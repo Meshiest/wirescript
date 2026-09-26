@@ -2258,3 +2258,245 @@ on go {
         );
         sweep.join().expect("sweep thread panicked");
     }
+
+    // `for` / `break` grammar
+
+    /// Pull the single `for` statement out of the first handler in `src`.
+    fn only_for(src: &str) -> crate::ast::ForStmt {
+        let parsed = crate::parser::parse(src, "test");
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
+        for d in &parsed.ast.decls {
+            if let crate::ast::TopDecl::Handler(h) = d {
+                for s in &h.body.stmts {
+                    if let Stmt::For(f) = s {
+                        return f.clone();
+                    }
+                }
+            }
+        }
+        panic!("no `for` statement parsed from: {src}");
+    }
+
+    #[test]
+    fn for_range_binds_one_slot() {
+        let f = only_for("in go: exec\non go { for i in 0..n { } }");
+        assert_eq!(f.bindings.len(), 1);
+        assert!(matches!(f.source, ForSource::Range(_)));
+        assert!(f.result.is_none());
+    }
+
+    #[test]
+    fn for_range_step_and_rev_parse() {
+        let f = only_for("in go: exec\non go { for i in (a..b).step(2) { } }");
+        let ForSource::Range(r) = &f.source else {
+            panic!("expected a range")
+        };
+        assert!(r.step.is_some());
+        assert!(!r.reversed);
+
+        let f = only_for("in go: exec\non go { for i in (0..n).rev() { } }");
+        let ForSource::Range(r) = &f.source else {
+            panic!("expected a range")
+        };
+        assert!(r.reversed);
+    }
+
+    /// Every `WS083` a parse of `src` reports, message included.
+    fn range_method_diags(src: &str) -> Vec<String> {
+        crate::parser::parse(src, "test")
+            .diagnostics
+            .into_iter()
+            .filter(|d| d.code == "WS083")
+            .map(|d| d.message)
+            .collect()
+    }
+
+    #[test]
+    fn a_range_method_on_a_collection_is_ws083() {
+        // Peeling the wrapper discards it, so without this the loop would run
+        // forward with no diagnostic anywhere.
+        for (src, method) in [
+            ("in go: exec\non go { for v in xs.rev() { } }", "rev"),
+            ("in go: exec\non go { for v in xs.step(2) { } }", "step"),
+            ("in go: exec\non go { for k, v in m.rev() { } }", "rev"),
+        ] {
+            let diags = range_method_diags(src);
+            assert_eq!(diags.len(), 1, "expected one WS083 for {src}: {diags:?}");
+            assert!(
+                diags[0].contains(&format!("`.{method}()`")),
+                "the message must name the method that does not apply: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_repeated_range_method_is_ws083() {
+        let diags = range_method_diags("in go: exec\non go { for i in (0..10).step(2).step(3) { } }");
+        assert_eq!(diags.len(), 1, "expected one WS083: {diags:?}");
+        assert!(diags[0].contains("one `.step()`"), "{diags:?}");
+
+        let diags = range_method_diags("in go: exec\non go { for i in (0..10).rev().rev() { } }");
+        assert_eq!(diags.len(), 1, "expected one WS083: {diags:?}");
+        assert!(diags[0].contains("one `.rev()`"), "{diags:?}");
+    }
+
+    #[test]
+    fn a_range_method_on_a_range_is_accepted() {
+        for src in [
+            "in go: exec\non go { for i in (0..10).step(2) { } }",
+            "in go: exec\non go { for i in (0..10).rev() { } }",
+            "in go: exec\non go { for i in (0..10).step(2).rev() { } }",
+        ] {
+            assert!(
+                range_method_diags(src).is_empty(),
+                "a range method on a range must be accepted: {src}"
+            );
+        }
+    }
+
+    /// `..` is tied with `+`/`-` at precedence 10 and is left-associative, so
+    /// parsing a `for` source's bare range the ordinary way groups `0..n-1`
+    /// as `(0..n) - 1`. The range then never forms and falls back to
+    /// `ForSource::Collection`.
+    #[test]
+    fn for_range_bound_arithmetic_groups_before_the_range_splits() {
+        let f = only_for("in go: exec\non go { for i in 0..n-1 { } }");
+        let ForSource::Range(r) = &f.source else {
+            panic!("expected a range, got {:?}", f.source)
+        };
+        let RangeExtent::Bounds { start, end } = &r.extent else {
+            panic!("expected bounds")
+        };
+        assert!(matches!(start, crate::ast::Expr::IntLit { value: 0, .. }));
+        assert!(matches!(end, crate::ast::Expr::BinOp { op, .. } if op == "-"));
+
+        let f = only_for("in go: exec\non go { for i in start+1..end-1 { } }");
+        let ForSource::Range(r) = &f.source else {
+            panic!("expected a range, got {:?}", f.source)
+        };
+        let RangeExtent::Bounds { start, end } = &r.extent else {
+            panic!("expected bounds")
+        };
+        assert!(matches!(start, crate::ast::Expr::BinOp { op, .. } if op == "+"));
+        assert!(matches!(end, crate::ast::Expr::BinOp { op, .. } if op == "-"));
+    }
+
+    #[test]
+    fn for_count_spelling_parses() {
+        let f = only_for("in go: exec\non go { for i in count(n, from = 5, step = 2) { } }");
+        let ForSource::Range(r) = &f.source else {
+            panic!("expected a range")
+        };
+        assert!(matches!(r.extent, RangeExtent::Count { .. }));
+        assert!(r.step.is_some());
+    }
+
+    #[test]
+    fn for_two_bindings_over_a_collection() {
+        let f = only_for("var arr: int[]\nin go: exec\non go { for i, v in arr { } }");
+        assert_eq!(f.bindings.len(), 2);
+        assert!(matches!(f.source, ForSource::Collection { .. }));
+    }
+
+    #[test]
+    fn for_record_pattern_and_ignore_slot() {
+        let f = only_for("var pts: Point[]\nin go: exec\non go { for _, { x, y } in pts { } }");
+        assert_eq!(f.bindings.len(), 2);
+        assert!(matches!(f.bindings[0], crate::ast::ForPat::Ignore(_)));
+        assert!(matches!(f.bindings[1], crate::ast::ForPat::Record { .. }));
+    }
+
+    #[test]
+    fn for_as_binds_a_result_name() {
+        let f = only_for("in go: exec\non go { for i in 0..n as run { } }");
+        assert_eq!(f.result.as_deref(), Some("run"));
+    }
+
+    #[test]
+    fn break_parses_as_a_statement() {
+        let parsed = crate::parser::parse("in go: exec\non go { for i in 0..n { break } }", "test");
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
+    }
+
+    #[test]
+    fn double_dot_is_still_concat_outside_a_for_source() {
+        let parsed = crate::parser::parse("let s = \"a\" .. \"b\"", "test");
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
+    }
+
+    /// A bare range endpoint gets the same newline skip as any other infix
+    /// operator, so a `for` header can split at the range like a long `+`/`-` chain.
+    #[test]
+    fn for_range_bare_dotdot_continues_across_a_line_break() {
+        fn endpoints(src: &str) -> (crate::ast::Expr, crate::ast::Expr) {
+            let f = only_for(src);
+            let ForSource::Range(r) = f.source else {
+                panic!("expected a range, got {:?}", f.source)
+            };
+            let RangeExtent::Bounds { start, end } = r.extent else {
+                panic!("expected bounds")
+            };
+            (start, end)
+        }
+
+        // Position spans differ across the three forms below, so compare the
+        // endpoints' shape rather than the whole node.
+        let (s, e) = endpoints("in go: exec\non go { for i in start..end { } }");
+        assert!(matches!(s, crate::ast::Expr::Ident { name, .. } if name == "start"));
+        assert!(matches!(e, crate::ast::Expr::Ident { name, .. } if name == "end"));
+
+        // Split before `..` - the shape the formatter actually produces.
+        let (s, e) = endpoints("in go: exec\non go { for i in start\n  ..end { } }");
+        assert!(matches!(s, crate::ast::Expr::Ident { name, .. } if name == "start"));
+        assert!(matches!(e, crate::ast::Expr::Ident { name, .. } if name == "end"));
+
+        // Split after `..`.
+        let (s, e) = endpoints("in go: exec\non go { for i in start..\n  end { } }");
+        assert!(matches!(s, crate::ast::Expr::Ident { name, .. } if name == "start"));
+        assert!(matches!(e, crate::ast::Expr::Ident { name, .. } if name == "end"));
+    }
+
+    #[test]
+    fn for_range_step_and_rev_continue_across_a_line_break() {
+        let f = only_for("in go: exec\non go { for i in (a\n  ..b).step(2) { } }");
+        let ForSource::Range(r) = &f.source else {
+            panic!("expected a range, got {:?}", f.source)
+        };
+        assert!(r.step.is_some());
+
+        let f = only_for("in go: exec\non go { for i in (0\n  ..n).rev() { } }");
+        let ForSource::Range(r) = &f.source else {
+            panic!("expected a range, got {:?}", f.source)
+        };
+        assert!(r.reversed);
+    }
+
+    #[test]
+    fn for_single_binding_over_a_collection_on_one_line_is_unaffected() {
+        let f = only_for("var arr: int[]\nin go: exec\non go { for v in arr { } }");
+        assert_eq!(f.bindings.len(), 1);
+        assert!(matches!(f.bindings[0], crate::ast::ForPat::Name(ref n, _) if n == "v"));
+        assert!(matches!(f.source, ForSource::Collection { .. }));
+    }
+
+    #[test]
+    fn double_dot_continues_across_a_line_break_outside_a_for_source() {
+        let parsed = crate::parser::parse("let s = \"a\" ..\n \"b\"", "test");
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
+    }

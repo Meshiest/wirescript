@@ -78,6 +78,8 @@ module.exports = grammar({
         $.await_expression,
         $.return_statement,
         $.if_statement,
+        $.for_statement,
+        $.break_statement,
         $.assignment_statement,
         $.expression_statement,
       ),
@@ -398,6 +400,25 @@ module.exports = grammar({
           ),
         ),
       ),
+
+    // `for <pat> [, <pat>]* in <source> [as <name>] { <body> }`. The source
+    // is `$._expression_no_brace`, like `if_statement`, so the body's `{`
+    // is never read as a record literal.
+    for_statement: ($) =>
+      seq(
+        'for',
+        commaSep1(field('binding', $._for_pattern)),
+        'in',
+        field('source', $._expression_no_brace),
+        optional(seq('as', field('result', $.identifier))),
+        field('body', $.block),
+      ),
+
+    // One binding slot: an identifier (`_` included, itself a valid
+    // identifier), or a record pattern like `{ index, isLast }`.
+    _for_pattern: ($) => choice($.identifier, $.record_pattern),
+
+    break_statement: (_$) => 'break',
 
     assignment_statement: ($) =>
       seq(

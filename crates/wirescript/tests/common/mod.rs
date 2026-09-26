@@ -106,3 +106,56 @@ pub fn compiles(src: &str) -> bool {
     })
     .is_ok()
 }
+
+/// Every brick in a world, root shell and every child grid alike. A chip's
+/// shell brick sits on the bricks of the module that instantiates it, so a
+/// walk of only `world.bricks` misses every nested one.
+pub fn all_bricks(world: &brdb::World) -> Vec<&brdb::Brick> {
+    std::iter::once(&world.bricks)
+        .chain(world.grids.iter().map(|(_, b)| b))
+        .flat_map(|bricks| bricks.iter())
+        .collect()
+}
+
+/// The brick-asset name of every brick in a world.
+pub fn brick_assets(world: &brdb::World) -> Vec<String> {
+    all_bricks(world)
+        .iter()
+        .map(|b| b.asset.asset().to_string())
+        .collect()
+}
+
+/// Asset name paired with component class, per typed component. The two are
+/// set independently at emit, so checking one alone passes while the pair the
+/// game validates is still wrong.
+pub fn brick_asset_components(world: &brdb::World) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for b in all_bricks(world) {
+        let asset = b.asset.asset().to_string();
+        for c in &b.components {
+            if let Some(t) = c.component_type_ref() {
+                out.push((asset.clone(), t.to_string()));
+            } else if let Some(t) = c.component_type() {
+                out.push((asset.clone(), t.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// The `(Count, FirstIndex, Step)` of each counted-loop shell, in world order.
+/// Read from the encoded `.brz`, since a constant pin exists only as component
+/// data and the in-memory `World` would not prove what the game reads.
+pub fn count_for_shell_data(brz: &[u8]) -> Vec<(i64, i64, i64)> {
+    use brdb::schema::BrdbValue;
+    let mut out = Vec::new();
+    for c in world_components(brz) {
+        let (Some(BrdbValue::I64(count)), Some(BrdbValue::I64(first)), Some(BrdbValue::I64(step))) =
+            (c.get("Count"), c.get("FirstIndex"), c.get("Step"))
+        else {
+            continue;
+        };
+        out.push((*count, *first, *step));
+    }
+    out
+}

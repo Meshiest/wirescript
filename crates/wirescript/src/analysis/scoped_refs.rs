@@ -54,6 +54,7 @@
 use crate::ast::*;
 use crate::collections::HashSet;
 use crate::diagnostic::{Pos, SourceRange};
+use crate::ir::plane::{for_slots, plane_spec, ForSlot, LoopKind};
 use std::sync::OnceLock;
 
 #[cfg(test)]
@@ -1037,6 +1038,30 @@ impl<'a> Walker<'a> {
                     self.walk_expr(e);
                 }
             }
+            Stmt::For(f) => {
+                match &f.source {
+                    ForSource::Range(r) => {
+                        match &r.extent {
+                            RangeExtent::Bounds { start, end } => {
+                                self.walk_expr(start);
+                                self.walk_expr(end);
+                            }
+                            RangeExtent::Count { count, from } => {
+                                self.walk_expr(count);
+                                if let Some(from) = from {
+                                    self.walk_expr(from);
+                                }
+                            }
+                        }
+                        if let Some(step) = &r.step {
+                            self.walk_expr(step);
+                        }
+                    }
+                    ForSource::Collection { expr, .. } => self.walk_expr(expr),
+                }
+                self.register_for(f, Some(scope.clone()));
+            }
+            Stmt::Break { .. } => {}
         }
     }
 
@@ -1045,6 +1070,89 @@ impl<'a> Walker<'a> {
         self.walk_block(then_block);
         if let Some(eb) = else_block {
             self.walk_block(eb);
+        }
+    }
+
+    /// Registers a `for` loop's slot bindings scoped to its body, then
+    /// registers `as run` scoped to the enclosing block AFTER the loop,
+    /// never inside it.
+    fn register_for(&mut self, f: &ForStmt, outer_scope: Option<SourceRange>) {
+        // This pass has no types, so a collection asks with the wider of the
+        // two collection tables: the kind only decides the `{ }` reading and
+        // the slot count, and both collection kinds destructure `{ }` alike.
+        let kind = match f.source {
+            ForSource::Range(_) => LoopKind::CountFor,
+            ForSource::Collection { .. } => LoopKind::ForEachMap,
+        };
+        let body_scope = Some(f.body.range.clone());
+
+        for (pat, slot) in f.bindings.iter().zip(for_slots(kind, &f.bindings)) {
+            match slot {
+                // A `{ }` binding on a range names the loop's own slots (no
+                // element to destructure). Names come from `ir::plane`'s table;
+                // one not in it binds nothing here, matching typecheck's WS076 refusal.
+                ForSlot::RangeSlotNames => {
+                    let ForPat::Record { fields, .. } = pat else { continue };
+                    let slot_labels = plane_spec(LoopKind::CountFor).slot_labels;
+                    for field in fields {
+                        let RecordDestructField::Named { name, alias, range } = field else {
+                            // `...rest` has no slots to collect on a range (WS076); nothing to bind.
+                            continue;
+                        };
+                        if !slot_labels.contains(&name.as_str()) {
+                            continue;
+                        }
+                        let bound = alias.clone().unwrap_or_else(|| name.clone());
+                        self.push(bound, RefNs::Value, range.clone(), body_scope.clone(), "for", false, true);
+                        self.mark_last_shorthand(alias.is_none());
+                    }
+                }
+                ForSlot::Slot(_) => self.bind_for_pat(pat, body_scope.clone()),
+                // Over-bound, so typecheck refused it (WS076); binding the
+                // name here would resolve a reference the program cannot have.
+                ForSlot::OverBound => {}
+            }
+        }
+
+        self.walk_block(&f.body);
+
+        if let Some(name) = &f.result {
+            // Scope containment is a pure range test with no ordering, so
+            // scoping `run` to the whole enclosing block would let a body
+            // reference resolve to it. Start the scope at the loop's own closing brace instead.
+            let after_loop = outer_scope.map(|s| SourceRange {
+                file: s.file.clone(),
+                start: f.range.end,
+                end: s.end,
+            });
+            self.push(name.clone(), RefNs::Value, f.range.clone(), after_loop, "for", false, true);
+        }
+    }
+
+    /// Binds one `for` slot pattern: a name, `_` (nothing), or a `{ }`
+    /// destructure of the slot's value. Never called for a range's own `{ }`
+    /// slot names - `register_for` handles those separately.
+    fn bind_for_pat(&mut self, pat: &ForPat, scope: Option<SourceRange>) {
+        match pat {
+            ForPat::Ignore(_) => {}
+            // `ForPat::Name`'s range is the name token only -> precise.
+            ForPat::Name(name, range) => {
+                self.push(name.clone(), RefNs::Value, range.clone(), scope, "for", false, false)
+            }
+            ForPat::Record { fields, .. } => {
+                for field in fields {
+                    match field {
+                        RecordDestructField::Named { name, alias, range } => {
+                            let bound = alias.clone().unwrap_or_else(|| name.clone());
+                            self.push(bound, RefNs::Value, range.clone(), scope.clone(), "for", false, true);
+                            self.mark_last_shorthand(alias.is_none());
+                        }
+                        RecordDestructField::Rest { name, range } => {
+                            self.push(name.clone(), RefNs::Value, range.clone(), scope.clone(), "for", false, true);
+                        }
+                    }
+                }
+            }
         }
     }
 

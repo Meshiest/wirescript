@@ -3,6 +3,7 @@ use super::types::{infer_expr_type, type_expr_str, type_str};
 use crate::ast::*;
 use crate::catalog::events::find_event;
 use crate::diagnostic::SourceRange;
+use crate::ir::Type;
 
 /// The display type string of a handler param's annotation (`a: int` -> "int"),
 /// if it has one.
@@ -528,7 +529,115 @@ pub fn collect_stmt(syms: &mut Vec<SymbolDef>, s: &Stmt, tmap: &TypeMap, file: O
                 }
             }
         }
+        Stmt::For(f) => {
+            collect_for_bindings(syms, f, tmap);
+            for s in &f.body.stmts {
+                collect_stmt(syms, s, tmap, file, script);
+            }
+            if let Some(name) = &f.result {
+                let ty = Type::Record(
+                    crate::ir::plane::result_fields()
+                        .into_iter()
+                        .map(|(field, _port, t)| (field.to_string(), t))
+                        .collect(),
+                );
+                syms.push(SymbolDef {
+                    name: name.clone(),
+                    kind: "let",
+                    range: f.range.clone(),
+                    ty: Some(type_str(&ty)),
+                    exec: false,
+                    is_const: false,
+                });
+            }
+        }
         _ => {}
+    }
+}
+
+/// Hover types for a `for` loop's slot bindings, sourced from `ir::plane`'s
+/// slot tables. A collection's element type is read back from `tmap`
+/// (typecheck's own inference), since this module cannot infer types itself.
+fn collect_for_bindings(syms: &mut Vec<SymbolDef>, f: &ForStmt, tmap: &TypeMap) {
+    use crate::ir::plane::{for_slots, plane_spec, slot_types, ForSlot, LoopKind};
+
+    let (kind, elem): (LoopKind, Vec<Type>) = match &f.source {
+        ForSource::Range(_) => (LoopKind::CountFor, Vec::new()),
+        ForSource::Collection { expr, .. } => {
+            let r = expr.range();
+            match tmap.get(&(r.file.clone(), r.start.offset, r.end.offset)) {
+                Some(Type::Array(elem)) => (LoopKind::ForEachArray, vec![(**elem).clone()]),
+                Some(Type::Map(k, v)) => (LoopKind::ForEachMap, vec![(**k).clone(), (**v).clone()]),
+                // Source type not resolved (e.g. WS075 already fired for this
+                // loop) - nothing meaningful to type the slots with.
+                _ => return,
+            }
+        }
+    };
+    let spec = plane_spec(kind);
+    let slot_tys = slot_types(kind, &elem);
+    let slots = for_slots(kind, &f.bindings);
+    // More names than slots (WS076) - malformed, nothing to type.
+    if slots.contains(&ForSlot::OverBound) {
+        return;
+    }
+
+    for (pat, slot) in f.bindings.iter().zip(&slots) {
+        match slot {
+            ForSlot::RangeSlotNames => {
+                let ForPat::Record { fields, .. } = pat else { continue };
+                for field in fields {
+                    let RecordDestructField::Named { name, alias, range } = field else {
+                        continue;
+                    };
+                    let Some(idx) = spec.slot_labels.iter().position(|l| l == name) else {
+                        continue;
+                    };
+                    syms.push(SymbolDef {
+                        name: alias.clone().unwrap_or_else(|| name.clone()),
+                        kind: "let",
+                        range: range.clone(),
+                        ty: Some(type_str(&slot_tys[idx])),
+                        exec: false,
+                        is_const: false,
+                    });
+                }
+            }
+            ForSlot::Slot(i) => push_for_pat_symbol(syms, pat, &slot_tys[*i]),
+            ForSlot::OverBound => {}
+        }
+    }
+}
+
+/// Bind one `for` slot pattern's name(s) at `ty`: a plain name, `_` (nothing),
+/// or a `{ }` destructure of the slot's value.
+fn push_for_pat_symbol(syms: &mut Vec<SymbolDef>, pat: &ForPat, ty: &Type) {
+    match pat {
+        ForPat::Ignore(_) => {}
+        ForPat::Name(name, range) => syms.push(SymbolDef {
+            name: name.clone(),
+            kind: "let",
+            range: range.clone(),
+            ty: Some(type_str(ty)),
+            exec: false,
+            is_const: false,
+        }),
+        ForPat::Record { fields, .. } => {
+            // An already-erroneous slot (the source type didn't resolve to a
+            // record): bind every name with no type rather than guessing one.
+            let rec = if let Type::Record(rec) = ty { Some(rec) } else { None };
+            for field in fields {
+                let (name, range, fty) = match field {
+                    RecordDestructField::Named { name, alias, range } => (
+                        alias.clone().unwrap_or_else(|| name.clone()),
+                        range.clone(),
+                        rec.and_then(|r| r.iter().find(|(n, _)| n == name)).map(|(_, t)| type_str(t)),
+                    ),
+                    RecordDestructField::Rest { name, range } => (name.clone(), range.clone(), None),
+                };
+                syms.push(SymbolDef { name, kind: "let", range, ty: fty, exec: false, is_const: false });
+            }
+        }
     }
 }
 

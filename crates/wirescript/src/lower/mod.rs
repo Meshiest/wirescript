@@ -65,6 +65,10 @@ use access::*;
 pub(crate) mod boundary_pins;
 pub(crate) mod flatten;
 
+// `for`-loop lowering, and the range normalisation it rests on: every range
+// spelling collapses onto the callable-loop shell's three driver pins.
+pub(crate) mod for_loop;
+
 // Maranget decision-tree builder for `match` lowering. Self-contained; the
 // match-expr / match-stmt lowering (later tasks) walks the `Decision` it emits.
 pub(crate) mod matchtree;
@@ -211,6 +215,13 @@ pub(super) fn count_emits_in_block(
             }
             Stmt::LetElse(l) => count_emits_in_block(&l.else_block, true, counts),
             Stmt::AnonChip(ac) => count_emits_in_block(&ac.body, in_branch, counts),
+            // A `for` body shares its parent's scope the way an anon chip's
+            // does for this purpose - an `out` inside one is pre-declared as
+            // a boundary port (`ast::collect_handler_port_sites` recurses
+            // into it), so an emit site inside it has to be counted here too,
+            // or an output driven from both inside and outside a `for` loads
+            // as an uncounted second driver into one rerouter (FanIn).
+            Stmt::For(f) => count_emits_in_block(&f.body, in_branch, counts),
             Stmt::Handler(h) => count_emits_in_handler(h, in_branch, counts),
             // A `match` STATEMENT arm is a conditional emit site, exactly like
             // an `if` branch: recurse into each block-bodied arm with
@@ -497,7 +508,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // `flatten`'s module docs). Afterwards there is a single module, so
     // `synthesize_boundary_pins` finds no cross-module wire and adds no pins.
     if input.ast.flat {
-        flatten::flatten_chips(&mut module);
+        flatten::flatten_chips(&mut module, &mut ctx.diagnostics);
     } else {
         crate::emit::partition_anon_chips(&mut module);
     }
@@ -529,6 +540,9 @@ fn collect_fn_names(ast: &Script) -> HashSet<String> {
                         walk_block(eb, names);
                     }
                 }
+                // A `mod`/`chip` declared inside a `for` body is still a
+                // module-scope name a call elsewhere needs to resolve.
+                Stmt::For(f) => walk_block(&f.body, names),
                 _ => {}
             }
         }

@@ -97,6 +97,108 @@ fn match_arm_binding_is_registered() {
     assert!(b.scope.is_some(), "match-arm binding must carry a scope extent");
 }
 
+#[test]
+fn for_loop_two_bindings_register_both_slots() {
+    let src = "\
+var arr: int[]
+in go: exec
+on go {
+  for i, v in arr {
+    let x = i + v
+  }
+}";
+    let m = model(src);
+    assert!(m.bindings.iter().any(|b| b.name == "i" && b.kind == "for" && b.scope.is_some()));
+    assert!(m.bindings.iter().any(|b| b.name == "v" && b.kind == "for" && b.scope.is_some()));
+}
+
+#[test]
+fn for_range_brace_binding_registers_named_slots() {
+    // `for { index, isLast } in 0..n` names the loop's own slots directly -
+    // there is no element to destructure on a range.
+    let src = "\
+var n: int = 0
+in go: exec
+on go {
+  for { index, isLast } in 0..n {
+    let x = index
+    let y = isLast
+  }
+}";
+    let m = model(src);
+    assert!(m.bindings.iter().any(|b| b.name == "index" && b.kind == "for"));
+    assert!(m.bindings.iter().any(|b| b.name == "isLast" && b.kind == "for"));
+}
+
+#[test]
+fn for_range_brace_binding_alias_binds_the_alias_not_the_slot_label() {
+    let src = "\
+var n: int = 0
+in go: exec
+on go {
+  for { index: idx } in 0..n {
+    let x = idx
+  }
+}";
+    let m = model(src);
+    assert!(m.bindings.iter().any(|b| b.name == "idx" && b.kind == "for"));
+    assert!(
+        !m.bindings.iter().any(|b| b.name == "index"),
+        "the slot label itself is not a bound name once aliased"
+    );
+}
+
+#[test]
+fn for_range_brace_binding_unknown_slot_registers_nothing() {
+    // `nope` names no slot of a range (index/ordinal/isFirst/isLast);
+    // typecheck alone reports WS076 for it, so scoped_refs binds nothing
+    // rather than inventing a rename target for a name that never compiles.
+    let src = "\
+var n: int = 0
+in go: exec
+on go {
+  for { nope } in 0..n {
+  }
+}";
+    let m = model(src);
+    assert!(!m.bindings.iter().any(|b| b.name == "nope"));
+}
+
+#[test]
+fn for_ignore_binding_registers_nothing() {
+    let src = "\
+var arr: int[]
+in go: exec
+on go {
+  for _, v in arr {
+    let x = v
+  }
+}";
+    let m = model(src);
+    assert!(!m.bindings.iter().any(|b| b.name == "_"));
+}
+
+#[test]
+fn for_as_run_registers_a_value_binding_with_a_scope_extent() {
+    let src = "\
+var n: int = 0
+in go: exec
+on go {
+  for i in 0..n as run {
+    let x = i
+  }
+  let ok = run.aborted
+}";
+    let m = model(src);
+    let b = m
+        .bindings
+        .iter()
+        .find(|b| b.name == "run")
+        .expect("`as run` registered as a value binding");
+    assert_eq!(b.ns, RefNs::Value);
+    assert!(b.scope.is_some(), "`as run` is block-local, not file scope");
+}
+
 // --- value-use collection + `references_at` -----------------------
 
 /// Resolve the binding under `(line, col)` (0-based, LSP-style — matches
@@ -164,6 +266,88 @@ on go {
     assert!(
         sites.iter().all(|(l, _)| *l >= 3),
         "file-scope `var x` leaked into the inner shadow's sites: {sites:?}"
+    );
+}
+
+#[test]
+fn for_loop_binding_rename_touches_binding_and_body_use_only() {
+    let src = "\
+var total: int = 0
+var n: int = 0
+in go: exec
+on go {
+  for i in 0..n {
+    total += i
+  }
+  total = 0
+}";
+    // cursor on the `i` binding in `for i in 0..n` (0-based line 4).
+    let col = src.lines().nth(4).unwrap().find("for i").unwrap() + 4;
+    let (name, sites) = rename_sites(src, 4, col);
+    assert_eq!(name, "i");
+    // decl (line 4) + the one body use in `total += i` (line 5) = 2 sites;
+    // nothing outside the loop (the pre/post `total` statements) is touched.
+    assert_eq!(sites.len(), 2);
+    assert!(
+        sites.iter().all(|(l, _)| *l == 4 || *l == 5),
+        "sites leaked outside the loop: {sites:?}"
+    );
+}
+
+#[test]
+fn for_binding_shadow_resolves_inside_the_body_only() {
+    let src = "\
+var i: int = 0
+in go: exec
+on go {
+  for i in 0..3 {
+    let y = i
+  }
+  let z = i
+}";
+    // cursor on the loop-body use of `i` inside `let y = i` (0-based line 4).
+    let col = src.lines().nth(4).unwrap().find("= i").unwrap() + 2;
+    let (name, sites) = rename_sites(src, 4, col);
+    assert_eq!(name, "i");
+    // decl (line 3) + the body use (line 4) = 2 sites; the outer `var i`
+    // (line 0) and the post-loop use in `let z = i` (line 6) are untouched.
+    assert_eq!(sites.len(), 2);
+    assert!(
+        sites.iter().all(|(l, _)| *l == 3 || *l == 4),
+        "outer `i` leaked into the loop binding's rename: {sites:?}"
+    );
+}
+
+#[test]
+fn for_as_run_resolves_after_the_loop_but_not_inside_it() {
+    let src = "\
+var n: int = 0
+in go: exec
+on go {
+  for i in 0..n as run {
+    let bad = run
+  }
+  let ok = run.aborted
+}";
+    // cursor on the post-loop use `run.aborted` (0-based line 6).
+    let col = src.lines().nth(6).unwrap().find("run").unwrap();
+    let (name, sites) = rename_sites(src, 6, col);
+    assert_eq!(name, "run");
+    assert!(
+        sites.iter().any(|(l, _)| *l == 6),
+        "the post-loop use must resolve: {sites:?}"
+    );
+    assert!(
+        sites.iter().all(|(l, _)| *l != 4),
+        "`run` used inside the loop body must not resolve to the `as run` binding: {sites:?}"
+    );
+
+    // The in-body use never resolved to anything, so it's a dead end for
+    // `references_at` too - clicking it must not find `run`'s outer binding.
+    let bad_col = src.lines().nth(4).unwrap().find("run").unwrap();
+    assert!(
+        references_at(&parse(src, "t.ws").ast, src, "t.ws", 4, bad_col).is_none(),
+        "the in-body `run` use must not resolve at all"
     );
 }
 

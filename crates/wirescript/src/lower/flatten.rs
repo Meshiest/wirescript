@@ -35,7 +35,9 @@
 //! longer exists, so under `@flat` they simply have nothing to apply to.
 
 use crate::collections::{HashMap, HashSet};
+use crate::diagnostic::Diagnostic;
 use crate::intern::sym;
+use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
 use crate::ir::{Literal, Module, NodeId, NodeKind, PortRef, ROOT_SCOPE_ID, ScopeId, ScopeInfo};
 
@@ -52,14 +54,20 @@ pub struct FlattenStats {
 }
 
 /// Inline every chip in `module`, recursively, leaving one flat module.
-pub fn flatten_chips(module: &mut Module) -> FlattenStats {
+///
+/// A loop's plane refuses instead (WS080): flattening it would compile a
+/// different program. Refusal runs once, after every chip has merged up, so
+/// a plane nested under a named chip is reported exactly once.
+pub fn flatten_chips(module: &mut Module, diagnostics: &mut Vec<Diagnostic>) -> FlattenStats {
     let mut stats = FlattenStats::default();
-    flatten_into(module, &mut stats);
+    flatten_into(module);
+    drop_chip_nodes(module, &mut stats, diagnostics);
+    module.template_key = None;
     module.scope_captures = super::call::compute_scope_captures(module);
     stats
 }
 
-fn flatten_into(module: &mut Module, stats: &mut FlattenStats) {
+fn flatten_into(module: &mut Module) {
     // Deterministic order: `chips` is a HashMap, and the scope ids handed out
     // by `merge_child` depend on the order children are merged in.
     let mut chip_ids: Vec<NodeId> = module.chips.keys().copied().collect();
@@ -69,19 +77,10 @@ fn flatten_into(module: &mut Module, stats: &mut FlattenStats) {
         let mut child = module.chips.remove(&chip_id).expect("chip module");
         // Deepest first, so `child` is already flat when it is merged and
         // every node lands in its final home in one hop.
-        flatten_into(&mut child, stats);
+        flatten_into(&mut child);
         merge_child(module, chip_id, child);
     }
     module.chips.clear();
-
-    // Every `NodeKind::Chip` node is bodyless by now: a named instance had
-    // its body merged above, and an anonymous chip never had one — its
-    // members are tagged with `chip_id` and left in place. Drop the shells
-    // and the tags.
-    drop_chip_nodes(module, stats);
-
-    // The module is no longer a verbatim copy of any chip template.
-    module.template_key = None;
 }
 
 /// Move `child`'s contents into `parent`, which instantiates it at
@@ -183,7 +182,9 @@ fn merge_child(parent: &mut Module, chip_id: NodeId, child: Module) {
     // move needs no renumbering — but assert it rather than trust it, since a
     // silent clobber here would drop a gate with no diagnostic.
     for (id, mut node) in child.nodes {
-        node.chip_id = None;
+        // `chip_id` is left as-is: NodeIds are globally unique, so it still
+        // names the right shell after the move. `drop_chip_nodes` clears it
+        // once, on the fully merged module, rather than once per level.
         node.scope_id = scope_map
             .get(&node.scope_id)
             .copied()
@@ -200,16 +201,35 @@ fn merge_child(parent: &mut Module, chip_id: NodeId, child: Module) {
 /// Remove every `NodeKind::Chip` node — each is an empty shell by the time
 /// this runs — along with the wires that reference one and the `chip_id`
 /// tags that pointed at one.
-fn drop_chip_nodes(module: &mut Module, stats: &mut FlattenStats) {
-    let shells: HashSet<NodeId> = module
-        .nodes
-        .iter()
-        .filter(|(_, n)| n.kind == NodeKind::Chip)
-        .map(|(id, _)| *id)
-        .collect();
+///
+/// A loop's plane shell is refused (WS080) instead of dropped: it and its
+/// still chip_id-tagged body are left alone, since merging them would compile
+/// a different program.
+fn drop_chip_nodes(module: &mut Module, stats: &mut FlattenStats, diagnostics: &mut Vec<Diagnostic>) {
+    let mut shells: HashSet<NodeId> = HashSet::default();
+    let mut refused: HashSet<NodeId> = HashSet::default();
+    for (id, n) in &module.nodes {
+        if n.kind != NodeKind::Chip {
+            continue;
+        }
+        if gc::is_plane_shell(n.gate_class) {
+            refused.insert(*id);
+            diagnostics.push(Diagnostic::error(
+                "WS080",
+                "`@flat` cannot flatten this `for` loop's plane. A loop's plane is an \
+                 execution boundary, not a visual grouping, so merging its body onto the \
+                 outer grid would compile a different program. Remove `@flat` from the file.",
+                n.source_range.clone(),
+            ));
+            continue;
+        }
+        shells.insert(*id);
+    }
 
     for node in module.nodes.values_mut() {
-        if node.chip_id.is_some() {
+        if let Some(cid) = node.chip_id
+            && !refused.contains(&cid)
+        {
             node.chip_id = None;
         }
     }

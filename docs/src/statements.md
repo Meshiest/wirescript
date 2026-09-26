@@ -17,6 +17,7 @@ Statements are the building blocks of Wirescript programs. They declare data, de
 - [`if` -- Conditional Statement](#if----conditional-statement)
 - [`match` -- Branch on an Enum Variant](#match----branch-on-an-enum-variant)
 - [`if let` / `let else` -- Refutable Enum Binds](#if-let--let-else----refutable-enum-binds)
+- [`for` Loops](#for-loops)
 - [`on` -- Event Handler](#on----event-handler)
 - [`let on` -- Event Declaration](#let-on----event-declaration)
 - [`emit` -- Emit Signal](#emit----emit-signal)
@@ -1079,6 +1080,213 @@ mod unwrapOr(v: Opt, fallback: int) -> int {
 ```
 
 See [Enums](enums.md#if-let--let-else) for the full reference.
+
+## `for` Loops
+
+`for` iterates a range, an array, or a map. Which loop you get follows from
+what you iterate: there is one keyword, not three.
+
+```wirescript
+in go: exec
+var sum: int = 0
+
+on go {
+  for i in 0..10 {
+    sum = sum + i
+  }
+}
+```
+
+```wirescript
+in go: exec
+var xs: int[]
+var total: int = 0
+
+on go {
+  xs.push(4)
+  xs.push(9)
+  for v in xs {
+    total = total + v
+  }
+}
+```
+
+```wirescript
+in go: exec
+var scores: Map<string, int>
+var total: int = 0
+
+on go {
+  scores.set("a", 1)
+  for k, v in scores {
+    total = total + v
+  }
+}
+```
+
+A loop's body is its own microchip plane, driven by the loop rather than by
+wires from the surrounding grid. Reading and writing a `var` declared outside
+the loop still works from inside the body: it is an ordinary boundary
+crossing, priced the same as a `chip { }`'s. `for` is exec-position only.
+
+### Range Sources
+
+`a..b` excludes `b`. `.step(k)` and `.rev()` modify a range. `count(n, from =
+.., step = ..)` is the same range spelled without `..`; `from` defaults to `0`
+and `step` to `1`.
+
+```wirescript ignore
+for i in 0..n                          // 0, 1, .. n-1
+for i in a..b                          // a, a+1, .. b-1
+for i in (0..n).step(2)                // stride 2
+for i in (0..n).rev()                  // n-1, n-2, .. 0
+for i in count(n, from = 10, step = 5) // 10, 15, 20, .. for n = 4
+```
+
+`..` still means string concatenation everywhere outside a `for` source; the
+range reading only applies where a range is expected.
+
+`.step(k)` and `.rev()` apply to a range and nothing else. On an array or map
+source, or written twice on one range, they are rejected (`WS083`).
+
+**`.step(k)` changes how many iterations there are**, the way Rust's
+`step_by` does: the count is a *ceiling* divide, not a truncating one.
+`(0..10).step(3)` runs four times, visiting 0, 3, 6 and 9, not three.
+
+### Bindings
+
+A binding fills slots left to right, one name per slot. A `{ }` pattern is a
+range-only form, described below:
+
+| source | slots | a single binding means |
+|---|---|---|
+| range / `count(...)` | `index`, `ordinal`, `isFirst`, `isLast` | `index` |
+| array | `index`, `value` | `value` |
+| map | `key`, `value`, `ordinal` | `key` |
+
+```wirescript
+in go: exec
+var xs: int[]
+var control: int = 0
+
+on go {
+  xs.push(4)
+  xs.push(9)
+  for i, v in xs {
+    if i == 1 { control = v }
+  }
+}
+```
+
+`{ }` names the loop's own entry ports, and only a range accepts it: it is the
+only way to reach `isFirst`, `isLast` and `ordinal`. An array or map slot
+holds a value rather than a set of ports, and no slot of either kind is a
+record, so `{ }` on one is rejected (`WS076`) - name the slot instead.
+
+```wirescript
+in go: exec
+var lastIndex: int = -1
+
+on go {
+  for { index, isLast } in 0..5 {
+    if isLast { lastIndex = index }
+  }
+}
+```
+
+`index` is the counter value and respects `from`/`step`; `ordinal` is the
+zero-based count of iterations so far. The two agree on a plain range and
+differ on a stepped one.
+
+**A record-typed array cannot be iterated.** Both `for { x, y } in points` and
+the single-binding `for p in points` are rejected over a `Point[]` (`WS082`):
+such an array is stored as one array gate per field (see
+[Records as storage](types.md#records-as-storage)), so there is no single
+array reference for the loop to bind. Iterate the index instead:
+
+```wirescript
+type Point = { x: int, y: int }
+
+in go: exec
+var points: Point[]
+var total: int = 0
+
+on go {
+  points.push({ x: 1, y: 2 })
+  for i in 0..points.length() {
+    total = total + points[i].x
+  }
+}
+```
+
+### `as run`
+
+`as run` binds the loop's result to a record readable after it ends: `{
+aborted, abortCode, iterations }`.
+
+```wirescript
+in go: exec
+var seen: int = 0
+
+on go {
+  for i in 0..6 as run {
+    seen = seen + 1
+  }
+  if run.aborted {
+    BroadcastChatMessage("cut short after ${run.iterations}")
+  }
+}
+```
+
+### `break`
+
+`break` stops the loop and ends the current iteration: nothing after it in
+the same body runs, even on the iteration that hit it.
+
+```wirescript
+in go: exec
+var breakSum: int = 0
+
+on go {
+  for i in 0..10 {
+    if i == 4 { break }
+    breakSum = breakSum + i
+  }
+}
+```
+
+A deliberate `break` does **not** set `run.aborted`. That field reports the
+runtime cutting a loop off on its own (an invocation limit, for instance),
+which a `break` is not.
+
+### What a Loop Body Can't Do
+
+- **`continue`.** No primitive exists to lower it to.
+- **`return`.** A loop body cannot cross the plane boundary back to its
+  caller. Assign to a `var` declared before the loop and `return` it after the
+  loop ends instead.
+- **`await`.** A loop body runs as one synchronous sweep within a single
+  tick, so it cannot suspend across ticks - the compiler rejects any `await`
+  inside one (`WS079`), including `await Sleep(...)`/`await SleepTicks(...)`.
+  Spread work across ticks with a back-edge loop (see [Loops](#loops) under
+  `emit`) outside the `for` instead.
+- **`@flat`.** A loop's plane is a real execution boundary, not a layout
+  grouping, so flattening it would compile a different program - the
+  compiler rejects `@flat` over a file containing any `for` (`WS080`).
+- **`buffer`.** A `buffer` binding inside a loop body compiles today, but a
+  tick-delayed value inside a body swept many times within one tick has no
+  established meaning. Treat it as undefined and declare the `buffer` outside
+  the loop until the behaviour is confirmed.
+
+### Cost
+
+A loop's gates are placed once no matter how many times it runs, but its
+body's computation is not: the same plane sweeps once per iteration, so
+anything inside the body that doesn't depend on the loop's binding is
+recomputed on every pass. Compute it once above the loop and read it inside
+instead. This is the first loop in the language where that trade-off exists:
+a `mod` bakes its cost in per call site at compile time, so there was never a
+runtime sweep to hoist work out of.
 
 ## `on` -- Event Handler
 

@@ -612,6 +612,10 @@ fn lower_block_inner(ctx: &mut LowerCtx, block: &Block) {
             pre_declare_anon_chip(ctx, ac);
         }
     }
+    // A `break` ends this block's exec chain: nothing after it in the same
+    // block ever runs, so each such statement gets one WS081 in place of
+    // its own WS058.
+    let mut dead_after_break = false;
     for s in &block.stmts {
         let is_handler_stmt = matches!(s, Stmt::Handler(_) | Stmt::AnonChip(_));
         // Flushing overwrites `current_exec` with the nested handlers' ends,
@@ -622,7 +626,23 @@ fn lower_block_inner(ctx: &mut LowerCtx, block: &Block) {
         if !ctx.handler_end_execs.is_empty() && !is_handler_stmt && ctx.current_exec.is_none() {
             flush_handler_end_execs(ctx);
         }
-        lower_stmt(ctx, s);
+        if dead_after_break {
+            ctx.warn_code(
+                "WS081",
+                "this statement never runs: a `break` earlier in the same body already \
+                 ended the loop's exec chain, so nothing after it in this block executes.",
+                s.range(),
+            );
+            let saved = ctx.dead_after_break;
+            ctx.dead_after_break = true;
+            lower_stmt(ctx, s);
+            ctx.dead_after_break = saved;
+        } else {
+            lower_stmt(ctx, s);
+        }
+        if matches!(s, Stmt::Break { .. }) {
+            dead_after_break = true;
+        }
     }
     // A BUFFERED `emit` as the block's final statement terminates this exec
     // chain: a loop back-edge (`buffer emit loop` last in the then-block) crosses

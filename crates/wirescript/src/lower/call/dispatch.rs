@@ -230,35 +230,25 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         {
             return port;
         }
-        // Record-resolved var methods: cpu.regs.push(val)
+        // Record-resolved container methods: `cpu.regs.push(val)`. Resolves
+        // every array spelling a bare name would (`var`, `in`/`out` port,
+        // `let`-bound ref), not just the `var` case — a record field holding an
+        // input array is the cartridge/socket idiom and used to land on the
+        // WS044 backstop.
         if crate::catalog::arrays::is_array_method(field)
-            && let Some(Binding::Var(var_rec)) = resolve_field_chain(ctx, obj).cloned()
-            && var_rec.storage == VarStorage::Array
+            && let Some(binding) = resolve_field_chain(ctx, obj).cloned()
+            && let Some((array_ref, elem_ty)) =
+                crate::lower::access::binding_array_ref(ctx, &binding, &ctx.type_of(obj))
         {
-            return lower_array_method(
-                ctx,
-                var_rec.node_id.port(WirePort::ArrayVarRef),
-                var_rec.inner_type.clone(),
-                field,
-                args,
-                range,
-                e,
-            );
+            return lower_array_method(ctx, array_ref, elem_ty, field, args, range, e);
         }
-        // Record-resolved var map methods: b.counts.set(k, v)
+        // Record-resolved map methods: b.counts.set(k, v)
         if crate::catalog::maps::is_map_method(field)
-            && let Some(Binding::Var(var_rec)) = resolve_field_chain(ctx, obj).cloned()
-            && var_rec.storage == VarStorage::Map
+            && let Some(binding) = resolve_field_chain(ctx, obj).cloned()
+            && let Some((map_ref, map_ty)) =
+                crate::lower::access::binding_map_ref(ctx, &binding, &ctx.type_of(obj))
         {
-            return lower_map_method(
-                ctx,
-                var_rec.node_id.port(WirePort::MapVarRef),
-                var_rec.inner_type.clone(),
-                field,
-                args,
-                range,
-                e,
-            );
+            return lower_map_method(ctx, map_ref, map_ty, field, args, range, e);
         }
         // Record ARRAY method: `pts.push(rec)` where `pts` is a record array —
         // a `Binding::Record` of parallel per-field arrays. `resolve_record_array`

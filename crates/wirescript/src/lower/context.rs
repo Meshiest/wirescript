@@ -163,6 +163,10 @@ pub(super) struct LowerCtx<'a> {
     /// When inside an anonymous chip body, nodes get tagged with this
     /// chip_id so the emitter routes them to a child grid.
     pub(super) current_anon_chip: Option<NodeId>,
+    /// Source range of every `for` body currently being lowered, innermost
+    /// last. A statement inside one was written inside the loop, so typecheck
+    /// saw the `for` around it; one that arrived by inlining lies outside.
+    pub(super) loop_body_ranges: Vec<SourceRange>,
     /// Anonymous-chip Chip nodes created by `pre_declare_anon_chip`, keyed
     /// by (decl range, enclosing chip at predeclare time) so
     /// `lower_anon_chip` can pair a decl with its node without scanning
@@ -472,6 +476,10 @@ pub(super) struct LowerCtx<'a> {
     /// imports of one file installs its behaviour ONCE instead of firing N
     /// times (which, on shared state, N-counts every increment).
     pub(super) import_behavior_lowered: crate::collections::HashSet<(String, usize)>,
+    /// Set while lowering a statement already flagged unreachable (WS081) by
+    /// a preceding `break` in the same block. `lower_assign`'s WS058 check
+    /// reads this to stay quiet for that one statement.
+    pub(super) dead_after_break: bool,
 }
 
 /// Chain an exec-driven `Var_Get` onto the current exec chain: the gate reads
@@ -552,6 +560,7 @@ impl<'a> LowerCtx<'a> {
             next_chain_id: 0,
             next_scope_id: ROOT_SCOPE_ID + 1,
             current_anon_chip: None,
+            loop_body_ranges: Vec::new(),
             anon_chip_nodes: crate::collections::HashMap::default(),
             mod_return_exec: None,
             mod_return_var: None,
@@ -595,6 +604,7 @@ impl<'a> LowerCtx<'a> {
             ns_mod_scopes: HashMap::default(),
             import_state_dedup: crate::collections::HashMap::default(),
             import_behavior_lowered: crate::collections::HashSet::default(),
+            dead_after_break: false,
         }
     }
 
@@ -602,6 +612,24 @@ impl<'a> LowerCtx<'a> {
         let id = self.next_chain_id;
         self.next_chain_id += 1;
         id
+    }
+
+    /// Is lowering currently inside a loop plane's body? Reads the innermost
+    /// `current_anon_chip`, which mod inlining leaves untouched, so an
+    /// inlined `await` answers the same as one written directly in the plane.
+    pub(super) fn in_loop_plane(&self) -> bool {
+        self.current_anon_chip
+            .and_then(|id| self.builder.module.nodes.get(&id))
+            .is_some_and(|n| gc::is_plane_shell(n.gate_class))
+    }
+
+    /// Is `r` written inside a `for` body typecheck walked with its loop
+    /// depth raised? A statement that reached the plane through an inlined
+    /// mod body sits outside every such range, so nothing reported it there.
+    pub(super) fn inside_written_loop_body(&self, r: &SourceRange) -> bool {
+        self.loop_body_ranges.iter().any(|b| {
+            b.file == r.file && b.start.offset <= r.start.offset && r.end.offset <= b.end.offset
+        })
     }
 
     /// The declared type of the OUTPUT port `src` refers to — the type of the

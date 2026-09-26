@@ -18,6 +18,7 @@ mod enums;
 mod exec_fork;
 mod flatten;
 mod fold;
+mod for_loop;
 mod fusion;
 mod gate_config;
 mod generics;

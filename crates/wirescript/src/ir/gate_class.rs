@@ -10,6 +10,28 @@ pub const MICROCHIP_OUTPUT: &str = "BrickComponentType_Internal_MicrochipOutput"
 pub const REROUTER: &str = "Component_Internal_Rerouter";
 pub const INPUT_SPLITTER: &str = "Component_Internal_InputSplitter";
 
+// Callable loop microchips
+pub const MICROCHIP_COUNT_FOR: &str = "Component_Internal_Microchip_CountFor";
+pub const MICROCHIP_FOR_EACH_ARRAY: &str = "Component_Internal_Microchip_ForEachArray";
+pub const MICROCHIP_FOR_EACH_MAP: &str = "Component_Internal_Microchip_ForEachMap";
+pub const CALLABLE_ENTRY_COUNT_FOR: &str =
+    "BrickComponentType_WireGraph_CallableEntry_CountFor";
+pub const CALLABLE_ENTRY_FOR_EACH_ARRAY: &str =
+    "BrickComponentType_WireGraph_CallableEntry_ForEachArray";
+pub const CALLABLE_ENTRY_FOR_EACH_MAP: &str =
+    "BrickComponentType_WireGraph_CallableEntry_ForEachMap";
+pub const CALLABLE_BREAK: &str = "BrickComponentType_WireGraph_Exec_CallableBreak";
+
+/// True for a gate class that hosts an isolated plane (a callable loop shell).
+/// Distinct from `MICROCHIP`/`MICROCHIP_ALT`, whose wall is visual only.
+///
+/// Answered by asking for the class's plane spec rather than by a second list:
+/// a shell this accepted but that had no spec would emit as a plain microchip,
+/// a save that loads and does nothing.
+pub fn is_plane_shell(class: &str) -> bool {
+    crate::ir::plane::plane_spec_for_class(class).is_some()
+}
+
 // Variables
 pub const PSEUDO_VAR: &str = "BrickComponentType_WireGraphPseudo_Var";
 pub const PSEUDO_ARRAY_VAR: &str = "BrickComponentType_WireGraphPseudo_ArrayVar";

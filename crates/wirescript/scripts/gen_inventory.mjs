@@ -288,7 +288,15 @@ for (const e of existing.entries) {
   }
 }
 
-entries.sort((a, b) => a.brickAsset.localeCompare(b.brickAsset));
+// Total, locale-independent ordering. Sorting on brickAsset alone leaves ties
+// (one brick hosting several components, and the shared standalone placeholder)
+// to fall back on insertion order -- i.e. the dump's Lua iteration order, which
+// shifts between runs. That churned ~1700 lines of this tracked file per regen and
+// buried real changes, so tiebreak on the component class.
+const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+entries.sort(
+  (a, b) => cmp(a.brickAsset, b.brickAsset) || cmp(a.component.class, b.component.class),
+);
 
 // --- validation against brdb (authoritative port lists), if present ----------
 let brdbWarnings = 0;

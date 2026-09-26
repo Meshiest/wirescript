@@ -156,8 +156,17 @@
     "keywords": {
       "patterns": [
         {
+          "comment": "`in` is contextual: the `for x in` iterator reads as control flow alongside `for`, while a port declaration `in name: type` stays a declaration like `let`. Must precede the general keyword rules so it wins the tie at `for`.",
+          "match": "\\b(for)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+(in)\\b",
+          "captures": {
+            "1": { "name": "keyword.control.wirescript" },
+            "2": { "name": "variable.other.wirescript" },
+            "3": { "name": "keyword.control.wirescript" }
+          }
+        },
+        {
           "name": "keyword.control.wirescript",
-          "match": "\\b(if|else|then|match|on|return|emit|await|from|as)\\b"
+          "match": "\\b(if|else|then|match|on|return|emit|await|from|as|for|break)\\b"
         },
         {
           "comment": "`unsafe` is contextual: match only the marker position, so a name spelled `unsafe` stays unhighlighted",

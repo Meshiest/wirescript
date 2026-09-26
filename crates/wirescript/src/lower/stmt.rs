@@ -270,6 +270,27 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                 }
             }
         }
+        Stmt::For(f) => crate::lower::for_loop::lower_for(ctx, f),
+        Stmt::Break { range } => {
+            let Some(exec) = ctx.current_exec else {
+                return;
+            };
+            let brk = ctx.add_gate(AddNodeOpts {
+                gate_class: gc::CALLABLE_BREAK,
+                source_range: range.clone(),
+                ports: GateIO {
+                    inputs: vec![PortSpec::exec(*sym::EXEC)],
+                    outputs: vec![PortSpec::exec(*sym::EXEC_OUT)],
+                },
+                chip_id: ctx.current_anon_chip,
+                ..Default::default()
+            });
+            ctx.connect(exec, brk.port(WirePort::Exec));
+            // `Exec_CallableBreak` only stops SUBSEQUENT sweeps; its own
+            // ExecOut still forwards, so leaving `current_exec` unset (rather
+            // than wired to it) is what stops the rest of THIS sweep instead.
+            ctx.current_exec = None;
+        }
     }
 }
 
@@ -789,7 +810,10 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     // dropped: a mod/chip body used as a value (`let x = f()`), or a top-level
     // assignment outside any handler. `Assign` never reaches here through the
     // pure-chip declaration path, so a missing exec chain always means a drop.
-    if ctx.current_exec.is_none() {
+    //
+    // `dead_after_break` means WS081 already covered this exact statement,
+    // so this stays quiet instead of also blaming a pure position.
+    if ctx.current_exec.is_none() && !ctx.dead_after_break {
         ctx.warn_code(
             "WS058",
             "this assignment has no exec chain to run on, so it never happens. It sits in a \
@@ -1548,16 +1572,16 @@ pub(super) fn lower_match_stmt(
     let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
     let decision = crate::lower::matchtree::build(&ctx.enum_defs, &scrut_ty, &arm_patterns);
 
-    // The scrutinee resolves to its `__disc` + payload-slot `Binding::Record`
-    // (Task 6) - a NAMED scrutinee through the scope, an INLINE construction by
-    // lowering it (see `match_scrutinee_record`, shared with `lower_match_expr`).
+    // The scrutinee resolves to its `__disc` + payload-slot `Binding::Record`:
+    // a NAMED scrutinee through the scope, an INLINE construction by lowering
+    // it (see `match_scrutinee_record`, shared with `lower_match_expr`).
     // A scrutinee with no record decomposition (an enum INPUT port, a
     // typecheck-error program) is a loud `_Unsupported` placeholder.
     let Some(root) = match_scrutinee_record(ctx, scrutinee) else {
         return synthesise_unsupported_range(ctx, range);
     };
 
-    // Const-elision fast path (Task 16): the statement twin of
+    // Const-elision fast path: the statement twin of
     // `lower_match_expr`'s own -- see that function's doc comment for the
     // `nofold_depth`/`if_cond_const_ctx` rationale, identical here. On
     // success, every arm OTHER than the taken one is dropped: none of their
@@ -2082,6 +2106,23 @@ fn retype_output_port(ctx: &mut LowerCtx, node: NodeId, port: WirePort, ty: Type
 }
 
 pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
+    // Backstop for typecheck's loop-depth check: a mod inlines per call
+    // site, so an `await` with no `for` of its own can still land inside a
+    // loop plane through the caller. One written in the body typecheck
+    // walked was already reported there, so this speaks only for the rest.
+    if ctx.in_loop_plane() {
+        if !ctx.inside_written_loop_body(&a.range) {
+            ctx.error(
+                "WS079",
+                "a loop body runs synchronously within one tick, so it cannot \
+                 suspend. Move the `await` outside the loop, or use a back-edge \
+                 loop (`emit` + `await`) if you need work spread across ticks.",
+                &a.range,
+            );
+        }
+        return;
+    }
+
     // 1. Create a static bool var for the armed flag (initially false)
     let armed_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::PSEUDO_VAR,

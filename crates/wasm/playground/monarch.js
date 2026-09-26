@@ -5,7 +5,7 @@ export const monarchLanguage = {
   ignoreCase: false,
 
   keywords: [
-    'if', 'else', 'then', 'match', 'on', 'return', 'emit', 'await',
+    'if', 'else', 'then', 'match', 'on', 'return', 'emit', 'await', 'for', 'break',
     'var', 'array', 'buffer', 'let', 'const', 'fn', 'chip', 'mod', 'in', 'out', 'open', 'ref',
     'import', 'from', 'as', 'event', 'static', 'type',
     // Contextual: the parser also accepts these as ordinary identifiers, so a

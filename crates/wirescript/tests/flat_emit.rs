@@ -5,7 +5,8 @@
 //! DROPS them at load) and no two wires into one target port (the game
 //! rejects the wire at load).
 
-use wirescript::compile::{CompileInput, FoldMode, compile_to_world};
+use wirescript::compile::{CompileError, CompileInput, FoldMode, compile_to_world, diagnostics_only};
+use wirescript::diagnostic::Severity;
 
 /// Two named chips (one nested inside the other, and one instantiated
 /// twice — so template instantiation is exercised), an anonymous chip, a
@@ -214,4 +215,111 @@ fn flat_is_deterministic() {
     assert_eq!(a.grids, b.grids);
     assert_eq!(a.root_bricks, b.root_bricks);
     assert_eq!(a.wires, b.wires);
+}
+
+/// A `for` loop's plane is an execution boundary, not a visual grouping:
+/// flattening it onto the root grid would strand the plane-only
+/// `CallableEntry_*` gate there, which the game rejects at load ("Brick not
+/// allowed on this board"). `@flat` over any `for` must refuse (WS080)
+/// instead of silently building that broken save.
+const FLAT_OVER_A_LOOP: &str = "@flat\n\nvar t: int = 0\non ReadBrickGrid() {\n  for i in 0..5 { t = t + i }\n}\n";
+
+/// `just check` (`diagnostics_only`) must report WS080 for this program.
+#[test]
+fn flat_over_a_loop_is_ws080_in_diagnostics_only() {
+    let diags = diagnostics_only(CompileInput {
+        source: FLAT_OVER_A_LOOP,
+        file: "flat_emit.ws",
+        module_name: None,
+        fold_mode: FoldMode::Auto,
+    });
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == "WS080" && d.severity == Severity::Error),
+        "expected an WS080 error, got {diags:?}"
+    );
+}
+
+/// The refusal must actually stop the bad emit, not just add a warning next
+/// to it: `compile_to_world` has to fail outright, before layout/emit ever
+/// run, so no `.brdb`/`.brz` with the stranded gate can be produced.
+#[test]
+fn flat_over_a_loop_fails_compile_to_world() {
+    let result = compile_to_world(
+        CompileInput {
+            source: FLAT_OVER_A_LOOP,
+            file: "flat_emit.ws",
+            module_name: None,
+            fold_mode: FoldMode::Auto,
+        },
+        wirescript::EmitOptions::default(),
+    );
+    let Err(CompileError::HasErrors(diags)) = result else {
+        panic!("`@flat` over a `for` loop must fail to compile with HasErrors, not silently emit");
+    };
+    assert!(
+        diags.iter().any(|d| d.code == "WS080"),
+        "expected WS080 among the compile errors, got {diags:?}"
+    );
+}
+
+/// Control: the identical program with `@flat` removed compiles cleanly, so
+/// WS080 is specifically about the `@flat` + `for` combination, not about the
+/// loop itself.
+#[test]
+fn the_same_loop_without_flat_compiles_clean() {
+    let source = FLAT_OVER_A_LOOP.replacen("@flat\n\n", "", 1);
+    let diags = diagnostics_only(CompileInput {
+        source: &source,
+        file: "flat_emit.ws",
+        module_name: None,
+        fold_mode: FoldMode::Auto,
+    });
+    assert!(
+        diags.iter().all(|d| d.severity != Severity::Error),
+        "the loop alone (no @flat) must compile clean: {diags:?}"
+    );
+}
+
+/// A loop nested inside a named chip still merges into the chip's own module
+/// before the chip itself merges into the root, so refusing it once, on the
+/// root, is what proves it isn't refused again on the way up.
+fn ws080_count(source: &str) -> usize {
+    diagnostics_only(CompileInput {
+        source,
+        file: "flat_emit.ws",
+        module_name: None,
+        fold_mode: FoldMode::Auto,
+    })
+    .into_iter()
+    .filter(|d| d.code == "WS080")
+    .count()
+}
+
+#[test]
+fn flat_over_a_loop_inside_a_named_chip_is_ws080_exactly_once() {
+    let src = "@flat\n\nchip Looper(go: exec) {\n  var t: int = 0\n  \
+               on go { for i in 0..3 { t = t + i } }\n}\n\n\
+               in start: exec\nlet l = Looper(start)\n";
+    assert_eq!(
+        ws080_count(src),
+        1,
+        "one loop, nested one level under a named chip, must be refused once"
+    );
+}
+
+/// Two instances of one chip build two distinct loop planes (template
+/// instantiation re-stamps every node), so the refusal count must scale with
+/// the number of planes, not with how many times each one merges upward.
+#[test]
+fn two_instances_of_a_chip_with_a_loop_are_ws080_twice() {
+    let src = "@flat\n\nchip Looper(go: exec) {\n  var t: int = 0\n  \
+               on go { for i in 0..3 { t = t + i } }\n}\n\n\
+               in start: exec\nlet l1 = Looper(start)\nlet l2 = Looper(start)\n";
+    assert_eq!(
+        ws080_count(src),
+        2,
+        "two loop instances must be refused exactly twice, not four times"
+    );
 }

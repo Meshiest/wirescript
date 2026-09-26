@@ -88,6 +88,84 @@ pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx, expr: &Expr) -> Option<
     }
 }
 
+/// A `Binding` that names an ARRAY container → its ref port and element type.
+/// The bare-`Ident` index path already accepts four spellings of "an array
+/// lives here": a `var` array (ref on `ArrayVarRef`), an `in X: T[]` input and
+/// an `out X: T[]` (ref rides the rerouter's `RER_Output`), and a `let` bound
+/// to an array-valued expression (ref arrives on that wire). A record FIELD
+/// holding one resolves to exactly the same bindings, so the field chain
+/// resolves them the same way instead of accepting only the `var` case and
+/// leaving `m.rom[i]` on the silent `_Unsupported` placeholder.
+///
+/// `obj_ty` is the static type of the indexed expression, used for the
+/// port-only `Local` binding, which carries no type of its own. It is `Any` on
+/// an assignment target (typecheck records no `type_of_expr` for one), which
+/// only costs the `Local` case there.
+pub(super) fn binding_array_ref(
+    ctx: &LowerCtx,
+    binding: &Binding,
+    obj_ty: &Type,
+) -> Option<(PortRef, Type)> {
+    fn elem(t: &Type) -> Option<Type> {
+        match unwrap_ref(t) {
+            Type::Array(e) => Some(e.as_ref().clone()),
+            _ => None,
+        }
+    }
+    match binding {
+        Binding::Var(var_rec) if var_rec.storage == VarStorage::Array => Some((
+            var_rec.node_id.port(WirePort::ArrayVarRef),
+            var_rec.inner_type.clone(),
+        )),
+        Binding::Input(inp) => elem(&inp.ty).map(|e| (inp.node_id.port(WirePort::RerOutput), e)),
+        Binding::Output(out) => elem(&out.ty).map(|e| (out.node_id.port(WirePort::RerOutput), e)),
+        Binding::Local(local) if !is_placeholder_port(ctx, local.port) => {
+            elem(obj_ty).map(|e| (local.port, e))
+        }
+        _ => None,
+    }
+}
+
+/// Does this port come off an `_Unsupported` placeholder? A field whose value
+/// failed to lower (a `const` container put in a record literal, say) binds to
+/// the placeholder's port, and a container ref taken from one would wire a real
+/// gate to a dead source — a read that is broken but no longer says so.
+/// Declining leaves the caller on its own placeholder path, which still warns.
+fn is_placeholder_port(ctx: &LowerCtx, port: PortRef) -> bool {
+    ctx.builder
+        .module
+        .nodes
+        .get(&port.node_id)
+        .is_some_and(|n| n.gate_class == gc::UNSUPPORTED)
+}
+
+/// The map analogue of [`binding_array_ref`]: a `Binding` that names a MAP
+/// container → its ref port and whole `Type::Map(K, V)`.
+pub(super) fn binding_map_ref(
+    ctx: &LowerCtx,
+    binding: &Binding,
+    obj_ty: &Type,
+) -> Option<(PortRef, Type)> {
+    fn map_ty(t: &Type) -> Option<Type> {
+        match unwrap_ref(t) {
+            m @ Type::Map(_, _) => Some(m),
+            _ => None,
+        }
+    }
+    match binding {
+        Binding::Var(var_rec) if var_rec.storage == VarStorage::Map => Some((
+            var_rec.node_id.port(WirePort::MapVarRef),
+            var_rec.inner_type.clone(),
+        )),
+        Binding::Input(inp) => map_ty(&inp.ty).map(|t| (inp.node_id.port(WirePort::RerOutput), t)),
+        Binding::Output(out) => map_ty(&out.ty).map(|t| (out.node_id.port(WirePort::RerOutput), t)),
+        Binding::Local(local) if !is_placeholder_port(ctx, local.port) => {
+            map_ty(obj_ty).map(|t| (local.port, t))
+        }
+        _ => None,
+    }
+}
+
 /// Whether this record IS variable storage (every leaf a var/buffer gate)
 /// rather than a compile-time record VALUE whose fields resolve to locals.
 fn record_is_variable_backed(fields: &HashMap<crate::intern::Sym, Binding>) -> bool {
@@ -837,20 +915,19 @@ fn lower_index_access_runtime(
             }
         } else if let Some(inp) = ctx.lookup_input(name).cloned() {
             inp.node_id.port(WirePort::RerOutput)
+        } else if let Some(Binding::Local(local)) = ctx.scope.get(name).cloned() {
+            // A let bound to an array-valued expression. An `if` over two arrays
+            // lowers to a Select whose output carries the ref, and ArrayVarRef is a
+            // wireable input, so the ref can arrive on a wire instead of resolving
+            // back to one specific array gate. Without this a selected array
+            // type-checks and then emits a placeholder.
+            local.port
         } else {
             return None;
         }
     } else if let Some(binding) = resolve_field_chain(ctx, obj).cloned() {
-        // obj is a record field chain that resolves to an array var
-        if let Binding::Var(var_rec) = &binding {
-            if var_rec.storage == VarStorage::Array {
-                var_rec.node_id.port(WirePort::ArrayVarRef)
-            } else {
-                return None;
-            }
-        } else {
-            return None;
-        }
+        // obj is a record field chain that resolves to an array container
+        binding_array_ref(ctx, &binding, &ctx.type_of(obj))?.0
     } else {
         return None;
     };
@@ -1006,13 +1083,8 @@ pub(super) fn resolve_map_target(ctx: &LowerCtx, obj: &Expr) -> Option<(PortRef,
         }
         return None;
     }
-    if let Some(Binding::Var(var_rec)) = resolve_field_chain(ctx, obj)
-        && var_rec.storage == VarStorage::Map
-    {
-        return Some((
-            var_rec.node_id.port(WirePort::MapVarRef),
-            var_rec.inner_type.clone(),
-        ));
+    if let Some(binding) = resolve_field_chain(ctx, obj) {
+        return binding_map_ref(ctx, binding, &ctx.type_of(obj));
     }
     None
 }
@@ -2998,19 +3070,10 @@ pub(super) fn lower_array_set(
             return;
         }
     } else if let Some(binding) = resolve_field_chain(ctx, obj).cloned() {
-        // obj is a record field chain resolving to an array var
-        if let Binding::Var(var_rec) = &binding {
-            if var_rec.storage == VarStorage::Array {
-                (
-                    var_rec.node_id.port(WirePort::ArrayVarRef),
-                    "rec_arr".to_string(),
-                    var_rec.inner_type.clone(),
-                )
-            } else {
-                return;
-            }
-        } else {
-            return;
+        // obj is a record field chain resolving to an array container
+        match binding_array_ref(ctx, &binding, &ctx.type_of(obj)) {
+            Some((array_ref, elem)) => (array_ref, "rec_arr".to_string(), elem),
+            None => return,
         }
     } else {
         return;

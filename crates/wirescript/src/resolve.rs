@@ -965,6 +965,14 @@ fn collect_runtime_idents_in_block(block: &Block, idents: &mut HashSet<String>) 
             // Listed rather than caught by a wildcard: these name no runtime
             // value, and a new statement kind should be a compile error here.
             Stmt::In(_) | Stmt::Return { value: None, .. } => {}
+            // The source's expressions and the body are use sites like any
+            // other branch form's; the loop's own bindings name nothing
+            // importable.
+            Stmt::For(f) => {
+                collect_idents_in_for_source(&f.source, idents);
+                collect_runtime_idents_in_block(&f.body, idents);
+            }
+            Stmt::Break { .. } => {}
         }
     }
 }
@@ -1297,7 +1305,42 @@ fn collect_idents_in_block(block: &Block, idents: &mut HashSet<String>) {
             // value names nothing, and a new statement kind should be a
             // compile error here, not a silently missed use site.
             Stmt::Return { value: None, .. } => {}
+            // Same treatment as `collect_runtime_idents_in_block` above: the
+            // source's expressions and the body are use sites like any other
+            // branch form's.
+            Stmt::For(f) => {
+                collect_idents_in_for_source(&f.source, idents);
+                collect_idents_in_block(&f.body, idents);
+            }
+            Stmt::Break { .. } => {}
         }
+    }
+}
+
+/// The identifiers a `for` source names, shared by both import-closure
+/// walkers above (`collect_runtime_idents_in_block`, `collect_idents_in_block`) -
+/// neither yet knows about the loop's own bindings, only what the source
+/// expressions reference.
+fn collect_idents_in_for_source(source: &ForSource, idents: &mut HashSet<String>) {
+    match source {
+        ForSource::Range(r) => {
+            match &r.extent {
+                RangeExtent::Bounds { start, end } => {
+                    collect_idents_in_expr(start, idents);
+                    collect_idents_in_expr(end, idents);
+                }
+                RangeExtent::Count { count, from } => {
+                    collect_idents_in_expr(count, idents);
+                    if let Some(from) = from {
+                        collect_idents_in_expr(from, idents);
+                    }
+                }
+            }
+            if let Some(step) = &r.step {
+                collect_idents_in_expr(step, idents);
+            }
+        }
+        ForSource::Collection { expr, .. } => collect_idents_in_expr(expr, idents),
     }
 }
 

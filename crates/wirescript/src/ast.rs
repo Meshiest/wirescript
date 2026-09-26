@@ -413,6 +413,75 @@ pub struct AnonChipDecl {
     pub closed: bool,
 }
 
+/// `for <binding> in <source> [as <name>] { <body> }`
+#[derive(Clone, Debug)]
+pub struct ForStmt {
+    /// Slot patterns, left to right. Never empty.
+    pub bindings: Vec<ForPat>,
+    pub source: ForSource,
+    /// `as run` - binds `{ aborted, abortCode, iterations }` after the loop.
+    pub result: Option<String>,
+    pub body: Block,
+    pub range: SourceRange,
+}
+
+/// One binding slot of a `for`.
+#[derive(Clone, Debug)]
+pub enum ForPat {
+    /// A plain name bound to this slot.
+    Name(String, SourceRange),
+    /// `{ a, b }` - destructures the record value occupying this slot.
+    Record {
+        fields: Vec<RecordDestructField>,
+        range: SourceRange,
+    },
+    /// `_` - the slot is present but unbound.
+    Ignore(SourceRange),
+}
+
+impl ForPat {
+    pub fn range(&self) -> &SourceRange {
+        match self {
+            ForPat::Name(_, r) | ForPat::Ignore(r) => r,
+            ForPat::Record { range, .. } => range,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ForSource {
+    /// `0..n`, `(a..b).step(k)`, `(a..b).rev()`, `count(n, from, step)`.
+    Range(RangeSource),
+    /// An array or map VARIABLE. Which of the two it is resolves at typecheck.
+    Collection { expr: Expr, range: SourceRange },
+}
+
+impl ForSource {
+    pub fn range(&self) -> &SourceRange {
+        match self {
+            ForSource::Range(r) => &r.range,
+            ForSource::Collection { range, .. } => range,
+        }
+    }
+}
+
+/// How far a counted loop runs. `Bounds` excludes its end.
+#[derive(Clone, Debug)]
+pub enum RangeExtent {
+    Bounds { start: Expr, end: Expr },
+    Count { count: Expr, from: Option<Expr> },
+}
+
+#[derive(Clone, Debug)]
+pub struct RangeSource {
+    pub extent: RangeExtent,
+    /// `.step(k)` or `count(.., step = k)`. `None` means a stride of 1.
+    pub step: Option<Expr>,
+    /// `.rev()` - count down from the top of the range.
+    pub reversed: bool,
+    pub range: SourceRange,
+}
+
 /// `event foo = Trigger` or `event foo = on Trigger { ... }`
 #[derive(Clone, Debug)]
 pub struct EventDecl {
@@ -711,6 +780,10 @@ pub enum Stmt {
         value: Option<Expr>,
         range: SourceRange,
     },
+    For(ForStmt),
+    Break {
+        range: SourceRange,
+    },
 }
 
 impl Stmt {
@@ -734,6 +807,8 @@ impl Stmt {
             Stmt::AnonChip(d) => &d.range,
             Stmt::ChipDecl(d) => &d.range,
             Stmt::Return { range, .. } => range,
+            Stmt::For(d) => &d.range,
+            Stmt::Break { range } => range,
         }
     }
 }
@@ -775,6 +850,7 @@ fn collect_handler_port_sites<'a>(block: &'a Block, sites: &mut Vec<&'a OutBindi
             }
             Stmt::LetElse(l) => collect_handler_port_sites(&l.else_block, sites),
             Stmt::Handler(h) => collect_handler_port_sites(&h.body, sites),
+            Stmt::For(f) => collect_handler_port_sites(&f.body, sites),
             _ => {}
         }
     }

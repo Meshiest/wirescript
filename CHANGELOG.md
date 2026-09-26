@@ -1,5 +1,12 @@
 # Wirescript Changelog
 
+# 1.12.0
+- `for` loops compile to callable loop microchips, iterating a range, array or map within a single tick.
+
+### Fixes
+
+- An array or map reached through a record field now resolves for every spelling of one, not just a `var`; reading through a port-bound field emitted a placeholder that read zero, and writing through one emitted nothing.
+
 ## 1.11.1
 
 - `// ws-ignore-line:WS014` silences that warning on its own line, or on the line below when the comment stands alone; `// ws-ignore-file:WS014` silences it for the whole file. Both take a comma-separated list of codes, both cover every warning when written bare, and neither silences an error.

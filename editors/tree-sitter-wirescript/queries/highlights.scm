@@ -68,9 +68,14 @@
   "if"
   "else"
   "then"
+  "for"
 ] @keyword.conditional
 
-"return" @keyword.return
+; `break_statement` has no other content -- the whole node is the keyword.
+[
+  "return"
+  (break_statement)
+] @keyword.return
 
 [
   "on"

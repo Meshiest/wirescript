@@ -77,13 +77,20 @@ struct Parser<'a> {
     /// When true, a trailing `{ ... }` after a path expression is NOT parsed as
     /// braced enum-variant construction (`Enum.Variant { f: v }`) - the `{` is
     /// left for the surrounding block header instead. Set only while parsing a
-    /// header/condition expression (an `if` condition; extend to a `while`/`for`
-    /// header or `match` scrutinee if those are added), so `if f.bar { }` reads
-    /// as an `if` with a body, not a construction. Reset to false inside any
-    /// bracketed sub-expression (`( )`, `[ ]`, call args, a record/map/array
-    /// body), where a trailing `{` is unambiguous again. The Go-style
-    /// composite-literal disambiguation.
+    /// header/condition expression (an `if` condition, a `match` scrutinee, a
+    /// `for` source; extend to a `while` header if one is added), so
+    /// `if f.bar { }` reads as an `if` with a body, not a construction. Reset
+    /// to false inside any bracketed sub-expression (`( )`, `[ ]`, call args, a
+    /// record/map/array body), where a trailing `{` is unambiguous again. The
+    /// Go-style composite-literal disambiguation.
     no_brace_construct: bool,
+    /// When true, a bare `..` terminates `parse_binary` rather than being
+    /// consumed as its infix operator. Set only by
+    /// [`Parser::parse_range_operand`] for a `for` source's endpoints, because
+    /// `..` shares precedence 10 with `+`/`-` and is left-associative: without
+    /// it, `0..n-1` groups as `(0..n) - 1` and the range never forms. Reset
+    /// inside any bracketed sub-expression, where a `..` is unambiguous again.
+    stop_at_dotdot: bool,
     /// Current nesting level, in expression operands, blocks and type levels.
     /// See [`MAX_NEST_DEPTH`].
     depth: usize,
@@ -116,6 +123,7 @@ impl<'a> Parser<'a> {
             expr_trigger_counter: 0,
             pending_stmts: Vec::new(),
             no_brace_construct: false,
+            stop_at_dotdot: false,
             depth: 0,
             depth_exceeded: false,
         }
@@ -295,6 +303,20 @@ impl<'a> Parser<'a> {
             code: "WSP001".to_string(),
             message: message.into(),
             range: self.make_range(start, end),
+        });
+    }
+
+    /// A parse-stage error carrying a specific `WSxxx` code instead of the
+    /// generic `WSP001`, for a construct that parses but cannot mean anything.
+    fn error_code(&mut self, code: &str, message: impl Into<String>, range: SourceRange) {
+        if self.depth_exceeded {
+            return;
+        }
+        self.diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            code: code.to_string(),
+            message: message.into(),
+            range,
         });
     }
 

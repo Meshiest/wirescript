@@ -624,14 +624,48 @@ pub(super) fn emit_module(
 
         world.add_brick_grid(child_entity, child_bricks);
 
+        // The game rejects an entry gate placed on a plain microchip, so a
+        // loop shell needs both its own brick asset and its own component
+        // class; getting either one wrong still fails the load.
+        let spec = crate::ir::plane::plane_spec_for_class(node.gate_class);
+        let (shell_asset, shell_component) = match spec {
+            Some(s) => (BrickType::from(s.brick_asset), node.gate_class),
+            None => (brdb::assets::bricks::B_MICROCHIP, gc::MICROCHIP_ALT),
+        };
+
+        // A loop shell has data pins where a plain microchip has none, so a
+        // bare component would leave every constant pin at its default.
+        let shell_comp: Box<dyn brdb::BrdbComponent> = if spec.is_some() {
+            let mut shell_inlined: HashMap<Sym, &Literal> = HashMap::default();
+            if let Some(entries) = inlined_by_node.get(id) {
+                for (port_idx, lit) in entries {
+                    shell_inlined.insert(crate::intern::intern(port_idx.as_str()), lit);
+                }
+            }
+            // A single-consumer literal is folded into the target's
+            // properties and its wire deleted before emit, so the properties
+            // are where a constant pin usually arrives.
+            for (prop_name, lit) in node.properties.as_ref() {
+                shell_inlined.entry(*prop_name).or_insert(lit);
+            }
+            Box::new(build_gate_component(
+                shell_component,
+                &node.ports,
+                &shell_inlined,
+                world,
+                ctx.prefab_resolver.as_ref(),
+                ctx.nested_compiler.as_ref(),
+            )?)
+        } else {
+            Box::new(LiteralComponent::new(shell_component))
+        };
+
         let (mut chip_brick, chip_brick_id) = brdb::Brick {
-            asset: brdb::assets::bricks::B_MICROCHIP,
+            asset: shell_asset,
             position: inner_pos,
             ..Default::default()
         }
-        .with_component_box(Box::new(LiteralComponent::new(
-            "Component_Internal_Microchip",
-        )))
+        .with_component_box(shell_comp)
         .with_id_split();
         // Named chips get a floating name label (the `@label` override wins
         // over the declared name); anonymous groupings (ModuleRoot-scoped

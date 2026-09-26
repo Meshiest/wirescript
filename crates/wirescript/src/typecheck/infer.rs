@@ -7,8 +7,8 @@
 //! variant, no fallback.
 
 use crate::ast::{
-    ArrayElem, Block, CallArg, Expr, InterpPart, MatchBody, Pattern, RecordLitField, Stmt,
-    VariantPattern,
+    ArrayElem, Block, CallArg, Expr, ForSource, InterpPart, MatchBody, Pattern, RangeExtent,
+    RecordLitField, Stmt, VariantPattern,
 };
 use crate::catalog::calls::find_call;
 use crate::diagnostic::{Diagnostic, Severity, SourceRange};
@@ -599,6 +599,37 @@ fn stmt_has_direct_exec(
         Stmt::Return { value, .. } => value
             .as_ref()
             .is_some_and(|e| expr_has_direct_exec(ctx, e, locals, edges)),
+        // Task 1: parser-only. Structurally a branch/block form like `if`
+        // above: scan the source's expressions and the body so the call-edge
+        // set stays complete, without asserting anything about whether a
+        // `for` itself is exec-requiring (a later task decides that).
+        Stmt::For(f) => {
+            let s = match &f.source {
+                ForSource::Range(r) => {
+                    let mut d = match &r.extent {
+                        RangeExtent::Bounds { start, end } => {
+                            expr_has_direct_exec(ctx, start, locals, edges)
+                                | expr_has_direct_exec(ctx, end, locals, edges)
+                        }
+                        RangeExtent::Count { count, from } => {
+                            let mut d = expr_has_direct_exec(ctx, count, locals, edges);
+                            if let Some(from) = from {
+                                d |= expr_has_direct_exec(ctx, from, locals, edges);
+                            }
+                            d
+                        }
+                    };
+                    if let Some(step) = &r.step {
+                        d |= expr_has_direct_exec(ctx, step, locals, edges);
+                    }
+                    d
+                }
+                ForSource::Collection { expr, .. } => expr_has_direct_exec(ctx, expr, locals, edges),
+            };
+            let b = block_has_direct_exec(ctx, &f.body, locals, edges);
+            s | b
+        }
+        Stmt::Break { .. } => false,
     }
 }
 

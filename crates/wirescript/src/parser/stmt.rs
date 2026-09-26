@@ -436,6 +436,14 @@ impl<'a> Parser<'a> {
                         return Some(Stmt::ChipDecl(c));
                     }
                 }
+                "for" => return Some(self.parse_for_stmt()),
+                "break" => {
+                    let kw = self.advance();
+                    self.eat_stmt_end();
+                    return Some(Stmt::Break {
+                        range: self.make_range(kw.start, kw.end),
+                    });
+                }
                 _ => {}
             }
         }
@@ -665,6 +673,302 @@ impl<'a> Parser<'a> {
             }
         } else {
             None
+        }
+    }
+
+    /// `for <pat> [, <pat>]* in <source> [as <name>] { <body> }`
+    fn parse_for_stmt(&mut self) -> Stmt {
+        let kw = self.expect(TokenKind::Kw, Some("for"));
+        let start = kw.start;
+
+        let mut bindings = vec![self.parse_for_pat()];
+        while self.match_tok(TokenKind::Comma, None).is_some() {
+            bindings.push(self.parse_for_pat());
+        }
+
+        self.expect(TokenKind::Kw, Some("in"));
+        let source = self.parse_for_source();
+
+        // `as run` - optional result binding.
+        let result = if self.match_tok(TokenKind::Kw, Some("as")).is_some() {
+            Some(self.expect(TokenKind::Ident, None).text)
+        } else {
+            None
+        };
+
+        let body = self.parse_block();
+        let end = body.range.end;
+        Stmt::For(ForStmt {
+            bindings,
+            source,
+            result,
+            body,
+            range: self.make_range(start, end),
+        })
+    }
+
+    /// One binding slot: `name`, `_`, or `{ a, b: alias }`.
+    fn parse_for_pat(&mut self) -> ForPat {
+        // `{ a, b: alias, ...rest }` - the same record-destructure shape
+        // `let { .. } = ..` uses, via the shared per-field parser.
+        if self.check(TokenKind::LBrace, None) {
+            let brace_start = self.advance().start; // consume `{`
+            let mut fields: Vec<RecordDestructField> = Vec::new();
+            self.eat_newlines();
+            while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
+                if self.check(TokenKind::Op, Some("...")) {
+                    let spread_start = self.advance().start;
+                    let rest_tok = self.expect(TokenKind::Ident, None);
+                    fields.push(RecordDestructField::Rest {
+                        name: rest_tok.text,
+                        range: self.make_range(spread_start, rest_tok.end),
+                    });
+                    self.eat_newlines();
+                    break;
+                }
+                fields.push(self.parse_record_destruct_field());
+                if self.match_tok(TokenKind::Comma, None).is_none() {
+                    break;
+                }
+                self.eat_newlines();
+            }
+            let brace_end = self.expect(TokenKind::RBrace, None).end;
+            return ForPat::Record {
+                fields,
+                range: self.make_range(brace_start, brace_end),
+            };
+        }
+        let t = self.peek().clone();
+        if t.kind == TokenKind::Ident && t.text == "_" {
+            self.advance();
+            return ForPat::Ignore(self.make_range(t.start, t.end));
+        }
+        let name = self.expect(TokenKind::Ident, None);
+        ForPat::Name(name.text.clone(), self.make_range(name.start, name.end))
+    }
+
+    /// The `for` source position, where `..` reads as a range rather than as
+    /// string concatenation. Nothing else in the grammar reinterprets `..`.
+    fn parse_for_source(&mut self) -> ForSource {
+        let start = self.peek().start;
+
+        // `count(...)` - contextual, so `count` stays an ordinary identifier
+        // everywhere else. Only treated as the range spelling when it is
+        // immediately followed by `(`.
+        if self.peek().kind == TokenKind::Ident
+            && self.peek().text == "count"
+            && self.peek_at(1).kind == TokenKind::LParen
+        {
+            return ForSource::Range(self.parse_count_range(start));
+        }
+
+        // Parse the first endpoint with `..` excluded from ITS OWN operator
+        // search (`parse_range_operand`, backed by `Parser::stop_at_dotdot`):
+        // `..` is tied with `+`/`-` at precedence 10 and left-associative, so
+        // parsing this the ordinary way would group `0..n-1` as `(0..n) - 1`
+        // instead of `0 .. (n-1)`. Excluding `..` here means `+`/`-` (and
+        // everything tighter) still fully group into this one endpoint, and
+        // the loop simply stops the moment it reaches a bare `..` rather than
+        // treating it as a same-tier continuation.
+        let left = self.parse_range_operand();
+
+        // `..` may follow the endpoint after a line break, like any infix
+        // operator. The position is saved and restored so a source with no
+        // `..` never consumes the newline, or the next statement would be absorbed.
+        let saved = self.pos;
+        while self.peek().kind == TokenKind::Newline {
+            self.advance();
+        }
+        if self.check(TokenKind::Op, Some("..")) {
+            self.advance();
+            while self.peek().kind == TokenKind::Newline {
+                self.advance();
+            }
+            // Parse the other side the same way, so `start+1..end-1` groups
+            // each side's arithmetic correctly on both ends.
+            let right = self.parse_range_operand();
+            let end = right.range().end;
+            return ForSource::Range(RangeSource {
+                extent: RangeExtent::Bounds { start: left, end: right },
+                step: None,
+                reversed: false,
+                range: self.make_range(start, end),
+            });
+        }
+        self.pos = saved;
+
+        // Not a bare range: either a parenthesized range, optionally with
+        // `.step(..)` / `.rev()` (`(a..b).step(2)` parsed its own `..`
+        // unrestricted, inside the parens - see `parse_expr_delimited`), or a
+        // plain array/map collection expression.
+        let end = left.range().end;
+        match self.range_from_expr(left, start, end) {
+            Ok(r) => ForSource::Range(r),
+            Err(expr) => ForSource::Collection {
+                range: self.make_range(start, end),
+                expr,
+            },
+        }
+    }
+
+    /// Reinterpret a parsed expression as a range, or hand back its innermost
+    /// form when it is not one - the array/map case.
+    ///
+    /// Peeling a `.step()`/`.rev()` discards the wrapper, so nothing later can
+    /// see one that was applied to an array or map. WS083 is reported here, at
+    /// the only point where the wrapper still exists.
+    fn range_from_expr(&mut self, expr: Expr, start: Pos, end: Pos) -> Result<RangeSource, Expr> {
+        let mut step: Option<Expr> = None;
+        let mut reversed = false;
+        let mut cur = expr;
+        // Every peeled method, outermost first: what a range-only method
+        // applied to a non-range source is reported at.
+        let mut peeled: Vec<(&'static str, SourceRange)> = Vec::new();
+
+        // Peel `.step(k)` and `.rev()` off the outside, innermost last. A
+        // method call parses as `Call { callee: FieldAccess, .. }` - there is
+        // no separate method-call node in this AST.
+        loop {
+            let is_step = match &cur {
+                Expr::Call { callee, args, type_args, .. } if type_args.is_empty() => {
+                    match callee.as_ref() {
+                        Expr::FieldAccess { field, .. }
+                            if field == "step"
+                                && args.len() == 1
+                                && matches!(args[0], CallArg::Positional(_)) =>
+                        {
+                            Some(true)
+                        }
+                        Expr::FieldAccess { field, .. } if field == "rev" && args.is_empty() => {
+                            Some(false)
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            let Some(is_step) = is_step else { break };
+            let Expr::Call { callee, args, range, .. } = cur else {
+                unreachable!("shape just matched above")
+            };
+            let Expr::FieldAccess { obj, .. } = *callee else {
+                unreachable!("shape just matched above")
+            };
+            if is_step {
+                let Some(CallArg::Positional(v)) = args.into_iter().next() else {
+                    unreachable!("shape just matched above")
+                };
+                step = Some(v);
+                peeled.push(("step", range));
+            } else {
+                reversed = true;
+                peeled.push(("rev", range));
+            }
+            cur = *obj;
+        }
+
+        match cur {
+            Expr::BinOp { op, left, right, .. } if op == ".." => {
+                // Each peel overwrites the one below it rather than combining
+                // with it, so a repeated method silently keeps the innermost.
+                if let Some((method, range)) = peeled
+                    .iter()
+                    .enumerate()
+                    .find(|(i, (m, _))| peeled[i + 1..].iter().any(|(n, _)| n == m))
+                    .map(|(_, p)| p)
+                {
+                    self.error_code(
+                        "WS083",
+                        format!(
+                            "a range takes one `.{method}()`. A second one replaces the \
+                             first rather than combining with it; keep the one you want."
+                        ),
+                        range.clone(),
+                    );
+                }
+                Ok(RangeSource {
+                    extent: RangeExtent::Bounds { start: *left, end: *right },
+                    step,
+                    reversed,
+                    range: self.make_range(start, end),
+                })
+            }
+            // Not a range. Hand back the innermost expression; the caller
+            // reports the array/map `Collection` case.
+            other => {
+                if let Some((method, range)) = peeled.first() {
+                    self.error_code(
+                        "WS083",
+                        format!(
+                            "`.{method}()` applies to a range, not to an array or map. \
+                             Give the loop a range source (`for i in 0..n`), or drop \
+                             the `.{method}()`."
+                        ),
+                        range.clone(),
+                    );
+                }
+                Err(other)
+            }
+        }
+    }
+
+    /// `count(n)`, `count(n, from, step)`, `count(n, from = a, step = b)`.
+    fn parse_count_range(&mut self, start: Pos) -> RangeSource {
+        self.advance(); // `count`
+        self.expect(TokenKind::LParen, None);
+        let mut positional: Vec<Expr> = Vec::new();
+        let mut from: Option<Expr> = None;
+        let mut step: Option<Expr> = None;
+        self.eat_newlines();
+        loop {
+            if self.check(TokenKind::RParen, None) || self.peek().kind == TokenKind::Eof {
+                break;
+            }
+            // `name = expr` named argument. `from` is already a reserved
+            // keyword (`import x from y`) rather than a plain identifier, so
+            // it has to be accepted by text here in addition to `step`, which
+            // stays an ordinary `Ident` since it is not reserved anywhere else.
+            if (self.peek().kind == TokenKind::Ident
+                || (self.peek().kind == TokenKind::Kw && self.peek().text == "from"))
+                && self.peek_at(1).kind == TokenKind::Op
+                && self.peek_at(1).text == "="
+            {
+                let name_tok = self.advance();
+                self.advance(); // `=`
+                let value = self.parse_expr();
+                match name_tok.text.as_str() {
+                    "from" => from = Some(value),
+                    "step" => step = Some(value),
+                    _ => self.error(
+                        format!("`count` takes `from` and `step`, not `{}`", name_tok.text),
+                        name_tok.start,
+                        name_tok.end,
+                    ),
+                }
+            } else {
+                positional.push(self.parse_expr());
+            }
+            self.eat_newlines();
+            if self.match_tok(TokenKind::Comma, None).is_none() {
+                break;
+            }
+            self.eat_newlines();
+        }
+        let close = self.expect(TokenKind::RParen, None);
+        // Positional order is (count, from, step).
+        let mut it = positional.into_iter();
+        let count = it.next().unwrap_or_else(|| Expr::IntLit {
+            value: 0,
+            text: "0".into(),
+            range: self.make_range(start, close.end),
+        });
+        from = from.or_else(|| it.next());
+        step = step.or_else(|| it.next());
+        RangeSource {
+            extent: RangeExtent::Count { count, from },
+            step,
+            reversed: false,
+            range: self.make_range(start, close.end),
         }
     }
 }

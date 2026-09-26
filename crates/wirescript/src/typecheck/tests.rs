@@ -6074,3 +6074,111 @@
             );
         }
     }
+
+    /// Typecheck `src` and return the diagnostic codes it reports.
+    fn codes(src: &str) -> Vec<String> {
+        tc(src).diagnostics.into_iter().map(|d| d.code).collect()
+    }
+
+    #[test]
+    fn for_outside_exec_is_ws074() {
+        // `for` has no top-level grammar of its own (it's a statement, not a
+        // `TopDecl`), so reach a PURE `for` the way any other statement does:
+        // a top-level `if`'s block runs in the module's ambient (pure)
+        // context, same as the `for` nested inside it.
+        let c = codes("var arr: int[]\nif true { for v in arr { } }");
+        assert!(c.iter().any(|c| c == "WS074"), "expected WS074, got {c:?}");
+    }
+
+    #[test]
+    fn for_over_a_call_is_ws075() {
+        let c = codes("mod make() -> int[] { }\nin go: exec\non go { for v in make() { } }");
+        assert!(c.iter().any(|c| c == "WS075"), "expected WS075, got {c:?}");
+    }
+
+    #[test]
+    fn too_many_bindings_is_ws076() {
+        let c = codes("var arr: int[]\nin go: exec\non go { for a, b, c in arr { } }");
+        assert!(c.iter().any(|c| c == "WS076"), "expected WS076, got {c:?}");
+    }
+
+    #[test]
+    fn zero_step_is_ws077() {
+        let c = codes("in go: exec\non go { for i in (0..10).step(0) { } }");
+        assert!(c.iter().any(|c| c == "WS077"), "expected WS077, got {c:?}");
+    }
+
+    #[test]
+    fn break_outside_a_loop_is_ws078() {
+        let c = codes("in go: exec\non go { break }");
+        assert!(c.iter().any(|c| c == "WS078"), "expected WS078, got {c:?}");
+    }
+
+    #[test]
+    fn return_inside_a_loop_body_is_ws078() {
+        let c = codes("mod f() { for i in 0..3 { return } }");
+        assert!(c.iter().any(|c| c == "WS078"), "expected WS078, got {c:?}");
+    }
+
+    #[test]
+    fn await_in_a_loop_body_is_ws079() {
+        let c = codes("let done: exec\nin go: exec\non go { for i in 0..3 { await done } }");
+        assert!(c.iter().any(|c| c == "WS079"), "expected WS079, got {c:?}");
+    }
+
+    #[test]
+    fn sleep_in_a_loop_body_is_ws079() {
+        let c = codes("in go: exec\non go { for i in 0..3 { await Sleep(_, delay = 1.0) } }");
+        assert!(c.iter().any(|c| c == "WS079"), "expected WS079, got {c:?}");
+    }
+
+    #[test]
+    fn await_outside_a_loop_is_not_ws079() {
+        // The same construct one scope up must stay clean: WS079 is keyed on
+        // `loop_depth`, not on `await` itself.
+        let c = codes("let done: exec\nin go: exec\non go { await done }");
+        assert!(!c.iter().any(|c| c == "WS079"), "unexpected WS079, got {c:?}");
+    }
+
+    #[test]
+    fn await_after_a_loop_body_is_not_ws079() {
+        // `loop_depth` must drop back to zero once the loop's body is done
+        // being checked, not stay latched for the rest of the handler.
+        let c = codes(
+            "let done: exec\nin go: exec\non go { for i in 0..3 { } await done }",
+        );
+        assert!(!c.iter().any(|c| c == "WS079"), "unexpected WS079, got {c:?}");
+    }
+
+    #[test]
+    fn continue_is_rejected() {
+        // `continue` is not a keyword, so it parses as an identifier expression and
+        // must not silently become a no-op call.
+        let c = codes("in go: exec\non go { for i in 0..3 { continue } }");
+        assert!(!c.is_empty(), "`continue` must not compile silently");
+    }
+
+    #[test]
+    fn array_single_binding_is_the_value() {
+        // `v` must typecheck as int (the element), not as the index. Adding it
+        // to a string would be a type error if it were bound to the wrong
+        // slot; here it must be accepted as an int.
+        let c = codes(
+            "var arr: int[]\nvar t: int = 0\nin go: exec\non go { for v in arr { t += v } }",
+        );
+        assert!(c.is_empty(), "expected a clean typecheck, got {c:?}");
+    }
+
+    #[test]
+    fn map_single_binding_is_the_key() {
+        let c = codes(
+            "var scores: Map<string, int>\nvar s: string = \"\"\nin go: exec\non go { for k in scores { s = k } }",
+        );
+        assert!(c.is_empty(), "expected a clean typecheck, got {c:?}");
+    }
+
+    #[test]
+    fn well_formed_loops_typecheck_clean() {
+        let c = codes("var t: int = 0\nin go: exec\non go { for i in 0..10 { t += i } }");
+        assert!(c.is_empty(), "expected a clean typecheck, got {c:?}");
+    }

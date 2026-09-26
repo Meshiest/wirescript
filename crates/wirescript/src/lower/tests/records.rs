@@ -2319,3 +2319,132 @@ fn dot_value_on_a_ref_record_field_reads_the_backing_var() {
         "the Select must be driven, not left dangling"
     );
 }
+
+/// The array behind a record field can be any spelling a bare name accepts —
+/// not just a `var`. An `in rom0: int[]` bound into a record (`let m: Mem = {
+/// rom: rom0 }`) and then indexed through the field (`m.rom[i]`) must lower
+/// exactly like the direct `rom0[i]`: the same `ArrayVar_Get`, fed from the
+/// same ref source. Only `Binding::Var` used to resolve through a field chain,
+/// so this — the cartridge/socket idiom, where a record describes a memory map
+/// whose banks arrive on ports — emitted an `_Unsupported` placeholder that
+/// read 0 forever behind nothing louder than a WSP001 warning.
+#[test]
+fn input_array_through_record_field_resolves() {
+    let r = compile(
+        "type Mem = { rom: int[] }\n\
+         in rom0: int[]\n\
+         in go: exec\n\
+         var a: int = 0\n\
+         var b: int = 0\n\
+         var n: int = 0\n\
+         on go {\n\
+           let m: Mem = { rom: rom0 }\n\
+           a = m.rom[3]\n\
+           b = rom0[3]\n\
+           n = m.rom.length()\n\
+           m.rom[1] = 7\n\
+         }",
+    );
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "indexing an input array through a record field must not placeholder"
+    );
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
+        "no lowering placeholder may be reported: {:?}",
+        r.diagnostics
+    );
+    // `m.rom[3]` and `rom0[3]` — one real read each.
+    assert_eq!(gate_count(&r, gc::ARRAY_GET), 2);
+    assert_eq!(gate_count(&r, gc::ARRAY_SET_AT_INDEX), 1, "`m.rom[1] = 7` writes");
+    assert_eq!(gate_count(&r, gc::ARRAY_GET_LENGTH), 1, "`m.rom.length()` reads");
+    // Every one of those four ops must take its ref from the SAME place the
+    // direct spelling does: the input's rerouter output.
+    let sources: Vec<_> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.target.port == crate::ir::port_registry::WirePort::ArrayVarRef)
+        .map(|w| (w.source.node_id, w.source.port))
+        .collect();
+    assert_eq!(sources.len(), 4, "one ArrayVarRef wire per array op: {sources:?}");
+    assert!(
+        sources.iter().all(|s| *s == sources[0]),
+        "field-reached and direct spellings must share one ref source: {sources:?}"
+    );
+}
+
+/// The map twin of `input_array_through_record_field_resolves`: an `in` map
+/// bound into a record and read back through the field (`m.tbl[k]` /
+/// `m.tbl.get(k)`) resolves to real `MapVar_Get` gates off the input's
+/// rerouter, instead of a silent placeholder.
+#[test]
+fn input_map_through_record_field_resolves() {
+    let r = compile(
+        "type Bus = { tbl: Map<int, int> }\n\
+         in tbl0: Map<int, int>\n\
+         in go: exec\n\
+         var a: int = 0\n\
+         var b: int = 0\n\
+         on go {\n\
+           let m: Bus = { tbl: tbl0 }\n\
+           a = m.tbl[3]\n\
+           b = m.tbl.get(4)\n\
+         }",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
+        "no lowering placeholder may be reported: {:?}",
+        r.diagnostics
+    );
+    assert_eq!(gate_count(&r, gc::MAP_GET), 2);
+    let sources: Vec<_> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.target.port == crate::ir::port_registry::WirePort::MapVarRef)
+        .map(|w| (w.source.node_id, w.source.port))
+        .collect();
+    assert_eq!(sources.len(), 2, "one MapVarRef wire per map op: {sources:?}");
+    assert!(sources.iter().all(|s| *s == sources[0]));
+}
+
+/// A record field holding an array that arrived on a WIRE rather than from a
+/// named container — here a `let`-bound select over two input banks — is the
+/// third spelling the field chain has to accept. `let r = m.rom; r[i]` already
+/// worked (the ref rides the local's port); `m.rom[i]` must too.
+#[test]
+fn wire_borne_array_through_record_field_resolves() {
+    let r = compile(
+        "type Mem = { rom: int[] }\n\
+         in rom0: int[]\n\
+         in rom1: int[]\n\
+         in hi: bool\n\
+         in go: exec\n\
+         var a: int = 0\n\
+         on go {\n\
+           let m: Mem = { rom: if hi then rom1 else rom0 }\n\
+           a = m.rom[3]\n\
+         }",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
+        "no lowering placeholder may be reported: {:?}",
+        r.diagnostics
+    );
+    assert_eq!(gate_count(&r, gc::ARRAY_GET), 1);
+    // The ref comes off the Select, so the bank choice reaches the read.
+    let sel = find_gate(&r, "BrickComponentType_WireGraph_Expr_Select");
+    let get = find_gate(&r, gc::ARRAY_GET);
+    assert!(
+        r.module.wires.iter().any(|w| w.source.node_id == sel
+            && w.target.node_id == get
+            && w.target.port == crate::ir::port_registry::WirePort::ArrayVarRef),
+        "the selected bank must drive the read's ArrayVarRef"
+    );
+}

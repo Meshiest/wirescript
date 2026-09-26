@@ -10,6 +10,7 @@ game does with the result, plus the practical tips that follow from it.
 - [Rich Text Markup](#rich-text-markup)
 - [Input Action Names](#input-action-names)
 - [DisplayText Screen Placement](#displaytext-screen-placement)
+- [Loop Ticks](#loop-ticks)
 <!-- /toc -->
 
 ## Rich Text Markup
@@ -42,6 +43,41 @@ on go {
   BroadcastChatMessage('<b><color="${hex}">RED TEAM</></> wins')
 }
 ```
+
+### Colour tags need no close
+
+`<color>` does not have to be closed. An open tag applies until the next
+`<color>` replaces it, and it keeps applying across `<br>`. Emitting a tag only
+when the colour differs from the previous one is therefore correct, not a
+shortcut.
+
+That matters at scale. A tag is 16 characters against one for a block
+character, so tagging every cell of a 60x40 grid costs about 40,000 characters
+while tagging only the changes costs a few thousand. Run-length encoding by
+colour is what makes a full screen fit in one `DisplayText`.
+
+```wirescript
+in go: exec
+var cells: string[]
+
+on go {
+  var line: string = ""
+  var last: string = ""
+  for i in 0..cells.length() {
+    let hex = cells[i]
+    if hex != last {
+      line = line .. '<color="${hex}">'
+      last = hex
+    }
+    line = line .. "#"
+  }
+  BroadcastChatMessage(line)
+}
+```
+
+One caveat if the text is split across several displays: colour carries forward
+within one string only. A chunk that begins mid-run needs its own opening tag,
+so reset the tracked colour at every boundary you might split on.
 
 Prefer single-quoted strings for anything containing markup. Both quote styles
 interpolate, and single quotes let the attribute's own double quotes stand
@@ -231,3 +267,17 @@ a change wants `0` (infinite), or it blanks itself between updates.
 The 2D layout ports are `Vector2D` composites and the call feeds them one axis
 at a time, so every one of these is a `float` named `...X` / `...Y`. There is no
 `vector`-typed `position` or `anchor`; passing one is a `WS041` error.
+
+## Loop Ticks
+
+A `for` loop runs its entire body, every iteration, to completion within the
+tick that triggers it. An N-iteration loop costs one tick, not N.
+
+The standing guidance to give each entity its own chip instance rather than
+sweep a central one in a loop (see
+[per-entity fan-out](best-practices.md#10-per-entity-fan-out-one-chip-each-not-one-loop-over-all))
+exists because a back-edge loop, built from `emit`/`await` and a buffered
+edge, costs a tick per iteration. That is no longer the only option: a bounded
+sweep that must finish before the tick ends belongs in a `for` now. Keep the
+back-edge form for work that should stay spread across ticks on purpose, such
+as a slow reveal or a rate-limited rebuild.

@@ -72,22 +72,40 @@ impl<'a> Parser<'a> {
         e
     }
 
+    /// Parse one endpoint of a `for` source's bare range (`0..n-1`). A
+    /// header expression in which a bare `..` also stops the parse, so the
+    /// endpoint keeps its own arithmetic. See `Parser::stop_at_dotdot`.
+    pub(super) fn parse_range_operand(&mut self) -> Expr {
+        let saved_brace = std::mem::replace(&mut self.no_brace_construct, true);
+        let saved_dotdot = std::mem::replace(&mut self.stop_at_dotdot, true);
+        let e = self.parse_expr();
+        self.no_brace_construct = saved_brace;
+        self.stop_at_dotdot = saved_dotdot;
+        e
+    }
+
     /// Parse an expression inside a bracketed delimiter (`( )`, `[ ]`, call
     /// args, a record/map/array body), where a trailing `{` is unambiguous, so
     /// braced construction is re-enabled regardless of any enclosing header.
+    /// A `..` nested in here is unambiguous for the same reason, so
+    /// `stop_at_dotdot` is re-enabled too. See `Parser::stop_at_dotdot`.
     fn parse_expr_delimited(&mut self) -> Expr {
-        let saved = std::mem::replace(&mut self.no_brace_construct, false);
+        let saved_brace = std::mem::replace(&mut self.no_brace_construct, false);
+        let saved_dotdot = std::mem::replace(&mut self.stop_at_dotdot, false);
         let e = self.parse_expr();
-        self.no_brace_construct = saved;
+        self.no_brace_construct = saved_brace;
+        self.stop_at_dotdot = saved_dotdot;
         e
     }
 
     /// [`parse_call_arg`] wrapped like [`parse_expr_delimited`] - a call's
     /// argument list is a bracketed context.
     fn parse_call_arg_delimited(&mut self) -> CallArg {
-        let saved = std::mem::replace(&mut self.no_brace_construct, false);
+        let saved_brace = std::mem::replace(&mut self.no_brace_construct, false);
+        let saved_dotdot = std::mem::replace(&mut self.stop_at_dotdot, false);
         let a = self.parse_call_arg();
-        self.no_brace_construct = saved;
+        self.no_brace_construct = saved_brace;
+        self.stop_at_dotdot = saved_dotdot;
         a
     }
 
@@ -168,6 +186,17 @@ impl<'a> Parser<'a> {
                 self.advance();
             }
             let tok = self.peek().clone();
+            // A `for` source's range endpoint (`Parser::stop_at_dotdot`, set
+            // only by `parse_range_operand`) never treats a bare `..` as this
+            // loop's operator - it stops here instead, so `0..n-1` groups the
+            // `-1` before `parse_for_source` ever sees the `..`, rather than
+            // this loop swallowing it left-to-right at the same precedence as
+            // `+`/`-`. `..` keeps precedence 10 in `infix_prec` unchanged;
+            // this is a parse-time exclusion local to that one caller.
+            if self.stop_at_dotdot && tok.kind == TokenKind::Op && tok.text == ".." {
+                self.pos = saved;
+                break;
+            }
             // `value is Enum.Variant` is a word-shaped infix operator.
             // Contextual, like `enum` and `unsafe`: it only reads as the
             // operator when a name follows it, so a variable spelled `is`

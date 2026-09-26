@@ -1,7 +1,15 @@
 //! Statement checking and assignment-target resolution.
 
 use super::*;
+use crate::ir::plane::{ForSlot, LoopKind, for_slots, plane_spec, slot_types};
 use crate::types::mono::unwrap_ref;
+
+/// WS082: a `for` loop's array/map source has a record-typed element, key or
+/// value. Shared between the whole-element and destructured binding forms so
+/// both produce byte-identical wording for the one real limitation.
+const RECORD_ELEMENT_MESSAGE: &str = "a record-typed array or map is stored as one container \
+     per field, so this loop has no single reference for its driver pin. Iterate the index \
+     instead (`for i in 0..arr.length()`) and read the record's fields inside the body.";
 
 pub(super) fn check_block(
     ctx: &mut TypeCheckCtx,
@@ -365,8 +373,9 @@ fn check_stmt_inner(
         }
         Stmt::LetElse(l) => {
             // A refutable pattern can never be `const`: `let <pattern> = e else`
-            // may fail to match, so its binding is not a compile-time constant.
-            // Task 18 parsed and silently dropped the `const`; reject it here.
+            // may fail to match, so its binding is not a compile-time
+            // constant. The parser accepts the `const` and drops it, so the
+            // rejection has to happen here.
             if l.is_const {
                 ctx.emit(
                     "WS046",
@@ -492,6 +501,19 @@ fn check_stmt_inner(
             }
         }
         Stmt::Await(a) => {
+            // A loop body is one synchronous sweep within a single tick, so
+            // nothing in it can suspend across ticks - every spelling of
+            // `await` (a bare wait, a captured value, `await Sleep(...)`)
+            // reaches this same node.
+            if ctx.loop_depth > 0 {
+                ctx.emit(
+                    "WS079",
+                    "a loop body runs synchronously within one tick, so it cannot \
+                     suspend. Move the `await` outside the loop, or use a back-edge \
+                     loop (`emit` + `await`) if you need work spread across ticks.",
+                    a.range.clone(),
+                );
+            }
             if ctx.exec_mode() != ExecMode::Exec {
                 ctx.emit("WS007", "await outside an exec context", a.range.clone());
             }
@@ -724,6 +746,21 @@ fn check_stmt_inner(
             }
         }
         Stmt::ExprStmt(es) => {
+            // `continue` is not a keyword, so it parses as a bare identifier
+            // expression statement, which would otherwise resolve as an
+            // undefined name or a silent namespace no-op; there is no gate to lower it to.
+            if ctx.loop_depth > 0
+                && let Expr::Ident { name, range } = &es.expr
+                && name == "continue"
+            {
+                ctx.emit(
+                    "WS078",
+                    "`continue` does not exist in this language, and there is no gate a loop \
+                     plane could lower it to. Restructure the rest of the body under an `if`.",
+                    range.clone(),
+                );
+                return;
+            }
             infer::infer(ctx, &es.expr);
         }
         Stmt::In(i) => {
@@ -745,6 +782,19 @@ fn check_stmt_inner(
             check_decl(ctx, &TopDecl::Chip(c.clone()));
         }
         Stmt::Return { value, range } => {
+            // A loop body is its own microchip plane, so `return` there would
+            // have to leave the plane rather than the enclosing mod/handler,
+            // and there is no gate that does that. Non-fatal, so the rest still gets checked.
+            if ctx.loop_depth > 0 {
+                ctx.emit(
+                    "WS078",
+                    "`return` cannot cross a loop plane: this `for` body is its own microchip, \
+                     so `return` here would have to leave the loop rather than the enclosing \
+                     mod/handler. Write the value to a `var` declared before the loop and \
+                     `return` it after the loop ends.",
+                    range.clone(),
+                );
+            }
             if ctx.exec_mode() != ExecMode::Exec && value.is_none() {
                 ctx.emit(
                     "WS007",
@@ -759,6 +809,344 @@ fn check_stmt_inner(
                 // output is resolved by `check_return_value` rather than read
                 // off the current frame.
                 check_return_value(ctx, expr);
+            }
+        }
+        Stmt::For(f) => {
+            // WS074: the loop shell needs an `Exec` pin, so a `for` is
+            // exec-only. Non-fatal, like every other exec-context violation:
+            // the rest of the loop still gets checked, so a real problem
+            // inside it is not hidden behind this one.
+            if ctx.exec_mode() != ExecMode::Exec {
+                ctx.emit(
+                    "WS074",
+                    "`for` runs on an exec chain, so it must sit inside an `on` \
+                     handler or an exec `mod`/`chip` body.",
+                    f.range.clone(),
+                );
+            }
+
+            // Slot names, types and the single-binding rule all come from
+            // `ir::plane`, shared with lowering. A second copy could disagree
+            // silently: the wire would still be drawn, just typed wrong.
+            let (kind, elem): (LoopKind, Vec<Type>) = match &f.source {
+                ForSource::Range(r) => {
+                    check_for_range(ctx, r);
+                    (LoopKind::CountFor, Vec::new())
+                }
+                ForSource::Collection { expr, range } => {
+                    let ty = unwrap_ref(&infer::infer(ctx, expr));
+                    match ty {
+                        // A record-typed array/map has no single reference
+                        // for the loop's driver pin, in either binding form,
+                        // so this is caught once here for both.
+                        Type::Array(elem) if is_variable_ref(ctx, expr) => {
+                            if matches!(*elem, Type::Record(_)) {
+                                ctx.emit("WS082", RECORD_ELEMENT_MESSAGE, range.clone());
+                                return;
+                            }
+                            (LoopKind::ForEachArray, vec![*elem])
+                        }
+                        Type::Map(k, v) if is_variable_ref(ctx, expr) => {
+                            if matches!(*k, Type::Record(_)) || matches!(*v, Type::Record(_)) {
+                                ctx.emit("WS082", RECORD_ELEMENT_MESSAGE, range.clone());
+                                return;
+                            }
+                            (LoopKind::ForEachMap, vec![*k, *v])
+                        }
+                        _ => {
+                            ctx.emit(
+                                "WS075",
+                                "`for` iterates an array or map VARIABLE, not a value. \
+                                 Take the collection as a `T[]`/`Map<K, V>` parameter, \
+                                 which reads the caller's own storage, or fill a declared \
+                                 `var` array/map and iterate that.",
+                                range.clone(),
+                            );
+                            return;
+                        }
+                    }
+                }
+            };
+            let spec = plane_spec(kind);
+            let slot_tys = slot_types(kind, &elem);
+            let slots = for_slots(kind, &f.bindings);
+
+            // WS076: more names than the loop has slots to bind them to.
+            if slots.contains(&ForSlot::OverBound) {
+                ctx.emit(
+                    "WS076",
+                    format!(
+                        "this loop binds {} name(s) but has only {} slot(s) ({}).",
+                        f.bindings.len(),
+                        spec.slot_labels.len(),
+                        spec.slot_labels.join(", ")
+                    ),
+                    f.range.clone(),
+                );
+                return;
+            }
+
+            ctx.push_scope();
+            for (pat, slot) in f.bindings.iter().zip(&slots) {
+                match slot {
+                    ForSlot::RangeSlotNames => {
+                        if let ForPat::Record { fields, .. } = pat {
+                            bind_range_slot_names(ctx, fields, spec, &slot_tys);
+                        }
+                    }
+                    ForSlot::Slot(i) => bind_for_pat(ctx, pat, &slot_tys[*i]),
+                    ForSlot::OverBound => {}
+                }
+            }
+            ctx.loop_depth += 1;
+            check_block(ctx, &f.body);
+            ctx.loop_depth -= 1;
+            ctx.pop_scope();
+
+            // `as run` binds the outcome record AFTER the loop, in the scope
+            // the `for` statement itself sits in, not the body scope just
+            // popped above.
+            if let Some(name) = &f.result {
+                declare_for_binding(ctx, name, loop_result_type(), &f.range);
+            }
+        }
+        Stmt::Break { range } => {
+            if ctx.loop_depth == 0 {
+                ctx.emit(
+                    "WS078",
+                    "`break` outside a loop: there is no enclosing `for` for it to stop.",
+                    range.clone(),
+                );
+            }
+        }
+    }
+}
+
+/// Type-check a `for` range source's endpoints and stride, and enforce WS077.
+///
+/// `infer` walks each bound so an identifier resolves (or reports WS002) and
+/// hover data covers it, but nothing here constrains it to `int`. Only the
+/// stride's SIGN is checked: a zero or negative one silently loops the wrong
+/// way rather than producing a wrong value in an otherwise well-typed
+/// program.
+fn check_for_range(ctx: &mut TypeCheckCtx, r: &RangeSource) {
+    match &r.extent {
+        RangeExtent::Bounds { start, end } => {
+            infer::infer(ctx, start);
+            infer::infer(ctx, end);
+        }
+        RangeExtent::Count { count, from } => {
+            infer::infer(ctx, count);
+            if let Some(from) = from {
+                infer::infer(ctx, from);
+            }
+        }
+    }
+    let Some(step) = &r.step else { return };
+    infer::infer(ctx, step);
+
+    // Only a compile-time-constant step can be checked here; a runtime step
+    // is the program's own responsibility (same "check what we can, at
+    // compile time" stance as `Stmt::If`'s const-elision).
+    let no_lookup: Option<&dyn Fn(&str) -> Option<Arc<ChipDecl>>> = None;
+    let cx = ctx.const_ctx(no_lookup);
+    let mut budget = crate::const_eval::Budget::default();
+    if let Ok(crate::ir::Literal::Int(n)) = crate::const_eval::eval_expr(step, &cx, &mut budget)
+        && n <= 0
+    {
+        ctx.emit(
+            "WS077",
+            format!(
+                "a loop stride must be greater than zero, got {n}. To count \
+                 down, use `.rev()`."
+            ),
+            r.range.clone(),
+        );
+    }
+}
+
+/// Whether `e` denotes an array/map VARIABLE a `for` loop can iterate by
+/// reference, as opposed to a computed value with no storage behind it.
+///
+/// Arrays and maps are already reference-backed, so a plain `T[]`/`Map<K, V>`
+/// parameter reads the caller's own storage. That is why this cannot reuse
+/// `is_ref_able`, which for a `Param` recognizes only an explicit `*T`; a
+/// container parameter is never spelled with a `*` in the first place.
+fn is_variable_ref(ctx: &TypeCheckCtx, e: &Expr) -> bool {
+    match e {
+        Expr::Ident { name, .. } => match ctx.scope.lookup(name) {
+            Some(s) => {
+                matches!(s.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map)
+                    || (matches!(s.kind, SymbolKind::LetBinding | SymbolKind::Param)
+                        && matches!(unwrap_ref(&s.ty), Type::Array(_) | Type::Map(_, _)))
+                    || (s.kind == SymbolKind::In && matches!(&s.ty, Type::Array(_)))
+            }
+            None => false,
+        },
+        Expr::FieldAccess { obj, field, .. } => {
+            if let Expr::Ident { name: ns, range: ns_range } = obj.as_ref()
+                && ctx.scope.lookup(ns).map(|s| s.kind) == Some(SymbolKind::Namespace)
+            {
+                return ctx
+                    .ns_members(ns, &ns_range.file)
+                    .and_then(|m| m.get(field))
+                    .is_some_and(|info| {
+                        matches!(info.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map)
+                    });
+            }
+            is_variable_ref(ctx, obj)
+        }
+        _ => false,
+    }
+}
+
+/// The record `as run` binds after the loop: `{ aborted, abortCode, iterations }`.
+/// Built from `ir::plane::result_fields`, the same table lowering wires each
+/// field's shell pin from.
+fn loop_result_type() -> Type {
+    Type::Record(
+        crate::ir::plane::result_fields()
+            .into_iter()
+            .map(|(name, _port, ty)| (name.to_string(), ty))
+            .collect(),
+    )
+}
+
+/// Declare one name a `for` loop binds (a slot pattern name, or the `as run`
+/// result) as a plain read-only local, the same `SymbolKind` a `let` capture
+/// uses.
+fn declare_for_binding(ctx: &mut TypeCheckCtx, name: &str, ty: Type, range: &SourceRange) {
+    ctx.scope.declare(
+        name,
+        SymbolInfo {
+            kind: SymbolKind::LetBinding,
+            name: name.to_string(),
+            ty,
+            decl_range: range.clone(),
+            signature: None,
+            event_data: None,
+        },
+    );
+}
+
+/// Bind a `{ }` pattern that names a counted loop's own SLOTS rather than
+/// destructuring a value: `for { index, isLast } in 0..n`.
+///
+/// Field names resolve against `spec.slot_labels` and take `slot_tys` at the
+/// same index, keeping this in step with the entry-gate ports lowering looks
+/// up from `spec.entry_slots` at that index.
+fn bind_range_slot_names(
+    ctx: &mut TypeCheckCtx,
+    fields: &[RecordDestructField],
+    spec: &'static crate::ir::plane::PlaneSpec,
+    slot_tys: &[Type],
+) {
+    for field in fields {
+        match field {
+            RecordDestructField::Named { name, alias, range } => {
+                match spec.slot_labels.iter().position(|l| l == name) {
+                    Some(idx) => declare_for_binding(
+                        ctx,
+                        alias.as_ref().unwrap_or(name),
+                        slot_tys[idx].clone(),
+                        range,
+                    ),
+                    None => ctx.emit(
+                        "WS076",
+                        format!(
+                            "`{name}` is not a slot of this loop. Available: {}.",
+                            spec.slot_labels.join(", ")
+                        ),
+                        range.clone(),
+                    ),
+                }
+            }
+            // A range has no record for `...` to collect leftovers from, and
+            // binding it to "every slot not named" would invent a value with
+            // no wire behind it.
+            RecordDestructField::Rest { range, .. } => ctx.emit(
+                "WS076",
+                format!(
+                    "`...` has nothing to collect: a `{{ }}` binding on a range names the \
+                     loop's own slots ({}), not the fields of a value.",
+                    spec.slot_labels.join(", ")
+                ),
+                range.clone(),
+            ),
+        }
+    }
+}
+
+/// Bind one `for` slot pattern to `ty`. A `{ .. }` pattern destructures a
+/// record-typed slot; an unknown field or a non-record slot is WS076.
+///
+/// Unlike `bind_let`'s `RecordDestruct` arm, an unresolvable field is an
+/// error rather than quietly typed `Any`: WS076 exists to police a `for`
+/// slot's shape.
+fn bind_for_pat(ctx: &mut TypeCheckCtx, pat: &ForPat, ty: &Type) {
+    match pat {
+        ForPat::Ignore(_) => {}
+        ForPat::Name(name, range) => declare_for_binding(ctx, name, ty.clone(), range),
+        ForPat::Record { fields, range } => {
+            // An already-erroneous slot (e.g. WS075 already fired for this
+            // loop, so there is no real type to destructure): bind every
+            // name `Any` rather than piling on a second diagnostic.
+            if matches!(ty, Type::Any) {
+                for field in fields {
+                    match field {
+                        RecordDestructField::Named { name, alias, range } => {
+                            declare_for_binding(ctx, alias.as_ref().unwrap_or(name), Type::Any, range);
+                        }
+                        RecordDestructField::Rest { name, range } => {
+                            declare_for_binding(ctx, name, Type::Any, range);
+                        }
+                    }
+                }
+                return;
+            }
+            let Type::Record(rec) = ty else {
+                ctx.emit(
+                    "WS076",
+                    format!(
+                        "a `{{ ... }}` binding destructures the value in its slot, and this \
+                         slot is `{ty}`, not a record. Name the slot instead (`for v in ...`); \
+                         a record-typed array or map cannot be iterated at all."
+                    ),
+                    range.clone(),
+                );
+                return;
+            };
+            // Field names a `Named` has consumed so far, so a trailing
+            // `...rest` collects exactly what is left.
+            let mut consumed: crate::collections::HashSet<&str> =
+                crate::collections::HashSet::default();
+            for field in fields {
+                match field {
+                    RecordDestructField::Named { name, alias, range } => {
+                        let bind_name = alias.as_ref().unwrap_or(name);
+                        match rec.iter().find(|(k, _)| k == name) {
+                            Some((_, fty)) => declare_for_binding(ctx, bind_name, fty.clone(), range),
+                            None => ctx.emit(
+                                "WS076",
+                                format!(
+                                    "`{name}` is not a field of `{ty}`. Available: {}.",
+                                    rec.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+                                ),
+                                range.clone(),
+                            ),
+                        }
+                        consumed.insert(name.as_str());
+                    }
+                    RecordDestructField::Rest { name, range } => {
+                        let rest_ty = Type::Record(
+                            rec.iter()
+                                .filter(|(k, _)| !consumed.contains(k.as_str()))
+                                .cloned()
+                                .collect(),
+                        );
+                        declare_for_binding(ctx, name, rest_ty, range);
+                    }
+                }
             }
         }
     }

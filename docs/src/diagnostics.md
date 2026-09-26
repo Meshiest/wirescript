@@ -23,6 +23,7 @@ construct.
 - [Generics](#generics)
 - [Ports, outputs & labels](#ports-outputs--labels)
 - [Collections & shapes](#collections--shapes)
+- [Loops](#loops)
 - [Compile-time constants (`const`)](#compile-time-constants-const)
 - [Gate & event config](#gate--event-config)
 - [`any`](#any)
@@ -122,6 +123,24 @@ See [Generics](types.md#generics).
 | `WS027` | Assigning a whole map from a non-literal is unsupported — use `m.copyFrom(src)`. | `m = otherMap` |
 | `WS039` | Invalid map key type — a `Map<K, V>` key must be `int`, `string`, or an object (`entity`/`character`/`controller`). | `var m: Map<float, int>` |
 | `WS044` | An array/map method (`.push`, `.set`, `.remove`, …) called on something that isn't an array or map — the receiver didn't resolve to a container, so the operation would otherwise be silently dropped. Also reported for a MUTATING method whose receiver is a `const` array or map: a `const` container is immutable, so its compile-time value and its runtime contents can never disagree. | `let x = 5` then, in an exec handler, `x.push(1)`; or `const t = [1, 2]` then `t.push(3)` |
+
+## Loops
+
+`for` iterates a range or an array/map variable, but only on an exec chain.
+See [Statements](statements.md).
+
+| Code | Meaning | Trigger |
+|------|---------|---------|
+| `WS074` | A `for` loop outside an exec context. The loop shell has an `Exec` input, so it must sit inside an `on` handler or an exec `mod`/`chip` body. | `if true { for v in arr { } }` at the top level |
+| `WS075` | A `for` loop's collection source is not an array/map VARIABLE. It binds by reference, and a computed value (a call, an expression) has no storage to bind. Take the collection as a `T[]`/`Map<K, V>` parameter, or fill a declared `var` array/map and iterate that. | `for v in make() { }` where `make()` returns `int[]` by value |
+| `WS076` | A `for` loop binding that doesn't fit its loop: more names than the loop has slots, a `{ .. }` pattern on an array or map (whose slots are never records, so there is nothing to destructure), or, on a range where `{ .. }` names the loop's own slots, a name that is not one of `index`, `ordinal`, `isFirst`, `isLast`. | `for a, b, c in arr { }` |
+| `WS077` | A loop's `.step(...)` (or `count(..., step = ...)`) stride is zero or negative. Use `.rev()` to count down instead. | `for i in (0..10).step(0) { }` |
+| `WS078` | Control flow that cannot cross a loop plane: `break` outside a loop, `return` inside one, or `continue`, which has no gate to lower to. | `for i in 0..3 { return }` |
+| `WS079` | An `await` inside a loop body, including `await Sleep(...)`/`await SleepTicks(...)`. A body is one synchronous sweep within a single tick, so it cannot suspend. Use a back-edge loop (`emit` + `await`) for work that needs to spread across ticks. | `for i in 0..3 { await Sleep(_, delay = 1.0) }` |
+| `WS080` | `@flat` over a program containing a `for`. A loop's plane is an execution boundary, not a visual grouping, so flattening it would compile a different program. | `@flat` with any `for` in the file |
+| `WS081` (warning) | A statement after `break` in the same body never runs - the `break` already ended the block's exec chain. Reported at the dead statement, not the `break`, and in place of the generic WS058 that construct would otherwise get blamed with. | `for i in 0..3 { break\n t = t + 1 }` |
+| `WS082` | A `for` loop's array/map source has a record-typed element, key or value. A record is stored as one container per field, so there is no single reference for the loop's driver pin, in either binding form. Iterate the index instead (`for i in 0..arr.length()`) and read fields in the body. | `for p in pts` or `for { x, y } in pts` where `pts: Point[]` |
+| `WS083` | A range method used where it cannot apply: `.step(...)`/`.rev()` on an array or map source, or a second `.step(...)`/`.rev()` on one range (the outer one replaces the inner rather than combining with it). Reported at the method itself. | `for v in xs.rev() { }` / `for i in (0..10).step(2).step(3) { }` |
 
 ## Compile-time constants (`const`)
 

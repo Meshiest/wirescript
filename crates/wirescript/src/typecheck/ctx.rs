@@ -314,6 +314,10 @@ pub struct TypeCheckCtx<'a> {
     /// block that lowering emits. A depth counter rather than a bool for the
     /// same reason lowering uses one: annotated declarations nest.
     pub(super) nofold_depth: u32,
+    /// Depth of enclosing `for` loop bodies: >0 makes `break` legal and
+    /// `return` illegal, since a loop is its own microchip plane a `return`
+    /// cannot leave. What WS078 reads to tell the two cases apart.
+    pub(super) loop_depth: u32,
     /// Inferred custom-event receiver slot types (`infer_custom_event_slots`
     /// output), keyed by handler source range. Empty on pass 1 (nothing inferred
     /// yet); populated on pass 2 by `typecheck_with_inference`. Consulted by
@@ -426,6 +430,7 @@ impl<'a> TypeCheckCtx<'a> {
             scoped_const_declared: Vec::new(),
             scoped_const_placeholders: Vec::new(),
             nofold_depth: 0,
+            loop_depth: 0,
             ce_slots,
             out_ctx: Vec::new(),
             single_output_alias: crate::collections::HashMap::default(),

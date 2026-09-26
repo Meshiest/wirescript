@@ -392,8 +392,10 @@ fn flat_drops_no_chip_port_wire_on_real_programs() {
             ce_slots: &crate::typecheck::CeSlotMap::default(),
         });
         assert!(!r.module.chips.is_empty(), "nothing to flatten");
-        let stats = crate::lower::flatten::flatten_chips(&mut r.module);
+        let mut diags = Vec::new();
+        let stats = crate::lower::flatten::flatten_chips(&mut r.module, &mut diags);
         assert!(r.module.chips.is_empty());
+        assert!(diags.is_empty(), "no loop plane here to refuse: {diags:?}");
         assert_eq!(
             stats.dropped_chip_port_wires, 0,
             "flatten dropped a chip-port wire it could not resolve"

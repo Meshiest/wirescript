@@ -11,6 +11,7 @@
 
 pub mod build;
 pub mod gate_class;
+pub mod plane;
 pub mod port_registry;
 
 use crate::collections::HashMap;

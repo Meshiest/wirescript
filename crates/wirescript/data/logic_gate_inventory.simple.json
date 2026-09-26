@@ -1,6 +1,319 @@
 {
   "entries": [
     {
+      "brickAsset": "BP_ZoneProjector",
+      "brickDisplayName": "Zone Projector",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 10,
+        "Y": 10,
+        "Z": 2
+      },
+      "component": {
+        "class": "Component_Internal_AttachedZone",
+        "displayName": "Attached Zone",
+        "description": "",
+        "searchTags": "",
+        "kind": "internal",
+        "family": "",
+        "inputs": [
+          {
+            "name": "bDetectEntities",
+            "displayName": "Detect Entities",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectPlayers",
+            "displayName": "Detect Players",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectPlayers1",
+            "displayName": "Detect Players1",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectPlayers2",
+            "displayName": "Detect Players2",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectPlayers3",
+            "displayName": "Detect Players3",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectProjectiles",
+            "displayName": "Detect Projectiles",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bIsBuildingZone",
+            "displayName": "Is Building Zone",
+            "tooltip": "Whether this zone is a place that people without permission to build outside of build zones can build.",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bIsLooseZone",
+            "displayName": "Is Loose Zone",
+            "tooltip": "Whether this zone is a loose zone, meaning objects don't have to be fully inside it to be considered to be inside.",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bIsShareZone",
+            "displayName": "Is Share Zone",
+            "tooltip": "Whether this zone is a share zone, meaning bricks placed inside that are on the same grid and owned by the same owner are publicly editable by anyone on the server without them needing trust from the owner.",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bWater",
+            "displayName": "Water",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "TagFilter",
+            "displayName": "Tag Filter",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "WaterAbsorption",
+            "displayName": "Water Absorption",
+            "tooltip": "",
+            "type": "vector",
+            "composite": {
+              "kind": "vector",
+              "subPorts": [
+                "X",
+                "Y",
+                "Z"
+              ]
+            }
+          },
+          {
+            "name": "WaterFogAmbientColor",
+            "displayName": "Water Fog Ambient Color",
+            "tooltip": "",
+            "type": "color",
+            "composite": {
+              "kind": "color",
+              "subPorts": [
+                "A",
+                "B",
+                "G",
+                "R"
+              ]
+            }
+          },
+          {
+            "name": "WaterFogAmbientScale",
+            "displayName": "Water Fog Ambient Scale",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "WaterFogIntensity",
+            "displayName": "Water Fog Intensity",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "WaterFogScatteringColor",
+            "displayName": "Water Fog Scattering Color",
+            "tooltip": "",
+            "type": "color",
+            "composite": {
+              "kind": "color",
+              "subPorts": [
+                "A",
+                "B",
+                "G",
+                "R"
+              ]
+            }
+          },
+          {
+            "name": "WaterFogScatteringScale",
+            "displayName": "Water Fog Scattering Scale",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "WaterScattering",
+            "displayName": "Water Scattering",
+            "tooltip": "",
+            "type": "vector",
+            "composite": {
+              "kind": "vector",
+              "subPorts": [
+                "X",
+                "Y",
+                "Z"
+              ]
+            }
+          },
+          {
+            "name": "ZoneEndDistance",
+            "displayName": "Zone End Distance",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "ZoneStartDistance",
+            "displayName": "Zone Start Distance",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "ZoneWindForce",
+            "displayName": "Zone Wind Force",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "bOccupied",
+            "displayName": "Occupied",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "OccupantCount",
+            "displayName": "Occupant Count",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "ZoneRef",
+            "displayName": "Zone Ref",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
+      "brickAsset": "B_1x1F_Speaker",
+      "brickDisplayName": "1x1f Speaker",
+      "brickSummary": "Plays audio from a wide selection of music tracks and sound effects.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "Component_AudioEmitter",
+        "displayName": "Audio",
+        "description": "The brick produces sound continuously.",
+        "searchTags": "",
+        "kind": "?",
+        "family": "",
+        "inputs": [
+          {
+            "name": "AudioDescriptor",
+            "displayName": "Audio Descriptor",
+            "tooltip": "The audio track to play on this brick.",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "bEnabled",
+            "displayName": "Enabled",
+            "tooltip": "Whether the sound is enabled.",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bSpatialization",
+            "displayName": "Spatialization",
+            "tooltip": "Whether or not to spatialize the audio in the game world, panning accordingly as the player moves around. When disabled, it will play as a 2D sound.",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "FocusAzimuth",
+            "displayName": "Focus Azimuth",
+            "tooltip": "Sounds played from within this angle on the player's screen will be considered in focus, and played normally.",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "InnerRadius",
+            "displayName": "Inner Radius",
+            "tooltip": "The distance before the audio will begin to fade out.",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "MaxDistance",
+            "displayName": "Max Distance",
+            "tooltip": "The distance the audio can no longer be heard.",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "NonFocusAzimuth",
+            "displayName": "Non Focus Azimuth",
+            "tooltip": "Sounds above this angle on the player's screen will be considered out of focus, and will have the Unfocused Volume Multiplier applied to it. You can set this value lower than the Focus Angle to flip the effect.",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "NonFocusVolumeAttenuation",
+            "displayName": "Non Focus Volume Attenuation",
+            "tooltip": "When a sound is out of focus, it will have its volume multiplied by this value.",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "PitchMultiplier",
+            "displayName": "Pitch Multiplier",
+            "tooltip": "How much to multiply the default pitch of the audio being played.",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "VolumeMultiplier",
+            "displayName": "Volume Multiplier",
+            "tooltip": "How much to multiply the default volume of the audio being played.",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "outputs": [],
+        "config": []
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_AudioReference",
       "brickDisplayName": "Audio Reference",
       "brickSummary": "Outputs the selected looping audio track as a reference. Connect it to an Audio Emitter to choose music, ambience, or an engine loop.",
@@ -68,6 +381,185 @@
             "type": "object"
           }
         ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_CallableEntry_CountFor",
+      "brickDisplayName": "Counted For Entry",
+      "brickSummary": "Starts each iteration of the containing Counted For board.",
+      "halfSize": {
+        "X": 6,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_CallableEntry_CountFor",
+        "displayName": "Counted For Entry",
+        "description": "Starts each iteration of the containing Counted For board.",
+        "searchTags": "",
+        "kind": "?",
+        "family": "",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "bIsFirst",
+            "displayName": "Is First",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bIsLast",
+            "displayName": "Is Last",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "Body",
+            "displayName": "Body",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Index",
+            "displayName": "Index",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "Ordinal",
+            "displayName": "Ordinal",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_CallableEntry_ForEachArray",
+      "brickDisplayName": "For Each Array Entry",
+      "brickSummary": "Starts each iteration of the containing For Each Array board with the element's index and value.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_CallableEntry_ForEachArray",
+        "displayName": "For Each Array Entry",
+        "description": "Starts each iteration of the containing For Each Array board with the element's index and value.",
+        "searchTags": "",
+        "kind": "?",
+        "family": "",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "Body",
+            "displayName": "Body",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Index",
+            "displayName": "Index",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "Value",
+            "displayName": "Value",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_CallableEntry_ForEachMap",
+      "brickDisplayName": "For Each Map Entry",
+      "brickSummary": "Starts each iteration of the containing For Each Map board with the entry's key and value.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_CallableEntry_ForEachMap",
+        "displayName": "For Each Map Entry",
+        "description": "Starts each iteration of the containing For Each Map board with the entry's key and value.",
+        "searchTags": "",
+        "kind": "?",
+        "family": "",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "Body",
+            "displayName": "Body",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Key",
+            "displayName": "Key",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Ordinal",
+            "displayName": "Ordinal",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "Value",
+            "displayName": "Value",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_CallableEntry_Function",
+      "brickDisplayName": "Function Entry",
+      "brickSummary": "Starts each run of the containing Function Definition board.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_CallableEntry_Function",
+        "displayName": "Function Entry",
+        "description": "Starts each run of the containing Function Definition board.",
+        "searchTags": "",
+        "kind": "?",
+        "family": "",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "Body",
+            "displayName": "Body",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "config": []
       }
     },
     {
@@ -1571,6 +2063,43 @@
           {
             "name": "ExecOutB",
             "displayName": "Exec Out B",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_CallableBreak",
+      "brickDisplayName": "Break",
+      "brickSummary": "Stops the enclosing synchronous loop after the current body sweep.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_CallableBreak",
+        "displayName": "Break",
+        "description": "Stops the enclosing synchronous loop after the current body sweep.",
+        "searchTags": "",
+        "kind": "exec",
+        "family": "",
+        "inputs": [
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
             "tooltip": "",
             "type": "exec",
             "composite": null
@@ -7298,6 +7827,63 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Exec_PlayGlobalAudio",
+      "brickDisplayName": "Play Global Audio",
+      "brickSummary": "Plays a non-spatial sound for every player with adjustable volume and pitch; use it for round cues or global alerts.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_PlayGlobalAudio",
+        "displayName": "Play Global Audio",
+        "description": "Plays a non-spatial sound for every player with adjustable volume and pitch; use it for round cues or global alerts.",
+        "searchTags": "",
+        "kind": "exec",
+        "family": "",
+        "inputs": [
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "PitchMultiplier",
+            "displayName": "Pitch Multiplier",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "VolumeMultiplier",
+            "displayName": "Volume Multiplier",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "AudioDescriptor",
+            "displayName": "Audio Descriptor",
+            "type": "object"
+          }
+        ]
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Exec_PlayerState_DisplayText",
       "brickDisplayName": "Display Text",
       "brickSummary": "Creates or updates styled HUD text for one player, with position, lifetime, transition, and text ID controls; use it for timers or custom interfaces.",
@@ -8190,63 +8776,6 @@
           }
         ],
         "config": []
-      }
-    },
-    {
-      "brickAsset": "B_1x1_Gate_Exec_PlayGlobalAudio",
-      "brickDisplayName": "Play Global Audio",
-      "brickSummary": "Plays a non-spatial sound for every player with adjustable volume and pitch; use it for round cues or global alerts.",
-      "halfSize": {
-        "X": 5,
-        "Y": 5,
-        "Z": 2
-      },
-      "component": {
-        "class": "BrickComponentType_WireGraph_Exec_PlayGlobalAudio",
-        "displayName": "Play Global Audio",
-        "description": "Plays a non-spatial sound for every player with adjustable volume and pitch; use it for round cues or global alerts.",
-        "searchTags": "",
-        "kind": "exec",
-        "family": "",
-        "inputs": [
-          {
-            "name": "Exec",
-            "displayName": "Exec",
-            "tooltip": "",
-            "type": "exec",
-            "composite": null
-          },
-          {
-            "name": "PitchMultiplier",
-            "displayName": "Pitch Multiplier",
-            "tooltip": "",
-            "type": "float",
-            "composite": null
-          },
-          {
-            "name": "VolumeMultiplier",
-            "displayName": "Volume Multiplier",
-            "tooltip": "",
-            "type": "float",
-            "composite": null
-          }
-        ],
-        "outputs": [
-          {
-            "name": "ExecOut",
-            "displayName": "Exec Out",
-            "tooltip": "",
-            "type": "exec",
-            "composite": null
-          }
-        ],
-        "config": [
-          {
-            "name": "AudioDescriptor",
-            "displayName": "Audio Descriptor",
-            "type": "object"
-          }
-        ]
       }
     },
     {
@@ -15936,6 +16465,239 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_FunctionCall",
+      "brickDisplayName": "Function Call",
+      "brickSummary": "Synchronously executes the bound Function Definition.",
+      "halfSize": {
+        "X": 10,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_FunctionCall",
+        "displayName": "Function Call",
+        "description": "Synchronously executes the bound Function Definition.",
+        "searchTags": "",
+        "kind": "?",
+        "family": "",
+        "inputs": [
+          {
+            "name": "Definition",
+            "displayName": "Definition",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Input0",
+            "displayName": "Input0",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Input1",
+            "displayName": "Input1",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Input2",
+            "displayName": "Input2",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Input3",
+            "displayName": "Input3",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Input4",
+            "displayName": "Input4",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Input5",
+            "displayName": "Input5",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Input6",
+            "displayName": "Input6",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Input7",
+            "displayName": "Input7",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "AbortCode",
+            "displayName": "Abort Code",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "bAborted",
+            "displayName": "Aborted",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "Completed",
+            "displayName": "Completed",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "IterationsExecuted",
+            "displayName": "Iterations Executed",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "Output0",
+            "displayName": "Output0",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Output1",
+            "displayName": "Output1",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Output2",
+            "displayName": "Output2",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Output3",
+            "displayName": "Output3",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Output4",
+            "displayName": "Output4",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Output5",
+            "displayName": "Output5",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Output6",
+            "displayName": "Output6",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Output7",
+            "displayName": "Output7",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "AbortReason",
+            "displayName": "Abort Reason",
+            "type": "enum"
+          },
+          {
+            "name": "InputSources",
+            "displayName": "Input Sources",
+            "type": "enum"
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_FunctionInput",
+      "brickDisplayName": "Function Input",
+      "brickSummary": "Defines a named input to the containing Function Definition. Each call supplies its value before the function body runs.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_FunctionInput",
+        "displayName": "Function Input",
+        "description": "Defines a named input to the containing Function Definition. Each call supplies its value before the function body runs.",
+        "searchTags": "",
+        "kind": "?",
+        "family": "",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "Value",
+            "displayName": "Value",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "DefaultValue",
+            "displayName": "Default Value",
+            "type": "struct"
+          },
+          {
+            "name": "PortLabel",
+            "displayName": "Port Label",
+            "type": "struct"
+          },
+          {
+            "name": "PortOrder",
+            "displayName": "Port Order",
+            "type": "int"
+          }
+        ]
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_GetUnixEpoch",
       "brickDisplayName": "Unix Time",
       "brickSummary": "Returns the current UTC Unix timestamp in whole seconds, useful for real-world schedules, logs, and saved deadlines.",
@@ -16528,9 +17290,29 @@
         ],
         "config": [
           {
+            "name": "bCallableBoard",
+            "displayName": "Callable Board",
+            "type": "bool"
+          },
+          {
+            "name": "CallableDefault",
+            "displayName": "Callable Default",
+            "type": "struct"
+          },
+          {
+            "name": "CallableMirror",
+            "displayName": "Callable Mirror",
+            "type": "struct"
+          },
+          {
             "name": "PortLabel",
             "displayName": "Port Label",
             "type": "struct"
+          },
+          {
+            "name": "PortOrder",
+            "displayName": "Port Order",
+            "type": "int"
           }
         ]
       }
@@ -16571,9 +17353,29 @@
         ],
         "config": [
           {
+            "name": "bCallableBoard",
+            "displayName": "Callable Board",
+            "type": "bool"
+          },
+          {
+            "name": "CallableDefault",
+            "displayName": "Callable Default",
+            "type": "struct"
+          },
+          {
+            "name": "CallableMirror",
+            "displayName": "Callable Mirror",
+            "type": "struct"
+          },
+          {
             "name": "PortLabel",
             "displayName": "Port Label",
             "type": "struct"
+          },
+          {
+            "name": "PortOrder",
+            "displayName": "Port Order",
+            "type": "int"
           }
         ]
       }
@@ -18545,7 +19347,290 @@
         "family": "",
         "inputs": [],
         "outputs": [],
-        "config": []
+        "config": [
+          {
+            "name": "InternalBrickGrid",
+            "displayName": "Internal Brick Grid",
+            "type": "object"
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Microchip_CountFor",
+      "brickDisplayName": "Counted For",
+      "brickSummary": "Runs its circuitboard synchronously Count times when Exec fires, then emits Completed. Place an Entry gate inside to start each run.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "Component_Internal_Microchip_CountFor",
+        "displayName": "Counted For",
+        "description": "Runs the contained board synchronously Count times and then emits Completed.",
+        "searchTags": "",
+        "kind": "internal",
+        "family": "Microchip",
+        "inputs": [
+          {
+            "name": "Count",
+            "displayName": "Count",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "FirstIndex",
+            "displayName": "First Index",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "Step",
+            "displayName": "Step",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "AbortCode",
+            "displayName": "Abort Code",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "bAborted",
+            "displayName": "Aborted",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "Completed",
+            "displayName": "Completed",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "IterationsExecuted",
+            "displayName": "Iterations Executed",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "AbortReason",
+            "displayName": "Abort Reason",
+            "type": "enum"
+          },
+          {
+            "name": "InternalBrickGrid",
+            "displayName": "Internal Brick Grid",
+            "type": "object"
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Microchip_ForEachArray",
+      "brickDisplayName": "For Each Array",
+      "brickSummary": "Runs its circuitboard synchronously once per element of an array variable, then emits Completed. The Entry gate provides Index and Value.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "Component_Internal_Microchip_ForEachArray",
+        "displayName": "For Each Array",
+        "description": "Runs the contained board synchronously for each element in an array variable.",
+        "searchTags": "",
+        "kind": "internal",
+        "family": "Microchip",
+        "inputs": [
+          {
+            "name": "ArrayVarRef",
+            "displayName": "Array Var Ref",
+            "tooltip": "",
+            "type": "arrayVarRef",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "AbortCode",
+            "displayName": "Abort Code",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "bAborted",
+            "displayName": "Aborted",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "Completed",
+            "displayName": "Completed",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "IterationsExecuted",
+            "displayName": "Iterations Executed",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "AbortReason",
+            "displayName": "Abort Reason",
+            "type": "enum"
+          },
+          {
+            "name": "InternalBrickGrid",
+            "displayName": "Internal Brick Grid",
+            "type": "object"
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Microchip_ForEachMap",
+      "brickDisplayName": "For Each Map",
+      "brickSummary": "Runs its circuitboard synchronously once per entry of a map variable, then emits Completed. The Entry gate provides Key and Value.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "Component_Internal_Microchip_ForEachMap",
+        "displayName": "For Each Map",
+        "description": "Runs the contained board synchronously for each entry in a map variable.",
+        "searchTags": "",
+        "kind": "internal",
+        "family": "Microchip",
+        "inputs": [
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "MapVarRef",
+            "displayName": "Map Var Ref",
+            "tooltip": "",
+            "type": "varRef",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "AbortCode",
+            "displayName": "Abort Code",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "bAborted",
+            "displayName": "Aborted",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "Completed",
+            "displayName": "Completed",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "IterationsExecuted",
+            "displayName": "Iterations Executed",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "AbortReason",
+            "displayName": "Abort Reason",
+            "type": "enum"
+          },
+          {
+            "name": "InternalBrickGrid",
+            "displayName": "Internal Brick Grid",
+            "type": "object"
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Microchip_FunctionDefinition",
+      "brickDisplayName": "Function Definition",
+      "brickSummary": "Defines a circuitboard that Function Call gates run synchronously. Inputs and outputs are the board's Input and Output gates.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "Component_Internal_Microchip_FunctionDefinition",
+        "displayName": "Function Definition",
+        "description": "Defines a synchronous callable board for bound Function Call gates.",
+        "searchTags": "",
+        "kind": "internal",
+        "family": "Microchip",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "Definition",
+            "displayName": "Definition",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "InternalBrickGrid",
+            "displayName": "Internal Brick Grid",
+            "type": "object"
+          }
+        ]
       }
     },
     {
@@ -18692,12 +19777,12 @@
       }
     },
     {
-      "brickAsset": "B_1x1F_Speaker",
-      "brickDisplayName": "1x1f Speaker",
+      "brickAsset": "B_2x2F_Speaker",
+      "brickDisplayName": "2x2f Speaker",
       "brickSummary": "Plays audio from a wide selection of music tracks and sound effects.",
       "halfSize": {
-        "X": 5,
-        "Y": 5,
+        "X": 10,
+        "Y": 10,
         "Z": 2
       },
       "component": {
@@ -18780,6 +19865,71 @@
           }
         ],
         "outputs": [],
+        "config": []
+      }
+    },
+    {
+      "brickAsset": "B_2x2F_Target",
+      "brickDisplayName": "Target",
+      "brickSummary": "Outputs a wire signal when hit with a projectile.",
+      "halfSize": {
+        "X": 10,
+        "Y": 10,
+        "Z": 2
+      },
+      "component": {
+        "class": "Component_Target",
+        "displayName": "Target",
+        "description": "",
+        "searchTags": "",
+        "kind": "?",
+        "family": "",
+        "inputs": [
+          {
+            "name": "OnTime",
+            "displayName": "On Time",
+            "tooltip": "The amount of time that the target turns \"On\" when shot. Set to 0 for one tick. The target cannot report new information while it is on.",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "bJustHit",
+            "displayName": "Just Hit",
+            "tooltip": "Whether the target was just hit and is waiting out its hit timeout.",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "CharacterThatJustHit",
+            "displayName": "Character That Just Hit",
+            "tooltip": "Character that just hit the target.",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "Damage",
+            "displayName": "Damage",
+            "tooltip": "How much damage came from the hit.",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "WeaponNameThatJustHit",
+            "displayName": "Weapon Name That Just Hit",
+            "tooltip": "",
+            "type": "string",
+            "composite": null
+          },
+          {
+            "name": "WeaponThatJustHit",
+            "displayName": "Weapon That Just Hit",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          }
+        ],
         "config": []
       }
     },
@@ -19014,163 +20164,6 @@
           }
         ],
         "outputs": [],
-        "config": []
-      }
-    },
-    {
-      "brickAsset": "B_2x2F_Speaker",
-      "brickDisplayName": "2x2f Speaker",
-      "brickSummary": "Plays audio from a wide selection of music tracks and sound effects.",
-      "halfSize": {
-        "X": 10,
-        "Y": 10,
-        "Z": 2
-      },
-      "component": {
-        "class": "Component_AudioEmitter",
-        "displayName": "Audio",
-        "description": "The brick produces sound continuously.",
-        "searchTags": "",
-        "kind": "?",
-        "family": "",
-        "inputs": [
-          {
-            "name": "AudioDescriptor",
-            "displayName": "Audio Descriptor",
-            "tooltip": "The audio track to play on this brick.",
-            "type": "any",
-            "composite": null
-          },
-          {
-            "name": "bEnabled",
-            "displayName": "Enabled",
-            "tooltip": "Whether the sound is enabled.",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "bSpatialization",
-            "displayName": "Spatialization",
-            "tooltip": "Whether or not to spatialize the audio in the game world, panning accordingly as the player moves around. When disabled, it will play as a 2D sound.",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "FocusAzimuth",
-            "displayName": "Focus Azimuth",
-            "tooltip": "Sounds played from within this angle on the player's screen will be considered in focus, and played normally.",
-            "type": "float",
-            "composite": null
-          },
-          {
-            "name": "InnerRadius",
-            "displayName": "Inner Radius",
-            "tooltip": "The distance before the audio will begin to fade out.",
-            "type": "float",
-            "composite": null
-          },
-          {
-            "name": "MaxDistance",
-            "displayName": "Max Distance",
-            "tooltip": "The distance the audio can no longer be heard.",
-            "type": "float",
-            "composite": null
-          },
-          {
-            "name": "NonFocusAzimuth",
-            "displayName": "Non Focus Azimuth",
-            "tooltip": "Sounds above this angle on the player's screen will be considered out of focus, and will have the Unfocused Volume Multiplier applied to it. You can set this value lower than the Focus Angle to flip the effect.",
-            "type": "float",
-            "composite": null
-          },
-          {
-            "name": "NonFocusVolumeAttenuation",
-            "displayName": "Non Focus Volume Attenuation",
-            "tooltip": "When a sound is out of focus, it will have its volume multiplied by this value.",
-            "type": "float",
-            "composite": null
-          },
-          {
-            "name": "PitchMultiplier",
-            "displayName": "Pitch Multiplier",
-            "tooltip": "How much to multiply the default pitch of the audio being played.",
-            "type": "float",
-            "composite": null
-          },
-          {
-            "name": "VolumeMultiplier",
-            "displayName": "Volume Multiplier",
-            "tooltip": "How much to multiply the default volume of the audio being played.",
-            "type": "float",
-            "composite": null
-          }
-        ],
-        "outputs": [],
-        "config": []
-      }
-    },
-    {
-      "brickAsset": "B_2x2F_Target",
-      "brickDisplayName": "Target",
-      "brickSummary": "Outputs a wire signal when hit with a projectile.",
-      "halfSize": {
-        "X": 10,
-        "Y": 10,
-        "Z": 2
-      },
-      "component": {
-        "class": "Component_Target",
-        "displayName": "Target",
-        "description": "",
-        "searchTags": "",
-        "kind": "?",
-        "family": "",
-        "inputs": [
-          {
-            "name": "OnTime",
-            "displayName": "On Time",
-            "tooltip": "The amount of time that the target turns \"On\" when shot. Set to 0 for one tick. The target cannot report new information while it is on.",
-            "type": "float",
-            "composite": null
-          }
-        ],
-        "outputs": [
-          {
-            "name": "bJustHit",
-            "displayName": "Just Hit",
-            "tooltip": "Whether the target was just hit and is waiting out its hit timeout.",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "CharacterThatJustHit",
-            "displayName": "Character That Just Hit",
-            "tooltip": "Character that just hit the target.",
-            "type": "character",
-            "composite": null
-          },
-          {
-            "name": "Damage",
-            "displayName": "Damage",
-            "tooltip": "How much damage came from the hit.",
-            "type": "float",
-            "composite": null
-          },
-          {
-            "name": "WeaponNameThatJustHit",
-            "displayName": "Weapon Name That Just Hit",
-            "tooltip": "",
-            "type": "string",
-            "composite": null
-          },
-          {
-            "name": "WeaponThatJustHit",
-            "displayName": "Weapon That Just Hit",
-            "tooltip": "",
-            "type": "entity",
-            "composite": null
-          }
-        ],
         "config": []
       }
     },
@@ -21559,6 +22552,42 @@
       }
     },
     {
+      "brickAsset": "B_SpawnPoint",
+      "brickDisplayName": "Spawnpoint",
+      "brickSummary": "A spawnpoint for players.",
+      "halfSize": {
+        "X": 20,
+        "Y": 20,
+        "Z": 2
+      },
+      "component": {
+        "class": "Component_SpawnPoint",
+        "displayName": "Spawn Point",
+        "description": "The brick is a candidate when selecting player spawn points.",
+        "searchTags": "",
+        "kind": "?",
+        "family": "",
+        "inputs": [
+          {
+            "name": "bEnable",
+            "displayName": "Enable",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bRotatePlayerGravityOnSpawn",
+            "displayName": "Rotate Player Gravity On Spawn",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          }
+        ],
+        "outputs": [],
+        "config": []
+      }
+    },
+    {
       "brickAsset": "B_Spawn_Point_Prefab",
       "brickDisplayName": "Prefab Spawn Point",
       "brickSummary": "",
@@ -21648,42 +22677,6 @@
             "type": "struct"
           }
         ]
-      }
-    },
-    {
-      "brickAsset": "B_SpawnPoint",
-      "brickDisplayName": "Spawnpoint",
-      "brickSummary": "A spawnpoint for players.",
-      "halfSize": {
-        "X": 20,
-        "Y": 20,
-        "Z": 2
-      },
-      "component": {
-        "class": "Component_SpawnPoint",
-        "displayName": "Spawn Point",
-        "description": "The brick is a candidate when selecting player spawn points.",
-        "searchTags": "",
-        "kind": "?",
-        "family": "",
-        "inputs": [
-          {
-            "name": "bEnable",
-            "displayName": "Enable",
-            "tooltip": "",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "bRotatePlayerGravityOnSpawn",
-            "displayName": "Rotate Player Gravity On Spawn",
-            "tooltip": "",
-            "type": "bool",
-            "composite": null
-          }
-        ],
-        "outputs": [],
-        "config": []
       }
     },
     {
@@ -22270,227 +23263,6 @@
             "type": "bool"
           }
         ]
-      }
-    },
-    {
-      "brickAsset": "BP_ZoneProjector",
-      "brickDisplayName": "Zone Projector",
-      "brickSummary": "",
-      "halfSize": {
-        "X": 10,
-        "Y": 10,
-        "Z": 2
-      },
-      "component": {
-        "class": "Component_Internal_AttachedZone",
-        "displayName": "Attached Zone",
-        "description": "",
-        "searchTags": "",
-        "kind": "internal",
-        "family": "",
-        "inputs": [
-          {
-            "name": "bDetectEntities",
-            "displayName": "Detect Entities",
-            "tooltip": "",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "bDetectPlayers",
-            "displayName": "Detect Players",
-            "tooltip": "",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "bDetectPlayers1",
-            "displayName": "Detect Players1",
-            "tooltip": "",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "bDetectPlayers2",
-            "displayName": "Detect Players2",
-            "tooltip": "",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "bDetectPlayers3",
-            "displayName": "Detect Players3",
-            "tooltip": "",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "bDetectProjectiles",
-            "displayName": "Detect Projectiles",
-            "tooltip": "",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "bIsBuildingZone",
-            "displayName": "Is Building Zone",
-            "tooltip": "Whether this zone is a place that people without permission to build outside of build zones can build.",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "bIsLooseZone",
-            "displayName": "Is Loose Zone",
-            "tooltip": "Whether this zone is a loose zone, meaning objects don't have to be fully inside it to be considered to be inside.",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "bIsShareZone",
-            "displayName": "Is Share Zone",
-            "tooltip": "Whether this zone is a share zone, meaning bricks placed inside that are on the same grid and owned by the same owner are publicly editable by anyone on the server without them needing trust from the owner.",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "bWater",
-            "displayName": "Water",
-            "tooltip": "",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "TagFilter",
-            "displayName": "Tag Filter",
-            "tooltip": "",
-            "type": "any",
-            "composite": null
-          },
-          {
-            "name": "WaterAbsorption",
-            "displayName": "Water Absorption",
-            "tooltip": "",
-            "type": "vector",
-            "composite": {
-              "kind": "vector",
-              "subPorts": [
-                "X",
-                "Y",
-                "Z"
-              ]
-            }
-          },
-          {
-            "name": "WaterFogAmbientColor",
-            "displayName": "Water Fog Ambient Color",
-            "tooltip": "",
-            "type": "color",
-            "composite": {
-              "kind": "color",
-              "subPorts": [
-                "A",
-                "B",
-                "G",
-                "R"
-              ]
-            }
-          },
-          {
-            "name": "WaterFogAmbientScale",
-            "displayName": "Water Fog Ambient Scale",
-            "tooltip": "",
-            "type": "float",
-            "composite": null
-          },
-          {
-            "name": "WaterFogIntensity",
-            "displayName": "Water Fog Intensity",
-            "tooltip": "",
-            "type": "float",
-            "composite": null
-          },
-          {
-            "name": "WaterFogScatteringColor",
-            "displayName": "Water Fog Scattering Color",
-            "tooltip": "",
-            "type": "color",
-            "composite": {
-              "kind": "color",
-              "subPorts": [
-                "A",
-                "B",
-                "G",
-                "R"
-              ]
-            }
-          },
-          {
-            "name": "WaterFogScatteringScale",
-            "displayName": "Water Fog Scattering Scale",
-            "tooltip": "",
-            "type": "float",
-            "composite": null
-          },
-          {
-            "name": "WaterScattering",
-            "displayName": "Water Scattering",
-            "tooltip": "",
-            "type": "vector",
-            "composite": {
-              "kind": "vector",
-              "subPorts": [
-                "X",
-                "Y",
-                "Z"
-              ]
-            }
-          },
-          {
-            "name": "ZoneEndDistance",
-            "displayName": "Zone End Distance",
-            "tooltip": "",
-            "type": "int",
-            "composite": null
-          },
-          {
-            "name": "ZoneStartDistance",
-            "displayName": "Zone Start Distance",
-            "tooltip": "",
-            "type": "int",
-            "composite": null
-          },
-          {
-            "name": "ZoneWindForce",
-            "displayName": "Zone Wind Force",
-            "tooltip": "",
-            "type": "float",
-            "composite": null
-          }
-        ],
-        "outputs": [
-          {
-            "name": "bOccupied",
-            "displayName": "Occupied",
-            "tooltip": "",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "OccupantCount",
-            "displayName": "Occupant Count",
-            "tooltip": "",
-            "type": "int",
-            "composite": null
-          },
-          {
-            "name": "ZoneRef",
-            "displayName": "Zone Ref",
-            "tooltip": "",
-            "type": "any",
-            "composite": null
-          }
-        ],
-        "config": []
       }
     },
     {

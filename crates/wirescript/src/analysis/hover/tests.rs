@@ -1174,3 +1174,53 @@ chip a(uid: string) -> int {
             }
         }
     }
+
+#[test]
+fn for_loop_range_binding_hovers_as_int() {
+    let src = "var n: int = 0\nin go: exec\non go {\n  for i in 0..n {\n    let x = i\n  }\n}";
+    let col = src.lines().nth(3).unwrap().find("for i").unwrap() + 4;
+    let h = hover_for(src, 3, col).expect("loop binding should hover");
+    assert!(h.contains("let i: int"), "got: {h}");
+}
+
+#[test]
+fn for_each_array_single_binding_hovers_as_the_element_type() {
+    // A single binding on an array means the VALUE, not the index.
+    let src = "var arr: int[]\nin go: exec\non go {\n  for v in arr {\n    let x = v\n  }\n}";
+    let col = src.lines().nth(3).unwrap().find("for v").unwrap() + 4;
+    let h = hover_for(src, 3, col).expect("array element binding should hover");
+    assert!(h.contains("let v: int"), "got: {h}");
+}
+
+#[test]
+fn for_each_map_bindings_hover_as_key_and_value_types() {
+    let src = "var m: Map<string, int>\nin go: exec\non go {\n  for k, v in m {\n    let x = v\n  }\n}";
+    let colk = src.lines().nth(3).unwrap().find('k').unwrap();
+    let colv = src.lines().nth(3).unwrap().find("v in").unwrap();
+    let hk = hover_for(src, 3, colk).expect("map key binding should hover");
+    let hv = hover_for(src, 3, colv).expect("map value binding should hover");
+    assert!(hk.contains("let k: string"), "got: {hk}");
+    assert!(hv.contains("let v: int"), "got: {hv}");
+}
+
+#[test]
+fn for_range_brace_binding_hovers_with_each_slots_own_type() {
+    let src = "var n: int = 0\nin go: exec\non go {\n  for { index, isLast } in 0..n {\n    let a = index\n  }\n}";
+    let coli = src.lines().nth(3).unwrap().find("index").unwrap();
+    let coll = src.lines().nth(3).unwrap().find("isLast").unwrap();
+    let hi = hover_for(src, 3, coli).expect("`index` slot should hover");
+    let hl = hover_for(src, 3, coll).expect("`isLast` slot should hover");
+    assert!(hi.contains("let index: int"), "got: {hi}");
+    assert!(hl.contains("let isLast: bool"), "got: {hl}");
+}
+
+#[test]
+fn for_as_run_hovers_as_the_outcome_record() {
+    let src = "var n: int = 0\nin go: exec\non go {\n  for i in 0..n as run {\n  }\n  let ok = run.aborted\n}";
+    let col = src.lines().nth(5).unwrap().find("run").unwrap();
+    let h = hover_for(src, 5, col).expect("`as run` should hover after the loop");
+    assert!(
+        h.contains("aborted: bool") && h.contains("abortCode: int") && h.contains("iterations: int"),
+        "got: {h}"
+    );
+}
