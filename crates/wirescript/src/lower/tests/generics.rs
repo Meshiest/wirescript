@@ -1178,3 +1178,259 @@ fn generic_chip_in_generic_mod_sees_outer_and_own_params() {
     string_inst.extend(vec![Type::String; 4]);
     assert_eq!(rer, vec![int_inst, string_inst], "pins must carry outer `T` and own `U`, got {inst:?}");
 }
+
+/// The instance types of `chip_instance_types` with the keys dropped, each
+/// instance's lists already sorted and the instances sorted.
+fn instance_type_sets(module: &Module) -> Vec<(Vec<Type>, Vec<Type>)> {
+    chip_instance_types(module).into_iter().map(|(_, rer, vars)| (rer, vars)).collect()
+}
+
+/// The `ArrayVar` storage types across the whole module tree, sorted.
+fn array_var_types(module: &Module) -> Vec<Type> {
+    let mut out = Vec::new();
+    fn walk(module: &Module, out: &mut Vec<Type>) {
+        for n in module.nodes.values() {
+            if n.gate_class == crate::ir::gate_class::ARRAY_VAR {
+                out.extend(n.ports.outputs.iter().map(|p| p.ty.clone()));
+            }
+        }
+        for c in module.chips.values() {
+            walk(c, out);
+        }
+    }
+    walk(module, &mut out);
+    out.sort_by_key(|t| format!("{t:?}"));
+    out
+}
+
+#[test]
+fn two_level_generic_nesting_types_chip_per_instantiation() {
+    // `c` is declared two generic bodies deep: it uses `A`'s `T` and `B`'s `U`.
+    // Each `A` instantiation must type both, not only the innermost `U`.
+    let src = "in n: int\nin s: string\nin f: float\nin g: bool\n\
+               mod A<T: int | string, V: float | bool>(v: T, w: V) -> (r: T) {\n\
+                 mod B<U: float | bool>(t: T, u: U) -> (r2: T) {\n\
+                   chip c(x: T, z: U) -> (y: T, q: U) {\n\
+                     var st: T = x\n\
+                     out y = st\n\
+                     out q = z\n\
+                   }\n\
+                   let (gg, _) = c(t, u)\n\
+                   return gg\n\
+                 }\n\
+                 return B(v, w)\n\
+               }\n\
+               out a = A(n, f)\nout b = A(s, g)\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    let keys = chip_template_keys(&r.module);
+    assert_eq!(keys.len(), 2, "one template per `A` instantiation, got {keys:?}");
+    let mut int_float = vec![Type::Float; 4];
+    int_float.extend(vec![Type::Int; 4]);
+    let mut string_bool = vec![Type::Bool; 4];
+    string_bool.extend(vec![Type::String; 4]);
+    assert_eq!(
+        instance_type_sets(&r.module),
+        vec![(string_bool, vec![Type::String]), (int_float, vec![Type::Int])],
+        "`c` must carry the outer `T` and the middle `U` per instantiation"
+    );
+}
+
+#[test]
+fn two_level_generic_nesting_types_inline_mod_storage() {
+    // The inline-mod analog: `B` is inlined inside `A`, and its body reads
+    // both `A`'s `T` and its own `U`.
+    let src = "in n: int\nin s: string\nin f: float\nin g: bool\n\
+               mod A<T: int | string, V: float | bool>(v: T, w: V) -> (r: T) {\n\
+                 mod B<U: float | bool>(t: T, u: U) -> (r2: T) {\n\
+                   var st: T = t\n\
+                   var su: U = u\n\
+                   return st\n\
+                 }\n\
+                 return B(v, w)\n\
+               }\n\
+               out a = A(n, f)\nout b = A(s, g)\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    let mut vals = pseudo_var_value_types(&r.module);
+    vals.sort_by_key(|t| format!("{t:?}"));
+    assert_eq!(
+        vals,
+        vec![Type::Bool, Type::Float, Type::Int, Type::String],
+        "`B`'s storage must be typed by `A`'s `T` and its own `U`, got {vals:?}"
+    );
+}
+
+#[test]
+fn own_type_param_shadows_the_enclosing_one() {
+    // `inner<T>` inside `outer<T>`: the inner `T` is bound by the call
+    // (`float`), not by the outer instantiation, for a chip and an inline mod.
+    let src = "in n: int\nin s: string\nin f: float\n\
+               mod outer<T: int | string>(v: T, w: float) -> (r: T) {\n\
+                 chip inner<T>(x: T) -> (y: T) {\n\
+                   var st: T = x\n\
+                   out y = st\n\
+                 }\n\
+                 mod twin<T>(x: T) -> (y: T) {\n\
+                   var mt: T = x\n\
+                   return mt\n\
+                 }\n\
+                 let q = inner(w)\n\
+                 let p = twin(w)\n\
+                 return v\n\
+               }\n\
+               out a = outer(n, f)\nout b = outer(s, f)\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    let inst = instance_type_sets(&r.module);
+    assert_eq!(
+        inst,
+        vec![(vec![Type::Float; 4], vec![Type::Float]); 2],
+        "the chip's own `T` must win over the outer one"
+    );
+    assert_eq!(
+        pseudo_var_value_types(&r.module).iter().filter(|t| **t != Type::Float).count(),
+        0,
+        "the inline mod's own `T` must win over the outer one too"
+    );
+}
+
+#[test]
+fn array_push_in_nested_chip_pins_element_type_per_instantiation() {
+    // A `T[]` in a chip declared inside `B` inside `outer`: the element type
+    // comes from `outer`'s `T`, per instantiation.
+    let src = "in go: exec\nin n: int\nin s: string\n\
+               mod outer<T: int | string>(v: T) -> (r: int) {\n\
+                 mod B<U: float | bool>(t: T, u: U) -> (r2: int) {\n\
+                   chip inner(x: T) -> (len: int) {\n\
+                     var xs: T[]\n\
+                     xs.push(x)\n\
+                     emit len = xs.length()\n\
+                   }\n\
+                   let q = inner(t, exec = go)\n\
+                   return q.len\n\
+                 }\n\
+                 return B(v, 1.0)\n\
+               }\n\
+               out a = outer(n)\nout b = outer(s)\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert_eq!(chip_template_keys(&r.module).len(), 2);
+    assert_eq!(
+        array_var_types(&r.module),
+        vec![
+            Type::Ref(Box::new(Type::Array(Box::new(Type::Int)))),
+            Type::Ref(Box::new(Type::Array(Box::new(Type::String)))),
+        ],
+        "each instance's array must hold its own `T`"
+    );
+}
+
+#[test]
+fn chip_in_non_generic_mod_ignores_a_generic_callers_frame() {
+    // `pick` is declared in a non-generic top-level `helper`, so its key is
+    // empty and every call shares one template. Inlining `helper` from a
+    // generic caller must not hand `pick` that caller's frame: its pin types
+    // are the same whichever call builds the shared template first.
+    let body = "enum Dir { Up, Down }\nin n: int\nin s: string\n\
+                mod helper(x: int) -> (r: int) {\n\
+                  chip pick(d: Dir, x: int) -> (y: int) {\n\
+                    out y = if d is Dir.Up then x else 0\n\
+                  }\n\
+                  return pick(Dir.Up, x)\n\
+                }\n\
+                mod outer<T: int | string>(v: T, x: int) -> (r: int) {\n\
+                  return helper(x)\n\
+                }\n";
+    let direct_first = format!("{body}out a = helper(n)\nout b = outer(s, n)\nout c = outer(n, n)\n");
+    let generic_first = format!("{body}out b = outer(s, n)\nout c = outer(n, n)\nout a = helper(n)\n");
+    let r1 = compile(&direct_first);
+    let r2 = compile(&generic_first);
+    assert_no_errors(&r1);
+    assert_no_errors(&r2);
+    assert_eq!(chip_template_keys(&r1.module).len(), 1);
+    assert_eq!(chip_template_keys(&r2.module).len(), 1);
+    assert_eq!(
+        instance_type_sets(&r1.module),
+        instance_type_sets(&r2.module),
+        "the shared template's pins must not depend on call order"
+    );
+}
+
+#[test]
+fn non_generic_mod_in_generic_body_uses_its_lexical_frame_under_a_shadowing_caller() {
+    // `helper` is declared in `A` and reads `A`'s `T`. It is called from `B`,
+    // whose own `T` shadows `A`'s. The body must see `A`'s `T` (int / string),
+    // not `B`'s (float), exactly as a chip declared there does.
+    let src = "in n: int\nin s: string\nin f: float\n\
+               mod A<T: int | string>(v: T, w: float) -> (r: T) {\n\
+                 mod helper(x: T) -> (r2: T) {\n\
+                   var st: T = x\n\
+                   return st\n\
+                 }\n\
+                 mod B<T: float | bool>(u: T) -> (r3: T) {\n\
+                   let z = helper(v)\n\
+                   return u\n\
+                 }\n\
+                 let bb = B(w)\n\
+                 return v\n\
+               }\n\
+               out a = A(n, f)\nout b = A(s, f)\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    let mut vals = pseudo_var_value_types(&r.module);
+    vals.sort_by_key(|t| format!("{t:?}"));
+    assert_eq!(vals, vec![Type::Int, Type::String], "`st` must follow `A`'s `T`, got {vals:?}");
+}
+
+#[test]
+fn non_generic_mod_in_generic_body_called_from_non_shadowing_generic() {
+    // Same shape with `B<U>`: nothing shadows `T`, so the caller's frame and
+    // the lexical one agree, and `st` follows `A`'s `T`.
+    let src = "in n: int\nin s: string\nin f: float\n\
+               mod A<T: int | string>(v: T, w: float) -> (r: T) {\n\
+                 mod helper(x: T) -> (r2: T) {\n\
+                   var st: T = x\n\
+                   return st\n\
+                 }\n\
+                 mod B<U: float | bool>(u: U) -> (r3: U) {\n\
+                   let z = helper(v)\n\
+                   return u\n\
+                 }\n\
+                 let bb = B(w)\n\
+                 return v\n\
+               }\n\
+               out a = A(n, f)\nout b = A(s, f)\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    let mut vals = pseudo_var_value_types(&r.module);
+    vals.sort_by_key(|t| format!("{t:?}"));
+    assert_eq!(vals, vec![Type::Int, Type::String], "`st` must follow `A`'s `T`, got {vals:?}");
+}
+
+#[test]
+fn top_level_non_generic_mod_from_generic_caller_gets_no_lexical_frame() {
+    // A top-level `helper` has no enclosing generic body, so inlining it from
+    // `outer<T>` pushes nothing: its body is the same at every instantiation
+    // as when it is called directly.
+    let src = "in n: int\nin s: string\nin k: int\n\
+               mod helper(x: int) -> (r: int) {\n\
+                 var st: int = x\n\
+                 return st\n\
+               }\n\
+               mod outer<T: int | string>(v: T, x: int) -> (r: int) {\n\
+                 return helper(x)\n\
+               }\n\
+               out a = outer(n, k)\nout b = outer(s, k)\nout c = helper(k)\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert_eq!(pseudo_var_value_types(&r.module), vec![Type::Int; 3]);
+    assert!(!any_param_port(&r.module));
+}

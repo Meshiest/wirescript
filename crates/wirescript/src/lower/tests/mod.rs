@@ -28,6 +28,7 @@ mod opaque;
 mod out_reads;
 mod port_side;
 mod purity;
+mod record_field_columns;
 mod records;
 mod refs;
 mod regression_bugs;

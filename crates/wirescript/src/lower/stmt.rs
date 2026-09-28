@@ -28,6 +28,27 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
             if v.is_static || ctx.current_exec.is_none() {
                 warn_unbaked_var_init(ctx, v, false);
             }
+            // A record (or tuple or enum) var is several gates, so its
+            // initializer runs as an assignment to them, which resets the var
+            // each time this scope is entered like the forms below do.
+            if !v.is_static
+                && ctx.current_exec.is_some()
+                && let Some(init) = &v.init
+                && matches!(ctx.scope.get(&v.name), Some(Binding::Record(_)))
+            {
+                lower_assign(
+                    ctx,
+                    &Assign {
+                        target: Expr::Ident {
+                            name: v.name.clone(),
+                            range: v.range.clone(),
+                        },
+                        value: init.clone(),
+                        range: v.range.clone(),
+                    },
+                );
+                return;
+            }
             // In exec context, emit a Var_Set to reset the variable to its
             // initial value each time this scope is entered. Without this,
             // PseudoVar keeps its value from the previous invocation.
@@ -469,12 +490,50 @@ fn set_scalar_var(ctx: &mut LowerCtx, var_rec: &VarRecord, value_port: PortRef, 
     invalidate_var_cache(ctx, &var_rec.node_id);
 }
 
+/// A record-valued `if`/`match` chooses per leaf, and a record whose field is
+/// an array or map of records has several containers with no single reference
+/// to choose, so the value has no form: WS071, as `if c then pts else pts2` is.
+/// `true` when it reported.
+fn reject_column_record_choice(ctx: &mut LowerCtx, value: &Expr, range: &SourceRange) -> bool {
+    fn column_field(fields: &[(String, Type)]) -> Option<(String, &'static str)> {
+        fields.iter().find_map(|(name, ft)| match unwrap_ref(ft) {
+            Type::Array(e) | Type::Map(_, e) => match *e {
+                Type::Record(_) => Some((name.clone(), "records")),
+                Type::Tuple(_) => Some((name.clone(), "tuples")),
+                Type::Enum { .. } => Some((name.clone(), "enum values")),
+                _ => None,
+            },
+            Type::Record(sub) => column_field(&sub).map(|(p, k)| (format!("{name}.{p}"), k)),
+            _ => None,
+        })
+    }
+    let Type::Record(fields) = unwrap_ref(&ctx.type_of(value)) else {
+        return false;
+    };
+    let Some((path, kind)) = column_field(&fields) else {
+        return false;
+    };
+    ctx.error(
+        "WS071",
+        format!(
+            "this conditional chooses between records whose field `{path}` is an array or map \
+             of {kind}. That field is several containers with no single reference to choose, \
+             so the choice can't be a value. Branch on the condition and use each record \
+             directly"
+        ),
+        range,
+    );
+    true
+}
+
 /// Resolve a record-typed VALUE expression to its per-field binding map: a
 /// record literal (`{ x, y }`) lowers each field expr in place; an identifier or
 /// field chain naming a `Binding::Record` (a record var/let/input) forwards its
-/// field map. Returns `None` for a source with no field map yet (e.g. a
-/// record-returning call — handled by the `pending_*` machinery elsewhere, not
-/// here), leaving the assignment to fall through rather than miswire.
+/// field map; a record-valued `if`/`match` chooses per leaf; a record array or
+/// map element reads every column; a record-returning call or an enum
+/// construction is lowered here and its stashed per-field record taken.
+/// Returns `None` for a value with no field map, leaving the caller to fall
+/// through rather than miswire.
 pub(super) fn value_record_fields(
     ctx: &mut LowerCtx,
     value: &Expr,
@@ -494,6 +553,9 @@ pub(super) fn value_record_fields(
         range,
     } = value
     {
+        if reject_column_record_choice(ctx, value, range) {
+            return None;
+        }
         let then_fields = branch_record_fields(ctx, then_branch)?;
         let else_fields = branch_record_fields(ctx, else_branch)?;
         let cond_port = lower_expr(ctx, cond);
@@ -512,6 +574,11 @@ pub(super) fn value_record_fields(
     // report each arm as WS071. Without this arm every consumer bailed on the
     // `None` and a record-valued match assigned nothing at all - no Select, no
     // store, no diagnostic.
+    if let Expr::MatchExpr { range, .. } = value
+        && reject_column_record_choice(ctx, value, range)
+    {
+        return None;
+    }
     if let Expr::MatchExpr { scrutinee, arms, range } = value
         && let Some(rec) =
             crate::lower::expr::lower_match_expr_record(ctx, scrutinee, arms, range)
@@ -591,12 +658,22 @@ pub(super) fn value_record_fields(
         let port = lower_expr(ctx, value);
         // Kept for `branch_record_fields`, the one caller that can still make
         // something of a record-shaped value with no field map.
-        ctx.last_value_record_port = Some(port);
+        ctx.last_value_record_port = Some((value.range().clone(), port));
         if let Some(rec) = ctx.pending_inline_record.take() {
             return Some(unwrap_single_record_output(rec));
         }
     }
     None
+}
+
+/// The port [`value_record_fields`] lowered for exactly `value`, if its last
+/// probe lowered one. A port from a probe of a different expression (such as
+/// the `obj` of `obj.Value`) is dropped, never handed back.
+pub(super) fn take_value_record_port(ctx: &mut LowerCtx, value: &Expr) -> Option<PortRef> {
+    match ctx.last_value_record_port.take() {
+        Some((range, port)) if &range == value.range() => Some(port),
+        _ => None,
+    }
 }
 
 /// A single RECORD-typed output arrives keyed by the OUTPUT name - `mod mk() ->
@@ -638,7 +715,7 @@ pub(super) fn branch_record_fields(
     }
     // Reuses the port `value_record_fields` just lowered rather than lowering
     // the call a second time.
-    let port = ctx.last_value_record_port.take()?;
+    let port = take_value_record_port(ctx, value)?;
     let Type::Record(fields) = unwrap_ref(&ctx.type_of(value)) else {
         return None;
     };
@@ -734,18 +811,169 @@ pub(super) fn select_record_fields(
 /// Write a record value into a `Binding::Record` target, field by field: each
 /// leaf `Var` field is read from the matching source field (`binding_to_port`,
 /// which emits a `Var_Get` for a stored source) and written with `set_scalar_var`;
-/// nested record fields recurse. Container-typed fields (a record with an
-/// array/map field) are left for a follow-up and skipped here.
+/// nested record fields recurse. A record literal routes per field through
+/// [`assign_record_literal`].
 fn assign_record(
     ctx: &mut LowerCtx,
     target_fields: &HashMap<crate::intern::Sym, Binding>,
+    path: &str,
     value: &Expr,
     range: &SourceRange,
 ) {
-    let Some(src) = value_record_fields(ctx, value) else {
+    if let Expr::RecordLit { fields, .. } = value {
+        assign_record_literal(ctx, target_fields, path, fields, range);
+        return;
+    }
+    let Some(mut src) = value_record_fields(ctx, value) else {
         return;
     };
+    src.retain(|k, b| !target_fields.get(k).is_some_and(|t| same_storage(t, b)));
     assign_record_fields(ctx, target_fields, &src, range);
+}
+
+/// `h = { ...h2, xs: [..], pts: [..], m: { .. }, n: 2 }`: each field takes its
+/// value from the LAST source that names it (a spread supplies every field of
+/// its record). Every spread and every field value except a container literal
+/// is evaluated in source order, including one a later source overrides, and
+/// before any container is rebuilt, so `n: h.xs.length()` sees the old
+/// contents. Two things are NOT snapshotted first: a container literal's
+/// elements are evaluated during its own rebuild (`{ xs: [a.pop()], n: a.pop() }`
+/// pops for `n` first), and a container a non-literal field or spread supplies
+/// is copied after every rebuild (`{ pts: [..], qs: h.pts }` copies the NEW
+/// `pts`). A container field given a literal is rebuilt the way `h.xs = [..]`
+/// / `h.pts = [..]` / `h.m = { .. }` rebuilds it (a non-literal plain container
+/// is WS027, as `h.xs = ys` is), and a nested record literal recurses. Every
+/// other field, and every field a spread supplies, goes through
+/// [`assign_record_fields`], so a container a spread supplies copies per column
+/// as `pts = qs` does; a field a spread would copy onto its own storage
+/// (`h = { ...h, n: 1 }`) is skipped.
+fn assign_record_literal(
+    ctx: &mut LowerCtx,
+    target: &HashMap<crate::intern::Sym, Binding>,
+    path: &str,
+    fields: &[RecordLitField],
+    range: &SourceRange,
+) {
+    let mut src: HashMap<crate::intern::Sym, Binding> = HashMap::default();
+    let mut rebuilds: HashMap<crate::intern::Sym, (usize, String, Binding, Expr)> =
+        HashMap::default();
+    for (i, f) in fields.iter().enumerate() {
+        let (name, value) = match f {
+            RecordLitField::Spread { value, .. } => {
+                if let Some(rec) = branch_record_fields(ctx, value) {
+                    for (k, b) in rec {
+                        rebuilds.remove(&k);
+                        src.insert(k, b);
+                    }
+                }
+                continue;
+            }
+            RecordLitField::Named { name, value, .. } => (name, value.clone()),
+            RecordLitField::Shorthand { name, range } => (
+                name,
+                Expr::Ident {
+                    name: name.clone(),
+                    range: range.clone(),
+                },
+            ),
+        };
+        let key = crate::intern::intern(name);
+        let rebuilt = match (target.get(&key), &value) {
+            (Some(Binding::Var(v)), _) => matches!(v.storage, VarStorage::Array | VarStorage::Map),
+            (
+                Some(Binding::Record(_)),
+                Expr::Array { .. } | Expr::MapLit { .. } | Expr::RecordLit { .. },
+            ) => true,
+            _ => false,
+        };
+        match target.get(&key) {
+            Some(b) if rebuilt => {
+                src.remove(&key);
+                rebuilds.insert(key, (i, name.clone(), b.clone(), value));
+            }
+            _ => {
+                rebuilds.remove(&key);
+                src.extend(crate::lower::decl::lower_record_lit(ctx, std::slice::from_ref(f)));
+            }
+        }
+    }
+    let mut rebuilds: Vec<(usize, String, Binding, Expr)> = rebuilds.into_values().collect();
+    rebuilds.sort_by_key(|(i, ..)| *i);
+    for (_, name, binding, value) in rebuilds {
+        let field_path = format!("{path}.{name}");
+        match (binding, &value) {
+            (Binding::Var(v), _) => {
+                lower_container_assign(ctx, &v, &field_path, &value, range);
+            }
+            (Binding::Record(sub), Expr::Array { elements, .. }) => {
+                lower_record_array_literal_assign(ctx, &sub, elements, range, &value);
+            }
+            (Binding::Record(sub), Expr::MapLit { entries, .. }) => {
+                lower_record_map_literal_assign(ctx, &sub, entries, range, &value);
+            }
+            (Binding::Record(sub), Expr::RecordLit { fields: inner, .. }) => {
+                assign_record_literal(ctx, &sub, &field_path, inner, range);
+            }
+            _ => {}
+        }
+    }
+    src.retain(|k, b| !target.get(k).is_some_and(|t| same_storage(t, b)));
+    assign_record_fields(ctx, target, &src, range);
+}
+
+/// Whether two bindings name the very same storage gates.
+fn same_storage(a: &Binding, b: &Binding) -> bool {
+    match (a, b) {
+        (Binding::Var(x), Binding::Var(y)) => x.node_id == y.node_id,
+        (Binding::Record(x), Binding::Record(y)) => {
+            x.len() == y.len()
+                && x.iter().all(|(k, xb)| y.get(k).is_some_and(|yb| same_storage(xb, yb)))
+        }
+        _ => false,
+    }
+}
+
+/// `recArr = [rec0, ...rest]` on a record array (a `Binding::Record` of
+/// parallel per-field arrays): clear every field array, then push each element
+/// and append each spread, through the record-array method lowering.
+fn lower_record_array_literal_assign(
+    ctx: &mut LowerCtx,
+    fields: &HashMap<crate::intern::Sym, Binding>,
+    elements: &[ArrayElem],
+    range: &SourceRange,
+    value: &Expr,
+) {
+    crate::lower::access::lower_record_array_method(ctx, fields, "clear", &[], range, value);
+    for el in elements {
+        let arg = [CallArg::Positional(el.expr().clone())];
+        let method = match el {
+            ArrayElem::Item(_) => "push",
+            ArrayElem::Spread(_) => "append",
+        };
+        crate::lower::access::lower_record_array_method(ctx, fields, method, &arg, el.range(), value);
+    }
+}
+
+/// `m = { k: rec, .. }` on a record map: clear every field map, then set each
+/// entry across them.
+fn lower_record_map_literal_assign(
+    ctx: &mut LowerCtx,
+    fields: &HashMap<crate::intern::Sym, Binding>,
+    entries: &[crate::ast::MapLitEntry],
+    range: &SourceRange,
+    value: &Expr,
+) {
+    crate::lower::access::lower_record_map_method(ctx, fields, "clear", &[], range, value);
+    for e in entries {
+        if !crate::lower::access::lower_record_map_key_set(ctx, fields, &e.key, &e.value, range) {
+            ctx.error(
+                "WS071",
+                "this map entry's value is not a record, so it can't be split across the \
+                 record map's fields",
+                e.value.range(),
+            );
+        }
+    }
 }
 
 fn assign_record_fields(
@@ -845,7 +1073,9 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
                 let value_port = lower_expr(ctx, &s.value);
                 set_scalar_var(ctx, &var_rec, value_port, &s.range);
             }
-            Some(Binding::Record(fields)) => assign_record(ctx, &fields, &s.value, &s.range),
+            Some(Binding::Record(fields)) => {
+                assign_record(ctx, &fields, &target_path(inner), &s.value, &s.range)
+            }
             _ => ctx.error(
                 "WS007",
                 "this `unsafe` payload access resolves to no storage slot, so the write would emit nothing",
@@ -960,7 +1190,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         }
         // `ns.xs = [..]` / `rec.m = { .. }`: a container field or namespace
         // member is written like the bare container var.
-        if lower_container_assign(ctx, &var_rec, &target_path(&s.target), s) {
+        if lower_container_assign(ctx, &var_rec, &target_path(&s.target), &s.value, &s.range) {
             return;
         }
         let value_port = lower_expr(ctx, &s.value);
@@ -980,19 +1210,15 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         && let Expr::Array { elements, .. } = &s.value
         && let Some(fields) = crate::lower::access::resolve_record_array(ctx, &s.target)
     {
-        crate::lower::access::lower_record_array_method(
-            ctx, &fields, "clear", &[], &s.range, &s.value,
-        );
-        for el in elements {
-            let arg = [CallArg::Positional(el.expr().clone())];
-            let method = match el {
-                ArrayElem::Item(_) => "push",
-                ArrayElem::Spread(_) => "append",
-            };
-            crate::lower::access::lower_record_array_method(
-                ctx, &fields, method, &arg, el.range(), &s.value,
-            );
-        }
+        lower_record_array_literal_assign(ctx, &fields, elements, &s.range, &s.value);
+        return;
+    }
+    // `m = { k: rec, .. }` on a RECORD map: the map spelling of the branch above.
+    if ctx.current_exec.is_some()
+        && let Expr::MapLit { entries, .. } = &s.value
+        && let Some(fields) = crate::lower::access::resolve_record_map(ctx, &s.target)
+    {
+        lower_record_map_literal_assign(ctx, &fields, entries, &s.range, &s.value);
         return;
     }
 
@@ -1016,7 +1242,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         if ctx.current_exec.is_none() {
             return;
         }
-        assign_record(ctx, &target_fields, &s.value, &s.range);
+        assign_record(ctx, &target_fields, &target_path(&s.target), &s.value, &s.range);
         return;
     }
 
@@ -1126,7 +1352,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         None => return,
     };
 
-    if lower_container_assign(ctx, &var_rec, &var_name, s) {
+    if lower_container_assign(ctx, &var_rec, &var_name, &s.value, &s.range) {
         return;
     }
 
@@ -1188,32 +1414,38 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
 /// Whole-container assignment to an array or map var `name`, shared by the bare
 /// `xs = ..` target and the field-chain `ns.xs = ..` / `rec.xs = ..` ones.
 /// Returns false, emitting nothing, when `var_rec` is not a container.
-fn lower_container_assign(ctx: &mut LowerCtx, var_rec: &VarRecord, name: &str, s: &Assign) -> bool {
+fn lower_container_assign(
+    ctx: &mut LowerCtx,
+    var_rec: &VarRecord,
+    name: &str,
+    value: &Expr,
+    range: &SourceRange,
+) -> bool {
     let what = match var_rec.storage {
         VarStorage::Array => "array",
         VarStorage::Map => "map",
         _ => return false,
     };
-    match &s.value {
+    match value {
         // `foo = [items, ...spreads]` on an array var: rebuild the contents at
         // runtime. There's no single "set array" gate, so clear it then push
         // each item / append each spread in order.
         Expr::Array { elements, .. } if var_rec.storage == VarStorage::Array => {
-            lower_array_literal_assign(ctx, var_rec, elements, &s.range, &s.value);
+            lower_array_literal_assign(ctx, var_rec, elements, range, value);
         }
         // `foo = { k => v, ... }` on a map var: rebuild the contents at runtime.
         // There's no single "set map" gate, so clear it then set each entry in
         // order (mirrors the array literal assign above).
         Expr::MapLit { entries, .. } if var_rec.storage == VarStorage::Map => {
             let map_ref = var_rec.node_id.port(WirePort::MapVarRef);
-            lower_map_literal_assign(ctx, map_ref, entries, &s.range);
+            lower_map_literal_assign(ctx, map_ref, entries, range);
         }
         // Assigning a whole container from a non-literal expression (`m = m2`)
         // is UNCONDITIONALLY unsatisfiable: there is no whole-container
         // copy-by-assignment gate, and a container's backing gate only exposes
         // `ArrayVarRef`/`MapVarRef`, not `VarRef`. Falling through to the
         // generic Var_Set path would wire a nonexistent source port into the
-        // gate — a silent no-op that only surfaces as a load failure in-game.
+        // gate, which does nothing and only shows up as a load failure in-game.
         // Since no fallback can ever satisfy it, this is a hard ERROR (mirrors
         // WS021's "would silently produce a placeholder → error" policy), not a
         // droppable warning. `.copyFrom(src)` is the supported way to copy a
@@ -1223,7 +1455,7 @@ fn lower_container_assign(ctx: &mut LowerCtx, var_rec: &VarRecord, name: &str, s
             format!(
                 "assigning a whole {what} from a non-literal is not supported; use {name}.copyFrom(src) instead"
             ),
-            s.value.range().clone(),
+            value.range().clone(),
         )),
     }
     true

@@ -1136,8 +1136,8 @@ fn assert_rebuild_chain(
 
 /// `u.xs = [1, 2]` on a namespace-member array lowers exactly like the bare
 /// `xs = [1, 2]`: a Clear, then one Push per item, all on the member's own
-/// ArrayVar. It used to take the scalar field-write path, lowering the literal
-/// to `_Unsupported` feeding a Var_Set on a nonexistent `VarRef` port.
+/// ArrayVar, never the scalar field-write path (an `_Unsupported` literal
+/// feeding a Var_Set on a `VarRef` port the ArrayVar does not have).
 #[test]
 fn namespaced_array_literal_assign_clears_and_pushes_the_member() {
     let (tc, lr) = compile_with_lib(
@@ -1148,6 +1148,27 @@ fn namespaced_array_literal_assign_clears_and_pushes_the_member() {
     assert!(!has_unsupported(&lr.module));
     let xs = storage_gates(&lr.module, gc::ARRAY_VAR);
     assert_eq!(xs.len(), 1);
+    assert_rebuild_chain(
+        &lr.module,
+        xs[0],
+        WirePort::ArrayVarRef,
+        gc::ARRAY_CLEAR,
+        &[gc::ARRAY_PUSH, gc::ARRAY_PUSH],
+    );
+}
+
+/// `u.rec.xs = [1, 2]`, an array field of a record inside a namespace member,
+/// rebuilds that field's own ArrayVar exactly like `u.xs = [1, 2]`.
+#[test]
+fn namespaced_record_field_array_literal_assign_clears_and_pushes_the_field() {
+    let (tc, lr) = compile_with_lib(
+        "type R = { xs: int[], n: int }\nvar rec: R",
+        "import * as u from \"lib\"\nin go: exec\non go { u.rec.xs = [1, 2] }",
+    );
+    assert_no_diagnostics(&tc, &lr);
+    assert!(!has_unsupported(&lr.module));
+    let xs = storage_gates(&lr.module, gc::ARRAY_VAR);
+    assert_eq!(xs.len(), 1, "only `rec.xs` is array storage");
     assert_rebuild_chain(
         &lr.module,
         xs[0],
@@ -1215,9 +1236,13 @@ fn namespaced_map_literal_assign_clears_and_sets_the_member() {
 /// wired from a port the container gate does not have.
 #[test]
 fn namespaced_non_literal_container_assign_is_ws027() {
-    for (lib, main) in [
-        ("var m: Map<string, int>", "var m2: Map<string, int>\non go { u.m = m2 }"),
-        ("var xs: int[]\nvar ys: int[]", "on go { u.xs = u.ys }"),
+    for (lib, main, fix) in [
+        (
+            "var m: Map<string, int>",
+            "var m2: Map<string, int>\non go { u.m = m2 }",
+            "u.m.copyFrom(src)",
+        ),
+        ("var xs: int[]\nvar ys: int[]", "on go { u.xs = u.ys }", "u.xs.copyFrom(src)"),
     ] {
         let (_tc, lr) = compile_with_lib(
             lib,
@@ -1226,8 +1251,7 @@ fn namespaced_non_literal_container_assign_is_ws027() {
         assert!(
             lr.diagnostics.iter().any(|d| d.code == "WS027"
                 && d.severity == crate::diagnostic::Severity::Error
-                && d.message.contains("u.")
-                && d.message.contains("copyFrom")),
+                && d.message.contains(fix)),
             "`{main}` must be a WS027 error naming the target: {:?}",
             lr.diagnostics
         );

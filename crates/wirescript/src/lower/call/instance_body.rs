@@ -23,7 +23,7 @@ pub(super) fn build_chip_module(
     // `resolve_local_type` like a generic chip's. `body_frame` is `None`
     // exactly for a non-generic chip declared outside every generic body,
     // which leaves the stack empty and resolution unaffected.
-    let body_frame = ctx.chip_body_frame(chip_decl, mono_frame.as_ref());
+    let body_frame = ctx.body_frame(chip_decl, mono_frame.as_ref());
     let is_generic = body_frame.is_some();
     let mut child_builder = ModuleBuilder::new(instance_name);
     child_builder.module.scopes.insert(

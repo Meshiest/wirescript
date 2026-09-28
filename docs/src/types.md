@@ -461,6 +461,22 @@ prefab reference) or an `exec` field cannot be stored, and a record with one is
 rejected with `WS049`. (A record *value* may still carry a `*T` field for interior
 mutability, as above; only *storage* is restricted.)
 
+A record variable's array or map field is itself a container. When its elements
+are records (`type H = { pts: Point[] }`), `h.pts` is stored exactly like a
+top-level `var pts: Point[]`, one column per field, and supports the same
+operations (`h.pts.push(p)`, `h.pts[i].y`, `h.pts.x[i]`). Two shapes are
+rejected with `WS049` because a column holds one value per element: a record
+or tuple stored in an array or map cannot contain an array or map at any depth
+(`type H = { xs: int[] }` then `var hs: H[]`), and an array or map of records,
+or a record holding one, cannot cross a port (an `in`/`out` port or a `chip`
+parameter or output), since a pin carries one reference. Pass it to a `mod`
+instead. A record literal that initializes or is assigned to a record variable
+fills its container fields the same way the field assignments would
+(`h = { pts: [{ x: 1, y: 2 }], m: { "a": 1 }, n: 0 }`), and a `...spread`
+supplies every field it names. Inside a handler, a record `var` with an
+initializer is reset to it every run, like a scalar or container `var`; a
+`static var` keeps its baked initializer.
+
 **Container operations.** A record array supports `push`, `pop`, `insert`,
 `remove`, `fill`, `resize`, `swap`, `reverse`, `clear`, `length`, and element
 access (`pts[i]`, `pts[i].field`, `pts[i] = rec`, `p = pts[i]`). A nested-record

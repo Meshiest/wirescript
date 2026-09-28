@@ -2469,9 +2469,9 @@ fn port_source(r: &LowerResult, target: crate::ir::NodeId, port: WirePort) -> Op
 }
 
 /// `rec.xs = [1, 2]` on a record's array field rebuilds that field's ArrayVar
-/// like the bare `xs = [1, 2]` (Clear + one Push per item). It used to take
-/// the scalar field-write path: the literal lowered to `_Unsupported` feeding a
-/// Var_Set on the ArrayVar's nonexistent `VarRef` port, with no diagnostic.
+/// like the bare `xs = [1, 2]` (Clear + one Push per item), never the scalar
+/// field-write path (an `_Unsupported` literal feeding a Var_Set on a `VarRef`
+/// port the ArrayVar does not have).
 #[test]
 fn record_array_field_literal_assign_clears_and_pushes() {
     let r = compile(

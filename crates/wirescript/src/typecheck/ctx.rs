@@ -318,6 +318,15 @@ pub struct TypeCheckCtx<'a> {
     /// `return` illegal, since a loop is its own microchip plane a `return`
     /// cannot leave. What WS078 reads to tell the two cases apart.
     pub(super) loop_depth: u32,
+    /// Depth of enclosing `mod` bodies. A mod is inlined per call site, so its
+    /// `in`/`out` statements alias the caller's values instead of crossing a
+    /// port; a physical `chip` body resets it to 0.
+    pub(super) inline_body_depth: u32,
+    /// A record literal checked against a stored record type may give a `Map`
+    /// field a map literal (`h = { m: { "a": 1 } }`): lowering rebuilds or bakes
+    /// that field like the bare `h.m = { .. }`. Set only for a var initializer
+    /// and an assignment.
+    pub(super) record_lit_map_fields: bool,
     /// Inferred custom-event receiver slot types (`infer_custom_event_slots`
     /// output), keyed by handler source range. Empty on pass 1 (nothing inferred
     /// yet); populated on pass 2 by `typecheck_with_inference`. Consulted by
@@ -447,6 +456,8 @@ impl<'a> TypeCheckCtx<'a> {
             scoped_const_placeholders: Vec::new(),
             nofold_depth: 0,
             loop_depth: 0,
+            inline_body_depth: 0,
+            record_lit_map_fields: false,
             ce_slots,
             out_ctx: Vec::new(),
             single_output_alias: crate::collections::HashMap::default(),

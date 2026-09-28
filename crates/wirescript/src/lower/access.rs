@@ -1861,14 +1861,14 @@ fn first_leaf_port(rec: &HashMap<crate::intern::Sym, Binding>) -> Option<PortRef
     None
 }
 
-/// The array var backing one field of a record array (`pts[i].field` /
-/// `pts[i].field = v`). `None` if the field is not a scalar parallel array
-/// (e.g. a nested record — a deeper case left for a follow-up).
+/// The array var backing the leaf column `path` names in a record array
+/// (`pts.x` is `["x"]`, `qs.p.x` is `["p", "x"]`). `None` if the path does not
+/// end on a scalar parallel array.
 fn record_array_field(
     fields: &HashMap<crate::intern::Sym, Binding>,
-    field: &str,
+    path: &[String],
 ) -> Option<VarRecord> {
-    match fields.get(&crate::intern::intern(field)) {
+    match navigate_record_fields(fields, path) {
         Some(Binding::Var(v)) if v.storage == VarStorage::Array => Some(v.clone()),
         _ => None,
     }
@@ -2276,17 +2276,18 @@ fn make_scratch_array(ctx: &mut LowerCtx, elem: &Type, range: &SourceRange) -> P
 }
 
 /// `soa.field.sort(descending?)` on a record array: sort the WHOLE record by
-/// `field`, reordering every sibling field array to match, so rows stay intact.
+/// the column `path` names (a nested `qs.p.x` is `["p", "x"]`), reordering
+/// every other leaf column of the record array to match, so rows stay intact.
 /// The `sortMultiple` gate carries a sort key plus 7 parallel columns, so a
 /// record wider than 8 fields is sorted in GROUPS of 7: each later group is
 /// sorted against a COPY of the original key taken before any sort, and a
 /// deterministic sort applies the identical permutation to every group. `None`
-/// if `field` isn't a scalar parallel array (a nested-record field can't be a
-/// sort key).
+/// if `path` doesn't name a scalar parallel array (a nested-record field can't
+/// be a sort key).
 pub(super) fn lower_record_array_field_sort(
     ctx: &mut LowerCtx,
     fields: &HashMap<crate::intern::Sym, Binding>,
-    field: &str,
+    path: &[String],
     args: &[CallArg],
     range: &SourceRange,
     e: &Expr,
@@ -2300,7 +2301,7 @@ pub(super) fn lower_record_array_field_sort(
         WirePort::ArrayVarRef7,
         WirePort::ArrayVarRef8,
     ];
-    let key = record_array_field(fields, field)?;
+    let key = record_array_field(fields, path)?;
     let key_ref = key.node_id.port(WirePort::ArrayVarRef);
     let key_elem = key.inner_type.clone();
     let parallels: Vec<VarRecord> = leaf_arrays(fields)

@@ -171,12 +171,27 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         // record by that field (reorder every sibling column via sortMultiple),
         // instead of sorting the one column and desyncing the rows. Checked
         // before the column's own container method below, which would sort in place.
+        // Typecheck's kind for `soa` says whether `.field` is a column at all: a
+        // record VARIABLE with array fields binds the same way but is not one.
+        // A nested column (`qs.p.x`) climbs to the root record array, so every
+        // column of the row moves with the key.
         if field == "sort"
             && let Expr::FieldAccess { obj: base, field: keyfield, .. } = obj.as_ref()
-            && let Some(rec) = resolve_record_array(ctx, base)
-            && let Some(port) = lower_record_array_field_sort(ctx, &rec, keyfield, args, range, e)
+            && is_record_array_kind(ctx, base)
         {
-            return port;
+            let mut root: &Expr = base;
+            let mut path = vec![keyfield.clone()];
+            while let Expr::FieldAccess { obj: parent, field: seg, .. } = root
+                && is_record_array_kind(ctx, parent)
+            {
+                path.insert(0, seg.clone());
+                root = parent;
+            }
+            if let Some(rec) = resolve_record_array(ctx, root)
+                && let Some(port) = lower_record_array_field_sort(ctx, &rec, &path, args, range, e)
+            {
+                return port;
+            }
         }
         match ctx.method_target(e) {
             Some(MethodTarget::Container { kind, method }) => match container_ref(ctx, obj, &kind) {
@@ -294,4 +309,9 @@ fn event_config_props_from_call_args(
         }
     }
     props
+}
+
+/// Whether typecheck resolved `e` as an array of records.
+fn is_record_array_kind(ctx: &LowerCtx, e: &Expr) -> bool {
+    matches!(ctx.container_kind(e), Some(ContainerKind::Array { elem: Type::Record(_) }))
 }

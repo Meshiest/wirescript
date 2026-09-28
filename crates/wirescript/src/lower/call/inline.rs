@@ -27,16 +27,32 @@ pub(in crate::lower) fn lower_chip_call_inline(
     // Polymorphic recursion can't diverge here: any (transitive) self-call is
     // already blocked by the WS020 recursion guard in `lower_chip_call` before
     // it re-enters this inline, so the stack can't grow unbounded.
-    let pushed_mono = if chip_decl.type_params.is_empty() {
-        false
+    //
+    // The pushed frame is lexically merged: a generic mod declared inside
+    // another generic body also sees that body's params (see `body_frame`).
+    let own_frame = if chip_decl.type_params.is_empty() {
+        None
     } else {
-        let frame = build_mono_frame(ctx, chip_decl, &positional_args, type_args);
-        ctx.mono_stack.push(frame);
-        true
+        Some(build_mono_frame(ctx, chip_decl, &positional_args, type_args))
     };
     // The body's resolution key, set only while the body itself is lowered:
     // arguments and `exec = ...` are the caller's expressions and keep its key.
-    let body_subst = ctx.body_resolution_subst(chip_decl, ctx.mono_stack.last().filter(|_| pushed_mono));
+    let body_subst = ctx.body_resolution_subst(chip_decl, own_frame.as_ref());
+    let pushed_mono = match &own_frame {
+        Some(own) => {
+            let frame = ctx.body_frame(chip_decl, Some(own)).unwrap_or_else(|| own.clone());
+            ctx.mono_stack.push(frame);
+            true
+        }
+        None => false,
+    };
+    // A non-generic mod declared inside a generic body lowers its body under
+    // that body's frame (lexical, as the chip path does), not the caller's: a
+    // caller nested in a generic that shadows the param would otherwise hand
+    // the body its own `T`. Pushed only after the arguments, which are the
+    // caller's expressions and lower under its frame. `None` for a mod
+    // declared outside every generic body, which pushes nothing.
+    let lexical_frame = if own_frame.is_none() { ctx.body_frame(chip_decl, None) } else { None };
 
     // Collect param bindings first (before mutating ctx) so ref lookups
     // see the caller's vars.
@@ -124,7 +140,15 @@ pub(in crate::lower) fn lower_chip_call_inline(
                     RefArg::Forward(d) => dyn_bindings.push((param.name.clone(), d)),
                     RefArg::Value => {
                         let port = lower_expr(ctx, arg_expr);
+                        // The param's type is the callee's, so it resolves
+                        // under the body's frame.
+                        if let Some(f) = &lexical_frame {
+                            ctx.mono_stack.push(f.clone());
+                        }
                         let t = ctx.resolve_local_type(pt);
+                        if lexical_frame.is_some() {
+                            ctx.mono_stack.pop();
+                        }
                         let (storage, inner_type) = super::context::container_binding(pt, &t)
                             .expect("gated by container_storage");
                         dyn_bindings.push((
@@ -235,6 +259,9 @@ pub(in crate::lower) fn lower_chip_call_inline(
             .collect();
         let record = lower_record_lit(ctx, &rest_fields);
         record_bindings.push((rest_name.clone(), record));
+    }
+    if let Some(f) = &lexical_frame {
+        ctx.mono_stack.push(f.clone());
     }
 
     // The callee body is lowered into the CALLER's ctx, so the caller's own
@@ -466,7 +493,13 @@ pub(in crate::lower) fn lower_chip_call_inline(
     });
     let saved_caller_exec = ctx.current_exec;
     if let Some(exec_expr) = exec_arg {
+        // The trigger is the caller's expression: lower it under the caller's
+        // frame, not the body's lexical one.
+        let lexical = if lexical_frame.is_some() { ctx.mono_stack.pop() } else { None };
         let src = lower_expr(ctx, exec_expr);
+        if let Some(f) = lexical {
+            ctx.mono_stack.push(f);
+        }
         ctx.current_exec = Some(src);
     }
 
@@ -735,7 +768,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
         }
     }
 
-    if pushed_mono {
+    if pushed_mono || lexical_frame.is_some() {
         ctx.mono_stack.pop();
     }
 

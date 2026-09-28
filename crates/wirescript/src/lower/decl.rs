@@ -1368,6 +1368,27 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     }
 }
 
+/// Whether a record-literal field value may be record-shaped, so it is worth
+/// probing with `value_record_fields`: anything typecheck did not type as a
+/// single-wire value. A scalar field skips the probe and is lowered once.
+fn record_valued(ctx: &LowerCtx, value: &Expr) -> bool {
+    !matches!(
+        unwrap_ref(&ctx.type_of(value)),
+        Type::Bool
+            | Type::Int
+            | Type::Float
+            | Type::String
+            | Type::Vector
+            | Type::Rotator
+            | Type::Quat
+            | Type::Color
+            | Type::Entity
+            | Type::Character
+            | Type::Controller
+            | Type::Brick
+    )
+}
+
 /// Lower a record literal into a `HashMap<Sym, Binding>`.
 pub(super) fn lower_record_lit(
     ctx: &mut LowerCtx,
@@ -1387,7 +1408,10 @@ pub(super) fn lower_record_lit(
                 } else if let Some(binding) = resolve_field_chain(ctx, value).cloned() {
                     // Value references something in scope (possibly through a record chain).
                     map.insert(crate::intern::intern(name), binding);
-                } else if let Some(inner) = crate::lower::stmt::value_record_fields(ctx, value) {
+                } else if let Some(inner) = record_valued(ctx, value)
+                    .then(|| crate::lower::stmt::value_record_fields(ctx, value))
+                    .flatten()
+                {
                     // A record-shaped field value with no binding of its own:
                     // a record-returning call, an enum construction, a record
                     // array/map element. The `lower_expr` fallback below keeps
@@ -1396,10 +1420,17 @@ pub(super) fn lower_record_lit(
                     // `Binding::Record` target skips without a diagnostic. For
                     // the parallel-array consumers that desyncs the columns'
                     // LENGTHS, misaligning every later row. Uses the same
-                    // resolver as the spread arm below.
+                    // resolver as the spread arm below. Only a value typecheck
+                    // did not type as a scalar is probed, so a scalar field is
+                    // lowered once, through `lower_expr` below.
                     map.insert(crate::intern::intern(name), Binding::Record(inner));
                 } else {
-                    let port = lower_expr(ctx, value);
+                    // A call the record probe above already lowered for this
+                    // same value keeps that one gate.
+                    let port = match crate::lower::stmt::take_value_record_port(ctx, value) {
+                        Some(port) => port,
+                        None => lower_expr(ctx, value),
+                    };
                     map.insert(
                         crate::intern::intern(name),
                         Binding::Local(LocalRecord { port }),

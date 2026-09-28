@@ -330,25 +330,17 @@ pub(super) fn check_decl(
     ctx.with_nofold(decl_no_fold(d), |ctx| check_decl_inner(ctx, d));
 }
 
-/// The innermost record type backing a storage declaration — unwrapping a `ref`,
-/// the array element, or the map value — so an aggregate (`var p: Rec`,
-/// `Rec[]`, `Map<K, Rec>`) is checked from one place regardless of container.
-fn aggregate_record_fields(ty: &Type) -> Option<&Vec<(String, Type)>> {
-    match ty {
-        Type::Ref(inner) => aggregate_record_fields(inner),
-        Type::Array(e) => aggregate_record_fields(e),
-        Type::Map(_, v) => aggregate_record_fields(v),
-        Type::Record(f) => Some(f),
-        _ => None,
-    }
-}
-
 /// A record used as var/array/map STORAGE decomposes into one backing gate per
 /// field (see `lower::predeclare::declare_record_container`), so every leaf must
 /// be a value that a gate can hold. A reference-only field (`ref T`/zone/
 /// teleport/prefab) or an `exec` can't — reject it with WS049. Nested records
-/// recurse; variant, array, and map fields are fine.
-fn check_aggregate_record(ctx: &mut TypeCheckCtx, ty: &Type, range: &SourceRange) {
+/// recurse; variant, array, and map fields are fine on a record VARIABLE.
+///
+/// A record stored as an array ELEMENT or map VALUE (`var hs: H[]`, and a
+/// record variable's `pts: P[]` field) is one column per field, and a column
+/// can't hold an array or map, so such a record may not contain one at any
+/// depth.
+pub(super) fn check_aggregate_record(ctx: &mut TypeCheckCtx, ty: &Type, range: &SourceRange) {
     fn reason(ft: &Type) -> Option<&'static str> {
         match ft {
             Type::Ref(_) => Some("a reference (`*T`)"),
@@ -359,26 +351,168 @@ fn check_aggregate_record(ctx: &mut TypeCheckCtx, ty: &Type, range: &SourceRange
             _ => None,
         }
     }
+    /// The named parts of a record, or the index-named elements of a tuple.
+    fn parts(t: &Type) -> Option<Vec<(String, Type)>> {
+        match t {
+            Type::Record(fields) => Some(fields.clone()),
+            Type::Tuple(elems) => {
+                Some(elems.iter().enumerate().map(|(i, t)| (i.to_string(), t.clone())).collect())
+            }
+            _ => None,
+        }
+    }
+    /// The dotted path to the first array or map anywhere in `fields`.
+    fn container_field(fields: &[(String, Type)]) -> Option<String> {
+        fields.iter().find_map(|(name, ft)| match ft {
+            Type::Array(_) | Type::Map(..) => Some(name.clone()),
+            _ => parts(ft)
+                .and_then(|sub| container_field(&sub))
+                .map(|p| format!("{name}.{p}")),
+        })
+    }
     fn walk(ctx: &mut TypeCheckCtx, fields: &[(String, Type)], range: &SourceRange) {
         for (name, ft) in fields {
-            if let Type::Record(sub) = ft {
-                walk(ctx, sub, range);
-            } else if let Some(reason) = reason(ft) {
+            match ft {
+                Type::Record(sub) => walk(ctx, sub, range),
+                Type::Tuple(_) => tuple_containers(ctx, ft, range),
+                Type::Array(elem) | Type::Map(_, elem) => element(ctx, elem, range),
+                _ => {
+                    if let Some(reason) = reason(ft) {
+                        ctx.emit(
+                            "WS049",
+                            format!(
+                                "record field `{name}` is {reason}, which can't be stored. \
+                                 Every field of a stored record needs a value a gate can \
+                                 hold, such as a number, string, vector, entity or nested \
+                                 record"
+                            ),
+                            range.clone(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    /// A tuple is walked only for the containers it holds; its other elements
+    /// keep their existing rules.
+    fn tuple_containers(ctx: &mut TypeCheckCtx, t: &Type, range: &SourceRange) {
+        match t {
+            Type::Array(elem) | Type::Map(_, elem) => element(ctx, elem, range),
+            Type::Tuple(elems) => {
+                for e in elems {
+                    tuple_containers(ctx, e, range);
+                }
+            }
+            Type::Record(sub) => walk(ctx, sub, range),
+            _ => {}
+        }
+    }
+    fn element(ctx: &mut TypeCheckCtx, elem: &Type, range: &SourceRange) {
+        let Some(fields) = parts(elem) else {
+            return;
+        };
+        if let Some(path) = container_field(&fields) {
+            let (part, whole) = match elem {
+                Type::Tuple(_) => ("tuple element", "tuple"),
+                _ => ("record field", "record"),
+            };
+            ctx.emit(
+                "WS049",
+                format!(
+                    "{part} `{path}` is an array or map, and a {whole} stored in an array or \
+                     map can't contain an array or map. Each part of the element is stored \
+                     as its own column, and a column can't hold a container. Keep the inner \
+                     collection in a separate `var` and store an index or key in the \
+                     {whole} instead"
+                ),
+                range.clone(),
+            );
+        }
+        match elem {
+            Type::Record(fields) => walk(ctx, fields, range),
+            _ => tuple_containers(ctx, elem, range),
+        }
+    }
+    match ty {
+        Type::Ref(inner) => check_aggregate_record(ctx, inner, range),
+        Type::Array(elem) | Type::Map(_, elem) => element(ctx, elem, range),
+        Type::Record(fields) => walk(ctx, fields, range),
+        Type::Tuple(_) => tuple_containers(ctx, ty, range),
+        _ => {}
+    }
+}
+
+/// A value crossing a port (an `in`/`out` port or a chip parameter/output) is
+/// one pin per record field, and a pin carries a single reference. An array or
+/// map of records (or tuples or payload-carrying enums) is several columns with
+/// no single reference, so neither it nor a record holding one at any depth can
+/// cross (WS049). Inside a record, an array of ANY enum counts, since a record
+/// variable stores that field as columns.
+pub(super) fn check_port_record(ctx: &mut TypeCheckCtx, name: &str, ty: &Type, range: &SourceRange) {
+    // A payload-free enum array is one column, which a single pin carries.
+    let enums = ctx.enum_defs.clone();
+    let columnar = |t: &Type| match t {
+        Type::Record(_) | Type::Tuple(_) => true,
+        Type::Enum { name, .. } => enums.get(name).is_some_and(|d| {
+            d.variants
+                .iter()
+                .any(|v| !matches!(v.payload, crate::typecheck::enums::Payload::Unit))
+        }),
+        _ => false,
+    };
+    /// What an element of this kind is called in the message.
+    fn kind(t: &Type) -> &'static str {
+        match t {
+            Type::Tuple(_) => "tuples",
+            Type::Enum { .. } => "enum values",
+            _ => "records",
+        }
+    }
+    fn columnar_field(
+        fields: &[(String, Type)],
+        columnar: &dyn Fn(&Type) -> bool,
+    ) -> Option<(String, &'static str)> {
+        fields.iter().find_map(|(name, ft)| match unwrap_ref(ft) {
+            Type::Array(e) | Type::Map(_, e) if columnar(&e) => Some((name.clone(), kind(&e))),
+            Type::Record(sub) => {
+                columnar_field(&sub, columnar).map(|(p, k)| (format!("{name}.{p}"), k))
+            }
+            _ => None,
+        })
+    }
+    match unwrap_ref(ty) {
+        Type::Array(e) | Type::Map(_, e) if columnar(&e) => ctx.emit(
+            "WS049",
+            format!(
+                "`{name}` is an array or map of {}, so it can't cross a port. It is stored \
+                 as one column per field, and a port pin carries a single reference. Pass it \
+                 to a `mod` instead (a mod is inlined, so nothing crosses a port), or pass \
+                 the columns the chip needs",
+                kind(&e)
+            ),
+            range.clone(),
+        ),
+        Type::Record(fields) => {
+            // Inside a record every enum counts: a record variable stores an enum
+            // array field as columns even when it has no payload.
+            let any_columnar = |t: &Type| {
+                matches!(t, Type::Record(_) | Type::Tuple(_) | Type::Enum { .. })
+            };
+            if let Some((path, k)) = columnar_field(&fields, &any_columnar) {
                 ctx.emit(
                     "WS049",
                     format!(
-                        "record field `{name}` is {reason}, which can't be stored — a \
-                         record used as a variable, array, or map may only hold value \
-                         fields (numbers, strings, vectors, entities, nested records, \
-                         or arrays/maps)"
+                        "record field `{path}` is an array or map of {k}, so this record \
+                         can't cross a port. A record variable stores it as one column per \
+                         part, and a port pin carries a single reference. Pass the record to \
+                         a `mod` instead (a mod is inlined, so nothing crosses a port), or \
+                         pass the fields the chip needs"
                     ),
                     range.clone(),
                 );
             }
         }
-    }
-    if let Some(fields) = aggregate_record_fields(ty) {
-        walk(ctx, fields, range);
+        _ => {}
     }
 }
 
@@ -436,7 +570,7 @@ fn check_decl_inner(
                     // pure; inside an exec body it runs on the chain instead.
                     let force_pure = ctx.exec_mode() != ExecMode::Exec;
                     ctx.maybe_pure(force_pure, |ctx| {
-                        let t = infer::check(ctx, init, &inner);
+                        let t = infer::check_stored_value(ctx, init, &inner);
                         // An unannotated `var x = a.push(5)` adopts the init's
                         // type; reject a void-mutation `Never` here (an annotated
                         // var already mismatches via `check` above).
@@ -505,13 +639,25 @@ fn check_decl_inner(
                 }
             }
         }
-        TopDecl::In(_) => {
-            // Already handled in registration.
+        TopDecl::In(i) => {
+            // Registered already; only the port's record shape is checked here.
+            if let Some(ty) = ctx.scope.lookup(&i.name).map(|s| s.ty.clone()) {
+                check_port_record(ctx, &i.name, &ty, &i.range);
+            }
         }
         TopDecl::Out(b) => {
+            if b.value.is_none()
+                && let Some(te) = &b.typ
+            {
+                let before = ctx.diagnostics.len();
+                let ty = resolve_type_expr(ctx, te);
+                ctx.diagnostics.truncate(before);
+                check_port_record(ctx, &b.name, &ty, &b.range);
+            }
             if let Some(value) = &b.value {
                 if let Some(te) = &b.typ {
                     let resolved = resolve_type_expr(ctx, te);
+                    check_port_record(ctx, &b.name, &resolved, &b.range);
                     warn_any_annotation(ctx, &resolved, type_expr_range(te));
                     // When out has ref type and value is a var, override to show "ref" in hover
                     if matches!(resolved, Type::Ref(_))
@@ -546,6 +692,7 @@ fn check_decl_inner(
                     // An unannotated `out y = a.push(5)` would publish a nothing;
                     // reject a void-mutation `Never`.
                     let value_ty = ctx.in_pure(|ctx| infer::infer(ctx, value));
+                    check_port_record(ctx, &b.name, &value_ty, &b.range);
                     // A `Never` value has already been reported as producing
                     // nothing, and the port check would say so a second time.
                     if !reject_never_value(ctx, &unwrap_ref(&value_ty), value.range(), &b.name) {
@@ -782,6 +929,9 @@ fn check_decl_inner(
                 let before = ctx.diagnostics.len();
                 for p in &c.inputs {
                     let pt = resolve_type_expr(ctx, &p.typ);
+                    if !c.inline {
+                        check_port_record(ctx, &p.name, &pt, &p.range);
+                    }
                     // `name: const T` means "inside the body the parameter
                     // reads as [a compile-time constant]" (ast.rs's own doc
                     // comment on `Param::is_const`) — a mod is inlined per
@@ -980,8 +1130,16 @@ fn check_decl_inner(
                     })
                     .collect();
                 ctx.diagnostics.truncate(chip_diag_mark);
+                if !c.inline {
+                    for (o, f) in c.outputs.iter().zip(&chip_outs) {
+                        check_port_record(ctx, &o.name, &f.ty, &o.range);
+                    }
+                }
                 ctx.out_ctx.push(chip_outs);
+                let saved_inline = ctx.inline_body_depth;
+                ctx.inline_body_depth = if c.inline { saved_inline + 1 } else { 0 };
                 ctx.in_exec(|ctx| check_block(ctx, &c.body));
+                ctx.inline_body_depth = saved_inline;
                 // Warn if outputs are declared but never assigned. Assignments
                 // count anywhere in the body, including nested if blocks and
                 // `on` handlers: `out x = expr`, `emit x (= expr)`, or a plain

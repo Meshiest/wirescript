@@ -276,6 +276,17 @@ fn method_receiver_type(ctx: &mut TypeCheckCtx, obj: &Expr) -> Option<Type> {
         ctx.type_of_expr
             .insert((r.file.clone(), r.start.offset, r.end.offset), ty.clone());
     }
+    // A column receiver (`pts.x.sort()`, `qs.p.x.sort()`): record each record
+    // container it is a column of, up to the root, which is how lowering tells
+    // a column from a record variable's field and finds every sibling column.
+    let mut cur = obj;
+    while let Expr::FieldAccess { obj: base, field, .. } = cur
+        && let Some(base_ty) = container_receiver_type(ctx, base)
+        && record_column_type(&base_ty, field).is_some()
+    {
+        ctx.record_container_kind(base, &base_ty);
+        cur = base;
+    }
     Some(ty)
 }
 
@@ -2558,6 +2569,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // indexing a column fell to `_Unsupported` and any op on it was a
             // WS004 (Any). (R13.)
             if let Some(column) = record_column_type(&ot, field) {
+                ctx.record_container_kind(obj, &ot);
                 return column;
             }
             if let Type::Record(fields) = &ot {
@@ -2885,52 +2897,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             }
             result
         }
-        Expr::RecordLit { fields, .. } => {
-            let mut rec_fields: Vec<(String, Type)> = Vec::new();
-            for f in fields {
-                match f {
-                    RecordLitField::Named { name, value, .. } => {
-                        let ty = infer(ctx, value);
-                        // Override if field already exists (from spread)
-                        if let Some(existing) = rec_fields.iter_mut().find(|(n, _)| n == name) {
-                            existing.1 = ty;
-                        } else {
-                            rec_fields.push((name.clone(), ty));
-                        }
-                    }
-                    RecordLitField::Shorthand { name, .. } => {
-                        // `{ arr }` captures the array/map var by its container
-                        // ref, not `*T[]` (a var's symbol type is `Ref(T)`, but
-                        // an array/map is already a ref). A scalar `*int` stays.
-                        let ty = ctx
-                            .scope
-                            .lookup(name)
-                            .map(|s| collapse_container_ref(s.ty.clone()))
-                            .unwrap_or(Type::Any);
-                        if let Some(existing) = rec_fields.iter_mut().find(|(n, _)| n == name) {
-                            existing.1 = ty;
-                        } else {
-                            rec_fields.push((name.clone(), ty));
-                        }
-                    }
-                    RecordLitField::Spread { value, .. } => {
-                        let spread_ty = infer(ctx, value);
-                        if let Type::Record(spread_fields) = spread_ty {
-                            for (fname, fty) in spread_fields {
-                                if let Some(existing) =
-                                    rec_fields.iter_mut().find(|(n, _)| *n == fname)
-                                {
-                                    existing.1 = fty;
-                                } else {
-                                    rec_fields.push((fname, fty));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Type::Record(rec_fields)
-        }
+        Expr::RecordLit { fields, .. } => infer_record_lit(ctx, fields, None),
         Expr::Array { elements, .. } => {
             // Type each element so it lands in the type map, and take the
             // array's element type as the WIDENING JOIN of them all, not
@@ -4062,10 +4029,21 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     }
 }
 
+/// [`check`] for a stored record's initializer or assigned value: a map literal
+/// may fill a `Map` field of a record literal there (see
+/// `TypeCheckCtx::record_lit_map_fields`).
+pub(crate) fn check_stored_value(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
+    ctx.record_lit_map_fields = matches!(unwrap_ref(expected), Type::Record(_));
+    check(ctx, e, expected)
+}
+
 pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
     // `null` is polymorphic: it takes the expected type and lowers to that type's
     // zero/default. Resolve it here (before the generic infer+coerce), recording
     // the resolved type so lowering emits the right default literal.
+    // Taken on entry so the allowance reaches only this literal's own fields
+    // (and nested record literals), never a call argument below them.
+    let map_fields = std::mem::take(&mut ctx.record_lit_map_fields);
     if let Expr::NullLit { .. } = e {
         return check_null(ctx, e, expected);
     }
@@ -4090,13 +4068,37 @@ pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
     {
         for (fname, ftype) in &ftypes {
             let val = named.iter().find(|(k, _)| k == fname).map(|(_, v)| *v).unwrap();
-            check(ctx, val, ftype);
+            match (val, unwrap_ref(ftype)) {
+                (Expr::MapLit { entries, .. }, Type::Map(k, v)) if map_fields => {
+                    super::decl::check_map_literal(ctx, entries, &k, &v);
+                    let r = val.range();
+                    ctx.type_of_expr
+                        .insert((r.file.clone(), r.start.offset, r.end.offset), Type::Map(k, v));
+                }
+                _ => {
+                    ctx.record_lit_map_fields = map_fields && matches!(val, Expr::RecordLit { .. });
+                    check(ctx, val, ftype);
+                }
+            }
         }
         let r = e.range();
         let rec = Type::Record(ftypes);
         ctx.type_of_expr
             .insert((r.file.clone(), r.start.offset, r.end.offset), rec.clone());
         return rec;
+    }
+    // Any other shape of a stored record's literal (a spread, a shorthand) is
+    // typed as `infer` types it, except that a map literal may fill a `Map`
+    // field (`h = { ...h2, m: { "a": 1 } }`).
+    if map_fields
+        && let Expr::RecordLit { fields, range } = e
+        && let Type::Record(ftypes) = unwrap_ref(expected)
+    {
+        let t = infer_record_lit(ctx, fields, Some(&ftypes));
+        ctx.type_of_expr
+            .insert((range.file.clone(), range.start.offset, range.end.offset), t.clone());
+        coerce_or_emit(ctx, &t, expected, range);
+        return t;
     }
     // PROTOTYPE: push an expected element type into an array literal, so
     // `var a: float[] = [1, 2]` / `var a: int[] = []` check element-wise
@@ -4254,3 +4256,80 @@ pub(crate) fn emit_deref_not_a_scalar_ref(ctx: &mut TypeCheckCtx, t: &Type, rang
 
 #[cfg(test)]
 mod tests;
+
+/// The type of a record literal, field by field, later fields overriding
+/// earlier ones (a spread supplies every field of its record).
+/// `map_field_types` is the stored record type a map literal field may fill.
+fn infer_record_lit(
+    ctx: &mut TypeCheckCtx,
+    fields: &[RecordLitField],
+    map_field_types: Option<&[(String, Type)]>,
+) -> Type {
+    let mut rec_fields: Vec<(String, Type)> = Vec::new();
+    for f in fields {
+        match f {
+            RecordLitField::Named { name, value, .. } => {
+                // A map literal filling a `Map` field of a stored record's literal
+                // (see `TypeCheckCtx::record_lit_map_fields`) is checked against
+                // that field's type instead of reaching the `MapLit` guard.
+                let map_field = match (value, map_field_types) {
+                    (Expr::MapLit { entries, .. }, Some(types)) => types
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .and_then(|(_, t)| match unwrap_ref(t) {
+                            Type::Map(k, v) => Some((entries, k, v)),
+                            _ => None,
+                        }),
+                    _ => None,
+                };
+                let ty = match map_field {
+                    Some((entries, k, v)) => {
+                        super::decl::check_map_literal(ctx, entries, &k, &v);
+                        let map = Type::Map(k, v);
+                        let r = value.range();
+                        ctx.type_of_expr
+                            .insert((r.file.clone(), r.start.offset, r.end.offset), map.clone());
+                        map
+                    }
+                    None => infer(ctx, value),
+                };
+                // Override if field already exists (from spread)
+                if let Some(existing) = rec_fields.iter_mut().find(|(n, _)| n == name) {
+                    existing.1 = ty;
+                } else {
+                    rec_fields.push((name.clone(), ty));
+                }
+            }
+            RecordLitField::Shorthand { name, .. } => {
+                // `{ arr }` captures the array/map var by its container
+                // ref, not `*T[]` (a var's symbol type is `Ref(T)`, but
+                // an array/map is already a ref). A scalar `*int` stays.
+                let ty = ctx
+                    .scope
+                    .lookup(name)
+                    .map(|s| collapse_container_ref(s.ty.clone()))
+                    .unwrap_or(Type::Any);
+                if let Some(existing) = rec_fields.iter_mut().find(|(n, _)| n == name) {
+                    existing.1 = ty;
+                } else {
+                    rec_fields.push((name.clone(), ty));
+                }
+            }
+            RecordLitField::Spread { value, .. } => {
+                let spread_ty = infer(ctx, value);
+                if let Type::Record(spread_fields) = spread_ty {
+                    for (fname, fty) in spread_fields {
+                        if let Some(existing) =
+                            rec_fields.iter_mut().find(|(n, _)| *n == fname)
+                        {
+                            existing.1 = fty;
+                        } else {
+                            rec_fields.push((fname, fty));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Type::Record(rec_fields)
+}

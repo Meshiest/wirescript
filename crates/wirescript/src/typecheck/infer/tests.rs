@@ -492,6 +492,174 @@ fn record_storage_rejects_non_variant_field() {
     assert!(!ro.diagnostics.iter().any(|d| d.code == "WS049"), "{:?}", ro.diagnostics);
 }
 
+/// The WS049 diagnostics a program type-checks to.
+fn ws049(src: &str) -> Vec<crate::diagnostic::Diagnostic> {
+    let p = parse(src, "test");
+    crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.code == "WS049")
+        .collect()
+}
+
+#[test]
+fn record_element_with_a_container_field_is_ws049() {
+    // A record stored in an array or map is one column per field, and a column
+    // can't hold an array or map, so the declaration itself is rejected.
+    let h = "type H = { xs: int[], n: int }\ntype M = { m: Map<string, int> }\n";
+    for decl in [
+        "var hs: H[]",
+        "var hm: Map<string, H>",
+        "var ms: M[]",
+        "type G = { h: H }\nvar gs: G[]",
+        "type K = { hs: H[] }\nvar k: K",
+        "type K = { hm: Map<int, H> }\nvar k: K",
+        "in go: exec\non go { var hs: H[] }",
+    ] {
+        let d = ws049(&format!("{h}{decl}\n"));
+        assert_eq!(d.len(), 1, "`{decl}` must be exactly one WS049: {d:?}");
+        assert!(
+            d[0].message.contains("can't contain an array or map"),
+            "`{decl}`: {}",
+            d[0].message
+        );
+        assert!(!d[0].message.contains('\u{2014}'), "no em dash: {}", d[0].message);
+    }
+}
+
+#[test]
+fn record_with_a_record_container_field_cannot_cross_a_port() {
+    // A record array/map field is several columns, and a port pin carries one
+    // reference, so a record port or chip parameter can't hold one.
+    let h = "type P = { x: int, y: int }\n\
+             type H = { pts: P[], n: int }\n\
+             type M = { m: Map<string, P> }\n\
+             type G = { h: H }\n";
+    for decl in [
+        "in r: H",
+        "in r: M",
+        "in r: G",
+        "chip C(hh: H) { in k: exec }",
+        "chip C() { in r: H }",
+        "chip C() -> (r: H) { in k: exec }",
+        "out o: H = { pts: [], n: 1 }",
+    ] {
+        let d = ws049(&format!("{h}{decl}\n"));
+        assert_eq!(d.len(), 1, "`{decl}` must be exactly one WS049: {d:?}");
+        assert!(d[0].message.contains("can't cross a port"), "`{decl}`: {}", d[0].message);
+        assert!(!d[0].message.contains('\u{2014}'), "no em dash: {}", d[0].message);
+    }
+    for decl in [
+        "mod f(hh: H) { hh.n = 1 }",
+        "in r: { xs: int[], n: int }",
+        "chip C(xs: { xs: int[] }) { in k: exec }",
+    ] {
+        let d = ws049(&format!("{h}{decl}\n"));
+        assert!(d.is_empty(), "`{decl}` is fine: {d:?}");
+    }
+}
+
+#[test]
+fn tuple_element_with_a_container_is_ws049() {
+    for src in [
+        "var ts: (int, int[])[]",
+        "type H = { t: (int, int[]), n: int }\nvar hs: H[]",
+        "var m: Map<int, (int, int[])>",
+        "type T = (int, Map<int, int>)\ntype H = { t: T }\nvar hm: Map<string, H>",
+    ] {
+        let d = ws049(&format!("{src}\n"));
+        assert_eq!(d.len(), 1, "`{src}` must be exactly one WS049: {d:?}");
+        assert!(d[0].message.contains("can't contain an array or map"), "`{src}`: {}", d[0].message);
+    }
+    assert!(ws049("var t: (int, int[])\nvar ps: (int, int)[]\n").is_empty());
+}
+
+#[test]
+fn ws049_ref_field_message_does_not_promise_container_fields() {
+    let d = ws049("type T = { z: zone, n: int }\nvar ts: T[]\n");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(!d[0].message.contains("arrays/maps"), "{}", d[0].message);
+    assert!(!d[0].message.contains('\u{2014}'), "{}", d[0].message);
+}
+
+#[test]
+fn ws049_names_tuple_elements_and_element_kinds() {
+    let d = ws049("var ts: (int, int[])[]\n");
+    assert!(d[0].message.contains("tuple element `1`"), "{}", d[0].message);
+    let d = ws049("enum C { Red, Green }\ntype H = { cs: C[], n: int }\nin h: H\n");
+    assert!(!d[0].message.contains("of records"), "{}", d[0].message);
+    assert!(d[0].message.contains("enum"), "{}", d[0].message);
+    let d = ws049("in ts: (int, int)[]\n");
+    assert!(d[0].message.contains("of tuples"), "{}", d[0].message);
+}
+
+#[test]
+fn chip_body_var_record_element_with_a_container_is_ws049() {
+    let d = ws049("type H = { xs: int[] }\nchip C() { var hs: H[] }\n");
+    assert_eq!(d.len(), 1, "{d:?}");
+}
+
+#[test]
+fn record_array_or_map_cannot_cross_a_port() {
+    let h = "type P = { x: int, y: int }\n\
+             type H = { pts: P[], n: int }\n\
+             var pts: P[]\n\
+             var pm: Map<string, P>\n\
+             var h: H\n";
+    for decl in [
+        "in ps: P[]",
+        "in pm2: Map<string, P>",
+        "out o3: P[] = pts",
+        "out o2 = pts",
+        "out o4 = pm",
+        "out o = h",
+        "chip C(ps2: P[]) { in k: exec }",
+        "chip C() -> (r: P[]) { in k: exec }",
+        "chip C() { var hc: H\n out r: H = hc }",
+        "chip C() { var pc: P[]\n out r = pc }",
+    ] {
+        let d = ws049(&format!("{h}{decl}\n"));
+        assert_eq!(d.len(), 1, "`{decl}` must be exactly one WS049: {d:?}");
+        assert!(d[0].message.contains("can't cross a port"), "`{decl}`: {}", d[0].message);
+    }
+    for decl in [
+        "mod f(ps2: P[]) { ps2.x.sort() }",
+        "mod g() -> (r: P[]) { return pts }",
+        "mod k() { var hc: H\n out r: H = hc }",
+        "in xs: int[]",
+        "out n = h.n",
+    ] {
+        let d = ws049(&format!("{h}{decl}\n"));
+        assert!(d.is_empty(), "`{decl}` is fine: {d:?}");
+    }
+}
+
+#[test]
+fn payload_enum_array_cannot_cross_a_port_but_a_unit_enum_array_can() {
+    let d = ws049("enum E { A, B(int) }\nin es: E[]\n");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(ws049("enum C { Red, Green }\nin cs: C[]\n").is_empty());
+    // A record variable stores any enum array field as columns, so a record
+    // holding one can't cross a port even without payloads.
+    let d = ws049("enum C { Red, Green }\ntype H = { cs: C[], n: int }\nchip K(hh: H) { in k: exec }\n");
+    assert_eq!(d.len(), 1, "{d:?}");
+}
+
+#[test]
+fn record_with_a_container_field_is_storable_outside_a_container() {
+    let h = "type P = { x: int, y: int }\ntype H = { xs: int[], n: int }\n";
+    for decl in [
+        "var h: H",
+        "var pts: P[]",
+        "var pm: Map<string, P>",
+        "type K = { pts: P[], m: Map<string, P>, xs: int[] }\nvar k: K",
+        "type G = { h: H }\nvar g: G",
+    ] {
+        let d = ws049(&format!("{h}{decl}\n"));
+        assert!(d.is_empty(), "`{decl}` is storable: {d:?}");
+    }
+}
+
 #[test]
 fn null_typing() {
     let tc = |src: &str| {

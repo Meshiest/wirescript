@@ -12,6 +12,10 @@
 - An array or map reached through a record field now resolves for every spelling of one, not just a `var`; reading through a port-bound field emitted a placeholder that read zero, and writing through one emitted nothing.
 - Container methods, index reads and writes, and `for` sources resolve the same way the type checker does, so a generic mod's container keeps its own element type per instantiation instead of the last one checked.
 - An index write through a namespace member or a record-array column (`u.xs[0] = v`, `pts.x[0] = v`) is type-checked against the element type, and an index write whose target resolves to no container is `WS044` instead of being silently dropped.
+- Assigning an array or map literal through a namespace member or record field (`u.xs = [1, 2]`) rebuilds that container instead of emitting a placeholder, and assigning a whole container from a non-literal is `WS027` (use `.copyFrom`).
+- A chip or mod declared inside a generic mod is typed per instantiation of every enclosing generic, instead of reusing the first instantiation's chip or typing the outer parameter as `any`.
+- A record field holding an array or map of records (`{ pts: P[] }`) is stored as per-field columns, so reads, writes and methods on it work; a record stored in an array or map can't hold an array or map, and an array of records can't cross a port (`WS049`).
+- A handler-local record var's initializer runs every time the handler does, a call in a record-literal field runs once, and sorting one array field of a record no longer reorders its siblings.
 
 ## 1.11.1
 

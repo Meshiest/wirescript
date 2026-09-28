@@ -64,6 +64,9 @@ pub(super) fn check_anon_chip_stmts(
     if !pre_registered {
         register_anon_chip_decls(ctx, stmts);
     }
+    // An anonymous chip is a physical microchip, so its `in`/`out` cross
+    // ports even inside a mod body.
+    let saved_inline = std::mem::replace(&mut ctx.inline_body_depth, 0);
     for s in stmts {
         // A chip's PURE statements (`let`/`var`/`out`/`buffer`/declarations) are
         // reactive signal flow — their var reads are continuous, so check them in
@@ -92,6 +95,7 @@ pub(super) fn check_anon_chip_stmts(
             check_one_chip_stmt(ctx, s);
         }
     }
+    ctx.inline_body_depth = saved_inline;
 }
 
 /// Whether a chip-body declaration's initializer contains a call. Must agree
@@ -150,6 +154,9 @@ fn check_stmt_inner(
     match s {
         Stmt::Var(v) => {
             register_decl(ctx, &TopDecl::Var(v.clone()));
+            if let Some(ty) = ctx.scope.lookup(&v.name).map(|s| s.ty.clone()) {
+                check_aggregate_record(ctx, &ty, &v.range);
+            }
             // A local `var` resets every run, and a ref has no literal to reset
             // to, so without an initializer it would keep the last run's ref.
             if !v.is_static
@@ -188,7 +195,7 @@ fn check_stmt_inner(
                     // An empty `{}` is an empty-map init.
                     check_map_literal(ctx, entries, k, v_ty);
                 } else {
-                    let t = infer::check(ctx, init, &inner);
+                    let t = infer::check_stored_value(ctx, init, &inner);
                     // Reject a void-mutation `Never` init on an unannotated var
                     // (annotated already mismatches via `check`), same as the
                     // top-level decl and `let` paths.
@@ -454,7 +461,7 @@ fn check_stmt_inner(
                 // generic `infer` position guard.
                 check_map_literal(ctx, entries, k, v);
             } else {
-                infer::check(ctx, &a.value, &target_ty);
+                infer::check_stored_value(ctx, &a.value, &target_ty);
                 check_deref_write_is_exact(ctx, &a.target, &a.value, &target_ty);
             }
         }
@@ -472,6 +479,9 @@ fn check_stmt_inner(
                     // and primitive → string — pass). A `*T` port carries a
                     // ref, never the value it points at; mirrors `TopDecl::Out`.
                     let value_ty = infer::infer(ctx, value);
+                    if ctx.inline_body_depth == 0 {
+                        check_port_record(ctx, &b.name, &resolved, &b.range);
+                    }
                     infer::coerce_or_emit(
                         ctx,
                         &value_ty.clone().container_ref_as_value(),
@@ -498,6 +508,9 @@ fn check_stmt_inner(
                 // No annotation of its own, so the port's declared type is the
                 // only thing the value answers to.
                 let value_ty = infer::infer(ctx, value);
+                if ctx.inline_body_depth == 0 {
+                    check_port_record(ctx, &b.name, &value_ty, &b.range);
+                }
                 check_port_write(ctx, &b.name, &value_ty, value.range());
             }
         }
@@ -801,6 +814,11 @@ fn check_stmt_inner(
         }
         Stmt::In(i) => {
             register_decl(ctx, &TopDecl::In(i.clone()));
+            if ctx.inline_body_depth == 0
+                && let Some(ty) = ctx.scope.lookup(&i.name).map(|s| s.ty.clone())
+            {
+                check_port_record(ctx, &i.name, &ty, &i.range);
+            }
         }
         Stmt::Handler(h) => {
             ctx.push_scope();
@@ -1423,26 +1441,11 @@ fn infer_assign_target(
             return unwrap_ref(&ty);
         }
         let obj_ty = unwrap_ref(&infer::infer(ctx, obj));
-        // A record array's or map's column (`pts.x[0] = 5`) types as the
-        // column, as it does when read. A record array that is itself a field
-        // of a record (`h.pts.x`) has no per-field columns to write, so it
-        // stays untyped and lowering reports the write. A column of a column
-        // (`qs.p.x`) is still a column. The inner object's type was recorded
-        // by the `infer` above.
-        let object_is_record_field = match obj.as_ref() {
-            Expr::FieldAccess { obj: inner, field: f, .. } => {
-                let r = inner.range();
-                infer::namespace_member_type(ctx, inner, f).is_none()
-                    && ctx
-                        .type_of_expr
-                        .get(&(r.file.clone(), r.start.offset, r.end.offset))
-                        .is_some_and(|t| matches!(unwrap_ref(t), Type::Record(_)))
-            }
-            _ => false,
-        };
-        if !object_is_record_field
-            && let Some(column) = infer::record_column_type(&obj_ty, field)
-        {
+        // A record array's or map's column (`pts.x[0] = 5`, and `h.pts.x[0] = 5`
+        // on a record array field) types as the column, as it does when read.
+        // A column of a column (`qs.p.x`) is still a column.
+        if let Some(column) = infer::record_column_type(&obj_ty, field) {
+            ctx.record_container_kind(obj, &obj_ty);
             return column;
         }
         match &obj_ty {

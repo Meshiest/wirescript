@@ -1109,17 +1109,46 @@ fn map_entry_literal(
     ))
 }
 
+/// Why a map literal has no constant form.
+enum MapBakeMiss {
+    /// Object/asset-family keys have no literal representation: `key_of`
+    /// bakes every one as `Object(None)`, so two or more entries would collapse
+    /// onto the same null key (a corrupt map with duplicate keys).
+    ObjectKeys,
+    /// Some entry doesn't fold to a constant.
+    NonConstant,
+}
+
+/// The constant `(key, value)` pairs of a map literal, coerced to the declared
+/// `Map<K, V>` (see [`map_entry_literal`]), or why it has none. The one bake
+/// rule for a map var's initializer and a record's map field initializer.
+fn map_literal_pairs(
+    ctx: &LowerCtx,
+    entries: &[crate::ast::MapLitEntry],
+    key_ty: &Type,
+    val_ty: &Type,
+) -> Result<Vec<(Literal, Literal)>, MapBakeMiss> {
+    if matches!(key_ty, Type::Entity | Type::Character | Type::Controller) {
+        return Err(MapBakeMiss::ObjectKeys);
+    }
+    let pairs: Vec<(Literal, Literal)> = entries
+        .iter()
+        .filter_map(|en| map_entry_literal(en, ctx, key_ty, val_ty))
+        .collect();
+    if pairs.len() == entries.len() {
+        Ok(pairs)
+    } else {
+        Err(MapBakeMiss::NonConstant)
+    }
+}
+
 /// Bake a constant map-literal initializer (`var m: Map<K, V> = {...}`) into
 /// `properties` as an `InitialValue` (`Literal::Map`) — zero runtime gates,
 /// exactly like the array path bakes `Literal::Array`.
 /// Shared by [`pre_declare_map`] and the `Map<K, V>` branch of
-/// [`pre_declare_var`] since both bake the same way. Non-constant entries
-/// can't bake at a (pure) decl: the map starts empty and a warning is
-/// raised (lowering handles the exec-context desugar for `m = {…}`).
-///
-/// `key_ty`/`val_ty` are the declared `Map<K, V>` types — every entry is
-/// coerced to them at fold time (see [`coerce_literal_to_type`]) so the baked
-/// `Literal::Map` is already correct, not a raw literal emit has to guess at.
+/// [`pre_declare_var`] since both bake the same way. A literal that can't bake
+/// (see [`map_literal_pairs`]) leaves the map empty with a warning (lowering
+/// handles the exec-context desugar for `m = {…}`).
 fn bake_map_init(
     ctx: &mut LowerCtx,
     properties: &mut HashMap<crate::intern::Sym, Literal>,
@@ -1131,35 +1160,22 @@ fn bake_map_init(
     let Some(Expr::MapLit { entries, .. }) = init else {
         return;
     };
-    // Object/asset-family keys have no literal representation — `key_of`
-    // bakes every one as `Object(None)`, so two or more entries would
-    // collapse onto the same null key (a corrupt map with duplicate keys).
-    // Fall to the non-constant path instead: warn + start empty.
-    if matches!(
-        key_ty,
-        Type::Entity | Type::Character | Type::Controller
-    ) {
-        ctx.warn(
+    match map_literal_pairs(ctx, entries, key_ty, val_ty) {
+        Ok(pairs) => {
+            properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs));
+        }
+        Err(MapBakeMiss::ObjectKeys) => ctx.warn(
             format!(
                 "'{name}' initializer has object/asset-typed keys, which can't bake as literals — it starts empty; assign entries inside an exec handler"
             ),
             init.as_ref().unwrap().range(),
-        );
-        return;
-    }
-    let pairs: Vec<(Literal, Literal)> = entries
-        .iter()
-        .filter_map(|en| map_entry_literal(en, ctx, key_ty, val_ty))
-        .collect();
-    if pairs.len() == entries.len() {
-        properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs));
-    } else {
-        ctx.warn(
+        ),
+        Err(MapBakeMiss::NonConstant) => ctx.warn(
             format!(
                 "'{name}' initializer has non-constant entries — they are dropped here; assign them inside an exec handler"
             ),
             init.as_ref().unwrap().range(),
-        );
+        ),
     }
 }
 
@@ -1181,11 +1197,10 @@ fn var_init_unbaked<'a>(v: &'a VarDecl, ctx: &LowerCtx) -> Option<&'a Expr> {
         // `Literal::Map` InitialValue, so it is NOT unbaked; never double-report
         // it here with the generic "not a compile-time constant" message.
         Expr::MapLit { .. } => false,
-        // A record-literal initializer bakes PER FIELD into each backing
-        // `Pseudo_Var`'s InitialValue (see `record_field_storage`), so the whole
-        // record is never "unbaked" — the generic scalar warning would be a
-        // false positive (there is no single gate to bake it into).
-        Expr::RecordLit { .. } => false,
+        // A record-literal initializer bakes PER FIELD into each backing gate's
+        // InitialValue (see `record_field_storage`), so it is unbaked only when
+        // some field's value can't bake there.
+        Expr::RecordLit { .. } => record_init_unbaked(ctx, init),
         // `null` bakes to the var's type default (the `or_else` fallback below),
         // which IS its value — never unbaked.
         Expr::NullLit { .. } => false,
@@ -1198,6 +1213,51 @@ fn var_init_unbaked<'a>(v: &'a VarDecl, ctx: &LowerCtx) -> Option<&'a Expr> {
         e => expr_to_literal_in(e, &ctx.const_env).is_none(),
     };
     unbaked.then_some(init)
+}
+
+/// Whether some field of a record-literal initializer can't bake into its
+/// backing gate: a scalar that doesn't fold, a container whose value isn't a
+/// fully constant literal, a shorthand or spread (neither bakes). Nested record
+/// literals recurse, as `record_field_storage` does.
+fn record_init_unbaked(ctx: &LowerCtx, e: &Expr) -> bool {
+    let Expr::RecordLit { fields, .. } = e else {
+        return false;
+    };
+    fields.iter().any(|f| match f {
+        RecordLitField::Named { value, .. } => field_init_unbaked(ctx, value),
+        RecordLitField::Shorthand { .. } | RecordLitField::Spread { .. } => true,
+    })
+}
+
+fn field_init_unbaked(ctx: &LowerCtx, value: &Expr) -> bool {
+    match value {
+        Expr::RecordLit { .. } => record_init_unbaked(ctx, value),
+        Expr::Array { elements, .. } => elements.iter().any(|el| match el {
+            ArrayElem::Item(row @ Expr::RecordLit { .. }) => record_init_unbaked(ctx, row),
+            ArrayElem::Item(_) => array_elem_literal(el, ctx).is_none(),
+            ArrayElem::Spread(_) => true,
+        }),
+        Expr::MapLit { entries, .. } => {
+            let Type::Map(k, v) = ctx.type_of(value) else {
+                return true;
+            };
+            // A record-valued map is columns, baked per column from each
+            // entry's record literal; any other map bakes by the one map rule.
+            if entries.iter().any(|en| matches!(en.value, Expr::RecordLit { .. })) {
+                entries.iter().any(|en| match &en.value {
+                    row @ Expr::RecordLit { .. } => {
+                        fold_const(ctx, &en.key).is_none() || record_init_unbaked(ctx, row)
+                    }
+                    _ => true,
+                })
+            } else {
+                map_literal_pairs(ctx, entries, &k, &v).is_err()
+            }
+        }
+        Expr::NullLit { .. } => false,
+        e if matches!(ctx.type_of(e), Type::Enum { .. }) => false,
+        e => expr_to_literal_in(e, &ctx.const_lookup()).is_none(),
+    }
 }
 
 /// Warn when a `var` initializer is silently dropped: it can't bake into the
@@ -1409,6 +1469,8 @@ fn record_field_storage(
     depth: u32,
 ) -> Binding {
     let label = format!("{label_base}.{field_name}");
+    let expanded = container_alias(ctx, field_typ);
+    let field_typ = expanded.as_ref().unwrap_or(field_typ);
     // A record alias whose body names itself (`type L = { tail: L }`) expands
     // without end here, because the field walk below follows aliases at every
     // level. Typecheck reports the alias itself, but lowering still runs on a
@@ -1481,17 +1543,37 @@ fn record_field_storage(
         }
         return Binding::Record(fmap);
     }
+    // A record VARIABLE's array or map field whose element is itself columnar
+    // (`type H = { pts: P[] }`) is stored exactly like a top-level
+    // `var pts: P[]`: one parallel column per element field, bound as a nested
+    // `Binding::Record`, so `h.pts` resolves to columns wherever `pts` does.
+    if kind == VarStorage::Var
+        && !too_deep
+        && let Some(binding) = columnar_container_field(ctx, &label, field_typ, init, range, depth)
+    {
+        return binding;
+    }
     let field_type = ctx.resolve_local_type(field_typ);
     let field_type = &field_type;
     // Taken before the gate-building borrows `ctx` mutably below.
     let consts = ctx.const_lookup();
     let mut properties = HashMap::default();
-    properties.insert(*sym::NAME_LABEL, Literal::String(label));
+    properties.insert(*sym::NAME_LABEL, Literal::String(label.clone()));
     match kind {
         // A record VARIABLE: each field is a per-field container matching the
         // field's own type (scalar/array/map), exactly like a record input port.
         VarStorage::Var => match field_type {
             Type::Array(elem) => {
+                if let Some(Expr::Array { elements, .. }) = init {
+                    let lits: Vec<Literal> = elements
+                        .iter()
+                        .filter_map(|el| array_elem_literal(el, ctx))
+                        .map(|lit| bake_string_bool(lit, elem))
+                        .collect();
+                    if lits.len() == elements.len() {
+                        properties.insert(*sym::INITIAL_VALUE, Literal::Array(lits));
+                    }
+                }
                 let node_id = make_array_var_gate(ctx, elem, properties, range);
                 Binding::Var(VarRecord {
                     node_id,
@@ -1502,6 +1584,13 @@ fn record_field_storage(
             }
             Type::Map(k, v) => {
                 let map_type = Type::Map(k.clone(), v.clone());
+                // Only a fully constant literal bakes; `var_init_unbaked` reports
+                // the rest where no exec-context assignment rebuilds it.
+                if let Some(Expr::MapLit { entries, .. }) = init
+                    && let Ok(pairs) = map_literal_pairs(ctx, entries, k, v)
+                {
+                    properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs));
+                }
                 let node_id = make_map_var_gate(ctx, &map_type, properties, range);
                 Binding::Var(VarRecord {
                     node_id,
@@ -1566,6 +1655,100 @@ fn record_field_storage(
             })
         }
     }
+}
+
+/// The array or map type a (chain of) alias names: `Pts` for `type Pts = P[]`
+/// reads as `P[]`, and `Arr<P>` for `type Arr<T> = T[]` reads as `P[]`. `None`
+/// when `te` is not an alias of a container, which leaves record and enum
+/// aliases to their own resolvers.
+fn container_alias(ctx: &LowerCtx, te: &TypeExpr) -> Option<TypeExpr> {
+    let is_container = |t: &TypeExpr| match t {
+        TypeExpr::Array { .. } => true,
+        TypeExpr::Generic { name, args, .. } => name == "Map" && args.len() == 2,
+        _ => false,
+    };
+    let mut cur = te.clone();
+    for _ in 0..MAX_RECORD_FIELD_DEPTH {
+        let next = match &cur {
+            TypeExpr::Name { name, .. } => ctx.type_aliases.get(name.as_str())?.clone(),
+            TypeExpr::Generic { name, args, .. } if !is_container(&cur) => {
+                crate::types::resolve::instantiate_generic_alias(
+                    name,
+                    args,
+                    &ctx.generic_type_aliases,
+                )?
+            }
+            _ => return None,
+        };
+        if is_container(&next) {
+            return Some(next);
+        }
+        cur = next;
+    }
+    None
+}
+
+/// The columns of a record-element array field (`pts: P[]`) or record-value map
+/// field (`m: Map<K, P>`) of a record variable: the same per-field
+/// `Pseudo_ArrayVar` / `Pseudo_MapVar` layout `pre_declare_var` gives a top-level
+/// `var pts: P[]` / `var m: Map<K, P>`, labelled under `label`, with a constant
+/// initializer baked per column. `None` when the field is not an array or map of
+/// a record, tuple or enum element.
+fn columnar_container_field(
+    ctx: &mut LowerCtx,
+    label: &str,
+    field_typ: &TypeExpr,
+    init: Option<&Expr>,
+    range: &SourceRange,
+    depth: u32,
+) -> Option<Binding> {
+    let (kind, elem_te, map_key) = match field_typ {
+        TypeExpr::Array { inner, .. } => (VarStorage::Array, inner.as_ref(), None),
+        TypeExpr::Generic { name, args, .. } if name == "Map" && args.len() == 2 => {
+            (VarStorage::Map, &args[1], Some(ctx.resolve_local_type(&args[0])))
+        }
+        _ => return None,
+    };
+    let cols = ctx
+        .record_or_tuple_fields(elem_te)
+        .or_else(|| enum_container_columns(ctx, elem_te, range))?;
+    let mut fmap = HashMap::default();
+    for c in &cols {
+        fmap.insert(
+            crate::intern::intern(&c.name),
+            record_field_storage(
+                ctx,
+                kind,
+                label,
+                &c.name,
+                &c.typ,
+                None,
+                map_key.as_ref(),
+                range,
+                depth + 1,
+            ),
+        );
+    }
+    match init {
+        Some(Expr::Array { elements, .. }) if kind == VarStorage::Array => {
+            let rows: Vec<&Expr> = elements
+                .iter()
+                .filter_map(|el| match el {
+                    ArrayElem::Item(e) => Some(e),
+                    ArrayElem::Spread(_) => None,
+                })
+                .collect();
+            if rows.len() == elements.len() {
+                bake_record_array_columns(ctx, &fmap, &rows);
+            }
+        }
+        Some(Expr::MapLit { entries, .. }) if kind == VarStorage::Map => {
+            let pairs: Vec<(&Expr, &Expr)> = entries.iter().map(|en| (&en.key, &en.value)).collect();
+            bake_record_map_pairs(ctx, &fmap, &pairs);
+        }
+        _ => {}
+    }
+    Some(Binding::Record(fmap))
 }
 
 /// The value expression of field `name` in a record literal `row`; `None` if
@@ -2346,11 +2529,12 @@ fn var_label(ctx: &LowerCtx, d: &VarDecl) -> String {
 }
 
 pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
+    // An alias naming a container (`type Pts = P[]`) declares that container.
+    let expanded = d.typ.as_ref().and_then(|te| container_alias(ctx, te));
+    let typ = expanded.as_ref().or(d.typ.as_ref());
     // `resolve_local_type` monomorphizes a `T` annotation inside a generic mod
     // body (and is identical to `type_of_type_expr` everywhere else).
-    let inner_type = d
-        .typ
-        .as_ref()
+    let inner_type = typ
         .map(|te| ctx.resolve_local_type(te))
         .or_else(|| d.init.as_ref().map(|e| ctx.type_of(e)))
         .unwrap_or(Type::Any);
@@ -2364,7 +2548,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         // `VarStorage::Array` fields. Every element op fans out across them (see
         // `lower_record_array_method`). `record_fields_of` follows a `type P = {…}`
         // alias on the element the resolved `Type` would not preserve.
-        if let Some(TypeExpr::Array { inner: elem_te, .. }) = d.typ.as_ref()
+        if let Some(TypeExpr::Array { inner: elem_te, .. }) = typ
             && let Some(fields) = ctx.record_or_tuple_fields(elem_te)
         {
             let label = var_label(ctx, d);
@@ -2389,7 +2573,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         // one per `__disc`/payload slot. A single ArrayVar collapsed the tag
         // and the payload together, and a push of a constructed value found no
         // column to carry it and emitted no `Value` wire at all.
-        if let Some(TypeExpr::Array { inner: elem_te, .. }) = d.typ.as_ref()
+        if let Some(TypeExpr::Array { inner: elem_te, .. }) = typ
             && let Some(cols) = enum_container_columns(ctx, elem_te, &d.range)
         {
             let label = var_label(ctx, d);
@@ -2433,7 +2617,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         // `var m: Map<K, Rec>` — a record VALUE decomposes into parallel per-field
         // maps `Map<K, fieldType>`, keyed the same, bound as a `Binding::Record`.
         // Every map op fans out across them (see `lower_record_map_method`).
-        if let Some(val_te) = map_value_typeexpr(d.typ.as_ref())
+        if let Some(val_te) = map_value_typeexpr(typ)
             && let Some(fields) = ctx.record_or_tuple_fields(val_te)
         {
             let label = var_label(ctx, d);
@@ -2455,7 +2639,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         }
         // The map twin of the enum-element array above: one parallel map per
         // column, keyed identically.
-        if let Some(val_te) = map_value_typeexpr(d.typ.as_ref())
+        if let Some(val_te) = map_value_typeexpr(typ)
             && let Some(cols) = enum_container_columns(ctx, val_te, &d.range)
         {
             let label = var_label(ctx, d);
@@ -2502,7 +2686,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     // swizzle — a silent miscompile. Mirrors the record INPUT-PORT expansion in
     // `pre_declare_input`; `record_fields_of` follows a `type P = { … }` alias
     // that `resolve_local_type`'s empty alias table cannot.
-    if let Some(fields) = d.typ.as_ref().and_then(|te| ctx.record_or_tuple_fields(te)) {
+    if let Some(fields) = typ.and_then(|te| ctx.record_or_tuple_fields(te)) {
         let label = var_label(ctx, d);
         declare_record_container(
             ctx,

@@ -312,10 +312,11 @@ pub(super) struct LowerCtx<'a> {
     pub(super) pending_inline_record: Option<HashMap<crate::intern::Sym, Binding>>,
     /// The port `value_record_fields` got from lowering a record-SHAPED value
     /// that turned out to carry no field map (its `may_produce_record`
-    /// fallback). Only `branch_record_fields` reads it, to reach a MULTI-OUTPUT
-    /// GATE's per-port record without lowering the call a second time. Set on
-    /// every `value_record_fields` call, so it is never stale across two.
-    pub(super) last_value_record_port: Option<PortRef>,
+    /// fallback), with the range of the expression it lowered. A reader takes
+    /// it only for that same expression (see `take_value_record_port`), so a
+    /// nested probe's port (the `obj` of `obj.Value`) is never reused for the
+    /// outer expression.
+    pub(super) last_value_record_port: Option<(SourceRange, PortRef)>,
     /// `import * as` namespaces keyed by the FILE that wrote the import, then by
     /// alias. An alias is file-local, so two modules may each write
     /// `import * as Other`; `scope` keeps one binding per name, and this is what
@@ -1137,9 +1138,16 @@ impl<'a> LowerCtx<'a> {
 
     /// Record `d`'s declaration key: the `resolution_subst` in effect where it
     /// is registered, which its body's key starts with.
+    ///
+    /// Its enclosing frame is recorded under the same condition as the key, so
+    /// the two agree: a declaration in a non-generic body inlined from a
+    /// generic caller has an empty key and must not pick up the caller's frame.
+    /// Every generic body pushes its lexically merged frame (see
+    /// [`Self::body_frame`]), so `mono_stack.last()` here carries every
+    /// enclosing param, not only the innermost body's.
     pub(super) fn record_decl_resolution_subst(&mut self, d: &ChipDecl) {
         let at = (d.range.file.clone(), d.range.start.offset);
-        match self.mono_stack.last() {
+        match self.mono_stack.last().filter(|_| !self.resolution_subst.is_empty()) {
             Some(frame) => {
                 self.decl_mono_frame.insert(at.clone(), frame.clone());
             }
@@ -1154,11 +1162,12 @@ impl<'a> LowerCtx<'a> {
         }
     }
 
-    /// The generic frame `d`'s body is lowered under when instanced as a chip:
-    /// its enclosing frame (from its declaration), extended by `own` for a
-    /// generic `d`, whose params shadow same-named outer ones. `None` for a
-    /// non-generic chip declared outside any generic body.
-    pub(super) fn chip_body_frame(&self, d: &ChipDecl, own: Option<&MonoFrame>) -> Option<MonoFrame> {
+    /// The generic frame `d`'s body is lowered under, inlined or instanced as a
+    /// chip: its enclosing frame (from its declaration), extended by `own` for
+    /// a generic `d`, whose params shadow same-named outer ones. This mirrors
+    /// typecheck's body key (enclosing combo, then the decl's own). `None` for a
+    /// non-generic `d` declared outside any generic body.
+    pub(super) fn body_frame(&self, d: &ChipDecl, own: Option<&MonoFrame>) -> Option<MonoFrame> {
         let outer = self.decl_mono_frame.get(&(d.range.file.clone(), d.range.start.offset));
         match (outer, own) {
             (None, None) => None,

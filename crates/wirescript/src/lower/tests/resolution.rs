@@ -374,16 +374,11 @@ fn a_namespace_record_array_column_write_uses_the_column() {
 }
 
 #[test]
-fn a_column_of_a_record_array_inside_a_record_is_ws044_on_write() {
+fn a_column_of_a_record_array_inside_a_record_index_write_uses_the_column() {
     let r = compile(&format!("{P}type H = {{ pts: P[] }}\nvar h: H\nin go: exec\non go {{ h.pts.x[0] = 5 }}"));
-    assert!(
-        r.diagnostics
-            .iter()
-            .any(|d| d.code == "WS044" && d.severity == crate::diagnostic::Severity::Error),
-        "{:?}",
-        r.diagnostics
-    );
-    assert_eq!(gate_count(&r, gc::ARRAY_SET_AT_INDEX), 0);
+    assert_no_errors(&r);
+    assert_eq!(ref_source_of(&r, gc::ARRAY_SET_AT_INDEX, WirePort::ArrayVarRef), gc::ARRAY_VAR);
+    assert_eq!(ref_source_label(&r, gc::ARRAY_SET_AT_INDEX, WirePort::ArrayVarRef).as_deref(), Some("h.pts.x"));
 }
 
 #[test]
