@@ -2448,3 +2448,85 @@ fn wire_borne_array_through_record_field_resolves() {
         "the selected bank must drive the read's ArrayVarRef"
     );
 }
+
+/// The ids of every gate of `class`.
+fn gate_ids(r: &LowerResult, class: &str) -> Vec<crate::ir::NodeId> {
+    r.module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == class)
+        .map(|n| n.id)
+        .collect()
+}
+
+/// The node feeding `target`'s `port`, if any.
+fn port_source(r: &LowerResult, target: crate::ir::NodeId, port: WirePort) -> Option<crate::ir::NodeId> {
+    r.module
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == target && w.target.port == port)
+        .map(|w| w.source.node_id)
+}
+
+/// `rec.xs = [1, 2]` on a record's array field rebuilds that field's ArrayVar
+/// like the bare `xs = [1, 2]` (Clear + one Push per item). It used to take
+/// the scalar field-write path: the literal lowered to `_Unsupported` feeding a
+/// Var_Set on the ArrayVar's nonexistent `VarRef` port, with no diagnostic.
+#[test]
+fn record_array_field_literal_assign_clears_and_pushes() {
+    let r = compile(
+        "type R = { xs: int[], n: int }\nvar rec: R\nin go: exec\non go { rec.xs = [1, 2] }",
+    );
+    assert!(r.diagnostics.is_empty(), "no diagnostics: {:?}", r.diagnostics);
+    assert!(!has_gate(&r, gc::UNSUPPORTED));
+    assert!(!has_gate(&r, gc::VAR_SET));
+    let arr = gate_ids(&r, gc::ARRAY_VAR);
+    assert_eq!(arr.len(), 1);
+    let clear = gate_ids(&r, gc::ARRAY_CLEAR);
+    let pushes = gate_ids(&r, gc::ARRAY_PUSH);
+    assert_eq!((clear.len(), pushes.len()), (1, 2));
+    for g in clear.iter().chain(&pushes) {
+        assert_eq!(port_source(&r, *g, WirePort::ArrayVarRef), Some(arr[0]));
+    }
+    for p in &pushes {
+        assert!(wired_reachable(&r, clear[0], *p), "pushes run after the clear");
+    }
+}
+
+/// The map spelling: `rec.m = { .. }` is a Clear + one Set per entry on the
+/// field's own MapVar.
+#[test]
+fn record_map_field_literal_assign_clears_and_sets() {
+    let r = compile(
+        "type R = { m: Map<string, int>, n: int }\nvar rec: R\nin go: exec\n\
+         on go { rec.m = { \"a\": 1 } }",
+    );
+    assert!(r.diagnostics.is_empty(), "no diagnostics: {:?}", r.diagnostics);
+    assert!(!has_gate(&r, gc::UNSUPPORTED));
+    assert!(!has_gate(&r, gc::VAR_SET));
+    let map = gate_ids(&r, gc::MAP_VAR);
+    assert_eq!(map.len(), 1);
+    let clear = gate_ids(&r, gc::MAP_CLEAR);
+    let sets = gate_ids(&r, gc::MAP_SET);
+    assert_eq!((clear.len(), sets.len()), (1, 1));
+    assert_eq!(port_source(&r, clear[0], WirePort::MapVarRef), Some(map[0]));
+    assert_eq!(port_source(&r, sets[0], WirePort::MapVarRef), Some(map[0]));
+    assert!(wired_reachable(&r, clear[0], sets[0]), "the set runs after the clear");
+}
+
+/// A non-literal whole-container assign to a record field is WS027, as it is
+/// for a bare container var.
+#[test]
+fn record_container_field_non_literal_assign_is_ws027() {
+    let r = compile(
+        "type R = { xs: int[], n: int }\nvar rec: R\nvar ys: int[]\nin go: exec\non go { rec.xs = ys }",
+    );
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS027"
+            && d.severity == crate::diagnostic::Severity::Error
+            && d.message.contains("rec.xs.copyFrom")),
+        "expected WS027 naming rec.xs: {:?}",
+        r.diagnostics
+    );
+    assert!(!has_gate(&r, gc::VAR_SET));
+}

@@ -1,6 +1,7 @@
 //! Resolve what a call's callee actually is, and route it.
 
 use super::*;
+use crate::typecheck::{ContainerKind, MethodTarget};
 
 /// Whether `obj` already names a real array/map storage gate, in which case the
 /// ordinary runtime lowering owns the call and no fold may run ahead of it.
@@ -125,6 +126,13 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     }
     // Method calls: arr.push(val), arr.pop()
     if let Expr::FieldAccess { obj, field, .. } = callee.as_ref() {
+        // Test-only hook: pins that typecheck's recorded resolution and
+        // lowering's own re-derivation agree on the resolution KEY for nested
+        // and generic bodies — something no output-level test can observe
+        // (a wrong key can still lower to the right gates by luck). Costs
+        // nothing in non-test builds.
+        #[cfg(test)]
+        crate::lower::tests::resolution::probe_method_call(ctx, e);
         // A `const` array/map used as a method receiver: give it its runtime
         // form first, so the receiver shapes below resolve it exactly like a
         // `var` instead of falling through to the WS044 backstop. A no-op for
@@ -159,76 +167,10 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             }
             materialize_const_container(ctx, obj);
         }
-        if let Expr::Ident { name, .. } = obj.as_ref()
-            && crate::catalog::arrays::is_array_method(field)
-            && let Some(var_rec) = ctx.lookup_var(name).cloned()
-            && var_rec.storage == VarStorage::Array
-        {
-            return lower_array_method(
-                ctx,
-                var_rec.node_id.port(WirePort::ArrayVarRef),
-                var_rec.inner_type.clone(),
-                field,
-                args,
-                range,
-                e,
-            );
-        }
-        // Map method: m.get(k), m.set(k, v), m.has(k), etc.
-        if let Expr::Ident { name, .. } = obj.as_ref()
-            && crate::catalog::maps::is_map_method(field)
-            && let Some(var_rec) = ctx.lookup_var(name).cloned()
-            && var_rec.storage == VarStorage::Map
-        {
-            return lower_map_method(
-                ctx,
-                var_rec.node_id.port(WirePort::MapVarRef),
-                var_rec.inner_type.clone(),
-                field,
-                args,
-                range,
-                e,
-            );
-        }
-        // Array method on an `in X: T[]` input. The array ref lives at the
-        // input's RER_Output (not an ArrayVarRef port), but is otherwise usable
-        // exactly like a var array — inputs are first-class wherever in scope.
-        if let Expr::Ident { name, .. } = obj.as_ref()
-            && crate::catalog::arrays::is_array_method(field)
-            && let Some(Binding::Input(inp)) = ctx.scope.get(name).cloned()
-            && let Type::Array(elem) = inp.ty.clone()
-        {
-            return lower_array_method(
-                ctx,
-                inp.node_id.port(WirePort::RerOutput),
-                *elem,
-                field,
-                args,
-                range,
-                e,
-            );
-        }
-        // Map method on an `in X: Map<K,V>` input — mirrors the array-input case
-        // (the map ref rides the input's RER_Output).
-        if let Expr::Ident { name, .. } = obj.as_ref()
-            && crate::catalog::maps::is_map_method(field)
-            && let Some(Binding::Input(inp)) = ctx.scope.get(name).cloned()
-            && matches!(inp.ty, Type::Map(_, _))
-        {
-            return lower_map_method(
-                ctx,
-                inp.node_id.port(WirePort::RerOutput),
-                inp.ty.clone(),
-                field,
-                args,
-                range,
-                e,
-            );
-        }
         // `soa.field.sort(desc?)` where `soa` is a record array: sort the WHOLE
         // record by that field (reorder every sibling column via sortMultiple),
         // instead of sorting the one column and desyncing the rows. Checked
-        // before the plain field-array method below, which would sort in place.
+        // before the column's own container method below, which would sort in place.
         if field == "sort"
             && let Expr::FieldAccess { obj: base, field: keyfield, .. } = obj.as_ref()
             && let Some(rec) = resolve_record_array(ctx, base)
@@ -236,87 +178,71 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         {
             return port;
         }
-        // Record-resolved container methods: `cpu.regs.push(val)`. Resolves
-        // every array spelling a bare name would (`var`, `in`/`out` port,
-        // `let`-bound ref), not just the `var` case — a record field holding an
-        // input array is the cartridge/socket idiom and used to land on the
-        // WS044 backstop.
-        if crate::catalog::arrays::is_array_method(field)
-            && let Some(binding) = resolve_field_chain(ctx, obj).cloned()
-            && let Some((array_ref, elem_ty)) =
-                crate::lower::access::binding_array_ref(ctx, &binding, &ctx.type_of(obj))
-        {
-            return lower_array_method(ctx, array_ref, elem_ty, field, args, range, e);
-        }
-        // Record-resolved map methods: b.counts.set(k, v)
-        if crate::catalog::maps::is_map_method(field)
-            && let Some(binding) = resolve_field_chain(ctx, obj).cloned()
-            && let Some((map_ref, map_ty)) =
-                crate::lower::access::binding_map_ref(ctx, &binding, &ctx.type_of(obj))
-        {
-            return lower_map_method(ctx, map_ref, map_ty, field, args, range, e);
-        }
-        // Record ARRAY method: `pts.push(rec)` where `pts` is a record array —
-        // a `Binding::Record` of parallel per-field arrays. `resolve_record_array`
-        // (not a bare `Binding::Record` match) is what keeps a method shared by
-        // both kinds — `length`/`remove`/`clear`/`get` — off a record MAP.
-        if crate::catalog::arrays::is_array_method(field)
-            && let Some(fields) = resolve_record_array(ctx, obj)
-        {
-            return lower_record_array_method(ctx, &fields, field, args, range, e);
-        }
-        // Record MAP method: `m.set(k, rec)` / `m.get(k)` where `m` is a record
-        // map — a `Binding::Record` of parallel per-field maps.
-        if crate::catalog::maps::is_map_method(field)
-            && let Some(fields) = resolve_record_map(ctx, obj)
-        {
-            return lower_record_map_method(ctx, &fields, field, args, range, e);
-        }
-        // A container reached through a runtime ref: `rows[y].push(v)`,
-        // `cur.length()`, an event's array data. The receiver's value IS the ref.
-        // Ahead of the receiver and `self`-mod forms, in typecheck's order.
-        if crate::catalog::arrays::is_array_method(field)
-            && let Some((array_ref, elem_ty)) = crate::lower::access::runtime_array_ref(ctx, obj)
-        {
-            return lower_array_method(ctx, array_ref, elem_ty, field, args, range, e);
-        }
-        if crate::catalog::maps::is_map_method(field)
-            && let Some((map_ref, map_ty)) = crate::lower::access::runtime_map_ref(ctx, obj)
-        {
-            return lower_map_method(ctx, map_ref, map_ty, field, args, range, e);
-        }
-        // Receiver method calls: entity.SetLocation(pos) -> SetLocation(entity, pos)
-        if let Some(spec) = find_call(field)
-            && spec.receiver.is_some()
-        {
-            // A named-target receiver (`entity.SendCustomEvent(…)`) binds the
-            // object to a specific param (`target`) rather than the first, so
-            // append it as a named arg and let the normal binding path place it.
-            if let Some(tp) = spec.receiver_target_param() {
-                let mut recv_args: Vec<CallArg> = args.to_vec();
-                recv_args.push(CallArg::Named {
-                    name: tp.to_string(),
-                    name_range: obj.range().clone(),
-                    value: obj.as_ref().clone(),
-                });
-                return lower_builtin_call(ctx, spec, None, &recv_args, range, e);
+        match ctx.method_target(e) {
+            Some(MethodTarget::Container { kind, method }) => match container_ref(ctx, obj, &kind) {
+                Some(ContainerSource::Ref(port)) => {
+                    return match kind {
+                        ContainerKind::Array { elem } => {
+                            lower_array_method(ctx, port, elem, &method, args, range, e)
+                        }
+                        ContainerKind::Map { .. } => {
+                            lower_map_method(ctx, port, kind.as_type(), &method, args, range, e)
+                        }
+                    };
+                }
+                Some(ContainerSource::Columns(fields)) => {
+                    return match kind {
+                        ContainerKind::Array { .. } => {
+                            lower_record_array_method(ctx, &fields, &method, args, range, e)
+                        }
+                        ContainerKind::Map { .. } => {
+                            lower_record_map_method(ctx, &fields, &method, args, range, e)
+                        }
+                    };
+                }
+                None => {}
+            },
+            Some(MethodTarget::Builtin(name)) => {
+                if let Some(spec) = find_call(&name) {
+                    // A named-target receiver (`entity.SendCustomEvent(…)`) binds the
+                    // object to a specific param (`target`) rather than the first, so
+                    // append it as a named arg and let the normal binding path place it.
+                    if let Some(tp) = spec.receiver_target_param() {
+                        let mut recv_args: Vec<CallArg> = args.to_vec();
+                        recv_args.push(CallArg::Named {
+                            name: tp.to_string(),
+                            name_range: obj.range().clone(),
+                            value: obj.as_ref().clone(),
+                        });
+                        return lower_builtin_call(ctx, spec, None, &recv_args, range, e);
+                    }
+                    // The receiver fills the spec's first param; passing it separately
+                    // avoids deep-cloning the receiver + args into a new arg vector.
+                    return lower_builtin_call(ctx, spec, Some(obj), args, range, e);
+                }
             }
-            // The receiver fills the spec's first param; passing it separately
-            // avoids deep-cloning the receiver + args into a new arg vector.
-            return lower_builtin_call(ctx, spec, Some(obj), args, range, e);
-        }
-        // User `self`-receiver method calls: `v.dist(o)` where `dist` is a user
-        // mod/chip whose first parameter is named `self`. Desugars to
-        // `dist(v, o)` by prepending the receiver as positional arg 0. Placed
-        // AFTER the builtin-receiver case so a builtin of the same name wins
-        // (typecheck's WS035 rejects a self-mod shadowing a builtin).
-        if let Some(chip_decl) = ctx.lookup_chip(field).cloned()
-            && chip_decl.is_self_receiver()
-        {
-            let mut recv_args = Vec::with_capacity(args.len() + 1);
-            recv_args.push(CallArg::Positional(obj.as_ref().clone()));
-            recv_args.extend(args.iter().cloned());
-            return lower_chip_call(ctx, &chip_decl, &recv_args, type_args, range);
+            // User `self`-receiver method calls: `v.dist(o)` where `dist` is a user
+            // mod/chip whose first parameter is named `self`. Desugars to
+            // `dist(v, o)` by prepending the receiver as positional arg 0.
+            // Typecheck classifies a builtin of the same name first, so the
+            // builtin wins (WS035 rejects a self-mod shadowing a builtin).
+            Some(MethodTarget::SelfMod(name)) => {
+                // Re-check `is_self_receiver` at the lowering scope: the
+                // recorded target names a chip that WAS a self-receiver where
+                // typecheck resolved it, but a lowering-scope shadow of a
+                // non-`self` chip with the same name (e.g. a different generic
+                // instantiation's local) would otherwise get the receiver
+                // prepended silently.
+                if let Some(chip_decl) = ctx.lookup_chip(&name).cloned()
+                    && chip_decl.is_self_receiver()
+                {
+                    let mut recv_args = Vec::with_capacity(args.len() + 1);
+                    recv_args.push(CallArg::Positional(obj.as_ref().clone()));
+                    recv_args.extend(args.iter().cloned());
+                    return lower_chip_call(ctx, &chip_decl, &recv_args, type_args, range);
+                }
+            }
+            None => {}
         }
         // Backstop for the whole container-method class: `field` IS an array/map
         // method, but its receiver resolved to none of the container bindings
@@ -327,15 +253,7 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         if crate::catalog::arrays::is_array_method(field)
             || crate::catalog::maps::is_map_method(field)
         {
-            ctx.error(
-                "WS044",
-                format!(
-                    "`.{field}()` is an array/map method, but its receiver did not \
-                     resolve to an array or map here (e.g. a container in an \
-                     unsupported position) — the operation would be silently dropped"
-                ),
-                range,
-            );
+            report_unresolved_container(ctx, &format!("`.{field}()` is an array/map method"), range);
         }
     }
     synthesise_unsupported(ctx, e)

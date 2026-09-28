@@ -14,6 +14,7 @@ use crate::ast::{Expr, RangeExtent, RangeSource};
 use crate::ir::plane::{
     ForSlot, LoopKind, PlaneSpec, SHELL_OUTPUTS, for_slots, plane_spec, slot_types,
 };
+use crate::typecheck::ContainerKind;
 
 /// One node of a synthesized shell-pin expression tree.
 ///
@@ -184,10 +185,16 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
             ]
         }
         ForSource::Collection { expr, .. } => {
-            // The shell takes a REFERENCE, not a value. An array/map
-            // identifier already lowers to its storage gate's ref port, and a
-            // `T[]`/`Map<K, V>` parameter to its boundary pin.
-            vec![(collection_driver_port(kind), lower_expr(ctx, expr))]
+            // The shell takes a REFERENCE: resolved like any other container receiver.
+            let port = ctx
+                .container_kind(expr)
+                .and_then(|k| container_ref(ctx, expr, &k))
+                .and_then(|s| match s {
+                    ContainerSource::Ref(p) => Some(p),
+                    ContainerSource::Columns(_) => None,
+                })
+                .unwrap_or_else(|| lower_expr(ctx, expr));
+            vec![(collection_driver_port(kind), port)]
         }
     };
 
@@ -316,17 +323,17 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
 fn loop_kind(ctx: &LowerCtx, src: &ForSource) -> Option<(LoopKind, Vec<Type>)> {
     match src {
         ForSource::Range(_) => Some((LoopKind::CountFor, Vec::new())),
-        ForSource::Collection { expr, .. } => {
-            match crate::types::mono::unwrap_ref(&ctx.type_of(expr)) {
-                Type::Array(elem) if !matches!(*elem, Type::Record(_)) => {
-                    Some((LoopKind::ForEachArray, vec![*elem]))
-                }
-                Type::Map(k, v) if !matches!(*k, Type::Record(_)) && !matches!(*v, Type::Record(_)) => {
-                    Some((LoopKind::ForEachMap, vec![*k, *v]))
-                }
-                _ => None,
+        ForSource::Collection { expr, .. } => match ctx.container_kind(expr)? {
+            ContainerKind::Array { elem } if !matches!(elem, Type::Record(_)) => {
+                Some((LoopKind::ForEachArray, vec![elem]))
             }
-        }
+            ContainerKind::Map { key, value }
+                if !matches!(key, Type::Record(_)) && !matches!(value, Type::Record(_)) =>
+            {
+                Some((LoopKind::ForEachMap, vec![key, value]))
+            }
+            _ => None,
+        },
     }
 }
 

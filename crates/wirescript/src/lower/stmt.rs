@@ -1,4 +1,5 @@
 use super::*;
+use crate::typecheck::ContainerKind;
 
 pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
     match s {
@@ -883,11 +884,14 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     if let Expr::IndexAccess { obj, index, .. } = &s.target {
         // Map subscript `m[k] = v` desugars to a MapVar_Set (the same gate
         // `m.set(k, v)` lowers to) — mirrors the read desugar in
-        // `lower_index_access`, via the shared `resolve_map_target` (storage-
-        // based dispatch; see its doc comment for why `ctx.type_of(obj)`
-        // doesn't work here). Falls through to the array path below for
-        // non-map subscript targets.
-        if let Some((map_ref, Type::Map(k, v))) = resolve_map_target_or_runtime(ctx, obj) {
+        // `lower_index_access`. Typecheck's recorded kind for the target
+        // object picks the map path. Falls through to the array path below
+        // for non-map subscript targets, which reports (WS044) a map target
+        // that neither map path could take.
+        if let Some(ContainerKind::Map { key: k, value: v }) = ctx.container_kind(obj)
+            && let Some(ContainerSource::Ref(map_ref)) =
+                container_ref(ctx, obj, &ContainerKind::Map { key: k.clone(), value: v.clone() })
+        {
             if ctx.current_exec.is_none() {
                 return;
             }
@@ -905,8 +909,8 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
                 map_ref,
                 gc::MAP_SET,
                 vec![
-                    (WirePort::Key, k.as_ref().clone(), key),
-                    (WirePort::Value, v.as_ref().clone(), val),
+                    (WirePort::Key, k.clone(), key),
+                    (WirePort::Value, v.clone(), val),
                 ],
                 vec![],
                 WirePort::ExecOut,
@@ -952,6 +956,11 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         && let Binding::Var(var_rec) = binding
     {
         if ctx.current_exec.is_none() {
+            return;
+        }
+        // `ns.xs = [..]` / `rec.m = { .. }`: a container field or namespace
+        // member is written like the bare container var.
+        if lower_container_assign(ctx, &var_rec, &target_path(&s.target), s) {
             return;
         }
         let value_port = lower_expr(ctx, &s.value);
@@ -1117,46 +1126,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         None => return,
     };
 
-    // `foo = [items, ...spreads]` on an var var: rebuild the contents at
-    // runtime. There's no single "set array" gate, so clear it then push each
-    // item / append each spread in order.
-    if var_rec.storage == VarStorage::Array
-        && let Expr::Array { elements, .. } = &s.value
-    {
-        lower_array_literal_assign(ctx, &var_rec, elements, &s.range, &s.value);
-        return;
-    }
-
-    // `foo = { k => v, ... }` on a map var: rebuild the contents at runtime.
-    // There's no single "set map" gate, so clear it then set each entry in
-    // order (mirrors the array literal assign above). A non-literal map RHS
-    // (`m = m2`) is NOT handled here — see the guard below.
-    if var_rec.storage == VarStorage::Map
-        && let Expr::MapLit { entries, .. } = &s.value
-    {
-        let map_ref = var_rec.node_id.port(WirePort::MapVarRef);
-        lower_map_literal_assign(ctx, map_ref, entries, &s.range);
-        return;
-    }
-
-    // Assigning a whole map from a non-literal expression (`m = m2`) is
-    // UNCONDITIONALLY unsatisfiable: there is no whole-map-copy-by-assignment
-    // gate, and — unlike arrays — a bare map Ident/expr has no valid port to
-    // read either (a map var's backing gate only exposes `MapVarRef`, not
-    // `VarRef`/`Value`). Falling through to the generic Var_Set path below
-    // would wire a nonexistent source port into the gate — a silent no-op
-    // that only surfaces as a load failure in-game. Since no fallback can
-    // ever satisfy it, this is a hard ERROR (mirrors WS021's "would silently
-    // produce a placeholder → error" policy), not a droppable warning.
-    // `.copyFrom(src)` is the supported way to copy a whole map.
-    if var_rec.storage == VarStorage::Map {
-        ctx.diagnostics.push(Diagnostic::error(
-            "WS027",
-            format!(
-                "assigning a whole map from a non-literal is not supported; use {var_name}.copyFrom(src) instead"
-            ),
-            s.value.range().clone(),
-        ));
+    if lower_container_assign(ctx, &var_rec, &var_name, s) {
         return;
     }
 
@@ -1213,6 +1183,61 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     ctx.connect(value_port, set_node.port(WirePort::Value));
     ctx.current_exec = Some(set_node.port(WirePort::ExecOut));
     invalidate_var_cache(ctx, &var_rec.node_id);
+}
+
+/// Whole-container assignment to an array or map var `name`, shared by the bare
+/// `xs = ..` target and the field-chain `ns.xs = ..` / `rec.xs = ..` ones.
+/// Returns false, emitting nothing, when `var_rec` is not a container.
+fn lower_container_assign(ctx: &mut LowerCtx, var_rec: &VarRecord, name: &str, s: &Assign) -> bool {
+    let what = match var_rec.storage {
+        VarStorage::Array => "array",
+        VarStorage::Map => "map",
+        _ => return false,
+    };
+    match &s.value {
+        // `foo = [items, ...spreads]` on an array var: rebuild the contents at
+        // runtime. There's no single "set array" gate, so clear it then push
+        // each item / append each spread in order.
+        Expr::Array { elements, .. } if var_rec.storage == VarStorage::Array => {
+            lower_array_literal_assign(ctx, var_rec, elements, &s.range, &s.value);
+        }
+        // `foo = { k => v, ... }` on a map var: rebuild the contents at runtime.
+        // There's no single "set map" gate, so clear it then set each entry in
+        // order (mirrors the array literal assign above).
+        Expr::MapLit { entries, .. } if var_rec.storage == VarStorage::Map => {
+            let map_ref = var_rec.node_id.port(WirePort::MapVarRef);
+            lower_map_literal_assign(ctx, map_ref, entries, &s.range);
+        }
+        // Assigning a whole container from a non-literal expression (`m = m2`)
+        // is UNCONDITIONALLY unsatisfiable: there is no whole-container
+        // copy-by-assignment gate, and a container's backing gate only exposes
+        // `ArrayVarRef`/`MapVarRef`, not `VarRef`. Falling through to the
+        // generic Var_Set path would wire a nonexistent source port into the
+        // gate — a silent no-op that only surfaces as a load failure in-game.
+        // Since no fallback can ever satisfy it, this is a hard ERROR (mirrors
+        // WS021's "would silently produce a placeholder → error" policy), not a
+        // droppable warning. `.copyFrom(src)` is the supported way to copy a
+        // whole container.
+        _ => ctx.diagnostics.push(Diagnostic::error(
+            "WS027",
+            format!(
+                "assigning a whole {what} from a non-literal is not supported; use {name}.copyFrom(src) instead"
+            ),
+            s.value.range().clone(),
+        )),
+    }
+    true
+}
+
+/// The dotted spelling of an assignment target (`u.xs`, `rec.xs`), for
+/// diagnostics.
+fn target_path(e: &Expr) -> String {
+    match e {
+        Expr::Ident { name, .. } => name.to_string(),
+        Expr::FieldAccess { obj, field, .. } => format!("{}.{field}", target_path(obj)),
+        Expr::TuplePick { obj, index, .. } => format!("{}.{index}", target_path(obj)),
+        _ => "_".to_string(),
+    }
 }
 
 /// Lower `foo = [items, ...spreads]` on an var var: clear it, then push each

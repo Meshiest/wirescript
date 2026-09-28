@@ -733,6 +733,7 @@ fn lower_chip_body(ctx: &mut LowerCtx, block: &Block) {
 }
 
 pub(super) fn lower_chip_decl(ctx: &mut LowerCtx, d: &ChipDecl) {
+    ctx.record_decl_resolution_subst(d);
     // Inline declarations (mod keyword or ref params) are stored for
     // expansion at call sites, not compiled as standalone microchips.
     let has_ref_params = d

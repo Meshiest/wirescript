@@ -131,6 +131,7 @@ fn run_wirescript(
             ast: &resolved.ast,
             type_of_expr: &tc.type_of_expr,
             op_resolutions: &tc.op_resolutions,
+            resolutions: &tc.resolutions,
             file: &file,
             module_name: module_name.as_deref(),
             template_cache: std::sync::Arc::new(wirescript::template_cache::TemplateCache::new()),

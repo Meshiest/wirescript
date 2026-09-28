@@ -21,7 +21,8 @@ use super::{
     coerces_at_a_baked_literal, is_bare_enum_member,
     is_reference_type, op_operand_type, out_scope_key, output_record_type, resolve_op,
     resolve_type_expr, sig_of_callspec, target_name, type_param_mask, type_user_symbol_call,
-    CallSignature, ExecMode, Param, ParamKind, SymbolInfo, SymbolKind, TypeCheckCtx,
+    CallSignature, ContainerKind, ExecMode, MethodTarget, Param, ParamKind, SymbolInfo,
+    SymbolKind, TypeCheckCtx,
 };
 
 /// Bound on how deep `$./….ws` source-prefab references are followed while
@@ -115,6 +116,63 @@ fn collapse_container_ref(t: Type) -> Type {
     match t {
         Type::Ref(inner) if matches!(&*inner, Type::Array(_) | Type::Map(_, _)) => *inner,
         other => other,
+    }
+}
+
+/// Lowering distributes an index over an if-expression object
+/// (`(if c then a else b)[i]` becomes `if c then a[i] else b[i]`), so each
+/// branch is an index object of its own and needs its own container kind.
+fn record_if_branch_containers(ctx: &mut TypeCheckCtx, obj: &Expr) {
+    let Expr::IfExpr { then_branch, else_branch, .. } = obj else {
+        return;
+    };
+    for br in [then_branch, else_branch] {
+        let r = br.range();
+        if let Some(t) = ctx.type_of_expr.get(&(r.file.clone(), r.start.offset, r.end.offset)).cloned() {
+            ctx.record_container_kind(br, &unwrap_ref(&t));
+        }
+        record_if_branch_containers(ctx, br);
+    }
+}
+
+/// The value type of `ns.field` when `obj` names an `import * as ns` namespace
+/// and `field` is one of its readable members. Emits nothing; `None` covers
+/// every other shape, including a missing or non-value member and a namespace
+/// not nameable from this file.
+pub(crate) fn namespace_member_type(ctx: &TypeCheckCtx, obj: &Expr, field: &str) -> Option<Type> {
+    let Expr::Ident { name: ns_name, range: ns_range } = obj else {
+        return None;
+    };
+    if ctx.scope.lookup(ns_name).map(|s| s.kind) != Some(SymbolKind::Namespace)
+        || ctx.namespace_hidden_here(ns_name, &ns_range.file)
+    {
+        return None;
+    }
+    ctx.ns_members(ns_name, &ns_range.file)
+        .and_then(|m| m.get(field))
+        .and_then(|info| info.value_type.clone())
+}
+
+/// The column `field` names on a record array or record map: `pts.x` on
+/// `pts: P[]` is an array of the field's type, and `m.x` on `Map<K, P>` maps
+/// the same keys to it. `None` for any other object type or an undeclared field.
+pub(crate) fn record_column_type(obj_ty: &Type, field: &str) -> Option<Type> {
+    match unwrap_ref(obj_ty) {
+        Type::Array(elem) => match *elem {
+            Type::Record(fields) => fields
+                .into_iter()
+                .find(|(k, _)| k == field)
+                .map(|(_, t)| Type::Array(Box::new(t))),
+            _ => None,
+        },
+        Type::Map(k, val) => match *val {
+            Type::Record(fields) => fields
+                .into_iter()
+                .find(|(n, _)| n == field)
+                .map(|(_, t)| Type::Map(k, Box::new(t))),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -2360,13 +2418,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // typed `any` and every use of it against a concrete type was a
             // spurious mismatch. Read the member's indexed type instead.
             // (`ns.f(args)` calls are handled in the Call arm, before this.)
-            if let Expr::Ident { name: ns_name, range: ns_range } = obj.as_ref()
-                && ctx.scope.lookup(ns_name).map(|s| s.kind) == Some(SymbolKind::Namespace)
-                && let Some(ty) = ctx
-                    .ns_members(ns_name, &ns_range.file)
-                    .and_then(|m| m.get(field.as_str()))
-                    .and_then(|info| info.value_type.clone())
-            {
+            if let Some(ty) = namespace_member_type(ctx, obj, field) {
                 return ty;
             }
             // A namespace member that is missing (`L.nope`) or is not a readable
@@ -2505,20 +2557,8 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // column method) as the field instead of `Any` — without it,
             // indexing a column fell to `_Unsupported` and any op on it was a
             // WS004 (Any). (R13.)
-            {
-                let base = unwrap_ref(&ot);
-                if let Type::Array(elem) = &base
-                    && let Type::Record(fields) = elem.as_ref()
-                    && let Some((_, t)) = fields.iter().find(|(k, _)| k == field)
-                {
-                    return Type::Array(Box::new(t.clone()));
-                }
-                if let Type::Map(k, val) = &base
-                    && let Type::Record(fields) = val.as_ref()
-                    && let Some((_, t)) = fields.iter().find(|(kk, _)| kk == field)
-                {
-                    return Type::Map(k.clone(), Box::new(t.clone()));
-                }
+            if let Some(column) = record_column_type(&ot, field) {
+                return column;
             }
             if let Type::Record(fields) = &ot {
                 if let Some((_, t)) = fields.iter().find(|(k, _)| k == field) {
@@ -2646,6 +2686,8 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
         }
         Expr::IndexAccess { obj, index, range } => {
             let ot = unwrap_ref(&infer(ctx, obj));
+            ctx.record_container_kind(obj, &ot);
+            record_if_branch_containers(ctx, obj);
             check_index_type(ctx, &ot, index);
             match &ot {
                 Type::Array(inner) => {
@@ -2905,6 +2947,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             let mut elem: Option<Type> = None;
             for el in elements {
                 let t = unwrap_ref(&infer(ctx, el.expr()));
+                if let ArrayElem::Spread(v) = el {
+                    // An exec-context assignment lowers a spread as an `append`
+                    // whose source is this element.
+                    ctx.record_container_expr(v);
+                }
                 let et = match el {
                     ArrayElem::Spread(_) => match t {
                         Type::Array(inner) => *inner,
@@ -3698,6 +3745,15 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     check_arity,
                     fa_range,
                 );
+                ctx.record_method_target(
+                    call_range,
+                    MethodTarget::Container {
+                        kind: ContainerKind::Array { elem: elem.clone() },
+                        method: field.clone(),
+                    },
+                );
+                ctx.record_container_kind(obj, &Type::Array(Box::new(elem.clone())));
+                ctx.record_container_args(args);
                 // Return type is derived from the method's gate
                 // output ports (see catalog::arrays). Multi-output
                 // gates (e.g. find) yield a record that auto-unwraps
@@ -3745,6 +3801,18 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     /*check_named=*/ true,
                     fa_range,
                 );
+                ctx.record_method_target(
+                    call_range,
+                    MethodTarget::Container {
+                        kind: ContainerKind::Map { key: key.clone(), value: value.clone() },
+                        method: field.clone(),
+                    },
+                );
+                ctx.record_container_kind(
+                    obj,
+                    &Type::Map(Box::new(key.clone()), Box::new(value.clone())),
+                );
+                ctx.record_container_args(args);
                 return crate::catalog::maps::map_return_type(field, &key, &value)
                     .unwrap_or(Type::Any);
             }
@@ -3757,6 +3825,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 && let Some(c) = find_call(field)
                 && c.receiver.is_some()
             {
+                ctx.record_method_target(call_range, MethodTarget::Builtin(field.clone()));
                 // Named-target receiver (`entity.SendCustomEvent(…)`) binds the
                 // object to `target`; positional args stay as the channel name +
                 // data. Ordinary receiver binds the object as positional arg 0.
@@ -3837,6 +3906,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     .iter()
                     .filter(|a| matches!(a, CallArg::Positional(_)))
                     .count();
+                ctx.record_method_target(call_range, MethodTarget::SelfMod(field.clone()));
                 return type_user_symbol_call(
                     ctx,
                     field,
@@ -4062,7 +4132,10 @@ pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
                         );
                     }
                 }
-                ArrayElem::Spread(v) => { check(ctx, v, &Type::Array(want.clone())); }
+                ArrayElem::Spread(v) => {
+                    check(ctx, v, &Type::Array(want.clone()));
+                    ctx.record_container_expr(v);
+                }
             }
         }
         let r = e.range();

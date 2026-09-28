@@ -742,6 +742,20 @@ fn check_decl_inner(
             let saved_active_combos = ctx.active_combos;
             ctx.active_combos = saved_active_combos.saturating_mul(combos.len().max(1));
             for combo in &combos {
+                // Concatenate onto the ENCLOSING substitution rather than
+                // replacing it: a nested generic decl (`Stmt::ChipDecl`,
+                // body-checked once per outer combo) must key its own body's
+                // resolutions by the outer combo too, or every outer pass
+                // would overwrite the same `(range, combo)` key with the
+                // last-checked outer type. `combo` is empty for a non-generic
+                // decl, so this leaves the key unchanged (inherits whatever
+                // the enclosing decl set, `[]` at the top level).
+                let saved_resolution_subst = std::mem::take(&mut ctx.resolution_subst);
+                ctx.resolution_subst = saved_resolution_subst
+                    .iter()
+                    .cloned()
+                    .chain(combo.iter().cloned())
+                    .collect();
                 ctx.push_scope();
                 // Same registration as the signature pass (register_decl),
                 // but in the body scope: covers annotations inside the body
@@ -997,6 +1011,7 @@ fn check_decl_inner(
                 }
                 ctx.out_ctx.pop();
                 ctx.pop_scope();
+                ctx.resolution_subst = saved_resolution_subst;
             }
             ctx.active_combos = saved_active_combos;
             if multi_pass {

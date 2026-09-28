@@ -34,6 +34,9 @@ pub(in crate::lower) fn lower_chip_call_inline(
         ctx.mono_stack.push(frame);
         true
     };
+    // The body's resolution key, set only while the body itself is lowered:
+    // arguments and `exec = ...` are the caller's expressions and keep its key.
+    let body_subst = ctx.body_resolution_subst(chip_decl, ctx.mono_stack.last().filter(|_| pushed_mono));
 
     // Collect param bindings first (before mutating ctx) so ref lookups
     // see the caller's vars.
@@ -430,7 +433,9 @@ pub(in crate::lower) fn lower_chip_call_inline(
             }
         }
     }
+    let saved_subst = std::mem::replace(&mut ctx.resolution_subst, body_subst.clone());
     pre_declare_block_vars(ctx, &chip_decl.body);
+    ctx.resolution_subst = saved_subst;
 
     // Install this mod's output nodes (for `return value`).
     // Track their IDs so cleanup only removes these, not parent outputs.
@@ -531,7 +536,9 @@ pub(in crate::lower) fn lower_chip_call_inline(
         }
     }
 
+    let saved_subst = std::mem::replace(&mut ctx.resolution_subst, body_subst);
     lower_block(ctx, &chip_decl.body);
+    ctx.resolution_subst = saved_subst;
 
     if body_has_return {
         // Merge fallthrough (if any) with accumulated return paths

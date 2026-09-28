@@ -35,6 +35,7 @@ fn compile_with_libs(
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
         op_resolutions: &tc.op_resolutions,
+        resolutions: &tc.resolutions,
         file: "test",
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
@@ -1075,4 +1076,161 @@ fn a_namespaced_modules_handler_declared_output_hoists_like_its_top_level_one() 
         "`L.hport` and `L.tport` must both read through a port rerouter; wires: {:?}",
         lr.module.wires
     );
+}
+
+fn assert_no_diagnostics(tc: &crate::typecheck::TypeCheckResult, lr: &LowerResult) {
+    assert!(
+        tc.diagnostics.is_empty() && lr.diagnostics.is_empty(),
+        "expected no diagnostics at all: typecheck {:?}, lower {:?}",
+        tc.diagnostics,
+        lr.diagnostics
+    );
+}
+
+/// The storage gates of `class`, in declaration order.
+fn storage_gates(m: &crate::ir::Module, class: &str) -> Vec<crate::ir::NodeId> {
+    let mut gates: Vec<&crate::ir::Node> =
+        m.nodes.values().filter(|n| n.gate_class == class).collect();
+    gates.sort_by_key(|n| n.source_range.start.offset);
+    gates.iter().map(|n| n.id).collect()
+}
+
+/// A whole-container rebuild: exactly one `clear` gate, followed on its exec
+/// chain by `ops` in order, every one writing through `storage`'s `ref_port`.
+fn assert_rebuild_chain(
+    m: &crate::ir::Module,
+    storage: crate::ir::NodeId,
+    ref_port: WirePort,
+    clear: &str,
+    ops: &[&str],
+) {
+    let clears: Vec<crate::ir::NodeId> = m
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == clear)
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(clears.len(), 1, "exactly one {clear}: {:?}", m.nodes);
+    let mut prev = clears[0];
+    assert_eq!(feed_source(m, prev, ref_port), Some(storage), "{clear} targets the member");
+    for op in ops {
+        let next = m
+            .wires
+            .iter()
+            .find(|w| w.source.node_id == prev && w.source.port == WirePort::ExecOut)
+            .map(|w| w.target.node_id)
+            .unwrap_or_else(|| panic!("nothing chained after {prev:?}; wires: {:?}", m.wires));
+        assert_eq!(m.nodes[&next].gate_class, *op, "exec order of the rebuild");
+        assert_eq!(feed_source(m, next, ref_port), Some(storage), "{op} targets the member");
+        prev = next;
+    }
+    for op in ops {
+        assert_eq!(
+            count_gate(m, op),
+            ops.iter().filter(|o| *o == op).count(),
+            "no stray {op} gates"
+        );
+    }
+    assert_eq!(count_gate(m, VAR_SET), 0, "no Var_Set on a container");
+}
+
+/// `u.xs = [1, 2]` on a namespace-member array lowers exactly like the bare
+/// `xs = [1, 2]`: a Clear, then one Push per item, all on the member's own
+/// ArrayVar. It used to take the scalar field-write path, lowering the literal
+/// to `_Unsupported` feeding a Var_Set on a nonexistent `VarRef` port.
+#[test]
+fn namespaced_array_literal_assign_clears_and_pushes_the_member() {
+    let (tc, lr) = compile_with_lib(
+        "var xs: int[]",
+        "import * as u from \"lib\"\nin go: exec\non go { u.xs = [1, 2] }",
+    );
+    assert_no_diagnostics(&tc, &lr);
+    assert!(!has_unsupported(&lr.module));
+    let xs = storage_gates(&lr.module, gc::ARRAY_VAR);
+    assert_eq!(xs.len(), 1);
+    assert_rebuild_chain(
+        &lr.module,
+        xs[0],
+        WirePort::ArrayVarRef,
+        gc::ARRAY_CLEAR,
+        &[gc::ARRAY_PUSH, gc::ARRAY_PUSH],
+    );
+}
+
+/// A spread element appends the source member's contents, in order.
+#[test]
+fn namespaced_array_literal_assign_with_spread_appends_the_source() {
+    let (tc, lr) = compile_with_lib(
+        "var xs: int[]\nvar ys: int[]",
+        "import * as u from \"lib\"\nin go: exec\non go { u.xs = [...u.ys, 3] }",
+    );
+    assert_no_diagnostics(&tc, &lr);
+    assert!(!has_unsupported(&lr.module));
+    let gates = storage_gates(&lr.module, gc::ARRAY_VAR);
+    let (xs, ys) = (gates[0], gates[1]);
+    assert_rebuild_chain(
+        &lr.module,
+        xs,
+        WirePort::ArrayVarRef,
+        gc::ARRAY_CLEAR,
+        &[gc::ARRAY_APPEND, gc::ARRAY_PUSH],
+    );
+    let append = lr
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == gc::ARRAY_APPEND)
+        .unwrap()
+        .id;
+    assert_eq!(
+        feed_source(&lr.module, append, WirePort::SourceRef),
+        Some(ys),
+        "the spread appends u.ys"
+    );
+}
+
+/// `u.m = { .. }` on a namespace-member map lowers like the bare `m = { .. }`:
+/// a Clear, then one Set per entry, on the member's own MapVar.
+#[test]
+fn namespaced_map_literal_assign_clears_and_sets_the_member() {
+    let (tc, lr) = compile_with_lib(
+        "var m: Map<string, int>",
+        "import * as u from \"lib\"\nin go: exec\non go { u.m = { \"a\": 1, \"b\": 2 } }",
+    );
+    assert_no_diagnostics(&tc, &lr);
+    assert!(!has_unsupported(&lr.module));
+    let m = storage_gates(&lr.module, gc::MAP_VAR);
+    assert_eq!(m.len(), 1);
+    assert_rebuild_chain(
+        &lr.module,
+        m[0],
+        WirePort::MapVarRef,
+        gc::MAP_CLEAR,
+        &[gc::MAP_SET, gc::MAP_SET],
+    );
+}
+
+/// A non-literal whole-container assign to a namespace member has no gate to
+/// lower to, so it is the same WS027 error as the bare spelling, not a Var_Set
+/// wired from a port the container gate does not have.
+#[test]
+fn namespaced_non_literal_container_assign_is_ws027() {
+    for (lib, main) in [
+        ("var m: Map<string, int>", "var m2: Map<string, int>\non go { u.m = m2 }"),
+        ("var xs: int[]\nvar ys: int[]", "on go { u.xs = u.ys }"),
+    ] {
+        let (_tc, lr) = compile_with_lib(
+            lib,
+            &format!("import * as u from \"lib\"\nin go: exec\n{main}"),
+        );
+        assert!(
+            lr.diagnostics.iter().any(|d| d.code == "WS027"
+                && d.severity == crate::diagnostic::Severity::Error
+                && d.message.contains("u.")
+                && d.message.contains("copyFrom")),
+            "`{main}` must be a WS027 error naming the target: {:?}",
+            lr.diagnostics
+        );
+        assert_eq!(count_gate(&lr.module, VAR_SET), 0, "`{main}` emits no Var_Set");
+    }
 }

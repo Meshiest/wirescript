@@ -31,6 +31,7 @@ mod purity;
 mod records;
 mod refs;
 mod regression_bugs;
+pub(in crate::lower) mod resolution;
 mod returns;
 mod scope;
 mod string;
@@ -58,6 +59,7 @@ pub(super) fn compile(src: &str) -> LowerResult {
         ast: &parsed.ast,
         type_of_expr: &tc.type_of_expr,
         op_resolutions: &tc.op_resolutions,
+        resolutions: &tc.resolutions,
         file: "test",
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
@@ -85,6 +87,7 @@ pub(super) fn compile_folded(src: &str) -> LowerResult {
         ast: &parsed.ast,
         type_of_expr: &tc.type_of_expr,
         op_resolutions: &tc.op_resolutions,
+        resolutions: &tc.resolutions,
         file: "test",
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
@@ -110,6 +113,7 @@ pub(super) fn compile_auto(src: &str) -> LowerResult {
         ast: &parsed.ast,
         type_of_expr: &tc.type_of_expr,
         op_resolutions: &tc.op_resolutions,
+        resolutions: &tc.resolutions,
         file: "test",
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
@@ -141,6 +145,7 @@ pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResu
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
         op_resolutions: &tc.op_resolutions,
+        resolutions: &tc.resolutions,
         file: "main",
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),

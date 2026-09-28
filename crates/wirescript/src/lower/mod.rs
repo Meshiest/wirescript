@@ -101,6 +101,7 @@ pub struct LowerInput<'a> {
     pub ast: &'a Script,
     pub type_of_expr: &'a HashMap<(Arc<str>, usize, usize), Type>,
     pub op_resolutions: &'a HashMap<(Arc<str>, usize, usize), OpRule>,
+    pub resolutions: &'a crate::typecheck::Resolutions,
     pub file: &'a str,
     pub module_name: Option<&'a str>,
     pub template_cache: Arc<TemplateCache>,
@@ -347,6 +348,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             builder,
             input.type_of_expr,
             input.op_resolutions,
+            input.resolutions,
             input.ce_slots,
             input.doc_comments,
         )
@@ -1824,6 +1826,7 @@ pub fn compile_chip_template(
         } else {
             vec![chip_decl.range.clone()]
         },
+        template_build: true,
         // Standalone template path (resource estimation / cache) resolves
         // record aliases from inline literals only, and has no whole-program
         // `decls` slice to re-run `typecheck::enums::build_registry` against,
@@ -1834,6 +1837,7 @@ pub fn compile_chip_template(
             builder,
             &tc.type_of_expr,
             &tc.op_resolutions,
+            &tc.resolutions,
             &empty_ce_slots,
             &empty_docs,
         )

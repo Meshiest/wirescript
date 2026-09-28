@@ -16,9 +16,15 @@ pub(super) fn build_chip_module(
     // `Some` only for a generic chip, and seeding the child ctx's `mono_stack`
     // with it makes every `T`-annotated storage/operator/if-expr/return in the
     // body — and its boundary ports (below) — resolve to the concrete type.
-    // Non-generic chips pass `None`, leaving the stack empty and resolution
-    // unaffected.
-    let is_generic = mono_frame.is_some();
+    //
+    // A chip declared inside a generic body (generic itself or not) lowers
+    // under that body's `T` too: its frame is the enclosing one extended by
+    // its own, and `is_generic` routes its `T`-typed pins through
+    // `resolve_local_type` like a generic chip's. `body_frame` is `None`
+    // exactly for a non-generic chip declared outside every generic body,
+    // which leaves the stack empty and resolution unaffected.
+    let body_frame = ctx.chip_body_frame(chip_decl, mono_frame.as_ref());
+    let is_generic = body_frame.is_some();
     let mut child_builder = ModuleBuilder::new(instance_name);
     child_builder.module.scopes.insert(
         ROOT_SCOPE_ID,
@@ -76,14 +82,26 @@ pub(super) fn build_chip_module(
         // `_nofold` from the start, since the body is lowered in this
         // fresh `child_ctx`, not the caller's `ctx`.
         nofold_depth: if chip_decl.no_fold { 1 } else { 0 },
+        // The body's resolution key: this chip's declaration key, then its
+        // type arguments when it is generic.
+        resolution_subst: ctx.body_resolution_subst(chip_decl, mono_frame.as_ref()),
+        // Carried so a mod declared inside an enclosing generic body keeps
+        // its declaration key when called from this chip.
+        decl_resolution_subst: ctx.decl_resolution_subst.clone(),
+        // Carried for the same reason: a chip declared inside an enclosing
+        // generic body keeps that body's frame when instanced from this chip.
+        decl_mono_frame: ctx.decl_mono_frame.clone(),
+        // A chip instantiated inside a template build is part of that build.
+        template_build: ctx.template_build,
         // Generic chips ARE monomorphized: one template per `(name, subst)`
         // (keyed in `lower_chip_call_instance`), so the shared-template concern
         // is moot — each distinct instantiation builds its own body here. Seed
         // the stack with this call's frame so every `T` in the body resolves to
         // the concrete monomorph (`resolve_local_type` / `mono_op_rule` /
-        // `lower_if_expr` all read `mono_stack`). `None` for a non-generic chip
-        // leaves the stack empty, so resolution is unaffected.
-        mono_stack: mono_frame.map(|f| vec![f]).unwrap_or_default(),
+        // `lower_if_expr` all read `mono_stack`). A non-generic chip
+        // declared outside every generic body leaves the stack empty, so
+        // resolution is unaffected.
+        mono_stack: body_frame.map(|f| vec![f]).unwrap_or_default(),
         // Fresh module (its own root scope, not inheriting the caller's block
         // scope — see `scope` above), so no scoped-const frame carries OVER
         // from the caller. It does get one EMPTY frame of its own, and that
@@ -140,6 +158,7 @@ pub(super) fn build_chip_module(
             child_builder,
             ctx.type_of_expr,
             ctx.op_resolutions,
+            ctx.resolutions,
             ctx.ce_slots,
             ctx.doc_comments,
         )

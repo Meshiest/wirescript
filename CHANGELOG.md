@@ -10,6 +10,8 @@
 - A `*T` output carries a ref: `out h: *int = &x` drives it with `x`'s ref, and a bare `x` there is `WS003`. Both used to wire `x`'s value.
 - A line that starts with `*` begins a new statement, so a bare deref whose value nothing uses now warns (`WSP001`) instead of silently dropping what read as a multiplication.
 - An array or map reached through a record field now resolves for every spelling of one, not just a `var`; reading through a port-bound field emitted a placeholder that read zero, and writing through one emitted nothing.
+- Container methods, index reads and writes, and `for` sources resolve the same way the type checker does, so a generic mod's container keeps its own element type per instantiation instead of the last one checked.
+- An index write through a namespace member or a record-array column (`u.xs[0] = v`, `pts.x[0] = v`) is type-checked against the element type, and an index write whose target resolves to no container is `WS044` instead of being silently dropped.
 
 ## 1.11.1
 

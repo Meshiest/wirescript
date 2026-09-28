@@ -411,6 +411,12 @@ pub struct TypeCheckCtx<'a> {
     /// it (see `infer_enum_args`). `None` outside a `check`; `infer_node`
     /// `take()`s it so a nested inference never sees a stale hint.
     pub(super) expected_ty: Option<Type>,
+    /// Method, index and loop-source resolutions for lowering to replay.
+    pub resolutions: Resolutions,
+    /// The concatenated type arguments of every enclosing generic mod/chip
+    /// body, outermost first; empty outside generics. Part of every
+    /// resolution key.
+    pub resolution_subst: Vec<Type>,
 }
 
 impl<'a> TypeCheckCtx<'a> {
@@ -434,6 +440,8 @@ impl<'a> TypeCheckCtx<'a> {
             const_env: Arc::new(crate::lower::ConstEnv::default()),
             const_declared: crate::collections::HashSet::default(),
             active_combos: 1,
+            resolutions: Resolutions::default(),
+            resolution_subst: Vec::new(),
             scoped_consts: Vec::new(),
             scoped_const_declared: Vec::new(),
             scoped_const_placeholders: Vec::new(),
@@ -479,6 +487,44 @@ impl<'a> TypeCheckCtx<'a> {
         // `pass1_chips`).
         if self.mod_decls.len() > 1 {
             self.mod_decls.pop();
+        }
+    }
+    /// The resolution-table key for `r`: its source range plus the current
+    /// generic substitution, so each generic instantiation gets its own entry.
+    pub(crate) fn resolution_key(&self, r: &SourceRange) -> ResolutionKey {
+        (r.file.clone(), r.start.offset, r.end.offset, self.resolution_subst.clone())
+    }
+
+    /// Record what a `recv.name(args)` call at `call` resolved to.
+    pub(crate) fn record_method_target(&mut self, call: &SourceRange, target: MethodTarget) {
+        let k = self.resolution_key(call);
+        self.resolutions.method_targets.insert(k, target);
+    }
+
+    /// Record `expr` as a container of type `ty`; a non-container type records nothing.
+    pub(crate) fn record_container_kind(&mut self, expr: &Expr, ty: &Type) {
+        if let Some(kind) = ContainerKind::of(ty) {
+            let k = self.resolution_key(expr.range());
+            self.resolutions.container_kinds.insert(k, kind);
+        }
+    }
+
+    /// Record every positional argument of a container method whose type is a
+    /// container: the source of `append`, `copyFrom`, `slice`, `keys`,
+    /// `values` and `sortMultiple`.
+    pub(crate) fn record_container_args(&mut self, args: &[CallArg]) {
+        for a in args {
+            if let CallArg::Positional(e) = a {
+                self.record_container_expr(e);
+            }
+        }
+    }
+
+    /// Record `expr` as a container of its already-recorded expression type.
+    pub(crate) fn record_container_expr(&mut self, expr: &Expr) {
+        let r = expr.range();
+        if let Some(t) = self.type_of_expr.get(&(r.file.clone(), r.start.offset, r.end.offset)).cloned() {
+            self.record_container_kind(expr, &t);
         }
     }
     /// Run `f` with `nofold_depth` incremented for its duration when `active`
@@ -798,6 +844,9 @@ pub struct TypeCheckResult {
     pub type_of_expr: HashMap<(Arc<str>, usize, usize), Type>,
     /// Operator rule chosen for every BinOp/UnOp; same key scheme.
     pub op_resolutions: HashMap<(Arc<str>, usize, usize), OpRule>,
+    /// Method, index and loop-source resolutions for lowering to replay —
+    /// see `TypeCheckCtx::resolutions`.
+    pub resolutions: Resolutions,
     /// Exec/pure context for each `if` node; key is (file, start_offset). true = exec.
     pub if_contexts: HashMap<(Arc<str>, usize), bool>,
     /// Exec/pure context for each var identifier read; key is (file, start_offset). true = exec.

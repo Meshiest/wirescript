@@ -1063,3 +1063,118 @@ fn await_sleep_ticks_placeholder_monomorphizes_input_and_output_to_bool() {
         "SleepTicks(_, ...)'s Input/Output ports must monomorphize to bool, got {value_ports:?}"
     );
 }
+
+/// Per chip instance: its template key, its data boundary-port types, and its
+/// `Pseudo_Var` value types, each sorted. Reads out what one instance's body
+/// was actually built for.
+fn chip_instance_types(module: &Module) -> Vec<(String, Vec<Type>, Vec<Type>)> {
+    let mut out = Vec::new();
+    fn walk(module: &Module, out: &mut Vec<(String, Vec<Type>, Vec<Type>)>) {
+        for c in module.chips.values() {
+            let key = c.template_key.map(|k| crate::intern::resolve(k).to_string()).unwrap_or_default();
+            let mut rer: Vec<Type> = Vec::new();
+            for n in c.nodes.values() {
+                if n.gate_class == crate::ir::gate_class::MICROCHIP_INPUT
+                    || n.gate_class == crate::ir::gate_class::MICROCHIP_OUTPUT
+                {
+                    rer.extend(n.ports.inputs.iter().chain(n.ports.outputs.iter()).map(|p| p.ty.clone()));
+                }
+            }
+            rer.retain(|t| *t != Type::Exec);
+            rer.sort_by_key(|t| format!("{t:?}"));
+            let mut vars = pseudo_var_value_types(&Module { chips: Default::default(), ..c.clone() });
+            vars.sort_by_key(|t| format!("{t:?}"));
+            out.push((key, rer, vars));
+            walk(c, out);
+        }
+    }
+    walk(module, &mut out);
+    out.sort_by_key(|(_, rer, _)| format!("{rer:?}"));
+    out
+}
+
+#[test]
+fn chip_in_generic_mod_keys_apart_per_outer_instantiation() {
+    // A NON-generic chip declared inside a generic mod's body, whose pins and
+    // storage are typed by the mod's `T`. Each outer instantiation lowers the
+    // chip body under a different `T`, so the two instances must be two
+    // templates, each typed for its own `T`. Keyed on the chip's own
+    // (empty) substitution alone, the `string` call reused the body built for
+    // `int`.
+    let src = "in go: exec\nin n: int\nin s: string\n\
+               mod outer<T: int | string>(v: T) -> (r: T) {\n\
+                 chip inner(x: T) -> (y: T) {\n\
+                   var stored: T = x\n\
+                   out y = stored\n\
+                 }\n\
+                 let got = inner(v)\n\
+                 return got\n\
+               }\n\
+               out a = outer(n)\nout b = outer(s)\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    let keys = chip_template_keys(&r.module);
+    let inst = chip_instance_types(&r.module);
+    assert_eq!(keys.len(), 2, "the int + string instantiations must be two templates, got {keys:?} / {inst:?}");
+    assert_eq!(inst.len(), 2, "two `inner` instances expected, got {inst:?}");
+    let types: Vec<(Vec<Type>, Vec<Type>)> = inst.iter().map(|(_, rer, vars)| (rer.clone(), vars.clone())).collect();
+    assert_eq!(
+        types,
+        vec![
+            (vec![Type::Int; 4], vec![Type::Int]),
+            (vec![Type::String; 4], vec![Type::String]),
+        ],
+        "each instance must be typed for its own `T`, got {inst:?}"
+    );
+}
+
+#[test]
+fn top_level_non_generic_chip_still_shares_one_template() {
+    // A top-level non-generic chip has an empty resolution key, so two calls
+    // share one template exactly as before.
+    let src = "chip inner(x: int) -> (y: int) {\n\
+                 var stored: int = x\n\
+                 out y = stored\n\
+               }\n\
+               in n: int\nin m: int\n\
+               out a = inner(n)\nout b = inner(m)\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    let keys = chip_template_keys(&r.module);
+    assert_eq!(keys.len(), 1, "two calls to a top-level chip must share one template, got {keys:?}");
+    let inst = chip_instance_types(&r.module);
+    assert_eq!(inst.len(), 2, "two `inner` instances expected, got {inst:?}");
+    // The key is exactly the pre-fix shape: no resolution-key segment.
+    let key = keys.iter().next().unwrap();
+    assert!(!key.contains("\u{1}r["), "a top-level chip's key must carry no resolution segment, got {key:?}");
+}
+
+#[test]
+fn generic_chip_in_generic_mod_sees_outer_and_own_params() {
+    // A generic chip declared inside a generic mod resolves both the outer `T`
+    // (from the enclosing instantiation) and its own `U` (from this call).
+    let src = "in n: int\nin s: string\nin f: float\n\
+               mod outer<T: int | string>(v: T, w: float) -> (r: T) {\n\
+                 chip inner<U>(x: T, u: U) -> (y: T, z: U) {\n\
+                   out y = x\n\
+                   out z = u\n\
+                 }\n\
+                 let (got, _) = inner(v, w)\n\
+                 return got\n\
+               }\n\
+               out a = outer(n, f)\nout b = outer(s, f)\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    let keys = chip_template_keys(&r.module);
+    let inst = chip_instance_types(&r.module);
+    assert_eq!(keys.len(), 2, "one template per outer instantiation, got {keys:?} / {inst:?}");
+    let rer: Vec<Vec<Type>> = inst.iter().map(|(_, rer, _)| rer.clone()).collect();
+    let mut int_inst = vec![Type::Float; 4];
+    int_inst.extend(vec![Type::Int; 4]);
+    let mut string_inst = vec![Type::Float; 4];
+    string_inst.extend(vec![Type::String; 4]);
+    assert_eq!(rer, vec![int_inst, string_inst], "pins must carry outer `T` and own `U`, got {inst:?}");
+}

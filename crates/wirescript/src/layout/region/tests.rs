@@ -22,6 +22,7 @@
             ast: &parsed.ast,
             type_of_expr: &tc.type_of_expr,
             op_resolutions: &tc.op_resolutions,
+            resolutions: &tc.resolutions,
             file: "test",
             module_name: None,
             template_cache: Arc::new(TemplateCache::new()),

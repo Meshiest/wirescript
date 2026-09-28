@@ -34,6 +34,8 @@ pub use sig::{CallSignature, Param, ParamKind, check_args};
 
 mod ctx;
 pub use ctx::*;
+pub mod resolution;
+pub use resolution::{ContainerKind, MethodTarget, Resolutions, ResolutionKey, classify_method};
 pub mod enums;
 pub mod patterns;
 mod resolve;
@@ -221,6 +223,7 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
         var_read_contexts: ctx.var_read_contexts,
         diagnostics: ctx.diagnostics,
         dropped_ranges: ctx.dropped_ranges,
+        resolutions: ctx.resolutions,
         #[cfg(test)]
         port_sites: ctx.port_sites,
     }
@@ -254,3 +257,6 @@ mod tests;
 
 #[cfg(test)]
 mod ref_tests;
+
+#[cfg(test)]
+mod resolution_tests;

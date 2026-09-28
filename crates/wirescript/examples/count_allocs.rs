@@ -54,6 +54,7 @@ fn main() {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
         op_resolutions: &tc.op_resolutions,
+        resolutions: &tc.resolutions,
         file: &file,
         module_name: None,
         template_cache: cache.clone(),

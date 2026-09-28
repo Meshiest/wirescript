@@ -165,6 +165,25 @@ pub(super) struct LowerCtx<'a> {
     pub(super) diagnostics: Vec<Diagnostic>,
     pub(super) type_of_expr: &'a HashMap<(Arc<str>, usize, usize), Type>,
     pub(super) op_resolutions: &'a HashMap<(Arc<str>, usize, usize), OpRule>,
+    /// Typecheck's recorded method/container resolutions (see `typecheck::resolution`).
+    pub(super) resolutions: &'a crate::typecheck::Resolutions,
+    /// The concrete type arguments of every generic body enclosing the code
+    /// being lowered, outermost first; empty outside generics. Part of every
+    /// resolution key.
+    pub(super) resolution_subst: Vec<Type>,
+    /// Each mod/chip declaration's `resolution_subst` at the point it was
+    /// registered, keyed by its source start. Only a declaration nested in a
+    /// generic body has an entry; every other one is `[]`.
+    pub(super) decl_resolution_subst: HashMap<(Arc<str>, usize), Vec<Type>>,
+    /// Each mod/chip declaration's enclosing generic frame (`mono_stack.last()`
+    /// where it was registered), keyed like `decl_resolution_subst`. A chip
+    /// instanced from inside a generic body lowers in a fresh child ctx, so
+    /// this is how its body still resolves the outer `T`.
+    pub(super) decl_mono_frame: HashMap<(Arc<str>, usize), MonoFrame>,
+    /// Set by `compile_chip_template`, which lowers a chip body (generic ones
+    /// included) outside any instantiation, so resolution lookups there may
+    /// fall back (see `resolution_fallback_allowed`).
+    pub(super) template_build: bool,
     /// Inferred custom-event data-slot types — see `LowerInput::ce_slots`.
     pub(super) ce_slots: &'a CeSlotMap,
     pub(super) file: String,
@@ -611,13 +630,14 @@ impl<'a> LowerCtx<'a> {
     /// a new field gets its zero in ONE place instead of needing all three
     /// edited in lockstep.
     ///
-    /// The five arguments are the ones that have no meaningful zero: a
+    /// The six arguments are the ones that have no meaningful zero: a
     /// `LowerCtx` cannot exist without a module to build into or the
     /// typechecker tables to read.
     pub(super) fn empty(
         builder: ModuleBuilder,
         type_of_expr: &'a HashMap<(Arc<str>, usize, usize), Type>,
         op_resolutions: &'a HashMap<(Arc<str>, usize, usize), OpRule>,
+        resolutions: &'a crate::typecheck::Resolutions,
         ce_slots: &'a CeSlotMap,
         doc_comments: &'a crate::parser::DocComments,
     ) -> Self {
@@ -625,6 +645,11 @@ impl<'a> LowerCtx<'a> {
             builder,
             type_of_expr,
             op_resolutions,
+            resolutions,
+            resolution_subst: Vec::new(),
+            decl_resolution_subst: HashMap::default(),
+            decl_mono_frame: HashMap::default(),
+            template_build: false,
             ce_slots,
             doc_comments,
             diagnostics: Vec::new(),
@@ -1041,6 +1066,127 @@ impl<'a> LowerCtx<'a> {
             .get(&(r.file.clone(), r.start.offset, r.end.offset))
             .cloned()
             .unwrap_or(Type::Any)
+    }
+
+    pub(super) fn resolution_key(&self, e: &Expr) -> crate::typecheck::ResolutionKey {
+        let r = e.range();
+        (r.file.clone(), r.start.offset, r.end.offset, self.resolution_subst.clone())
+    }
+
+    /// Whether a missing resolution entry may be derived from lowering's own
+    /// state instead: inside a generic body (a non-empty key or an active mono
+    /// frame), whose instantiation typecheck may not have checked because its
+    /// combinations come from the bound masks and are capped, and in a
+    /// template build, which lowers a generic body with no key at all.
+    fn resolution_fallback_allowed(&self) -> bool {
+        !self.resolution_subst.is_empty() || !self.mono_stack.is_empty() || self.template_build
+    }
+
+    /// What container `obj` is, as typecheck resolved it for this instantiation.
+    /// With no entry, and only where [`Self::resolution_fallback_allowed`],
+    /// falls back to the receiver's own binding, which is concrete after
+    /// monomorphization, then to the recorded expression type.
+    pub(super) fn container_kind(&self, obj: &Expr) -> Option<crate::typecheck::ContainerKind> {
+        if let Some(k) = self.resolutions.container_kinds.get(&self.resolution_key(obj)) {
+            return Some(k.clone());
+        }
+        if !self.resolution_fallback_allowed() {
+            return None;
+        }
+        let binding = match obj {
+            Expr::Ident { name, .. } => self.scope.get(name).cloned(),
+            _ => resolve_field_chain(self, obj).cloned(),
+        };
+        if let Some(b) = &binding {
+            let ty = self.type_of(obj);
+            if let Some((_, elem)) = binding_array_ref(self, b, &ty) {
+                return Some(crate::typecheck::ContainerKind::Array { elem });
+            }
+            if let Some((_, map_ty)) = binding_map_ref(self, b, &ty) {
+                return crate::typecheck::ContainerKind::of(&map_ty);
+            }
+        }
+        crate::typecheck::ContainerKind::of(&self.type_of(obj))
+    }
+
+    /// What `recv.name(..)` resolved to, for this instantiation. With no entry,
+    /// and only where [`Self::resolution_fallback_allowed`], classifies the
+    /// method against [`Self::container_kind`], then as a receiver builtin,
+    /// then as a `self`-mod in scope.
+    pub(super) fn method_target(&self, call: &Expr) -> Option<crate::typecheck::MethodTarget> {
+        if let Some(t) = self.resolutions.method_targets.get(&self.resolution_key(call)) {
+            return Some(t.clone());
+        }
+        if !self.resolution_fallback_allowed() {
+            return None;
+        }
+        let Expr::Call { callee, .. } = call else { return None };
+        let Expr::FieldAccess { obj, field, .. } = callee.as_ref() else { return None };
+        if let Some(kind) = self.container_kind(obj)
+            && let Some(t) = crate::typecheck::classify_method(field, &kind.as_type())
+        {
+            return Some(t);
+        }
+        if let Some(t) = crate::typecheck::classify_method(field, &Type::Any) {
+            return Some(t);
+        }
+        self.lookup_chip(field)
+            .filter(|c| c.is_self_receiver())
+            .map(|_| crate::typecheck::MethodTarget::SelfMod(field.clone()))
+    }
+
+    /// Record `d`'s declaration key: the `resolution_subst` in effect where it
+    /// is registered, which its body's key starts with.
+    pub(super) fn record_decl_resolution_subst(&mut self, d: &ChipDecl) {
+        let at = (d.range.file.clone(), d.range.start.offset);
+        match self.mono_stack.last() {
+            Some(frame) => {
+                self.decl_mono_frame.insert(at.clone(), frame.clone());
+            }
+            None => {
+                self.decl_mono_frame.remove(&at);
+            }
+        }
+        if self.resolution_subst.is_empty() {
+            self.decl_resolution_subst.remove(&at);
+        } else {
+            self.decl_resolution_subst.insert(at, self.resolution_subst.clone());
+        }
+    }
+
+    /// The generic frame `d`'s body is lowered under when instanced as a chip:
+    /// its enclosing frame (from its declaration), extended by `own` for a
+    /// generic `d`, whose params shadow same-named outer ones. `None` for a
+    /// non-generic chip declared outside any generic body.
+    pub(super) fn chip_body_frame(&self, d: &ChipDecl, own: Option<&MonoFrame>) -> Option<MonoFrame> {
+        let outer = self.decl_mono_frame.get(&(d.range.file.clone(), d.range.start.offset));
+        match (outer, own) {
+            (None, None) => None,
+            (Some(f), None) | (None, Some(f)) => Some(f.clone()),
+            (Some(outer), Some(own)) => {
+                let mut frame = outer.clone();
+                frame.params.retain(|p| !own.params.contains(p));
+                frame.params.extend(own.params.iter().cloned());
+                for (name, ty) in own.subst.iter() {
+                    frame.subst.insert(name.clone(), ty.clone());
+                }
+                Some(frame)
+            }
+        }
+    }
+
+    /// The resolution key for `d`'s body: its declaration key, then, for a
+    /// generic `d`, this instantiation's type arguments in declared order.
+    pub(super) fn body_resolution_subst(&self, d: &ChipDecl, frame: Option<&MonoFrame>) -> Vec<Type> {
+        let mut key = self
+            .decl_resolution_subst
+            .get(&(d.range.file.clone(), d.range.start.offset))
+            .cloned()
+            .unwrap_or_default();
+        if let Some(f) = frame {
+            key.extend(f.params.iter().map(|p| f.subst.get(p).cloned().unwrap_or(Type::Any)));
+        }
+        key
     }
 
     /// Resolve a lowering-side type annotation to its `Type`, monomorphized

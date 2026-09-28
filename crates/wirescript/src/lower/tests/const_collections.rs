@@ -275,6 +275,7 @@ fn typecheck_never_accepts_an_initializer_that_lowering_silently_drops() {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
         op_resolutions: &tc.op_resolutions,
+        resolutions: &tc.resolutions,
         file: "test",
         module_name: None,
         template_cache: std::sync::Arc::new(crate::template_cache::TemplateCache::new()),

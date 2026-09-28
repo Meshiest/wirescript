@@ -105,6 +105,15 @@ pub(in crate::lower) fn lower_chip_call_instance(
     for (index, value) in &const_key_parts {
         key.push_str(&format!("\u{1}k{index}:{value:?}"));
     }
+    // The body's resolution key: the enclosing generic instantiation it is
+    // declared in, then its own substitution. A chip declared inside a generic
+    // mod lowers its body under the outer `T`, so each outer instantiation is a
+    // different body even though the chip itself is not generic. Empty for a
+    // top-level non-generic chip, which then keys exactly as before.
+    let body_subst = ctx.body_resolution_subst(chip_decl, mono_frame.as_ref());
+    if !body_subst.is_empty() {
+        key.push_str(&format!("\u{1}r{body_subst:?}"));
+    }
 
     let mut child_module = if let Some(template) = ctx.template_cache.get(&key) {
         // Build remap: for each param name in the template's capture_names,

@@ -880,6 +880,7 @@ fn check_stmt_inner(
                                 ctx.emit("WS082", RECORD_ELEMENT_MESSAGE, range.clone());
                                 return;
                             }
+                            ctx.record_container_kind(expr, &Type::Array(elem.clone()));
                             (LoopKind::ForEachArray, vec![*elem])
                         }
                         Type::Map(k, v) if is_variable_ref(ctx, expr) => {
@@ -887,6 +888,7 @@ fn check_stmt_inner(
                                 ctx.emit("WS082", RECORD_ELEMENT_MESSAGE, range.clone());
                                 return;
                             }
+                            ctx.record_container_kind(expr, &Type::Map(k.clone(), v.clone()));
                             (LoopKind::ForEachMap, vec![*k, *v])
                         }
                         _ => {
@@ -1383,6 +1385,7 @@ fn infer_assign_target(
             ctx.type_of_expr
                 .insert((r.file.clone(), r.start.offset, r.end.offset), obj_ty.clone());
         }
+        ctx.record_container_kind(obj, &obj_ty);
         infer::check_index_type(ctx, &obj_ty, index);
         match obj_ty {
             Type::Array(inner) => *inner,
@@ -1413,7 +1416,35 @@ fn infer_assign_target(
         // declare, stays permissive: those are the shapes lowering resolves
         // dynamically (a swizzle, `.Value`, an enum payload slot), and the
         // read path already reports a genuinely unknown field.
+        //
+        // A namespace member (`u.xs[1] = 2`) types as the member, as it does
+        // when read.
+        if let Some(ty) = infer::namespace_member_type(ctx, obj, field) {
+            return unwrap_ref(&ty);
+        }
         let obj_ty = unwrap_ref(&infer::infer(ctx, obj));
+        // A record array's or map's column (`pts.x[0] = 5`) types as the
+        // column, as it does when read. A record array that is itself a field
+        // of a record (`h.pts.x`) has no per-field columns to write, so it
+        // stays untyped and lowering reports the write. A column of a column
+        // (`qs.p.x`) is still a column. The inner object's type was recorded
+        // by the `infer` above.
+        let object_is_record_field = match obj.as_ref() {
+            Expr::FieldAccess { obj: inner, field: f, .. } => {
+                let r = inner.range();
+                infer::namespace_member_type(ctx, inner, f).is_none()
+                    && ctx
+                        .type_of_expr
+                        .get(&(r.file.clone(), r.start.offset, r.end.offset))
+                        .is_some_and(|t| matches!(unwrap_ref(t), Type::Record(_)))
+            }
+            _ => false,
+        };
+        if !object_is_record_field
+            && let Some(column) = infer::record_column_type(&obj_ty, field)
+        {
+            return column;
+        }
         match &obj_ty {
             // A `*T` field aliases the caller's storage, so writing through
             // one writes the pointee: the target's type is what it points at.

@@ -29,6 +29,7 @@ fn bus_cells(src: &str, file: &str) -> Vec<(i32, i32, i32)> {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
         op_resolutions: &tc.op_resolutions,
+        resolutions: &tc.resolutions,
         file,
         module_name: None,
         template_cache: Arc::new(wirescript::template_cache::TemplateCache::new()),

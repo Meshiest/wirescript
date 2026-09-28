@@ -1419,6 +1419,30 @@ fn non_literal_map_assign_is_rejected_not_silently_miscompiled() {
 }
 
 #[test]
+fn non_literal_array_assign_is_rejected_not_silently_miscompiled() {
+    // The array twin of the map guard above: `xs = ys` has no whole-array
+    // assignment gate, and the generic Var_Set path wired the ArrayVar's
+    // nonexistent `VarRef` port, which only failed at emit.
+    let r = compile("var xs: int[]\nvar ys: int[]\nin t: exec\non t {\n  xs = ys\n}\n");
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS027"
+            && d.severity == crate::diagnostic::Severity::Error
+            && d.message.contains("xs.copyFrom")),
+        "a non-literal whole-array assign must be a WS027 error, got: {:?}",
+        r.diagnostics
+    );
+    assert!(!has_gate(&r, "BrickComponentType_Exec_Var_Set"));
+    assert!(
+        !r.module
+            .wires
+            .iter()
+            .any(|w| w.source.port == WirePort::VarRef),
+        "no wire may source the ArrayVar's nonexistent VarRef port; wires: {:?}",
+        r.module.wires
+    );
+}
+
+#[test]
 fn map_subscript_read_lowers_to_map_get() {
     // `m[k]` must desugar to the same MapVar_Get gate `m.get(k)` lowers to
     // (not a dangling `_Unsupported`).

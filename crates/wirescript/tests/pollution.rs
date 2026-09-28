@@ -58,6 +58,7 @@ fn lower_source(src: &str) -> wirescript::lower::LowerResult {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
         op_resolutions: &tc.op_resolutions,
+        resolutions: &tc.resolutions,
         file: "test.ws",
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
