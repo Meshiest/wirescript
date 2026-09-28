@@ -1,5 +1,5 @@
 //! Declaring and checking one `let`: its annotation, its bindings, and the
-//! single-output alias it may carry.
+//! single-output alias it may carry, and which record fields hold ref values.
 
 use super::*;
 
@@ -18,6 +18,149 @@ fn as_tuple_fields(t: &Type) -> Option<Vec<Type>> {
         Type::Tuple(fields) => Some(fields.clone()),
         Type::Record(fields) => Some(fields.iter().map(|(_, ft)| ft.clone()).collect()),
         _ => None,
+    }
+}
+
+/// Which `*T` fields of a record `let` carry a ref VALUE on a wire rather than
+/// naming storage (see `TypeCheckCtx::let_ref_values`).
+#[derive(Clone, Debug)]
+pub(crate) enum LetRefValues {
+    /// A map or array read, another builtin's result, event data: every field
+    /// arrived on a wire.
+    All,
+    /// A record literal: the dotted field paths whose initializer names no
+    /// storage (`p: &a`, `n: 1`). The empty path covers every field.
+    Fields(crate::collections::HashSet<String>),
+}
+
+impl LetRefValues {
+    /// Whether the field at `path` (its segments below the binding) is a value.
+    pub(crate) fn covers(&self, path: &[String]) -> bool {
+        match self {
+            LetRefValues::All => true,
+            LetRefValues::Fields(set) => {
+                let joined = path.join(".");
+                set.iter().any(|p| {
+                    p.is_empty()
+                        || *p == joined
+                        || joined.strip_prefix(p.as_str()).is_some_and(|r| r.starts_with('.'))
+                })
+            }
+        }
+    }
+}
+
+/// Record, for `let <name> = value`, which of its ref fields are values. A
+/// binding with no entry bundles places: the pre-existing `{ cpsr, skip }`
+/// idiom and a user mod's record result, whose `*T` fields read their targets.
+pub(super) fn record_let_ref_values(ctx: &mut TypeCheckCtx, b: &LetBinding, value: &Expr) {
+    let LetBinding::Ident { range, .. } = b else {
+        return;
+    };
+    let key = (range.file.clone(), range.start.offset);
+    match ref_values_of(ctx, value) {
+        Some(v) => {
+            ctx.let_ref_values.insert(key, v);
+        }
+        None => {
+            ctx.let_ref_values.remove(&key);
+        }
+    }
+}
+
+fn ref_values_of(ctx: &TypeCheckCtx, value: &Expr) -> Option<LetRefValues> {
+    match value {
+        Expr::RecordLit { fields, .. } => {
+            let mut set = crate::collections::HashSet::default();
+            collect_value_fields(ctx, fields, "", &mut set);
+            Some(LetRefValues::Fields(set))
+        }
+        Expr::Ident { name, .. } => {
+            let sym = ctx.scope.lookup(name)?;
+            match sym.kind {
+                SymbolKind::LetBinding => ctx
+                    .let_ref_values
+                    .get(&(sym.decl_range.file.clone(), sym.decl_range.start.offset))
+                    .cloned(),
+                SymbolKind::Var | SymbolKind::Param | SymbolKind::Namespace => None,
+                _ => Some(LetRefValues::All),
+            }
+        }
+        Expr::Call { callee, .. } if super::infer::call_returns_places(ctx, callee) => None,
+        _ => Some(LetRefValues::All),
+    }
+}
+
+fn join_path(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() || name.is_empty() {
+        format!("{prefix}{name}")
+    } else {
+        format!("{prefix}.{name}")
+    }
+}
+
+fn collect_value_fields(
+    ctx: &TypeCheckCtx,
+    fields: &[crate::ast::RecordLitField],
+    prefix: &str,
+    set: &mut crate::collections::HashSet<String>,
+) {
+    use crate::ast::RecordLitField;
+    for f in fields {
+        match f {
+            RecordLitField::Named { name, value, .. } => {
+                let path = join_path(prefix, name);
+                match value {
+                    Expr::RecordLit { fields: inner, .. } => {
+                        collect_value_fields(ctx, inner, &path, set)
+                    }
+                    _ => merge_field_source(ctx, value, &path, set),
+                }
+            }
+            RecordLitField::Shorthand { name, range } => merge_field_source(
+                ctx,
+                &Expr::Ident { name: name.clone(), range: range.clone() },
+                &join_path(prefix, name),
+                set,
+            ),
+            RecordLitField::Spread { value, .. } => match ref_values_of(ctx, value) {
+                Some(LetRefValues::All) => {
+                    set.insert(prefix.to_string());
+                }
+                Some(LetRefValues::Fields(inner)) => {
+                    set.extend(inner.iter().map(|p| join_path(prefix, p)));
+                }
+                None => {}
+            },
+        }
+    }
+}
+
+/// One literal field's source: storage leaves it a place; a record-valued
+/// source passes on its own values under `path`; anything else is a value.
+fn merge_field_source(
+    ctx: &TypeCheckCtx,
+    value: &Expr,
+    path: &str,
+    set: &mut crate::collections::HashSet<String>,
+) {
+    if let Expr::Ident { name, .. } = value
+        && let Some(sym) = ctx.scope.lookup(name)
+        && matches!(crate::types::mono::unwrap_ref(&sym.ty), Type::Record(_) | Type::Tuple(_))
+    {
+        match ref_values_of(ctx, value) {
+            Some(LetRefValues::All) => {
+                set.insert(path.to_string());
+            }
+            Some(LetRefValues::Fields(inner)) => {
+                set.extend(inner.iter().map(|p| join_path(path, p)));
+            }
+            None => {}
+        }
+        return;
+    }
+    if !super::infer::names_storage(ctx, value) {
+        set.insert(path.to_string());
     }
 }
 
@@ -491,17 +634,32 @@ pub(super) fn check_let_type_annotation(
                 crate::ast::LetBinding::Ident { name, .. } => name.clone(),
                 _ => "<binding>".into(),
             };
-            ctx.diagnostics.push(crate::Diagnostic {
-                severity: crate::diagnostic::Severity::Warning,
-                code: "WS016".into(),
-                message: format!(
-                    "let '{}' annotated as {}, but expression has type {}",
-                    name,
-                    crate::analysis::types::type_expr_str(te),
-                    crate::analysis::types::type_str(inferred),
-                ),
-                range: l.range.clone(),
-            });
+            let message = format!(
+                "let '{}' annotated as {}, but expression has type {}",
+                name,
+                crate::analysis::types::type_expr_str(te),
+                crate::analysis::types::type_str(inferred),
+            );
+            // A `*T` var-ref or a `brick` on either side has no conversion
+            // into a mismatched annotation (`coerce`'s ref invariance: no
+            // coercion through ref types) — unlike a primitive "type lie"
+            // (`let n: int = someString`), which stays the lenient warning
+            // below, this can never wire, so it is a hard error. An
+            // array/map ref (`let a1: float[] = row0`) keeps the existing
+            // WS016: the spec's no-conversion rule covers `*T`/`brick` only.
+            let is_var_or_brick_ref = |t: &Type| {
+                matches!(t.ref_kind(), Some(crate::ir::RefKind::Var | crate::ir::RefKind::Brick))
+            };
+            if is_var_or_brick_ref(inferred) || is_var_or_brick_ref(&expected) {
+                ctx.emit("WS003", message, l.range.clone());
+            } else {
+                ctx.diagnostics.push(crate::Diagnostic {
+                    severity: crate::diagnostic::Severity::Warning,
+                    code: "WS016".into(),
+                    message,
+                    range: l.range.clone(),
+                });
+            }
         }
     }
 }

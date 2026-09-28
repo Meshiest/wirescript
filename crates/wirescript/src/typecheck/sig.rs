@@ -426,6 +426,66 @@ fn wire_arg_is_game_enum(ctx: &mut TypeCheckCtx, enum_type: &str, arg_expr: &Exp
     )
 }
 
+/// The argument's inferred type, read back from this pass's `type_of_expr`
+/// when the call preamble already recorded it.
+fn arg_type(ctx: &mut TypeCheckCtx, arg_expr: &Expr) -> Type {
+    let r = arg_expr.range();
+    let key = (r.file.clone(), r.start.offset, r.end.offset);
+    match ctx.type_of_expr.get(&key).cloned() {
+        Some(t) => t,
+        None => crate::typecheck::infer::infer(ctx, arg_expr),
+    }
+}
+
+/// Whether a field chain passed to a `*T` parameter names storage the
+/// parameter can alias: a field of a record `var` (each field is its own gate),
+/// a namespaced var, a ref field of a record parameter (a place bound to the
+/// caller's storage), or a field of a record `let` or user mod result that
+/// bundles vars (`projection_is_place`). A chain that arrived on a wire (a
+/// literal's `n: 1`, a map read, an element `pts[i].x`) is a value with
+/// nothing to write back to; one that is a ref VALUE never reaches here (the
+/// ref-value check binds it first).
+fn field_names_storage(ctx: &TypeCheckCtx, arg_expr: &Expr) -> bool {
+    let (root, segs) = crate::typecheck::infer::flatten_access(arg_expr);
+    let Expr::Ident { name, range } = root else {
+        return matches!(root, Expr::Call { .. })
+            && crate::typecheck::infer::projection_is_place(ctx, arg_expr);
+    };
+    let Some(sym) = ctx.scope.lookup(name) else {
+        return true;
+    };
+    match sym.kind {
+        SymbolKind::Var | SymbolKind::Array | SymbolKind::Map => true,
+        SymbolKind::LetBinding => crate::typecheck::infer::projection_is_place(ctx, arg_expr),
+        SymbolKind::Namespace => segs.first().is_some_and(|member| {
+            ctx.ns_members(name, &range.file)
+                .and_then(|m| m.get(member.as_str()))
+                .is_some_and(|info| {
+                    matches!(info.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map)
+                })
+        }),
+        SymbolKind::Param => {
+            let mut t = sym.ty.clone();
+            for seg in &segs {
+                t = match &t {
+                    Type::Record(fields) => match fields.iter().find(|(k, _)| k == seg) {
+                        Some((_, ft)) => ft.clone(),
+                        None => return false,
+                    },
+                    Type::Tuple(fields) => match seg.parse::<usize>().ok().and_then(|i| fields.get(i)) {
+                        Some(ft) => ft.clone(),
+                        None => return false,
+                    },
+                    Type::Ref(_) if seg == "Value" || seg == "prev" => t.clone(),
+                    _ => return false,
+                };
+            }
+            matches!(t, Type::Ref(_))
+        }
+        _ => false,
+    }
+}
+
 fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
     // A param whose type still carries a `Type::Param` is an
     // uninferable generic — left to the caller's own WS033
@@ -439,11 +499,48 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
     // argument must denote one. A literal, expression, call, `arr[i]` element,
     // or scalar `let` has no ref pin, and the inline binder silently drops such
     // a call, so reject it here. `&x` is validated separately (WS008 in infer),
-    // and a record-field chain is left permissive (the binder resolves it).
+    // and a record-field chain must name storage (`field_names_storage`).
     // `arr[i]` is excluded even though it is otherwise ref-able: a scalar
     // ref cannot capture one array element (the game has only a whole-array ref
     // pin).
     check_record_lit_ref_fields(ctx, param, arg_expr);
+    // A ref VALUE (a `*T` held in a var or container, event data, `&x` in a
+    // value position) is never read through implicitly: it binds a `*T`
+    // parameter of exactly its type, and fits no other parameter but `any`
+    // (`Type::Any`/`Type::Opaque` - a true pass-through: custom-event data
+    // ports, `Opaque(...)`/`Change(...)` rerouters, and `BroadcastChatMessage`-
+    // style message ports all wire a ref straight through, same as `"${h}"`
+    // interpolation already does).
+    // `&x` into a `*T` parameter is the static alias form, checked below.
+    if !matches!(arg_expr, Expr::NullLit { .. }) {
+        let raw = arg_type(ctx, arg_expr);
+        // A `*Record` parameter distributes its ref-ness onto each field
+        // (`distribute_ref`), so it never shows up as a top-level `Type::Ref`
+        // the way a scalar/container `*T` does - `&r` aliasing one is still
+        // the static form, just recorded per field instead of at the top.
+        let is_ref_shaped_param = matches!(param.ty, Type::Ref(_))
+            || matches!(&param.ty, Type::Record(fields) if fields.iter().any(|(_, t)| matches!(t, Type::Ref(_))));
+        let static_alias = matches!(arg_expr, Expr::RefOf { .. }) && is_ref_shaped_param;
+        if matches!(raw, Type::Ref(_)) && !static_alias {
+            match &param.ty {
+                Type::Any | Type::Opaque => {}
+                want if coerce(&raw, want) == CoerceRule::Same => {}
+                want => {
+                    let hint = if matches!(want, Type::Ref(_)) {
+                        ""
+                    } else {
+                        "; read through the ref with `*`"
+                    };
+                    ctx.emit(
+                        "WS003",
+                        format!("argument '{}': expected {want}, got {raw}{hint}", param.name),
+                        arg_expr.range().clone(),
+                    );
+                }
+            }
+            return;
+        }
+    }
     if matches!(&param.ty, Type::Ref(_)) && !matches!(arg_expr, Expr::RefOf { .. }) {
         let ok = match arg_expr {
             Expr::Ident { name, .. } => match ctx.scope.lookup(name) {
@@ -457,7 +554,7 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
                 // Undefined ident: reported as WS002 elsewhere, do not pile on.
                 None => true,
             },
-            Expr::FieldAccess { .. } => true,
+            Expr::FieldAccess { .. } => field_names_storage(ctx, arg_expr),
             _ => false,
         };
         if !ok {
@@ -489,14 +586,7 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
     // Safe w.r.t. "don't memoize type_of_expr across re-visits": the preamble
     // re-runs and overwrites every pass, so within this pass the entry is
     // this-pass-fresh; we only skip the redundant SECOND inference.
-    let key = {
-        let r = arg_expr.range();
-        (r.file.clone(), r.start.offset, r.end.offset)
-    };
-    let raw = match ctx.type_of_expr.get(&key).cloned() {
-        Some(t) => t,
-        None => crate::typecheck::infer::infer(ctx, arg_expr),
-    };
+    let raw = arg_type(ctx, arg_expr);
     let arg_ty = unwrap_ref(&raw);
     // Unwrap a leading `Ref` off the param type too: a `*T` param
     // resolves to `Ref(T)`, but (like `arg_ty` above) the argument

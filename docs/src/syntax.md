@@ -156,6 +156,21 @@ let check = condition1 &&
   condition3
 ```
 
+A line that starts with `*` is the exception: it begins a new statement (a
+deref, such as `*h = 5`), never the continuation of the line above. To continue
+a multiplication, end the first line with `*`. A bare deref line whose value
+nothing uses gets a `WSP001` warning, since it is almost always a split
+multiplication:
+
+<!-- doc-check-prelude:
+in width: int
+in height: int
+-->
+```wirescript
+let area = width *
+  height
+```
+
 Newlines are also allowed inside delimited groups — call arguments `( ... )`,
 array literals `[ ... ]`, and record literals `{ ... }` — after the opener,
 around commas, and before the closer, with an optional trailing comma:

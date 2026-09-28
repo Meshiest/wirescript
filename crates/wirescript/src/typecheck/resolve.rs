@@ -179,9 +179,8 @@ pub(super) fn var_storable(t: &Type) -> bool {
             | Type::Entity
             | Type::Character
             | Type::Controller
-           
-           
-    )
+            | Type::Brick
+    ) || matches!(t, Type::Ref(inner) if inner.is_ref_target())
 }
 
 pub(super) fn type_expr_range(t: &TypeExpr) -> SourceRange {
@@ -235,25 +234,80 @@ pub(super) fn reject_any_storage(ctx: &mut TypeCheckCtx, resolved: &Type, range:
             format!("'never' cannot be stored: {what} needs a concrete wire type"),
             range,
         ),
-        // One storage gate holds one wire variant, so a container cannot be
-        // the thing inside another: `int[][]` and `Map<int, int[]>` fall back
-        // to a plain `Number`. (An array or map is storable in its own right;
-        // this only rejects one nested INSIDE another, which is what `what`
-        // always names here.)
-        Type::Array(_) | Type::Map(_, _)
-            if what == "an array's element type" || what == "a map's value type" =>
+        // A `**T` is reported where the type resolves (WS086).
+        Type::Ref(inner) if matches!(inner.as_ref(), Type::Ref(_)) => {}
+        // An array ref is already a reference, so an array of array refs is
+        // `int[][]`; `(*int[])[]` would name the same value twice over.
+        Type::Ref(inner)
+            if matches!(inner.as_ref(), Type::Array(_) | Type::Map(_, _)) && nested(what) =>
+        {
+            let n = crate::analysis::types::type_str(resolved);
+            let plain = crate::analysis::types::type_str(inner);
+            ctx.emit(
+                "WS025",
+                format!("'{n}' cannot be an element: an array or map is already a ref, so write '{plain}'"),
+                range,
+            );
+        }
+        // A `*T` names one var, so `T` must be a type one var gate holds, or a
+        // container (a var holding a container ref).
+        Type::Ref(inner)
+            if !inner.is_ref_target()
+                && !matches!(
+                    inner.as_ref(),
+                    Type::Array(_) | Type::Map(_, _) | Type::Any | Type::Opaque | Type::Param(_)
+                ) =>
         {
             let n = crate::analysis::types::type_str(resolved);
             ctx.emit(
                 "WS025",
-                format!(
-                    "'{n}' cannot be nested: {what} needs a concrete wire type, and one \
-                     storage gate holds one wire variant"
-                ),
+                format!("'{n}' cannot be stored: a ref names one var, and no var holds a '{inner}'"),
                 range,
             );
         }
+        // A container is storable as an array element or map value: the slot
+        // holds its ArrayVarRef / MapVarRef. A container of records, tuples or
+        // enums is several parallel containers with no single ref.
+        Type::Array(elem) | Type::Map(_, elem) if nested(what) => {
+            if let Type::Map(key, _) = resolved {
+                reject_ref_key(ctx, key, range.clone());
+            }
+            if matches!(elem.as_ref(), Type::Record(_) | Type::Tuple(_) | Type::Enum { .. }) {
+                let n = crate::analysis::types::type_str(resolved);
+                ctx.emit(
+                    "WS025",
+                    format!(
+                        "'{n}' cannot be nested: its elements are records, stored as one \
+                         container per field, so there is no single ref to hold"
+                    ),
+                    range,
+                );
+            } else {
+                let inner_what = if matches!(resolved, Type::Array(_)) {
+                    "an array's element type"
+                } else {
+                    "a map's value type"
+                };
+                reject_any_storage(ctx, elem, range, inner_what);
+            }
+        }
         _ => {}
+    }
+}
+
+fn nested(what: &str) -> bool {
+    what == "an array's element type" || what == "a map's value type"
+}
+
+/// A map key is hashed by value, and a ref or brick has none to hash.
+pub(super) fn reject_ref_key(ctx: &mut TypeCheckCtx, key: &Type, range: SourceRange) {
+    if key.ref_kind().is_some() {
+        let n = crate::analysis::types::type_str(key);
+        ctx.emit(
+            "WS025",
+            format!("'{n}' cannot be a map key: a key needs a plain value (int, string, bool or an object)"),
+            range,
+        );
     }
 }
 

@@ -62,6 +62,7 @@ fn type_eq(a: &Type, b: &Type) -> bool {
         | (Entity, Entity)
         | (Character, Character)
         | (Controller, Controller)
+        | (Brick, Brick)
         | (Zone, Zone)
         | (Teleport, Teleport)
         | (PrefabRef, PrefabRef)
@@ -235,8 +236,8 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     let _ = same_ref_inner; // keep helper alive for future extensions
 
     // Two records match field-wise treating ref-ness as an exposure mode, the
-    // same way params/out/assignment unwrap refs before comparing (`out y: *int
-    // = x` compares int to int). A record literal built from vars exposes scalar
+    // same way a `*T` parameter binds a `T` var by alias (`bump(x)` for
+    // `bump(p: *int)`). A record literal built from vars exposes scalar
     // fields as refs and array fields plainly, so a `*T` field and a plain `T`
     // field are interchangeable at the boundary — this is what lets a
     // `let cpu: Cpu = { regs, cpsr }` (mixed plain-array + ref-scalar) pass to a

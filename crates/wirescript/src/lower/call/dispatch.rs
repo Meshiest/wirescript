@@ -10,8 +10,14 @@ fn receiver_has_runtime_container(ctx: &LowerCtx, obj: &Expr) -> bool {
         // resolved by the paths below, which this fold must not pre-empt.
         return true;
     };
-    ctx.lookup_var(name)
-        .is_some_and(|v| matches!(v.storage, VarStorage::Array | VarStorage::Map))
+    match ctx.scope.get(name) {
+        Some(Binding::Var(v)) => {
+            matches!(v.storage, VarStorage::Array | VarStorage::Map)
+                || v.inner_type.ref_kind().is_some()
+        }
+        Some(Binding::DynRef(_)) => true,
+        _ => false,
+    }
 }
 
 /// A container method call whose value is a compile-time constant, materialized
@@ -265,6 +271,19 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             && let Some(fields) = resolve_record_map(ctx, obj)
         {
             return lower_record_map_method(ctx, &fields, field, args, range, e);
+        }
+        // A container reached through a runtime ref: `rows[y].push(v)`,
+        // `cur.length()`, an event's array data. The receiver's value IS the ref.
+        // Ahead of the receiver and `self`-mod forms, in typecheck's order.
+        if crate::catalog::arrays::is_array_method(field)
+            && let Some((array_ref, elem_ty)) = crate::lower::access::runtime_array_ref(ctx, obj)
+        {
+            return lower_array_method(ctx, array_ref, elem_ty, field, args, range, e);
+        }
+        if crate::catalog::maps::is_map_method(field)
+            && let Some((map_ref, map_ty)) = crate::lower::access::runtime_map_ref(ctx, obj)
+        {
+            return lower_map_method(ctx, map_ref, map_ty, field, args, range, e);
         }
         // Receiver method calls: entity.SetLocation(pos) -> SetLocation(entity, pos)
         if let Some(spec) = find_call(field)

@@ -97,10 +97,14 @@ on load {
 | `zone` | Reference to a Zone brick | a Zone brick's output (wire it into an `in z: zone` port) | `zone = …` on the zone events; `fillFromZone*` |
 | `teleport` | Reference to a Teleport Destination (a "teleport point") | a Teleport Destination brick (wire it into an `in p: teleport` port) | `Teleport` / `RelativeTeleport` `dest`/`source` |
 
-These are **reference-only** types, exactly like a variable ref (`ref T`): a wire carries a handle to a component, not a value. They can be passed as `in` ports, mod/chip parameters, and rerouted anywhere -- but, like a var ref, they can **not** be:
+These are **reference-only** types: a wire carries a handle to a component, not
+a value. They can be passed as `in` ports, mod/chip parameters, and rerouted
+anywhere -- but, unlike a [`*T` ref value](#reference-values), which can be
+stored, selected and compared, a `zone`, `teleport` or prefab reference can
+**not** be:
 
-- **stored** in a `var` / `buffer` (`WS025`) -- a storage gate needs a concrete wire variant;
-- **selected** with an if-then-else (`WS031`) -- the Select gate routes a *value*, not a reference;
+- **stored** in a `var` / `buffer` (`WS025`) -- there is no wire variant that holds one;
+- **selected** with an if-then-else (`WS031`) -- the Select gate routes a *value*, and these have none;
 - operated on (arithmetic, comparison, string-format).
 
 ```wirescript
@@ -134,9 +138,10 @@ var slot: Slot = { owner: null, count: null }
 ```
 
 `null` is only valid for a value type. A container, record, or reference-only
-type (`int[]`, `Map<K, V>`, a record, `*T`, `zone`) has no null value and reports
-`WS051` -- use its own empty form (`[]`, `{}`) instead. A bare `let x = null` with
-no target types as `any`.
+type (`int[]`, `Map<K, V>`, a record, `zone`) has no null value and reports
+`WS051` -- use its own empty form (`[]`, `{}`) instead. A `*T` var or element
+that was never assigned is null -- see [Reference values](#reference-values).
+A bare `let x = null` with no target types as `any`.
 
 ## Compound Types
 
@@ -196,6 +201,79 @@ A field that is *already* a reference stays as it is rather than becoming a
 double reference. Note that a record whose fields are references still cannot be
 stored in a variable, array, or map (`WS049`): storage needs a real value per
 field.
+
+### Reference values
+
+A `*T` is also a value: a ref to one var of type `T`, which can be stored,
+copied, compared and sent like any other value.
+
+```wirescript
+var a: int = 0
+var b: int = 0
+var h: *int                 // holds a ref; null until assigned
+var refs: (*int)[]          // an array of refs
+
+on ReadBrickGrid() {
+  h = &a                    // `&x` is x's ref as a value
+  *h = 5                    // write through it: a is now 5
+  let n = *h + 1            // read through it
+  refs.push(&a)
+  refs.push(&b)
+  *refs[1] += 2             // b is now 2
+}
+```
+
+- `&x` makes a ref and `*e` reads or writes through one, in an exec context.
+- A ref never converts to its target type: `h + 1` is an error, `*h + 1` is the read.
+- `==` and `!=` compare two refs of the same type. A ref equals its copy and differs from a ref to any other var. Comparing a ref with a number is `WS084`: the game treats `1 == <ref>` as true.
+- Passing a `*T` value to a `*T` parameter binds the parameter to the var the ref points at. Passing a plain var still binds that var.
+- Write an array of refs with parentheses, `(*int)[]`. A plain `*int[]` is a var that holds an array ref (below).
+- A ref to a ref (`**int`, or `&h` where `h` holds a ref) is `WS086`.
+
+**A null ref halts the chain.** A `*T` var or element that was never assigned holds a null ref. Reading or writing through it stops the exec chain in game, with no message. A `*T` var declared inside a handler must have an initializer (`WS025`), since a local var resets every run and a ref has no literal to reset to.
+
+#### Arrays of arrays
+
+An array or map is only ever handled by reference, so an array value is its own ref. It is used directly: `&` is optional and `*` is an error (`WS085`).
+
+```wirescript
+var row0: int[]
+var row1: int[]
+var rows: int[][]
+var cur: *int[]             // a var holding an array ref
+
+on ReadBrickGrid() {
+  rows.push(row0)
+  rows.push(row1)
+  rows[1].push(7)           // pushes into row1
+  rows[1][0] = 8
+  cur = rows[0]
+  cur.push(1)               // pushes into row0
+}
+```
+
+Maps work the same way, as values (`Map<string, int[]>`, `Map<string, *color>`), though not as keys.
+
+A map nested in a map needs a space between the two closing brackets, since the
+parser reads `>>` as the shift operator: write `Map<string, Map<string, int> >`.
+
+### Bricks
+
+`brick` is a value type. It can be stored in a `var`, a `brick[]` or a map value, copied, compared with `==` / `!=`, printed, and passed through ports, parameters and custom events.
+
+```wirescript
+var anchor: brick           // point it at a brick in the editor after pasting
+var seen: brick[]
+
+on ReadBrickGrid() {
+  seen.push(anchor)
+  if seen[0] == anchor {
+    BroadcastChatMessage("same brick")
+  }
+}
+```
+
+Nothing in the language creates a brick, and no gate reads one. A brick comes from the editor, a port or an event.
 
 ### Array Types (`T[]`)
 

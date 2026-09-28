@@ -237,15 +237,23 @@ pub(super) fn build_chip_module(
                 let (storage, inner) = super::context::container_binding(&inp.typ, &t)
                     .expect("gated by container_storage");
                 let node_id = child_ctx.add_input(&inp.name, t.clone(), chip_decl.range.clone());
-                child_ctx.scope.insert(
-                    &inp.name,
+                // An uncaptured `*T` pin carries a ref VALUE from the caller,
+                // so reads and writes go through the pin's wire.
+                let binding = if storage == VarStorage::Var {
+                    Binding::DynRef(DynRefRecord {
+                        port: node_id.port(WirePort::RerOutput),
+                        storage,
+                        inner_type: inner,
+                    })
+                } else {
                     Binding::Var(VarRecord {
                         node_id,
                         inner_type: inner,
                         get_node_for_handler: None,
                         storage,
-                    }),
-                );
+                    })
+                };
+                child_ctx.scope.insert(&inp.name, binding);
             }
         } else {
             let t = if is_generic {

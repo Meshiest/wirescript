@@ -2174,16 +2174,22 @@
     }
 
     #[test]
-    fn annotated_ref_out_still_accepts_var() {
-        // `out y: *int = x` — the ref annotation unwraps for the check
-        // (int against int), so the ref-exposure pattern stays clean.
-        let r = tc("var x: int = 0\nout y: *int = x");
+    fn annotated_ref_out_takes_a_ref_not_a_var() {
+        // A `*int` port carries a ref: `&x` is x's ref, while a bare `x` is
+        // its value, which no conversion turns into a ref.
+        let r = tc("var x: int = 0\nout y: *int = &x");
         let errors: Vec<_> = r
             .diagnostics
             .iter()
             .filter(|d| d.severity == Severity::Error)
             .collect();
         assert!(errors.is_empty(), "ref out must not error: {:?}", errors);
+        let r = tc("var x: int = 0\nout y: *int = x");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "a var's value is not a ref: {:?}",
+            r.diagnostics
+        );
     }
 
     // ---------- `self`-receiver (UFCS) ----------
@@ -5946,8 +5952,6 @@
             ("exec", "control flow"),
             ("exec[]", "control flow"),
             ("never", "cannot be stored"),
-            ("int[][]", "cannot be nested"),
-            ("Map<int, int[]>", "cannot be nested"),
         ] {
             let r = tc(&format!("in go: exec\nvar c: {ty}\non go {{ }}\n"));
             assert!(
@@ -5959,7 +5963,7 @@
             );
         }
         // The storable shapes stay storable.
-        for ty in ["int", "float[]", "Map<int, string>", "vector"] {
+        for ty in ["int", "float[]", "Map<int, string>", "vector", "int[][]", "Map<int, int[]>"] {
             let r = tc(&format!("in go: exec\nvar c: {ty}\non go {{ }}\n"));
             assert!(
                 !r.diagnostics.iter().any(|d| d.code == "WS025"),

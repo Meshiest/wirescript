@@ -23,6 +23,34 @@ fn enum_config_discriminant(ctx: &LowerCtx, arg_expr: &Expr, enum_type: &str) ->
     crate::catalog::enum_has_value(enum_type, v).then_some(v)
 }
 
+/// Replace any `Type::Param` still left in `t` (recursing through the same
+/// compound shapes `types::mono::substitute` does) with `Type::Any` — the
+/// fallback `typecheck::call::resolve_param_output` uses when a generic
+/// builtin's type param can't be pinned. A leftover would only happen if the
+/// call's typechecked type couldn't be recovered at all; this is the backstop
+/// that keeps the invariant `emit::variants::var_type_to_wire_value` asserts
+/// ("a `Type::Param` must never reach emit") true even then.
+fn scrub_param_type(t: Type) -> Type {
+    match t {
+        Type::Param(_) => Type::Any,
+        Type::Array(inner) => Type::Array(Box::new(scrub_param_type(*inner))),
+        Type::Ref(inner) => Type::Ref(Box::new(scrub_param_type(*inner))),
+        Type::Map(k, v) => Type::Map(Box::new(scrub_param_type(*k)), Box::new(scrub_param_type(*v))),
+        Type::Union(opts) => Type::Union(opts.into_iter().map(scrub_param_type).collect()),
+        Type::Tuple(fs) => Type::Tuple(fs.into_iter().map(scrub_param_type).collect()),
+        Type::Record(fs) => Type::Record(
+            fs.into_iter()
+                .map(|(n, ft)| (n, scrub_param_type(ft)))
+                .collect(),
+        ),
+        Type::Enum { name, args } => Type::Enum {
+            name,
+            args: args.into_iter().map(scrub_param_type).collect(),
+        },
+        other => other,
+    }
+}
+
 pub(in crate::lower) fn lower_builtin_call(
     ctx: &mut LowerCtx,
     spec: &crate::catalog::calls::CallSpec,
@@ -365,6 +393,33 @@ pub(in crate::lower) fn lower_builtin_call(
         ports.inputs.push(PortSpec::exec(intern(exec_in_port.as_str())));
         ports.outputs.push(PortSpec::exec(*sym::EXEC_OUT));
     }
+    // Generic passthrough builtins (`Sleep`/`SleepTicks`/`Select`/`Swap`) declare
+    // their value ports as `Type::Param("T")` in the catalog (see
+    // `catalog/calls/flow.rs`). Typecheck resolves the CALL's own type to a
+    // concrete answer (`resolve_param_output` in `typecheck/call.rs` — it never
+    // leaves `Param`, falling back to `Any`); recover that same substitution
+    // here by unifying the declared output type against the call's typechecked
+    // type, with the identical `collect` pass typecheck's generic-mod inference
+    // uses for a user `mod<T>`. Without this, a value port with no inlined
+    // literal (the common case: `_`, a var, any non-constant argument) reaches
+    // emit's `var_type_to_wire_value` as a bare `Type::Param`, which it has no
+    // representation for.
+    let param_subst: crate::types::infer::Subst = {
+        let mut constraints = Vec::new();
+        if let Some(out) = spec.outputs.first() {
+            let r = e.range();
+            if let Some(call_ty) =
+                ctx.type_of_expr.get(&(r.file.clone(), r.start.offset, r.end.offset))
+            {
+                crate::types::mono::collect(&out.ty, call_ty, &mut constraints);
+            }
+        }
+        constraints
+            .into_iter()
+            .map(|crate::types::infer::Constraint::Eq(n, t)| (n, t))
+            .collect()
+    };
+
     // A custom-event send declares its eight data params as `any` (the channel
     // accepts anything), but the RECEIVER types its DataOut ports from the
     // handler's annotation. If the send keeps `any`, emit falls through to the
@@ -384,7 +439,7 @@ pub(in crate::lower) fn lower_builtin_call(
     let is_event_send = spec.gate_class == gc::SEND_CUSTOM_EVENT
         || spec.gate_class == gc::SEND_CUSTOM_EVENT_GLOBAL;
     for p in spec.params.iter() {
-        let mut ty = p.ty.clone();
+        let mut ty = scrub_param_type(crate::types::mono::substitute(&p.ty, &param_subst));
         if is_event_send
             && matches!(ty, Type::Any)
             && let Some(w) = wires.iter().find(|w| w.port == p.port)
@@ -409,7 +464,8 @@ pub(in crate::lower) fn lower_builtin_call(
         ports.inputs.push(PortSpec::new(intern(p.port.as_str()), ty));
     }
     for out in &spec.outputs {
-        ports.outputs.push(PortSpec::new(intern(out.port.as_str()), out.ty.clone()));
+        let ty = scrub_param_type(crate::types::mono::substitute(&out.ty, &param_subst));
+        ports.outputs.push(PortSpec::new(intern(out.port.as_str()), ty));
     }
 
     // Ensure all gate ports are present — the catalog may define ports

@@ -352,10 +352,11 @@ fn if_branch_type_mismatch_is_ws003() {
 
 #[test]
 fn reference_in_if_is_ws031() {
-    // A `&x` ref-of infers as `Type::Ref` and can't flow through a Select.
-    // (A bare `*int` param reads back auto-dereferenced, so it never trips
-    // this — `&x` is the real trigger; see tests/ws_reachability.rs.)
-    let p = parse("var x: int = 0\nin c: bool\nlet y = if c then &x else 0", "test");
+    // `zone`/`teleport`/`prefab` are reference-only and can't flow through a
+    // Select. A `*T` (or an array/map ref, or a `brick`) routes through
+    // Select unchanged (measured), so it no longer trips this — see
+    // `typecheck::ref_tests::an_if_expression_selects_between_refs`.
+    let p = parse("in z1: zone\nin z2: zone\nlet y = if true then z1 else z2", "test");
     let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(r.diagnostics.iter().any(|d| d.code == "WS031"));
 }
@@ -402,6 +403,9 @@ fn ref_of_non_refable_is_ws008() {
         "in go: exec\non go { let r = &5 }",
         "var a: int = 0\nvar b: int = 0\nin go: exec\non go { let r = &(a + b) }",
         "mod f() -> int { return 1 }\nin go: exec\non go { let r = &f() }",
+        // An element of a value array has no ref of its own (ref-values):
+        // only the whole array is a reference.
+        "var xs: int[]\nmod inc(v: *int) {}\nin go: exec\non go { xs.push(1)\n  inc(&xs[0]) }",
     ] {
         let p = parse(src, "test");
         let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
@@ -415,11 +419,8 @@ fn ref_of_non_refable_is_ws008() {
 
 #[test]
 fn ref_of_refable_is_clean() {
-    // &var, &arr[i] are legal (they name a storage location).
-    for src in [
-        "var a: int = 0\nmod inc(v: *int) { v = v + 1 }\nin go: exec\non go { inc(&a) }",
-        "var xs: int[]\nmod inc(v: *int) {}\nin go: exec\non go { xs.push(1)\n  inc(&xs[0]) }",
-    ] {
+    // &var is legal (it names a storage location).
+    for src in ["var a: int = 0\nmod inc(v: *int) { v = v + 1 }\nin go: exec\non go { inc(&a) }"] {
         let p = parse(src, "test");
         let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
         assert!(

@@ -335,16 +335,14 @@ fn ws048_is_reachable() {
     assert!(diags(src).contains(&"WS048".to_string()));
 }
 
-// WS031 - a reference (var ref / zone / teleport) used as an if-then-else branch
-// (Select routes a value, not a reference) [typecheck]
-// NOTE: a bare `*int` param reads back auto-dereferenced (its symbol is
-// registered SymbolKind::Var, and an Ident read of a Var unwraps its Ref) —
-// so passing it straight into an if-branch never types as `Ref` and can't
-// trip this check. `&x` (an explicit ref-of) DOES infer as `Type::Ref`, so
-// it's the trigger that actually produces a reference-typed branch.
+// WS031 - a reference-only value (zone / teleport / prefab) used as an
+// if-then-else branch (Select routes a value, not a reference) [typecheck]
+// NOTE: a `*T` ref (or an array/map ref, or a `brick`) routes through Select
+// unchanged (measured), so it does NOT trip this — only the reference-only
+// types (which carry no value a Select could route) do.
 #[test]
 fn ws031_is_reachable() {
-    let src = "var x: int = 0\nin c: bool\nlet y = if c then &x else 0\n";
+    let src = "in z1: zone\nin z2: zone\nin c: bool\nlet y = if c then z1 else z2\n";
     assert!(diags(src).contains(&"WS031".to_string()));
 }
 

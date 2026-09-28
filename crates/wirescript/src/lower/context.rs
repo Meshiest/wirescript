@@ -102,6 +102,20 @@ pub(super) struct LocalRecord {
     pub(super) port: PortRef,
 }
 
+/// A name bound to a ref that arrives on a wire at runtime rather than to
+/// storage known at compile time: a `*T` or container parameter whose argument
+/// was a ref value (`paint(pixels[0])`). Reads and writes go through `port`.
+#[derive(Clone, Debug)]
+pub(super) struct DynRefRecord {
+    /// The wire carrying the ref.
+    pub(super) port: PortRef,
+    /// What the ref names: `Var` for a `*T`, `Array`, or `Map`.
+    pub(super) storage: VarStorage,
+    /// As `VarRecord::inner_type`: `T` for a `*T`, the element type for an
+    /// array, the whole `Map(K, V)` for a map.
+    pub(super) inner_type: Type,
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum Binding {
     Var(VarRecord),
@@ -110,6 +124,7 @@ pub(super) enum Binding {
     Input(NodeRecord),
     Output(NodeRecord),
     EventParam(PortRef),
+    DynRef(DynRefRecord),
     Chip(std::sync::Arc<ChipDecl>),
     /// An `import * as ns` module, keyed by member name. Holds BOTH the module's
     /// chips (as `Binding::Chip`) and its value members (`let`/`array`/`map`/
@@ -156,6 +171,10 @@ pub(super) struct LowerCtx<'a> {
     pub(super) scope: crate::scope::Scope<Binding>,
     pub(super) handler_end_execs: Vec<PortRef>,
     pub(super) current_exec: Option<PortRef>,
+    /// How many writes whose target is not known at compile time (through a
+    /// runtime ref) this lowering has emitted. A `for` body compares it before
+    /// and after, since such a write draws no wire out of the storage it hits.
+    pub(super) dyn_ref_writes: u32,
     pub(super) handler_entry_exec: Option<PortRef>,
     pub(super) captured_events: HashMap<String, PortRef>,
     pub(super) next_chain_id: u32,
@@ -515,6 +534,64 @@ pub(super) fn chain_var_get(
     get_id
 }
 
+/// `chain_var_get` for a ref that arrives on a wire: a `Var_Get` whose `VarRef`
+/// comes from `ref_port`. Never cached, since what `ref_port` names can change
+/// between two reads.
+pub(super) fn chain_var_get_through(
+    ctx: &mut LowerCtx,
+    ref_port: PortRef,
+    inner: &Type,
+    exec: PortRef,
+    range: &SourceRange,
+) -> NodeId {
+    let get_id = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::VAR_GET,
+        source_range: range.clone(),
+        ports: GateIO::var_read(inner.clone()),
+        note: Some("get through ref"),
+        ..Default::default()
+    });
+    ctx.connect(exec, get_id.port(WirePort::Exec));
+    ctx.connect(ref_port, get_id.port(WirePort::VarRef));
+    ctx.current_exec = Some(get_id.port(WirePort::ExecOut));
+    get_id
+}
+
+/// Write `value` through a ref that arrives on a wire: a `Var_Set`, or with
+/// `increment` a `Var_Increment` adding `value`, whose `VarRef` comes from
+/// `ref_port`. A no-op with no exec chain, like `set_scalar_var`.
+pub(super) fn write_through_ref(
+    ctx: &mut LowerCtx,
+    ref_port: PortRef,
+    inner: &Type,
+    value: PortRef,
+    increment: bool,
+    range: &SourceRange,
+) {
+    let Some(exec_in) = ctx.current_exec else {
+        return;
+    };
+    let node = ctx.add_gate(AddNodeOpts {
+        gate_class: if increment { gc::VAR_INCREMENT } else { gc::VAR_SET },
+        source_range: range.clone(),
+        ports: GateIO::var_write(inner.clone()),
+        note: Some("set through ref"),
+        ..Default::default()
+    });
+    ctx.connect(exec_in, node.port(WirePort::Exec));
+    ctx.connect(ref_port, node.port(WirePort::VarRef));
+    ctx.connect(value, node.port(WirePort::Value));
+    ctx.current_exec = Some(node.port(WirePort::ExecOut));
+    note_dynamic_write(ctx);
+}
+
+/// A write whose target could be any var of its type: every cached read is
+/// dropped, so a later read cannot reuse a value this write may have changed.
+pub(super) fn note_dynamic_write(ctx: &mut LowerCtx) {
+    ctx.dyn_ref_writes += 1;
+    reset_var_get_caches(ctx);
+}
+
 /// The `Value` a fresh `Var_Get` carries in its data struct: the type's zero,
 /// so a read that beats its var's first write reads that rather than whatever
 /// the gate was serialized with.
@@ -555,6 +632,7 @@ impl<'a> LowerCtx<'a> {
             scope: crate::scope::Scope::new(),
             handler_end_execs: Vec::new(),
             current_exec: None,
+            dyn_ref_writes: 0,
             handler_entry_exec: None,
             captured_events: HashMap::default(),
             next_chain_id: 0,

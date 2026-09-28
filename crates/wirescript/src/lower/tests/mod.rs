@@ -29,6 +29,7 @@ mod out_reads;
 mod port_side;
 mod purity;
 mod records;
+mod refs;
 mod regression_bugs;
 mod returns;
 mod scope;

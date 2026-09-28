@@ -432,7 +432,7 @@ out currentCount = count.Value
 chip let changed = count != count.prev
 ```
 
-In exec context, a bare variable name auto-dereferences to its value when used in expressions (arithmetic, comparisons, etc.). When passed to a `*T` parameter, the variable stays as a reference. In pure context, the bare name refers to the `ref T` (the variable reference itself). Use `.Value` to read the value in pure context.
+In exec context, a bare variable name auto-dereferences to its value when used in expressions (arithmetic, comparisons, etc.). When passed to a `*T` parameter, the variable stays as a reference. In pure context, a bare name reads the var's value (the same as `.Value`); `&x` is the var's ref as a value. See [Reference values](types.md#reference-values).
 
 ### Record Fields
 
@@ -591,14 +591,19 @@ DisplayText(target = ctrl, text = msg, fontSize = 30)
 
 ## Ref and Deref
 
-The `ref` keyword creates a reference to a value. The `*` prefix operator dereferences a reference.
+`ref` (or `&`) makes a ref value: `let r = ref someVar` and `let r = &someVar` are the same. The `*` prefix operator reads or writes through a ref, in an exec context -- see [Reference values](types.md#reference-values) for the full rules.
 
 ```wirescript
-// ref creates a reference
-let r = ref someVar
+in go: exec
+var someVar: int = 0
 
-// * dereferences
-let val = *r
+on go {
+  // ref (or &) makes a ref value
+  let r = ref someVar
+
+  // * reads through it
+  let val = *r
+}
 ```
 
 In practice, `ref` and `*` are primarily used in chip parameter passing. When a chip parameter has type `ref T` (or `*T`), you pass a variable and the chip can read/write it:
@@ -637,7 +642,8 @@ on tick {
 | `*x` | Pure | — | **Error WS006** — use `.Value` |
 | `x.Value` | Pure or Exec | `.Value` port | Previous tick's value (delayed) |
 | `x.prev` | Pure or Exec | `.Value` port | Previous tick's value (same as `.Value`) |
-| `x` (bare) | Pure | — | Variable reference (`ref T`, not the value) |
+| `x` (bare) | Pure | `.Value` port | The same read as `x.Value`; an unannotated `out` of it is `WS017` |
+| `&x` | Pure or Exec | `VarRef` port | `x`'s ref, as a value |
 
 ## Parenthesized Expressions
 

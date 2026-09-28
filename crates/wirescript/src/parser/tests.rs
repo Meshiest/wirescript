@@ -1295,6 +1295,46 @@
         }
     }
 
+    #[test]
+    fn a_leading_star_on_a_new_line_starts_a_new_statement() {
+        // `*` at the START of a line (reached only by skipping a newline to
+        // find it) is a deref statement, not a continuation of the previous
+        // line's expression: `n = 5` ends at the newline, and `*m = 1` is its
+        // own assignment through a deref target. Contrast with the next test,
+        // where the operator trails the FIRST line instead.
+        let body = handler_body("var n: int = 0\nvar m: int = 0\nin go: exec\non go {\nn = 5\n*m = 1\n}\n");
+        assert_eq!(body.len(), 2, "two statements, not one: {body:?}");
+        match &body[0] {
+            Stmt::Assign(a) => {
+                assert!(matches!(&a.target, Expr::Ident { name, .. } if name == "n"));
+                assert!(matches!(&a.value, Expr::IntLit { value: 5, .. }), "not continued into a multiply: {:?}", a.value);
+            }
+            other => panic!("expected an Assign, got {other:?}"),
+        }
+        match &body[1] {
+            Stmt::Assign(a) => {
+                assert!(matches!(&a.target, Expr::Deref { .. }), "expected a Deref target, got {:?}", a.target);
+            }
+            other => panic!("expected an Assign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_trailing_star_still_continues_across_the_newline() {
+        // The operator trails the FIRST line here, so this is genuine line
+        // continuation (`let x = a +\n  b`'s `*` sibling), unlike the leading-
+        // `*` case above.
+        let body = handler_body("var a: int = 0\nvar b: int = 0\nin go: exec\non go {\nlet x = a *\n  b\n}\n");
+        let Some(Stmt::Let(l)) = body.first() else {
+            panic!("expected a let, got {:?}", body.first())
+        };
+        assert!(
+            matches!(&l.value, Expr::BinOp { op, .. } if op == "*"),
+            "expected a continued `a * b`, got {:?}",
+            l.value
+        );
+    }
+
     // ---- `on <Event> -> <pattern>` output capture -----
 
     #[test]

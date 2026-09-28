@@ -70,11 +70,11 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 |------|---------|---------|
 | `WS003` | Type mismatch — a value doesn't coerce to the expected type (assignment, argument, output, array element, `if`-branch join, event input). | `var n: int = "hi"` |
 | `WS004` | No operator overload for the operand type(s) (arithmetic / comparison / logical). | `"a" + 1` |
-| `WS008` | Taking `&`/`ref` of a non-reference — only a variable, ref parameter, or array/map element can be referenced, not a temporary. | `&(a + b)` |
+| `WS008` | Taking `&`/`ref` of a non-reference, or passing one to a `*T` parameter: only a variable, a ref parameter or a record field over one can be referenced, not a temporary. An element of a value array has no ref of its own (`&xs[i]`, `&pts[i].x`), and neither does a plain field of a record value (`rr.n` of a `let` literal, `m.get(k).Value` on a map of values). | `&(a + b)` / `&xs[0]` |
 | `WS011` | No overload for a bitwise/shift operator (`&`, `\|`, `^`, `~`, `<<`, `>>`), or a builtin call with the wrong number of positional arguments. Bitwise/shift accept `int`, and `float`/`bool` coerce to `int`; only non-numeric operands (`string`, `vector`, …) have no overload. | `"a" & 2` |
 | `WS016` | *(warning)* `let` / `out` annotation doesn't match the inferred type (a checked assertion; string-format coercion is exempt). | `let n: int = s` where `s: string` |
-| `WS025` | A non-storable type used as storage — `any`, `zone`, `teleport`, or `prefab` in a `var` / `buffer` / array / map. | `var x: any = 0` |
-| `WS031` | A reference (`zone` / `teleport` / var ref) used in an `if`-then-else — a Select routes a value, not a reference. | `if c then zoneA else zoneB` |
+| `WS025` | A type with no storable form used as storage: `any`, `zone`, `teleport`, `prefab`, a ref to one of those, a container of records inside another container, or a ref, brick, array or map as a map key. Also a handler-local `*T` / `brick` var with no initializer. | `var x: any = 0` / `var h: *zone` / `on go { var h: *int }` |
+| `WS031` | A reference-only value (`zone`, `teleport`, prefab) used in an `if`-then-else. A `*T`, an array ref and a `brick` pass through the Select gate and are fine. | `if c then zoneA else zoneB` |
 | `WS066` | `.Discriminant`, `.ToInt()`, or a `match` targets a value that isn't an enum. | `var x: int = 0` then `x.Discriminant` |
 | `WS067` | A bare variant name for a variant that has a payload (`Circle` instead of `Circle(_)`) in a `match` arm binds the whole value like a catch-all, which can leave later arms unreachable. | `match s { Circle => .., Empty => .. }` |
 | `WS068` | A custom-event data param is a record or an enum. A data slot is one wire and those span several, so the value cannot travel through it. Pass the fields as separate params, or send a key and read the value from shared storage on the other side. | `on CustomEvent("c") -> (p: Point) { }` |
@@ -82,6 +82,9 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | `WS070` | An `unsafe` payload access does not name both a variant and a field. The form is `unsafe <value>.<Variant>.<field>`; the variant is what selects the slot. | `unsafe e.B = x` |
 | `WS071` | A record value used where a single value is expected. A record is several wires, so it cannot drive one port, including a string concatenation, which has no way to render the whole bundle. Read a field, or concatenate the fields individually. | `let p = { x: 1, y: 2 }` then `"p=" .. p` |
 | `WS072` | An expression that produces no value read as one: a void container mutation (`a.push(x)`, `m.set(k, v)`) or a `mod`/`chip` with no output. There is no wire to pass, so the consumer would read its port default. Use the call as a statement, or give the `mod` an output. | `mod f(x: int) { }` then `o = f(1)` |
+| `WS084` | A ref or brick compared with something that is not a ref of the same kind. The game treats `1 == <ref>` as true, so the comparison would mean nothing. Compare two refs, or read through one with `*`. | `h == 1` where `h: *int` |
+| `WS085` | `*` applied to an array ref, a map ref or a brick. An array or map ref is used directly (`rows[y].push(v)`), and nothing reads through a brick. | `*rows[0]` / `*anchor` |
+| `WS086` | A ref to a ref: a `**T` type, or `&` of a value that already holds a ref. The game has no storage for one. | `var g: **int` / `&h` where `h: *int` |
 
 ## Calls & arguments
 
@@ -107,7 +110,7 @@ See [Generics](types.md#generics).
 
 | Code | Meaning | Trigger |
 |------|---------|---------|
-| `WS017` | *(warning)* Ambiguous variable output type — `out foo = someVar` with an untyped var; annotate `out foo: T` (value) or `out foo: *T` (ref). | `out o = myVar` |
+| `WS017` | *(warning)* Ambiguous variable output type: `out foo = someVar` with an untyped var; annotate `out foo: T = someVar` (value) or `out foo: *T = &someVar` (ref). | `out o = myVar` |
 | `WS019` | A prefab reference must end in `.brz`. | `$./level` |
 | `WS023` | A side annotation (`@left`/`@right`/`@top`/`@bottom`) is only valid on a top-level port of the compiled file, not inside a chip/mod body. | `chip { @left in go: exec }` |
 | `WS040` | A `@label(<expr>)` isn't a compile-time constant, in a position that requires a baked label (a port, chip, or nested `var`). | `@label(hp) in x: int` |

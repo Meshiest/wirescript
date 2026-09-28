@@ -874,3 +874,51 @@
             .is_ok()
         );
     }
+
+    #[test]
+    fn refs_default_to_the_games_null_refs() {
+        use crate::ir::Type;
+        let null_brick = brdb::schema::SavedBrickRef {
+            brick_index_in_chunk: u32::MAX,
+            ..Default::default()
+        };
+        assert_eq!(
+            var_type_to_wire_value(Some(&Type::Brick)),
+            WireValue::BrickRef(null_brick)
+        );
+        for t in [
+            Type::Ref(Box::new(Type::Color)),
+            Type::Ref(Box::new(Type::Array(Box::new(Type::Int)))),
+            Type::Array(Box::new(Type::Int)),
+            Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+        ] {
+            assert_eq!(
+                var_type_to_wire_value(Some(&t)),
+                WireValue::ComponentRef(brdb::schema::SavedComponentRef {
+                    brick: null_brick,
+                    component_type_index: 0,
+                }),
+                "{t}"
+            );
+        }
+    }
+
+    #[test]
+    fn ref_elements_select_the_handle_storage_types() {
+        use crate::ir::Type;
+        let elem = |t: Type| array_from_literals(Some(&t), &[]).element_type;
+        assert_eq!(elem(Type::Ref(Box::new(Type::Color))), "component_handle");
+        assert_eq!(elem(Type::Array(Box::new(Type::Int))), "component_handle");
+        assert_eq!(
+            elem(Type::Map(Box::new(Type::String), Box::new(Type::Int))),
+            "component_handle"
+        );
+        assert_eq!(elem(Type::Brick), "brick_handle");
+        let m = map_from_type(&Type::Map(
+            Box::new(Type::String),
+            Box::new(Type::Ref(Box::new(Type::Color))),
+        ));
+        assert_eq!((m.key_type, m.value_type), ("Str", "component_handle"));
+        let m = map_from_type(&Type::Map(Box::new(Type::Int), Box::new(Type::Brick)));
+        assert_eq!((m.key_type, m.value_type), ("i64", "brick_handle"));
+    }

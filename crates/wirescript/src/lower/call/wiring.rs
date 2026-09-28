@@ -23,7 +23,7 @@ pub(super) fn wire_chip_args_and_outputs(
         if param.is_const {
             continue;
         }
-        let Some(arg_expr) = positional_args.get(i) else {
+        let Some(raw_arg) = positional_args.get(i) else {
             continue;
         };
         // `&x` / `ref x` names the same storage as bare `x`, so strip the sigil
@@ -33,9 +33,9 @@ pub(super) fn wire_chip_args_and_outputs(
         let arg_expr: &Expr = if crate::lower::context::container_storage(&param.typ).is_some()
             || ctx.record_or_tuple_fields(&param.typ).is_some()
         {
-            deref_arg(arg_expr)
+            deref_arg(raw_arg)
         } else {
-            arg_expr
+            raw_arg
         };
 
         // A `*Record` is NOT a scalar ref: `record_or_tuple_fields` reports its
@@ -56,27 +56,28 @@ pub(super) fn wire_chip_args_and_outputs(
             } else {
                 WirePort::VarRef
             };
-            if let Expr::Ident { name, .. } = arg_expr {
-                if let Some(var_rec) = ctx.lookup_var(name).cloned() {
-                    ctx.connect(
-                        var_rec.node_id.port(ref_port_id),
-                        mc_input.port(WirePort::RerInput),
+            let src = match classify_ref_arg(ctx, &param.typ, raw_arg) {
+                RefArg::Static(var_rec) => var_rec.node_id.port(ref_port_id),
+                // An `in X: T[]` / ref input passed by reference: its ref lives
+                // at RER_Output, not an ArrayVarRef/VarRef port.
+                RefArg::Input(inp) => inp.node_id.port(WirePort::RerOutput),
+                RefArg::Forward(d) => d.port,
+                RefArg::Value => lower_expr(ctx, raw_arg),
+                RefArg::Unbound => {
+                    ctx.error(
+                        "WS044",
+                        format!(
+                            "argument `{}` is an array/map literal, which names no storage \
+                             for the chip's container parameter to use, so its operations \
+                             on it would be silently dropped. Pass an array or map `var`",
+                            param.name
+                        ),
+                        raw_arg.range(),
                     );
-                } else if let Some(Binding::Input(inp)) = ctx.scope.get(name).cloned() {
-                    // An `in X: T[]` / ref input passed by reference: its array
-                    // ref lives at RER_Output, not an ArrayVarRef/VarRef port.
-                    ctx.connect(
-                        inp.node_id.port(WirePort::RerOutput),
-                        mc_input.port(WirePort::RerInput),
-                    );
+                    continue;
                 }
-            } else if let Some(Binding::Var(var_rec)) = resolve_field_chain(ctx, arg_expr).cloned()
-            {
-                ctx.connect(
-                    var_rec.node_id.port(ref_port_id),
-                    mc_input.port(WirePort::RerInput),
-                );
-            }
+            };
+            ctx.connect(src, mc_input.port(WirePort::RerInput));
             continue;
         }
 
@@ -129,8 +130,10 @@ pub(super) fn wire_chip_args_and_outputs(
     // stale, so a read after the call would see the pre-call value. The
     // instance body is a separate module, so we can't cheaply tell which
     // caller vars it touched — blanket-reset every cache, exactly as the
-    // inline-mod path does after its body.
-    reset_var_get_caches(ctx);
+    // inline-mod path does after its body. Those writes draw no wire out of
+    // the caller's storage, so they count as dynamic writes: an enclosing
+    // `for` then drops its pre-loop reads too.
+    note_dynamic_write(ctx);
 
     // A record-typed signature output has one child pin per LEAF, so the call
     // does not produce a single value port. Stash the per-leaf record the way

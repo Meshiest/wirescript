@@ -1012,3 +1012,54 @@ fn generic_negate_monomorphizes() {
     // int and float monomorphs each emit one negate.
     assert_eq!(gate_count(&r, "BrickComponentType_Expr_MathNegate"), 2);
 }
+
+/// Generic PASSTHROUGH BUILTINS (`Sleep`/`SleepTicks`/`Select`/`Swap`, declared
+/// in `catalog/calls/flow.rs`) are a second monomorphization surface, separate
+/// from user `mod<T>` calls: their `T`-typed ports were left as the CallSpec's
+/// bare `Type::Param("T")` when the argument was a runtime value rather than an
+/// inlined constant (`lower/call/builtin.rs`'s `ports.inputs`/`ports.outputs`
+/// build used the declared type verbatim). `await SleepTicks(_, delay = N)` -
+/// the documented anonymous-placeholder await form, `_` standing for the armed
+/// flag - is the case that surfaced it: `_` binds the generic `input` port to a
+/// `bool`, and that `Type::Param` reached `var_type_to_wire_value` and tripped
+/// its debug_assert (a release build silently defaulted the field to
+/// `WireValue::Number(0.0)` instead).
+#[test]
+fn await_sleep_ticks_placeholder_monomorphizes_input_and_output_to_bool() {
+    let src = "in start: exec\non start {\n  await SleepTicks(_, delay = 10)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed for `await SleepTicks(_, ...)`");
+    assert!(
+        !any_param_port(&r.module),
+        "no port may still carry Type::Param after monomorphization"
+    );
+
+    // The armed flag `_` binds is a `bool` (typecheck/stmt.rs declares it
+    // `Type::Bool` for the await's exec expression), so the BufferTicks gate's
+    // generic `Input`/`Output` ports must both monomorphize to `Type::Bool` -
+    // not fall back to `Any` (which would silently re-default to `Number(0.0)`
+    // at emit, the same wrong answer the leaked `Param` produced).
+    let buf = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == crate::ir::gate_class::BUFFER_TICKS)
+        .expect("a BufferTicks gate for SleepTicks");
+    let value_ports: Vec<&Type> = buf
+        .ports
+        .inputs
+        .iter()
+        .chain(buf.ports.outputs.iter())
+        .filter(|p| {
+            let name = crate::intern::resolve(p.name);
+            name == "Input" || name == "Output"
+        })
+        .map(|p| &p.ty)
+        .collect();
+    assert!(!value_ports.is_empty(), "BufferTicks must have Input/Output ports");
+    assert!(
+        value_ports.iter().all(|t| **t == Type::Bool),
+        "SleepTicks(_, ...)'s Input/Output ports must monomorphize to bool, got {value_ports:?}"
+    );
+}

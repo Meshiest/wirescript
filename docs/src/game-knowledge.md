@@ -10,6 +10,7 @@ game does with the result, plus the practical tips that follow from it.
 - [Rich Text Markup](#rich-text-markup)
 - [Input Action Names](#input-action-names)
 - [DisplayText Screen Placement](#displaytext-screen-placement)
+- [References in wire values](#references-in-wire-values)
 - [Loop Ticks](#loop-ticks)
 <!-- /toc -->
 
@@ -267,6 +268,41 @@ a change wants `0` (infinite), or it blanks itself between updates.
 The 2D layout ports are `Vector2D` composites and the call feeds them one axis
 at a time, so every one of these is a `float` named `...X` / `...Y`. There is no
 `vector`-typed `position` or `anchor`; passing one is a `WS041` error.
+
+## References in wire values
+
+Measured in game, with the probes that motivated ref values as a language
+feature (see [Reference values](types.md#reference-values)):
+
+- A component ref is stored in an ordinary var; a gate reading its `VarRef`
+  from that var reads, writes and increments the target, and copying the ref
+  var-to-var keeps it.
+- Handle containers are kind-strict: a `component_handle` array or map value
+  keeps a component ref, a `brick_handle` array keeps a brick ref, and each
+  only keeps its own kind.
+- A number container (an `i64`/`f64` array, or an `f64` map value) turns a
+  pushed ref into the plain number `1`. This is exactly the failure mode the
+  compiler's storage rules exist to prevent (a ref only ever picks a handle
+  container).
+- A non-ref value used where the game expects a ref halts the exec chain
+  silently, with nothing logged.
+- `1 == <ref>` compares true in the native gate, which is why the language
+  rejects a ref/brick compared with a non-ref (`WS084`) instead of letting the
+  comparison reach the gate.
+- A Select gate routes a ref through unchanged, and refs travel as
+  custom-event data, both without special-casing.
+- Arrays of arrays work: a `component_handle` array holding array refs, with
+  an element read back out able to drive `Push`, `Get` and `GetLength` on the
+  inner array.
+- A brick ref baked into a var's data survives paste and resolves under both
+  addressing forms -- the relative form (grid 0, chunk offset, index) and the
+  absolute form (saved grid id, chunk, index) of the same brick compare equal,
+  and refs to two different bricks compare unequal.
+- No gate consumes or produces a brick: `GetLocation` on one returns the
+  origin, and nothing outputs one. A brick ref comes only from the editor or
+  from save data.
+- `FormatText` prints a var ref as `Var`, an array ref as `Array Var`, and a
+  brick as `Brick`.
 
 ## Loop Ticks
 

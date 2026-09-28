@@ -72,7 +72,7 @@ Top-level (module-scope) `var` declarations are always persistent — `static` i
 Internally, a `var x: T` has type `ref T`. This means:
 
 - **In exec context** (inside `on` handlers): `x` auto-dereferences to type `T` when used in expressions. When passed to a `*T` parameter, it remains a reference.
-- **In pure context** (outside handlers): `x` refers to the variable reference itself (`ref T`). Use `x.Value` or `x.prev` to read the value.
+- **In pure context** (outside handlers): `x` reads the var's value (the same as `x.Value`); `x.prev` reads the previous tick's value. `&x` is the var's ref as a value. See [Reference values](types.md#reference-values).
 
 ```wirescript
 var count: int = 0
@@ -583,10 +583,10 @@ out name: type = expression
 ```wirescript ignore
 out score: int = count.Value     // type asserted + value
 out ratio: float = hits / total
-out ref: *int = myVar            // ref output — exposes the variable reference
+out ref: *int = &myVar           // ref output: carries the variable's ref
 ```
 
-This form is required when you want to expose a variable reference (`*T`) rather than its computed value, or to disambiguate the type when the compiler would otherwise warn.
+A `*T` output carries a ref, so its value is written `&myVar`; a bare `myVar` there is its value, a type mismatch (WS003). The annotation also disambiguates the type when the compiler would otherwise warn.
 
 ### Exec outputs
 
@@ -652,14 +652,14 @@ When `out foo = someVar` is used and `someVar` has no explicit type annotation, 
 
 ```
 warning WS017: output type inferred from untyped variable
-  suggest: `out foo: T = var` for value or `out foo: *T = var` for ref
+  suggest: `out foo: T = var` for value or `out foo: *T = &var` for ref
 ```
 
 Fix by adding a type annotation:
 
 ```wirescript
 out foo: int = myVar      // exposes the value (uses .Value)
-out foo: *int = myVar     // exposes the variable reference
+out foo: *int = &myVar    // exposes the variable reference
 ```
 
 ## `@left` / `@right` / `@top` / `@bottom` -- Outer Rerouter Pins

@@ -30,6 +30,23 @@ pub(super) fn coerce_bool_to_int(wv: WireValue) -> WireValue {
     }
 }
 
+/// The game's own unset brick ref, as it writes into an unwired ref field:
+/// brick index `u32::MAX` in chunk (0, 0, 0) of grid 0.
+pub(super) fn null_brick_ref() -> brdb::schema::SavedBrickRef {
+    brdb::schema::SavedBrickRef {
+        brick_index_in_chunk: u32::MAX,
+        ..Default::default()
+    }
+}
+
+/// The game's own unset component ref: the null brick, component type 0.
+pub(super) fn null_component_ref() -> brdb::schema::SavedComponentRef {
+    brdb::schema::SavedComponentRef {
+        brick: null_brick_ref(),
+        component_type_index: 0,
+    }
+}
+
 pub(super) fn var_type_to_wire_value(ty: Option<&crate::ir::Type>) -> WireValue {
     use crate::ir::Type;
     debug_assert!(
@@ -63,6 +80,12 @@ pub(super) fn var_type_to_wire_value(ty: Option<&crate::ir::Type>) -> WireValue 
             b: 1.0,
             a: 1.0,
         },
+        // A var ref, and an array or map ref (a `VarRef` of an ArrayVar /
+        // MapVar), is a component ref; unset, it is the game's null one.
+        Some(Type::Ref(_) | Type::Array(_) | Type::Map(_, _)) => {
+            WireValue::ComponentRef(null_component_ref())
+        }
+        Some(Type::Brick) => WireValue::BrickRef(null_brick_ref()),
         _ => WireValue::Number(0.0),
     }
 }
@@ -81,6 +104,10 @@ pub(super) fn dynamic_type_name(ty: Option<&crate::ir::Type>) -> &'static str {
         Some(Type::Quat) => "Quat",
         Some(Type::Color) => "LinearColor",
         Some(Type::Controller | Type::Character | Type::Entity) => "weak_object",
+        // Handle storage is kind-strict in game: a component_handle container
+        // keeps var, array and map refs; a brick_handle one keeps bricks.
+        Some(Type::Ref(_) | Type::Array(_) | Type::Map(_, _)) => "component_handle",
+        Some(Type::Brick) => "brick_handle",
         _ => "f64",
     }
 }

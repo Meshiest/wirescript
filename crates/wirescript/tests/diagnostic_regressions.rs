@@ -89,8 +89,10 @@ fn a_tuple_typed_field_in_a_record_annotation_stays_clean() {
 // --- A non-lvalue arg to a `*T` ref param is WS008, not a silent drop.
 #[test]
 fn a_literal_passed_to_a_ref_param_is_ws008() {
+    // Exact list, not just presence: a ref-typed param with no lvalue-shaped
+    // argument is WS008 alone, not WS008 plus a piled-on WS003.
     let src = "mod inc(v: *int) { v = v + 1 }\nin go: exec\non go { inc(5) }\n";
-    assert!(has(src, "WS008"), "{:?}", diags(src));
+    assert_eq!(diags(src), vec!["WS008"]);
 }
 
 #[test]

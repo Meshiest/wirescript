@@ -150,6 +150,25 @@ fn check_stmt_inner(
     match s {
         Stmt::Var(v) => {
             register_decl(ctx, &TopDecl::Var(v.clone()));
+            // A local `var` resets every run, and a ref has no literal to reset
+            // to, so without an initializer it would keep the last run's ref.
+            if !v.is_static
+                && v.init.is_none()
+                && ctx.exec_mode() == ExecMode::Exec
+                && let Some(SymbolInfo { ty: Type::Ref(held), .. }) = ctx.scope.lookup(&v.name).cloned()
+                && matches!(held.as_ref(), Type::Ref(_) | Type::Brick)
+            {
+                ctx.emit(
+                    "WS025",
+                    format!(
+                        "'{}' holds a {}, and a var declared here resets every run to its \
+                        initializer; a ref has none to reset to. Give it one \
+                        (`var {} = ...`) or make it `static var`",
+                        v.name, held, v.name
+                    ),
+                    v.range.clone(),
+                );
+            }
             // Statement-level vars inherit the current exec context (not forced pure)
             // so that `var x: int = arr[i]` works inside handlers.
             if let Some(init) = &v.init {
@@ -179,7 +198,8 @@ fn check_stmt_inner(
                     // Refine an unannotated var's placeholder `any` from a
                     // non-literal init, same as the top-level decl path.
                     if v.typ.is_none() && matches!(inner, Type::Any) {
-                        let u = unwrap_ref(&t);
+                        // A ref value is what the var holds, not a place to read.
+                        let u = if matches!(t, Type::Ref(_)) { t.clone() } else { unwrap_ref(&t) };
                         if var_storable(&u) {
                             ctx.scope.set_type(&v.name, Type::Ref(Box::new(u)));
                         }
@@ -205,6 +225,7 @@ fn check_stmt_inner(
                 check_let_type_annotation(ctx, l, &t);
             }
             record_single_output_alias(ctx, &l.binding, &l.value);
+            record_let_ref_values(ctx, &l.binding, &l.value);
             bind_let(ctx, &l.binding, &t);
             // A body-local `let name = <constant>` is recorded in the
             // innermost `scoped_consts` frame (mirroring how a top-level
@@ -434,6 +455,7 @@ fn check_stmt_inner(
                 check_map_literal(ctx, entries, k, v);
             } else {
                 infer::check(ctx, &a.value, &target_ty);
+                check_deref_write_is_exact(ctx, &a.target, &a.value, &target_ty);
             }
         }
         Stmt::OutBinding(b) => {
@@ -447,14 +469,13 @@ fn check_stmt_inner(
                 if let Some(value) = &b.value {
                     // An annotated out must accept its value (WS003 on a
                     // genuine mismatch; coercions — including string → bool
-                    // and primitive → string — pass). Both sides unwrap refs
-                    // so the ref-ness is treated as exposure mode rather
-                    // than a value-type difference; mirrors `TopDecl::Out`.
+                    // and primitive → string — pass). A `*T` port carries a
+                    // ref, never the value it points at; mirrors `TopDecl::Out`.
                     let value_ty = infer::infer(ctx, value);
                     infer::coerce_or_emit(
                         ctx,
-                        &unwrap_ref(&value_ty),
-                        &unwrap_ref(&resolved),
+                        &value_ty.clone().container_ref_as_value(),
+                        &resolved.clone().container_ref_as_value(),
                         value.range(),
                     );
                     // Two more things have to hold, and neither follows from
@@ -760,6 +781,21 @@ fn check_stmt_inner(
                     range.clone(),
                 );
                 return;
+            }
+            // A line that starts with `*` is a new statement, a deref, never
+            // the continuation of the line above (`n = a` / `* b`), so on its
+            // own it reads a value nothing uses.
+            if let Expr::Deref { operand, range } = &es.expr {
+                ctx.warn(
+                    "WSP001",
+                    format!(
+                        "`*{}` reads a value that nothing uses: a line that starts with `*` \
+                         begins a new statement (a deref), it does not continue the line \
+                         above. To multiply across lines, end the first line with `*`",
+                        target_name(operand).unwrap_or("<expr>".into())
+                    ),
+                    range.clone(),
+                );
             }
             infer::infer(ctx, &es.expr);
         }
@@ -1232,8 +1268,12 @@ pub(crate) fn is_ref_able(ctx: &TypeCheckCtx, e: &Expr) -> bool {
             // storage gate, so it is writable and ref-able exactly when the
             // record it hangs off is. Recursing keeps the conservatism, since a
             // field of a computed scalar `let` fails the `Ident` arm's guard and
-            // stays rejected.
-            is_ref_able(ctx, obj)
+            // stays rejected. A field of a container element (`pts[i].x`) is an
+            // element of a value column, which has no ref of its own.
+            !matches!(
+                crate::typecheck::infer::flatten_access(obj).0,
+                Expr::IndexAccess { .. }
+            ) && is_ref_able(ctx, obj)
         }
         _ => false,
     }
@@ -1257,7 +1297,7 @@ fn infer_assign_target(
                 );
                 Type::Any
             }
-            Some(s) if s.kind == SymbolKind::Var => unwrap_ref(&s.ty),
+            Some(s) if s.kind == SymbolKind::Var => unwrap_ref(&s.ty).container_ref_as_value(),
             Some(s) if s.kind == SymbolKind::Array => unwrap_ref(&s.ty),
             Some(s) if s.kind == SymbolKind::Map => unwrap_ref(&s.ty),
             // A `let` is only a writable target when it's reference-backed
@@ -1336,6 +1376,13 @@ fn infer_assign_target(
         }
     } else if let Expr::IndexAccess { obj, index, .. } = e {
         let obj_ty = infer_assign_target(ctx, obj);
+        // Recorded so lowering can resolve a runtime inner container
+        // (`rows[y][x] = v`) from the OBJECT's type, not just the element's.
+        {
+            let r = obj.range();
+            ctx.type_of_expr
+                .insert((r.file.clone(), r.start.offset, r.end.offset), obj_ty.clone());
+        }
         infer::check_index_type(ctx, &obj_ty, index);
         match obj_ty {
             Type::Array(inner) => *inner,
@@ -1387,6 +1434,29 @@ fn infer_assign_target(
             }
             _ => Type::Any,
         }
+    } else if let Expr::Deref { operand, range } = e {
+        // `*h = v` writes through the ref `h` holds.
+        let t = infer::infer(ctx, operand);
+        match t {
+            Type::Ref(inner) => *inner,
+            Type::Any => Type::Any,
+            t @ (Type::Array(_) | Type::Map(_, _) | Type::Brick) => {
+                infer::emit_deref_not_a_scalar_ref(ctx, &t, range);
+                Type::Any
+            }
+            _ if is_ref_able(ctx, operand) => infer_assign_target(ctx, operand),
+            other => {
+                ctx.emit(
+                    "WS003",
+                    format!(
+                        "`*` needs a reference, got {}",
+                        crate::analysis::types::type_str(&other)
+                    ),
+                    range.clone(),
+                );
+                Type::Any
+            }
+        }
     } else {
         // Any other target shape (a call result `f() = 5`, a literal, an
         // operator expression) is not an lvalue. It used to fall through to
@@ -1400,6 +1470,43 @@ fn infer_assign_target(
             e.range().clone(),
         );
         Type::Any
+    }
+}
+
+/// A write through a dynamic ref (`*h = v`) wires directly into whatever
+/// `Var_Set` gate `h` currently points at, with no coercion adapter the way an
+/// ordinary assignment to a statically named var gets - the same reasoning
+/// behind the `*T` call-argument invariance in `sig::check_wire_arg`. So
+/// unlike a plain `n = 1.5`, a numeric widen/narrow through a ref is still a
+/// mismatch. Only fires for a genuine ref write (`target`'s deref operand
+/// itself inferred `Type::Ref`); `*x = v` on a plain auto-deref var already
+/// went through `infer_assign_target`'s ordinary, lenient path.
+fn check_deref_write_is_exact(ctx: &mut TypeCheckCtx, target: &Expr, value: &Expr, target_ty: &Type) {
+    let Expr::Deref { operand, .. } = target else {
+        return;
+    };
+    let recorded = |ctx: &TypeCheckCtx, e: &Expr| {
+        let r = e.range();
+        ctx.type_of_expr
+            .get(&(r.file.clone(), r.start.offset, r.end.offset))
+            .cloned()
+    };
+    if !matches!(recorded(ctx, operand), Some(Type::Ref(_))) {
+        return;
+    }
+    let value_ty = recorded(ctx, value).unwrap_or(Type::Any);
+    if matches!(value_ty, Type::Any) || matches!(target_ty, Type::Any) {
+        return;
+    }
+    if coerce(&value_ty, target_ty) == CoerceRule::Coerce {
+        ctx.emit(
+            "WS003",
+            format!(
+                "`*` write needs exactly {target_ty}, got {value_ty} - a write through a ref \
+                 carries no coercion"
+            ),
+            value.range().clone(),
+        );
     }
 }
 

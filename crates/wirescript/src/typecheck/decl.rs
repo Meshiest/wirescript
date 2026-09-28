@@ -447,7 +447,8 @@ fn check_decl_inner(
                         // Vec(…)`): refine the placeholder `any` from the RHS,
                         // like buffers do.
                         if v.typ.is_none() && matches!(inner, Type::Any) {
-                            let u = unwrap_ref(&t);
+                            // A ref value is what the var holds, not a place to read.
+                            let u = if matches!(t, Type::Ref(_)) { t.clone() } else { unwrap_ref(&t) };
                             if var_storable(&u) {
                                 ctx.scope.set_type(&v.name, Type::Ref(Box::new(u)));
                             }
@@ -522,19 +523,13 @@ fn check_decl_inner(
                     // An annotated out must accept its value: `check` coerces it
                     // into the port type (WS003 on a genuine mismatch; the string
                     // → bool `!= ""` compare and friends pass) AND resolves a
-                    // bidirectional literal like `null` to the port's type. Both
-                    // sides unwrap refs so `out y: *int = x` compares int against
-                    // int, the ref-ness being the exposure mode, not a value type.
-                    // `out y: *int = &x` / `= ref x` names the same storage as
-                    // `out y: *int = x`; the `&`/`ref` is the exposure mode the
-                    // annotation already states, not a second value type, so
-                    // the check looks through it on both sides.
-                    let checked: &Expr = match value {
-                        Expr::RefOf { operand, .. } if matches!(resolved, Type::Ref(_)) => operand,
-                        other => other,
-                    };
-                    let value_ty =
-                        ctx.in_pure(|ctx| infer::check(ctx, checked, &unwrap_ref(&resolved)));
+                    // bidirectional literal like `null` to the port's type. A
+                    // `*T` port carries a ref, so `out y: *int = &x` fits it and
+                    // `out y: *int = x` (x's value) does not; an array or map
+                    // ref is the container itself, so `*int[]` and `int[]` agree.
+                    let value_ty = ctx.in_pure(|ctx| {
+                        infer::check(ctx, value, &resolved.clone().container_ref_as_value())
+                    });
                     // The value has to fit the PORT as well as this site's own
                     // annotation, which are different types whenever an earlier
                     // site typed the port. Annotation-versus-port is settled in
@@ -569,7 +564,7 @@ fn check_decl_inner(
                             code: "WS017".into(),
                             message: format!(
                                 "out '{}' infers type from var '{}' — add explicit type: \
-                                 `out {}: {} = {}` for value, or `out {}: *{} = {}` for ref",
+                                 `out {}: {} = {}` for value, or `out {}: *{} = &{}` for ref",
                                 b.name, name,
                                 b.name, crate::analysis::types::type_str(&unwrap_ref(&sym.ty)), name,
                                 b.name, crate::analysis::types::type_str(&unwrap_ref(&sym.ty)), name,
@@ -586,6 +581,7 @@ fn check_decl_inner(
                 check_let_type_annotation(ctx, l, &t);
             }
             record_single_output_alias(ctx, &l.binding, &l.value);
+            record_let_ref_values(ctx, &l.binding, &l.value);
             bind_let(ctx, &l.binding, &t);
             // Same is_const/let split as the `Stmt::Let` arm (typecheck/stmt.rs):
             // `let` folds opportunistically, `const` must fold or it's an error.

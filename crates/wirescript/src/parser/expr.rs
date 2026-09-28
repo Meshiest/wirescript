@@ -185,7 +185,21 @@ impl<'a> Parser<'a> {
             while self.peek().kind == TokenKind::Newline {
                 self.advance();
             }
+            let skipped_newline = self.pos != saved;
             let tok = self.peek().clone();
+            // `*`/`**` is ambiguous between "continue this expression as a
+            // multiplication" and "a new statement starting with a deref"
+            // (`*h = 5`). Only the trailing-operator form above is a real
+            // continuation — a line that STARTS with `*` (getting here only
+            // by skipping a newline to find it) is the latter, so stop the
+            // expression here instead of consuming it.
+            if skipped_newline
+                && tok.kind == TokenKind::Op
+                && (tok.text == "*" || tok.text == "**")
+            {
+                self.pos = saved;
+                break;
+            }
             // A `for` source's range endpoint (`Parser::stop_at_dotdot`, set
             // only by `parse_range_operand`) never treats a bare `..` as this
             // loop's operator - it stops here instead, so `0..n-1` groups the

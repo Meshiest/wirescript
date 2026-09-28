@@ -768,11 +768,17 @@ fn let_of_a_ref_binds_the_variable() {
             wired_between(
                 &r,
                 "BrickComponentType_Var",
+                WirePort::VarRef,
+                "BrickComponentType_Exec_Var_Get",
+                WirePort::VarRef,
+            ) && wired_between(
+                &r,
+                "BrickComponentType_Exec_Var_Get",
                 WirePort::Value,
                 "BrickComponentType_Exec_Var_Set",
                 WirePort::Value,
             ),
-            "`v = *r` must read someVar's value, not a placeholder"
+            "`v = *r` must read through someVar's ref, not a placeholder"
         );
     }
 }

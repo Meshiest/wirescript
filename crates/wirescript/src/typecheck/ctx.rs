@@ -341,6 +341,14 @@ pub struct TypeCheckCtx<'a> {
     /// means "known to be a single-output call result, but its output name
     /// isn't indexed here" — any field is accepted, never a false typo.
     pub single_output_alias: crate::collections::HashMap<String, Option<String>>,
+    /// Which `*T` fields of a record `let` hold a ref VALUE rather than name
+    /// storage, keyed by the binding's declaration `(file, offset)`. A record
+    /// literal built from vars (`{ cpsr, skip }`) bundles places, whose `*T`
+    /// fields read their targets; one built from `&x`, or a map read or other
+    /// builtin result, carries refs on wires. A `let` with no entry bundles
+    /// places. See `super::let_binding::LetRefValues`.
+    pub(crate) let_ref_values:
+        crate::collections::HashMap<(Arc<str>, usize), super::let_binding::LetRefValues>,
     /// Every `mod`/`chip` declaration seen so far (top-level AND nested,
     /// registered by `register_decl`'s `TopDecl::Chip` arm — the same site
     /// that declares the symbol into `scope`), keyed by bare name. `scope`
@@ -434,6 +442,7 @@ impl<'a> TypeCheckCtx<'a> {
             ce_slots,
             out_ctx: Vec::new(),
             single_output_alias: crate::collections::HashMap::default(),
+            let_ref_values: crate::collections::HashMap::default(),
             // Always non-empty: the base frame holds the module's top-level
             // declarations, registered before any scope is ever pushed (see
             // `mod_decls`'s own doc comment).
@@ -819,8 +828,8 @@ pub(super) fn current_output_ty(ctx: &TypeCheckCtx, name: &str) -> Option<Type> 
     ctx.out_ctx.last()?.iter().find(|f| f.name == name).map(|f| f.ty.clone())
 }
 
-/// The type output `name` is declared with, refs unwrapped, or `None` when
-/// nothing declares one.
+/// The type output `name` is declared with (an array or map ref read as the
+/// container), or `None` when nothing declares one.
 ///
 /// The enclosing mod/chip signature frame answers first, then the
 /// module-boundary port registry. A signature output and a port may share a
@@ -835,12 +844,12 @@ pub(super) fn current_output_ty(ctx: &TypeCheckCtx, name: &str) -> Option<Type> 
 /// `Type::Opaque`, a real declared type that answers.
 fn declared_output_ty(ctx: &TypeCheckCtx, name: &str) -> Option<Type> {
     let in_signature_frame = ctx.out_ctx.len() > 1;
-    match current_output_ty(ctx, name).map(|t| unwrap_ref(&t)) {
+    match current_output_ty(ctx, name).map(Type::container_ref_as_value) {
         Some(t) if in_signature_frame || !matches!(t, Type::Any) => Some(t),
         _ => ctx
             .scope
             .lookup(&out_scope_key(name))
-            .map(|s| unwrap_ref(&s.ty))
+            .map(|s| s.ty.clone().container_ref_as_value())
             .filter(|t| !matches!(t, Type::Any)),
     }
 }
@@ -864,7 +873,7 @@ pub(super) fn check_port_write(
     range: &SourceRange,
 ) {
     if let Some(port_ty) = declared_output_ty(ctx, name) {
-        infer::coerce_or_emit(ctx, &unwrap_ref(value_ty), &port_ty, range);
+        infer::coerce_or_emit(ctx, &value_ty.clone().container_ref_as_value(), &port_ty, range);
     }
 }
 
@@ -889,10 +898,10 @@ pub(super) fn check_annotated_port_write(
     let Some(port_ty) = declared_output_ty(ctx, name) else {
         return;
     };
-    if port_ty == unwrap_ref(annotated_ty) {
+    if port_ty == annotated_ty.clone().container_ref_as_value() {
         return;
     }
-    infer::coerce_or_emit(ctx, &unwrap_ref(value_ty), &port_ty, range);
+    infer::coerce_or_emit(ctx, &value_ty.clone().container_ref_as_value(), &port_ty, range);
 }
 
 /// Check the type an `out` site DECLARES against the port it writes, reporting

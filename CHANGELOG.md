@@ -2,9 +2,13 @@
 
 # 1.12.0
 - `for` loops compile to callable loop microchips, iterating a range, array or map within a single tick.
+- References are values: vars, arrays and maps hold `*T` refs (`&x` makes one, `*h` reads or writes through it), arrays nest (`int[][]`), refs travel as custom-event data, and a new `brick` type holds a brick set in the editor.
+- Comparing a ref or brick with a non-ref is `WS084`, `*` on an array ref, map ref or brick is `WS085`, a ref to a ref is `WS086`, and an if-expression may select between refs and bricks (`WS031` no longer applies to them).
 
 ### Fixes
 
+- A `*T` output carries a ref: `out h: *int = &x` drives it with `x`'s ref, and a bare `x` there is `WS003`. Both used to wire `x`'s value.
+- A line that starts with `*` begins a new statement, so a bare deref whose value nothing uses now warns (`WSP001`) instead of silently dropping what read as a multiplication.
 - An array or map reached through a record field now resolves for every spelling of one, not just a `var`; reading through a port-bound field emitted a placeholder that read zero, and writing through one emitted nothing.
 
 ## 1.11.1

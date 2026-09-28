@@ -409,18 +409,25 @@ fn needs_declaration(ctx: &LowerCtx, name: &str) -> bool {
 }
 
 pub(super) fn match_increment_self(s: &Assign) -> Option<&Expr> {
-    let name = match &s.target {
-        Expr::Ident { name, .. } => name,
-        _ => return None,
-    };
+    fn same_target(a: &Expr, b: &Expr) -> bool {
+        match (a, b) {
+            (Expr::Ident { name: x, .. }, Expr::Ident { name: y, .. }) => x == y,
+            (Expr::Deref { operand: x, .. }, Expr::Deref { operand: y, .. }) => {
+                matches!((x.as_ref(), y.as_ref()),
+                    (Expr::Ident { name: p, .. }, Expr::Ident { name: q, .. }) if p == q)
+            }
+            _ => false,
+        }
+    }
+    if !matches!(s.target, Expr::Ident { .. } | Expr::Deref { .. }) {
+        return None;
+    }
     match &s.value {
-        Expr::BinOp {
-            op, left, right, ..
-        } if op == "+" => {
-            if matches!(left.as_ref(), Expr::Ident { name: n, .. } if n == name) {
+        Expr::BinOp { op, left, right, .. } if op == "+" => {
+            if same_target(left, &s.target) {
                 return Some(right);
             }
-            if matches!(right.as_ref(), Expr::Ident { name: n, .. } if n == name) {
+            if same_target(right, &s.target) {
                 return Some(left);
             }
             None
@@ -847,6 +854,32 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         return;
     }
 
+    // `*e = v`: write through the ref `e` evaluates to. `*x = v` on a plain
+    // var or a `*T` parameter is the explicit spelling of `x = v`.
+    if let Expr::Deref { operand, .. } = &s.target {
+        if ctx.current_exec.is_none() {
+            return;
+        }
+        if !matches!(ctx.type_of(operand), Type::Ref(_)) {
+            let plain = Assign {
+                target: operand.as_ref().clone(),
+                value: s.value.clone(),
+                range: s.range.clone(),
+            };
+            lower_assign(ctx, &plain);
+            return;
+        }
+        let inner = match ctx.type_of(operand) {
+            Type::Ref(t) => *t,
+            _ => unreachable!("checked above"),
+        };
+        let increment = match_increment_self(s);
+        let value = lower_expr(ctx, increment.unwrap_or(&s.value));
+        let ref_port = lower_expr(ctx, operand);
+        write_through_ref(ctx, ref_port, &inner, value, increment.is_some(), &s.range);
+        return;
+    }
+
     if let Expr::IndexAccess { obj, index, .. } = &s.target {
         // Map subscript `m[k] = v` desugars to a MapVar_Set (the same gate
         // `m.set(k, v)` lowers to) — mirrors the read desugar in
@@ -854,7 +887,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         // based dispatch; see its doc comment for why `ctx.type_of(obj)`
         // doesn't work here). Falls through to the array path below for
         // non-map subscript targets.
-        if let Some((map_ref, Type::Map(k, v))) = resolve_map_target(ctx, obj) {
+        if let Some((map_ref, Type::Map(k, v))) = resolve_map_target_or_runtime(ctx, obj) {
             if ctx.current_exec.is_none() {
                 return;
             }
@@ -1055,6 +1088,26 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         Expr::Ident { name, .. } => name.clone(),
         _ => return,
     };
+    if let Some(Binding::DynRef(d)) = ctx.scope.get(&var_name).cloned() {
+        if ctx.current_exec.is_none() {
+            return;
+        }
+        if d.storage != VarStorage::Var {
+            ctx.error(
+                "WS027",
+                format!(
+                    "assigning a whole container through a ref is not supported; use \
+                     {var_name}.clear() and push, or {var_name}.copyFrom(src)"
+                ),
+                &s.range,
+            );
+            return;
+        }
+        let increment = match_increment_self(s);
+        let value = lower_expr(ctx, increment.unwrap_or(&s.value));
+        write_through_ref(ctx, d.port, &d.inner_type, value, increment.is_some(), &s.range);
+        return;
+    }
     let var_rec = match ctx.lookup_var(&var_name).cloned() {
         Some(v) => v,
         None => return,
@@ -2537,13 +2590,15 @@ pub(super) fn lower_out_binding(
     range: &SourceRange,
 ) {
     let Some(value) = value else { return };
-    // `out y: *int = &x` / `= ref x` names the same storage as the bare
-    // `out y: *int = x`: the `&`/`ref` states the exposure mode the annotation
-    // already carries. `Expr::RefOf` names no binding, so without this unwrap
-    // it falls through to `lower_expr`, which has no form for it. Same unwrap
-    // `call/binding.rs` does for a `*T` argument.
+    // `out y: *int = &x` drives the port with x's ref (`lower_ref_of`, through
+    // `lower_expr`). A record has no single ref: `*T` on one distributes over
+    // its fields, so `&rec` wires field by field like the bare record does.
     let value = match value {
-        Expr::RefOf { operand, .. } => operand.as_ref(),
+        Expr::RefOf { operand, .. }
+            if matches!(resolve_field_chain(ctx, operand), Some(Binding::Record(_))) =>
+        {
+            operand.as_ref()
+        }
         other => other,
     };
     // An ENUM value driving an output port has no materialization yet: the

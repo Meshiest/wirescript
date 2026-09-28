@@ -613,7 +613,7 @@ pub fn completions(
     }
     for ty in &[
         "int", "float", "bool", "string", "entity", "controller", "character", "vector", "rotator",
-        "color", "exec",
+        "color", "brick", "exec",
     ] {
         items.push(CompletionOut {
             label: ty.to_string(),

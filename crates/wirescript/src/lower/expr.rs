@@ -96,6 +96,21 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         Expr::BinOp { .. } => lower_binop(ctx, e),
         Expr::UnOp { .. } => lower_unop(ctx, e),
         Expr::Deref { operand, range } => {
+            // `*e` on a ref VALUE: read through the wire that carries it.
+            if matches!(ctx.type_of(operand), Type::Ref(_)) {
+                let target = ctx.type_of(e);
+                let ref_port = lower_expr(ctx, operand);
+                let Some(exec) = ctx.current_exec else {
+                    ctx.error(
+                        "WS006",
+                        "reading through a ref needs an exec context: `*` is a Var_Get",
+                        range,
+                    );
+                    return synthesise_unsupported_no_warn(ctx, range);
+                };
+                return chain_var_get_through(ctx, ref_port, &target, exec, range)
+                    .port(WirePort::Value);
+            }
             if let Expr::Ident { name, .. } = operand.as_ref()
                 && let Some(var_rec) = ctx.lookup_var(name).cloned()
             {
@@ -115,15 +130,7 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             }
             lower_expr(ctx, operand)
         }
-        // `ref x` / `&x` in a VALUE position, which is the documented way to
-        // write `let r = ref someVar`. An argument bound to a `*T` parameter
-        // never gets here (`call::binding` strips the sigil to name the
-        // caller's storage), so the arm only sees the positions that would
-        // otherwise fall to the `_Unsupported` catch-all below: a gate emit
-        // refuses to spawn, taking the binding and every wire through it with
-        // no error. The operand's own wire is what a reference reads through, a
-        // scalar var's live `Value` output, a container's reference port.
-        Expr::RefOf { operand, .. } => lower_expr(ctx, operand),
+        Expr::RefOf { operand, range } => lower_ref_of(ctx, operand, range),
         Expr::TuplePick { range, .. } => {
             if let Some(binding) = resolve_field_chain(ctx, e).cloned()
                 && let Some(port) = binding_to_port(ctx, &binding, range)
@@ -830,6 +837,57 @@ pub(super) fn literal_node_range(
     node_id.port(WirePort::Output)
 }
 
+/// `&x` in a value position: the port carrying `x`'s ref. A var's `VarRef`,
+/// an array's `ArrayVarRef`, a map's `MapVarRef`, an `in` port's `RER_Output`,
+/// or, for a name already bound to a runtime ref, that wire. An operand that
+/// already evaluates to a ref (`&rows[0]`, a var holding an array ref) is its
+/// own ref.
+fn lower_ref_of(ctx: &mut LowerCtx, operand: &Expr, range: &SourceRange) -> PortRef {
+    let binding = match operand {
+        Expr::Ident { name, .. } => ctx.scope.get(name).cloned(),
+        Expr::FieldAccess { .. } => resolve_field_chain(ctx, operand).cloned(),
+        _ => None,
+    };
+    match binding {
+        Some(Binding::Var(v)) if matches!(v.inner_type, Type::Ref(_)) && v.storage == VarStorage::Var => {
+            lower_expr(ctx, operand)
+        }
+        Some(Binding::Var(v)) => match v.storage {
+            VarStorage::Var => v.node_id.port(WirePort::VarRef),
+            VarStorage::Array => v.node_id.port(WirePort::ArrayVarRef),
+            VarStorage::Map => v.node_id.port(WirePort::MapVarRef),
+            VarStorage::Buffer => {
+                ctx.error("WS008", "a buffer has no ref to take: it is a wire, not a var", range);
+                synthesise_unsupported_no_warn(ctx, range)
+            }
+        },
+        Some(Binding::DynRef(d)) => d.port,
+        Some(Binding::Input(inp)) => inp.node_id.port(WirePort::RerOutput),
+        _ => lower_expr(ctx, operand),
+    }
+}
+
+/// The value of a name bound to a runtime ref: an array or map ref is its own
+/// wire; a `*T` is read through with a `Var_Get`, which needs an exec chain.
+pub(super) fn read_dyn_ref(ctx: &mut LowerCtx, d: &DynRefRecord, range: &SourceRange) -> PortRef {
+    if d.storage != VarStorage::Var {
+        return d.port;
+    }
+    match ctx.current_exec {
+        Some(exec) => chain_var_get_through(ctx, d.port, &d.inner_type, exec, range)
+            .port(WirePort::Value),
+        None => {
+            ctx.error(
+                "WS006",
+                "reading through a runtime ref needs an exec context: the read is a Var_Get, \
+                 which only runs on an exec chain",
+                range,
+            );
+            synthesise_unsupported_no_warn(ctx, range)
+        }
+    }
+}
+
 pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -> PortRef {
     let binding = ctx.scope.get(name).cloned();
     match binding {
@@ -860,6 +918,7 @@ pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -
         Some(Binding::Input(inp)) => inp.node_id.port(WirePort::RerOutput),
         Some(Binding::EventParam(p)) => p,
         Some(Binding::Local(local)) => local.port,
+        Some(Binding::DynRef(d)) => read_dyn_ref(ctx, &d, range),
         Some(Binding::Record(rec)) => {
             // Records are compile-time bundles of per-field ports; they don't
             // produce a single port. Field access reaches its fields through

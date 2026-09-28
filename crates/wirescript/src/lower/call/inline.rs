@@ -39,6 +39,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
     // see the caller's vars.
     let mut ref_bindings: Vec<(String, VarRecord)> = Vec::new();
     let mut input_bindings: Vec<(String, NodeRecord)> = Vec::new();
+    let mut dyn_bindings: Vec<(String, DynRefRecord)> = Vec::new();
     let mut val_bindings: Vec<(String, PortRef, Type)> = Vec::new();
     let mut record_bindings: Vec<(String, HashMap<crate::intern::Sym, Binding>)> = Vec::new();
     let mut const_bindings: Vec<(String, Literal)> = Vec::new();
@@ -98,47 +99,37 @@ pub(in crate::lower) fn lower_chip_call_inline(
             // arg to a scalar value (which would then fail the container-method
             // lowering to `_Unsupported`).
             pt if super::context::container_storage(pt).is_some() => {
-                // `&x` (address-of) passed to a `*T`/`ref T`/container param binds
-                // the SAME var as bare `x` — unwrap it so a write through the
-                // param reaches the caller's var. Without this the `&` form (the
-                // documented `inc(&x)` idiom) bound the param to nothing and every
-                // write through it was silently dropped.
-                let arg_expr = match arg_expr {
-                    Expr::RefOf { operand, .. } => operand.as_ref(),
-                    other => other,
-                };
-                let var_rec = if let Expr::Ident { name, .. } = arg_expr {
-                    // A `const` array/map argument: give it its runtime form so
-                    // the callee binds a real container ref, exactly as a `var`
-                    // argument does. Without this the param bound to nothing and
-                    // every container use inside the body failed as WS044. The
-                    // callee's binding carries the SAME gate node, so a mutating
-                    // method on the param is still rejected (see
-                    // `access::reject_const_container_mutation`).
-                    materialize_const_container(ctx, arg_expr);
-                    ctx.lookup_var(name).cloned()
-                } else if let Some(Binding::Var(v)) = resolve_field_chain(ctx, arg_expr).cloned() {
-                    Some(v)
-                } else {
-                    None
-                };
-                if let Some(var_rec) = var_rec {
-                    ref_bindings.push((
+                // A `const` array/map argument: give it its runtime form so
+                // the callee binds a real container ref, exactly as a `var`
+                // argument does. Without this the param bound to nothing and
+                // every container use inside the body failed as WS044. The
+                // callee's binding carries the SAME gate node, so a mutating
+                // method on the param is still rejected (see
+                // `access::reject_const_container_mutation`).
+                if let Expr::Ident { .. } = deref_arg(arg_expr) {
+                    materialize_const_container(ctx, deref_arg(arg_expr));
+                }
+                match classify_ref_arg(ctx, pt, arg_expr) {
+                    RefArg::Static(var_rec) => ref_bindings.push((
                         param.name.clone(),
                         VarRecord {
-                            node_id: var_rec.node_id,
-                            inner_type: var_rec.inner_type,
                             get_node_for_handler: None,
-                            storage: var_rec.storage,
+                            ..var_rec
                         },
-                    ));
-                } else if let Expr::Ident { name, .. } = arg_expr
-                    && let Some(Binding::Input(inp)) = ctx.scope.get(name)
-                {
-                    // An `in X: T[]` / ref input passed by reference: forward the
-                    // input binding so the mod body resolves the param to the
-                    // input's RER_Output ref, exactly like a var array/ref.
-                    input_bindings.push((param.name.clone(), inp.clone()));
+                    )),
+                    RefArg::Input(inp) => input_bindings.push((param.name.clone(), inp)),
+                    RefArg::Forward(d) => dyn_bindings.push((param.name.clone(), d)),
+                    RefArg::Value => {
+                        let port = lower_expr(ctx, arg_expr);
+                        let t = ctx.resolve_local_type(pt);
+                        let (storage, inner_type) = super::context::container_binding(pt, &t)
+                            .expect("gated by container_storage");
+                        dyn_bindings.push((
+                            param.name.clone(),
+                            DynRefRecord { port, storage, inner_type },
+                        ));
+                    }
+                    RefArg::Unbound => {}
                 }
             }
             _ => {
@@ -313,6 +304,9 @@ pub(in crate::lower) fn lower_chip_call_inline(
 
     for (name, rec) in ref_bindings {
         ctx.scope.insert(&name, Binding::Var(rec));
+    }
+    for (name, rec) in dyn_bindings {
+        ctx.scope.insert(&name, Binding::DynRef(rec));
     }
     for (name, rec) in input_bindings {
         ctx.scope.insert(&name, Binding::Input(rec));

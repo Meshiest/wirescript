@@ -440,6 +440,9 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     other => (other, "a variable gate"),
                 };
                 reject_any_storage(ctx, stored, type_expr_range(t), what);
+                if let Type::Map(key, _) = &inner {
+                    reject_ref_key(ctx, key, type_expr_range(t));
+                }
             }
             declare_or_dup(
                 ctx,
@@ -478,6 +481,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
         TopDecl::Map(m) => {
             let key = resolve_type_expr(ctx, &m.key_type);
             let value = resolve_type_expr(ctx, &m.value_type);
+            reject_ref_key(ctx, &key, type_expr_range(&m.key_type));
             reject_any_storage(
                 ctx,
                 &value,

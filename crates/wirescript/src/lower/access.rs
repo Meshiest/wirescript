@@ -122,6 +122,7 @@ pub(super) fn binding_array_ref(
         Binding::Local(local) if !is_placeholder_port(ctx, local.port) => {
             elem(obj_ty).map(|e| (local.port, e))
         }
+        Binding::DynRef(d) if d.storage == VarStorage::Array => Some((d.port, d.inner_type.clone())),
         _ => None,
     }
 }
@@ -162,6 +163,7 @@ pub(super) fn binding_map_ref(
         Binding::Local(local) if !is_placeholder_port(ctx, local.port) => {
             map_ty(obj_ty).map(|t| (local.port, t))
         }
+        Binding::DynRef(d) if d.storage == VarStorage::Map => Some((d.port, d.inner_type.clone())),
         _ => None,
     }
 }
@@ -186,6 +188,7 @@ pub(super) fn binding_to_port(
 ) -> Option<PortRef> {
     match binding {
         Binding::Local(local) => Some(local.port),
+        Binding::DynRef(d) => Some(crate::lower::expr::read_dyn_ref(ctx, d, range)),
         Binding::EventParam(p) => Some(*p),
         Binding::Buffer(buf) => Some(buf.node_id.port(WirePort::Output)),
         Binding::Input(inp) => Some(inp.node_id.port(WirePort::RerOutput)),
@@ -877,9 +880,10 @@ fn lower_string_index(
 /// before falling back to the `_Unsupported` placeholder.
 ///
 /// Every `None` exit is reached BEFORE the index expression is lowered (the
-/// only container resolution helpers used above that point, `resolve_map_target`
-/// and `resolve_field_chain`, both take `&LowerCtx` and emit nothing), so
-/// declining here leaves no half-built gates behind for the fold to trip over.
+/// static container resolvers used above that point, `resolve_map_target` and
+/// `resolve_field_chain`, take `&LowerCtx` and emit nothing, and the runtime
+/// ref fallbacks lower `obj` only when they succeed), so declining here leaves
+/// no half-built gates behind for the fold to trip over.
 fn lower_index_access_runtime(
     ctx: &mut LowerCtx,
     obj: &Expr,
@@ -891,7 +895,7 @@ fn lower_index_access_runtime(
     // lowers to), auto-unwrapping to the Value port. The Key/Value ports
     // carry the map's CONCRETE k/v types (not `any`) — see the comment at
     // `lower_map_method` on why a generic `any` Key would bake a bad default.
-    if let Some((map_ref, Type::Map(k, v))) = resolve_map_target(ctx, obj) {
+    if let Some((map_ref, Type::Map(k, v))) = resolve_map_target_or_runtime(ctx, obj) {
         let key = lower_expr(ctx, index);
         return Some(map_exec_op(
             ctx,
@@ -906,30 +910,32 @@ fn lower_index_access_runtime(
             WirePort::Value,
         ));
     }
-    let array_ref = if let Expr::Ident { name, .. } = obj {
+    let static_ref = if let Expr::Ident { name, .. } = obj {
         if let Some(var_rec) = ctx.lookup_var(name).cloned() {
-            if var_rec.storage == VarStorage::Array {
-                var_rec.node_id.port(WirePort::ArrayVarRef)
-            } else {
-                return None;
-            }
+            (var_rec.storage == VarStorage::Array).then(|| var_rec.node_id.port(WirePort::ArrayVarRef))
         } else if let Some(inp) = ctx.lookup_input(name).cloned() {
-            inp.node_id.port(WirePort::RerOutput)
-        } else if let Some(Binding::Local(local)) = ctx.scope.get(name).cloned() {
-            // A let bound to an array-valued expression. An `if` over two arrays
-            // lowers to a Select whose output carries the ref, and ArrayVarRef is a
-            // wireable input, so the ref can arrive on a wire instead of resolving
-            // back to one specific array gate. Without this a selected array
-            // type-checks and then emits a placeholder.
-            local.port
+            Some(inp.node_id.port(WirePort::RerOutput))
         } else {
-            return None;
+            match ctx.scope.get(name) {
+                // A let bound to an array-valued expression. An `if` over two
+                // arrays lowers to a Select whose output carries the ref, and
+                // ArrayVarRef is a wireable input, so the ref can arrive on a wire
+                // instead of resolving back to one specific array gate. Without
+                // this a selected array type-checks and then emits a placeholder.
+                Some(Binding::Local(local)) => Some(local.port),
+                Some(Binding::DynRef(d)) if d.storage == VarStorage::Array => Some(d.port),
+                _ => None,
+            }
         }
     } else if let Some(binding) = resolve_field_chain(ctx, obj).cloned() {
         // obj is a record field chain that resolves to an array container
-        binding_array_ref(ctx, &binding, &ctx.type_of(obj))?.0
+        binding_array_ref(ctx, &binding, &ctx.type_of(obj)).map(|(p, _)| p)
     } else {
-        return None;
+        None
+    };
+    let array_ref = match static_ref {
+        Some(p) => p,
+        None => runtime_array_ref(ctx, obj)?.0,
     };
     let index_port = lower_expr(ctx, index);
     // lower_expr for the index may have advanced the exec chain via
@@ -1014,7 +1020,7 @@ pub(super) fn array_exec_op(
 /// `in X: T[]` input — to its ref port (for the dual-array ops
 /// append/copyFrom/slice). A var array exposes `ArrayVarRef`; an input array's
 /// ref rides its `RER_Output`.
-fn resolve_array_ref_arg(ctx: &LowerCtx, arg: Option<&CallArg>) -> Option<PortRef> {
+fn resolve_array_ref_arg(ctx: &mut LowerCtx, arg: Option<&CallArg>) -> Option<PortRef> {
     if let Some(CallArg::Positional(Expr::Ident { name, .. })) = arg {
         if let Some(vr) = ctx.lookup_var(name)
             && vr.storage == VarStorage::Array
@@ -1027,6 +1033,9 @@ fn resolve_array_ref_arg(ctx: &LowerCtx, arg: Option<&CallArg>) -> Option<PortRe
             return Some(inp.node_id.port(WirePort::RerOutput));
         }
     }
+    if let Some(CallArg::Positional(e)) = arg {
+        return runtime_array_ref(ctx, e).map(|(p, _)| p);
+    }
     None
 }
 
@@ -1034,7 +1043,7 @@ fn resolve_array_ref_arg(ctx: &LowerCtx, arg: Option<&CallArg>) -> Option<PortRe
 /// `in X: Map<K,V>` input — to its ref port (for `copyFrom`). A var map exposes
 /// `MapVarRef`; an input map's ref rides its `RER_Output` (mirrors the array
 /// case).
-fn resolve_map_ref_arg(ctx: &LowerCtx, arg: Option<&CallArg>) -> Option<PortRef> {
+fn resolve_map_ref_arg(ctx: &mut LowerCtx, arg: Option<&CallArg>) -> Option<PortRef> {
     if let Some(CallArg::Positional(Expr::Ident { name, .. })) = arg {
         if let Some(vr) = ctx.lookup_var(name)
             && vr.storage == VarStorage::Map
@@ -1046,6 +1055,9 @@ fn resolve_map_ref_arg(ctx: &LowerCtx, arg: Option<&CallArg>) -> Option<PortRef>
         {
             return Some(inp.node_id.port(WirePort::RerOutput));
         }
+    }
+    if let Some(CallArg::Positional(e)) = arg {
+        return runtime_map_ref(ctx, e).map(|(p, _)| p);
     }
     None
 }
@@ -1087,6 +1099,95 @@ pub(super) fn resolve_map_target(ctx: &LowerCtx, obj: &Expr) -> Option<(PortRef,
         return binding_map_ref(ctx, binding, &ctx.type_of(obj));
     }
     None
+}
+
+/// Whether `obj`'s value is a container ref that only exists at runtime (an
+/// element `rows[y]`, a var holding one, event data, a call result) rather
+/// than a container the static resolvers above already bind. A record or enum
+/// container is several parallel containers with no single ref.
+///
+/// Declines what `obj` is reached from when that has no runtime value: a name
+/// with no binding is a `const`, whose reads fold or go through
+/// `materialize_const_container`; an unresolved namespace member is a
+/// namespaced `const`; a field bound to an `_Unsupported` placeholder (see
+/// [`is_placeholder_port`]) has no ref to give. Nothing reached from any of
+/// them takes this path, so it keeps its WS044 or placeholder diagnostic.
+fn is_runtime_container(ctx: &LowerCtx, obj: &Expr, elem: &Type) -> bool {
+    if matches!(elem, Type::Record(_) | Type::Tuple(_) | Type::Enum { .. }) {
+        return false;
+    }
+    let mut chain = vec![obj];
+    while let Expr::IndexAccess { obj, .. }
+    | Expr::FieldAccess { obj, .. }
+    | Expr::TuplePick { obj, .. } = chain[chain.len() - 1]
+    {
+        chain.push(obj);
+    }
+    if let Expr::Ident { name, .. } = chain[chain.len() - 1] {
+        // Resolve up the field chain from the name (`V.rows` in `V.rows[0]`)
+        // for as long as it names bindings. A field of any other binding
+        // (`e.Value` on a `let e = m.get(k)`) is a runtime value, not a miss.
+        let Some(mut binding) = ctx.scope.get(name) else {
+            return false;
+        };
+        for step in chain.iter().rev().skip(1) {
+            if !matches!(step, Expr::FieldAccess { .. } | Expr::TuplePick { .. }) {
+                break;
+            }
+            let from_namespace = matches!(binding, Binding::Namespace(_));
+            match resolve_field_chain(ctx, step) {
+                Some(b) => binding = b,
+                None if from_namespace => return false,
+                None => break,
+            }
+        }
+        if let Binding::Local(local) = binding
+            && is_placeholder_port(ctx, local.port)
+        {
+            return false;
+        }
+    }
+    match obj {
+        Expr::Ident { name, .. } => !matches!(
+            ctx.scope.get(name),
+            Some(Binding::Record(_) | Binding::Namespace(_) | Binding::Chip(_))
+                | Some(Binding::Var(VarRecord { storage: VarStorage::Array | VarStorage::Map, .. }))
+        ),
+        _ => true,
+    }
+}
+
+/// An array whose ref is `obj`'s runtime value: the port that carries it and
+/// the element type. Lowers `obj`, so call it at the point the ref is needed
+/// on the exec chain.
+pub(super) fn runtime_array_ref(ctx: &mut LowerCtx, obj: &Expr) -> Option<(PortRef, Type)> {
+    let Type::Array(elem) = unwrap_ref(&ctx.type_of(obj)).container_ref_as_value() else {
+        return None;
+    };
+    if !is_runtime_container(ctx, obj, &elem) {
+        return None;
+    }
+    Some((lower_expr(ctx, obj), *elem))
+}
+
+/// The map analogue of [`runtime_array_ref`]; carries the whole `Map(K, V)`.
+pub(super) fn runtime_map_ref(ctx: &mut LowerCtx, obj: &Expr) -> Option<(PortRef, Type)> {
+    let map @ Type::Map(_, _) = unwrap_ref(&ctx.type_of(obj)).container_ref_as_value() else {
+        return None;
+    };
+    let Type::Map(_, v) = &map else { unreachable!() };
+    if !is_runtime_container(ctx, obj, v) {
+        return None;
+    }
+    Some((lower_expr(ctx, obj), map))
+}
+
+/// [`resolve_map_target`], falling back to a runtime map ref.
+pub(super) fn resolve_map_target_or_runtime(ctx: &mut LowerCtx, obj: &Expr) -> Option<(PortRef, Type)> {
+    match resolve_map_target(ctx, obj) {
+        Some(t) => Some(t),
+        None => runtime_map_ref(ctx, obj),
+    }
 }
 
 /// A `MapVar_*` exec op: wires the current exec + the map's `MapVarRef` plus
@@ -3049,6 +3150,9 @@ pub(super) fn lower_array_set(
     // `Type::Any` Value port would hide the string → bool coercion from the
     // `ctx.connect` choke point, silently writing a raw String into a
     // `bool[]` slot.
+    let runtime = |ctx: &mut LowerCtx| {
+        runtime_array_ref(ctx, obj).map(|(p, e)| (p, "ref_arr".to_string(), e))
+    };
     let (array_ref, var_name, elem_ty) = if let Expr::Ident { name, .. } = obj {
         if let Some(var_rec) = ctx.lookup_var(name).cloned() {
             if var_rec.storage == VarStorage::Array {
@@ -3058,7 +3162,8 @@ pub(super) fn lower_array_set(
                     var_rec.inner_type.clone(),
                 )
             } else {
-                return;
+                let Some(r) = runtime(ctx) else { return };
+                r
             }
         } else if let Some(inp) = ctx.lookup_input(name).cloned() {
             let elem = match &inp.ty {
@@ -3066,17 +3171,26 @@ pub(super) fn lower_array_set(
                 _ => Type::Any,
             };
             (inp.node_id.port(WirePort::RerOutput), name.clone(), elem)
+        } else if let Some(Binding::DynRef(d)) = ctx.scope.get(name).cloned()
+            && d.storage == VarStorage::Array
+        {
+            (d.port, name.clone(), d.inner_type)
         } else {
-            return;
+            let Some(r) = runtime(ctx) else { return };
+            r
         }
     } else if let Some(binding) = resolve_field_chain(ctx, obj).cloned() {
         // obj is a record field chain resolving to an array container
         match binding_array_ref(ctx, &binding, &ctx.type_of(obj)) {
             Some((array_ref, elem)) => (array_ref, "rec_arr".to_string(), elem),
-            None => return,
+            None => {
+                let Some(r) = runtime(ctx) else { return };
+                r
+            }
         }
     } else {
-        return;
+        let Some(r) = runtime(ctx) else { return };
+        r
     };
     // `xs[i] = v` is a mutation, so the `const` container rule applies to it
     // exactly as it does to `xs.fill(v)`. Typecheck rejects the direct spelling

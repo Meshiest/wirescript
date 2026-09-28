@@ -3064,7 +3064,7 @@ fn build_completions(
 
     for ty in &[
         "int", "float", "bool", "string", "entity", "controller", "character", "vector",
-        "rotator", "color", "exec",
+        "rotator", "color", "brick", "exec",
     ] {
         items.push(CompletionItem {
             label: ty.to_string(),

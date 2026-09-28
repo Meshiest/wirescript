@@ -189,6 +189,38 @@ fn container_receiver_type(ctx: &TypeCheckCtx, e: &Expr) -> Option<Type> {
     }
 }
 
+/// [`container_receiver_type`], extended to a receiver whose value is a
+/// container ref (an element `rows[y]`, a call result), and recorded in
+/// `type_of_expr`: lowering takes a runtime container's ref from the
+/// receiver's value, so it needs the receiver's type (`rows[y].push(v)`, or
+/// `cur.length()` on a `var cur: *int[]`).
+///
+/// A receiver that is not a container keeps nothing from the inference, so it
+/// still falls through to the remaining call arms without having emitted
+/// anything. Called once per call node: a generic mod body is checked once per
+/// type combination, and each check must infer the receiver afresh.
+fn method_receiver_type(ctx: &mut TypeCheckCtx, obj: &Expr) -> Option<Type> {
+    let is_container = |t: &Type| matches!(t, Type::Array(_) | Type::Map(_, _));
+    let ty = match container_receiver_type(ctx, obj) {
+        Some(t) => t.container_ref_as_value(),
+        None if matches!(obj, Expr::Ident { .. } | Expr::FieldAccess { .. }) => return None,
+        None => {
+            let mark = ctx.diagnostics.len();
+            let t = infer(ctx, obj).container_ref_as_value();
+            if !is_container(&t) {
+                ctx.diagnostics.truncate(mark);
+            }
+            t
+        }
+    };
+    if is_container(&ty) {
+        let r = obj.range();
+        ctx.type_of_expr
+            .insert((r.file.clone(), r.start.offset, r.end.offset), ty.clone());
+    }
+    Some(ty)
+}
+
 /// Whether `e` — an `Expr::IndexAccess` node — is itself a compile-time
 /// constant, i.e. both the receiver and the index fold to a literal. Narrows
 /// WS007 (see the `Expr::IndexAccess` arm below): a *runtime* array/map read
@@ -259,6 +291,54 @@ fn container_call_exec_exempt(
 fn call_has_exec_arg(args: &[CallArg]) -> bool {
     args.iter()
         .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"))
+}
+
+/// A container's element/value/key type that is a ref (`(*int)[]`,
+/// `Map<K, *V>`) has no auto-aliasing convention the way a declared `*T` mod
+/// parameter does (Task 3's `bump(a)`): its only valid arguments are things
+/// that ALREADY carry a matching ref (a var holding one, `&x`, another
+/// element), which `sig::check_wire_arg`'s ref-value block already handles
+/// with its own single WS003. A plain, non-ref argument (a literal, or a
+/// plain-typed var) is instead the ordinary "no conversions" mismatch every
+/// ref value gets elsewhere - reported here, once, as WS003, rather than the
+/// lvalue-shaped WS008 `check_wire_arg` gives a non-lvalue argument to a
+/// genuine mod `*T` parameter (there IS no lvalue-aliasing convention for a
+/// container element to fall back on).
+///
+/// Neutralizes that one param's type to `Type::Any` in `params` so the
+/// `check_args` call the caller makes right after (still needed for arity and
+/// any other params, and for an argument that already IS ref-shaped, which
+/// this leaves untouched to flow through `check_wire_arg`'s own check) does
+/// not also flag the same argument.
+fn precheck_ref_element_args(ctx: &mut TypeCheckCtx, elem: &Type, params: &mut [Param], args: &[CallArg]) {
+    if !matches!(elem, Type::Ref(_)) {
+        return;
+    }
+    for (i, param) in params.iter_mut().enumerate() {
+        if param.ty != *elem {
+            continue;
+        }
+        let Some(CallArg::Positional(arg_expr)) = args.get(i) else {
+            continue;
+        };
+        if matches!(arg_expr, Expr::NullLit { .. }) {
+            continue;
+        }
+        let r = arg_expr.range();
+        let raw = ctx
+            .type_of_expr
+            .get(&(r.file.clone(), r.start.offset, r.end.offset))
+            .cloned()
+            .unwrap_or_else(|| infer(ctx, arg_expr));
+        if !matches!(raw, Type::Ref(_)) {
+            ctx.emit(
+                "WS003",
+                format!("argument '{}': expected {elem}, got {raw}", param.name),
+                r.clone(),
+            );
+            param.ty = Type::Any;
+        }
+    }
 }
 
 /// The container-typed names visible INSIDE a mod body during the exec-requiring
@@ -1551,11 +1631,75 @@ fn infer_match_body(ctx: &mut TypeCheckCtx, body: &MatchBody) -> Option<Type> {
     }
 }
 
+/// Whether the record/tuple projection `e` (`r.f`, `r.a.b`, `t.0`) reads a
+/// PLACE, so a `*T` field there names storage and reads as its target: a
+/// field of a variable or parameter (a `*Record` parameter's distributed
+/// fields, a record parameter's ref field bound to the caller's var), of a
+/// record `let` that bundles vars (`{ cpsr, skip }`), or of a user mod's
+/// record result. A field that arrived on a wire (a map or array read, a
+/// builtin's result, event data, a literal's `p: &a`) is a record VALUE whose
+/// `*T` field is the ref itself.
+pub(crate) fn projection_is_place(ctx: &TypeCheckCtx, e: &Expr) -> bool {
+    let (root, segs) = flatten_access(e);
+    match root {
+        Expr::Ident { name, .. } => match ctx.scope.lookup(name) {
+            Some(s) => match s.kind {
+                SymbolKind::Var | SymbolKind::Param | SymbolKind::Namespace => true,
+                SymbolKind::LetBinding => !ctx
+                    .let_ref_values
+                    .get(&(s.decl_range.file.clone(), s.decl_range.start.offset))
+                    .is_some_and(|v| v.covers(&segs)),
+                _ => false,
+            },
+            None => true,
+        },
+        Expr::Call { callee, .. } => call_returns_places(ctx, callee),
+        _ => false,
+    }
+}
+
+/// Whether `callee` names a user `mod`/`chip` (plain, namespaced or a
+/// `self`-receiver) returning ONE record, which may bundle the caller's
+/// storage (`return { cpsr, skip }`), as opposed to a builtin or container
+/// method, or a multi-output call, whose outputs are each on a wire.
+pub(crate) fn call_returns_places(ctx: &TypeCheckCtx, callee: &Expr) -> bool {
+    let user = |name: &str| {
+        ctx.scope.lookup(name).is_some_and(|s| {
+            matches!(s.kind, SymbolKind::Fn | SymbolKind::Chip)
+                && s.signature.as_ref().is_none_or(|sig| sig.outputs.len() <= 1)
+        })
+    };
+    match callee {
+        Expr::Ident { name, .. } => user(name),
+        Expr::FieldAccess { obj, field, .. } => {
+            matches!(obj.as_ref(), Expr::Ident { name, .. }
+                if ctx.scope.lookup(name).map(|s| s.kind) == Some(SymbolKind::Namespace))
+                || user(field)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `e` names storage a `*T` can alias: a var, array or map, a `*T`
+/// parameter, an array `in`, or a field chain over one that reads a place.
+pub(crate) fn names_storage(ctx: &TypeCheckCtx, e: &Expr) -> bool {
+    match e {
+        Expr::Ident { name, .. } => ctx.scope.lookup(name).is_some_and(|s| {
+            matches!(s.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map)
+                || (s.kind == SymbolKind::Param && matches!(&s.ty, Type::Ref(_)))
+                || (s.kind == SymbolKind::In && matches!(&s.ty, Type::Array(_)))
+        }),
+        Expr::FieldAccess { .. } | Expr::TuplePick { .. } => {
+            matches!(flatten_access(e).0, Expr::Ident { .. }) && projection_is_place(ctx, e)
+        }
+        _ => false,
+    }
+}
 
 /// Split an `unsafe` access's inner chain into its base value and the named
 /// segments applied to it. A positional payload is reached with `.0`, which
 /// parses as a `TuplePick`, so both projection forms are flattened here.
-fn flatten_access(e: &Expr) -> (&Expr, Vec<String>) {
+pub(crate) fn flatten_access(e: &Expr) -> (&Expr, Vec<String>) {
     match e {
         Expr::FieldAccess { obj, field, .. } => {
             let (base, mut segs) = flatten_access(obj);
@@ -1758,6 +1902,68 @@ pub(super) fn infer_unsafe_access(ctx: &mut TypeCheckCtx, inner: &Expr, range: &
     ty
 }
 
+/// Operator typing when either operand is a reference (a `*T`, an array or
+/// map ref, or a brick). `None` when neither is, so ordinary overload
+/// resolution runs.
+fn ref_operator_type(
+    ctx: &mut TypeCheckCtx,
+    op: &str,
+    lt: &Type,
+    rt: &Type,
+    range: &SourceRange,
+) -> Option<Type> {
+    let (lk, rk) = (lt.ref_kind(), rt.ref_kind());
+    if lk.is_none() && rk.is_none() {
+        return None;
+    }
+    if !matches!(op, "==" | "!=") {
+        ctx.emit(
+            "WS004",
+            format!(
+                "operator '{op}' cannot be applied to a reference ({lt}, {rt}): refs and \
+                 bricks only compare with `==` and `!=`"
+            ),
+            range.clone(),
+        );
+        return Some(Type::Any);
+    }
+    // `Any` is the generic unknown/error-fallback type, not an operator
+    // wildcard (`catalog::operators::type_kind_matches`'s NOTE): many of its
+    // ~150 producers emit no diagnostic of their own (e.g. an out-of-range
+    // record `.9` pick), so treating a ref-vs-`Any` comparison as
+    // pre-resolved here would silently swallow WS004. Fall through to
+    // ordinary overload resolution instead, which reports it exactly as it
+    // would for a non-ref operand (`row0 == <any>`).
+    if matches!(lt, Type::Any) || matches!(rt, Type::Any) {
+        return None;
+    }
+    let plain = |k: Option<crate::ir::RefKind>, t: &Type| k.is_none() && !matches!(t, Type::Opaque);
+    if plain(lk, lt) || plain(rk, rt) {
+        ctx.emit(
+            "WS084",
+            format!(
+                "cannot compare {lt} with {rt}: a ref or brick only compares with another of \
+                 its own kind, and the game treats `1 == <ref>` as true, so the answer would \
+                 mean nothing"
+            ),
+            range.clone(),
+        );
+        return Some(Type::Any);
+    }
+    if lk.is_some() && rk.is_some() && coerce(lt, rt) != CoerceRule::Same {
+        ctx.emit(
+            "WS003",
+            format!("cannot compare {lt} with {rt}: they are refs to different types"),
+            range.clone(),
+        );
+        return Some(Type::Any);
+    }
+    let rule = resolve_op(op, &[lt.clone(), rt.clone()])?;
+    ctx.op_resolutions
+        .insert((range.file.clone(), range.start.offset, range.end.offset), rule.clone());
+    Some(rule.result.clone())
+}
+
 /// Node dispatch, exhaustive over every `Expr` variant.
 fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     // The `check`-supplied expected type applies to THIS node only; take it
@@ -1940,8 +2146,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     let is_exec = ctx.exec_mode() == ExecMode::Exec;
                     ctx.var_read_contexts
                         .insert((range.file.clone(), range.start.offset), is_exec);
-                    unwrap_ref(&sym.ty)
+                    unwrap_ref(&sym.ty).container_ref_as_value()
                 }
+                // A destructured field of a `*Record` parameter is a place: it
+                // reads as the field's value, like a `*T` parameter does.
+                SymbolKind::Param if matches!(sym.ty, Type::Ref(_)) => unwrap_ref(&sym.ty),
                 SymbolKind::Array => sym.ty.clone(),
                 _ => sym.ty.clone(),
             }
@@ -1961,6 +2170,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             match t {
                 Type::Ref(inner) => *inner,
                 Type::Any => Type::Any,
+                t @ (Type::Array(_) | Type::Map(_, _) | Type::Brick) => {
+                    emit_deref_not_a_scalar_ref(ctx, &t, range);
+                    Type::Any
+                }
                 // A bare variable name in exec context ALREADY auto-derefs, so
                 // `*x` infers the value type rather than a `ref`. `*x` is
                 // documented as the explicit spelling of that same read
@@ -1981,15 +2194,41 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             }
         }
         Expr::RefOf { operand, range } => {
-            if !super::is_ref_able(ctx, operand) {
+            let t = infer(ctx, operand);
+            if !matches!(t, Type::Ref(_)) && !super::is_ref_able(ctx, operand) {
                 ctx.emit(
                     "WS008",
                     "cannot take `&` of a non-reference — `&`/`ref` needs a variable, ref parameter, \
-                     or array/map element, not a temporary value",
+                     or a record field of one, not a temporary value or an element of a value \
+                     container",
                     range.clone(),
                 );
             }
-            let t = infer(ctx, operand);
+            // A ref to a ref has no storage in the game.
+            if matches!(t, Type::Ref(_)) {
+                ctx.emit(
+                    "WS086",
+                    format!(
+                        "`&` of a value that is already a ref ({t}): a ref to a ref has no \
+                         storage in the game; use the ref itself"
+                    ),
+                    range.clone(),
+                );
+                return Type::Any;
+            }
+            // One element of an array of values has no ref of its own; only
+            // the whole array does.
+            if matches!(operand.as_ref(), Expr::IndexAccess { .. }) && t.ref_kind().is_none() {
+                ctx.emit(
+                    "WS008",
+                    format!(
+                        "`&` of an array or map element ({t}): an element of a value container \
+                         has no ref of its own; pass the whole container"
+                    ),
+                    range.clone(),
+                );
+                return Type::Any;
+            }
             // An array/map is already a reference, so `&arr` is a no-op — never
             // `*T[]` (which is redundant and drops writes).
             if t.is_reference_backed() {
@@ -2002,6 +2241,14 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             let operand_t = infer(ctx, operand);
             if matches!(operand_t, Type::Never) {
                 crate::typecheck::let_binding::emit_no_value(ctx, None, operand.range());
+                return Type::Any;
+            }
+            if operand_t.ref_kind().is_some() {
+                ctx.emit(
+                    "WS004",
+                    format!("operator '{op}' cannot be applied to a reference ({operand_t})"),
+                    range.clone(),
+                );
                 return Type::Any;
             }
             let unwrapped = op_operand_type(&operand_t);
@@ -2043,6 +2290,9 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     crate::typecheck::let_binding::emit_no_value(ctx, None, e.range());
                     return Type::Any;
                 }
+            }
+            if let Some(t) = ref_operator_type(ctx, op, &lt, &rt, range) {
+                return t;
             }
             // Comparing two whole records has no lowering: each operand's
             // first-field projection in `op_operand_type` lets `rec == rec`
@@ -2272,11 +2522,16 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             }
             if let Type::Record(fields) = &ot {
                 if let Some((_, t)) = fields.iter().find(|(k, _)| k == field) {
-                    // Reading a ref-typed field yields the VALUE, exactly as
-                    // reading a `var` does (`SymbolKind::Var` above). A `*T`
-                    // field is storage, so leaving the `Ref` on it made every
-                    // consumer that wants a value reject it.
-                    return unwrap_ref(t);
+                    // A ref field of a record PARAMETER (`*T` on a record
+                    // distributes onto its fields) is a place: it reads its
+                    // target, exactly as reading a `var` does. A record VALUE
+                    // (a let-bound literal, a map read, a call result) holds
+                    // the ref itself, so the field stays a ref.
+                    return if projection_is_place(ctx, e) {
+                        unwrap_ref(t)
+                    } else {
+                        t.clone()
+                    };
                 }
                 // One concise line naming the valid fields. The full,
                 // syntax-COLOURED record type is rendered on hover
@@ -2428,8 +2683,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
         }
         Expr::TuplePick { obj, index, range } => {
             let ot = infer(ctx, obj);
+            let place = projection_is_place(ctx, e);
+            let read = |t: &Type| if place { unwrap_ref(t) } else { t.clone() };
             match &ot {
-                Type::Tuple(fields) => fields.get(*index).cloned().unwrap_or_else(|| {
+                Type::Tuple(fields) => fields.get(*index).map(read).unwrap_or_else(|| {
                     ctx.emit(
                         "WS010",
                         format!("tuple index .{index} out of range"),
@@ -2439,7 +2696,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 }),
                 Type::Record(fields) => fields
                     .get(*index)
-                    .map(|(_, t)| t.clone())
+                    .map(|(_, t)| read(t))
                     .unwrap_or(Type::Any),
                 _ => Type::Any,
             }
@@ -2460,12 +2717,13 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // flow through the Select gate an if-expr compiles to — Select routes
             // a value, not a reference. Flag whichever branch is a reference.
             for (br, bty) in [(then_branch, &tt), (else_branch, &et)] {
-                if is_reference_type(bty) {
+                if matches!(bty, Type::Zone | Type::Teleport | Type::PrefabRef) {
                     ctx.emit(
                         "WS031",
                         format!(
-                            "'{}' is a reference and can't be used in an if-then-else — a Select \
-                             routes a value, not a reference; wire or reroute it instead",
+                            "'{}' is a reference-only value and can't be used in an if-then-else \
+                             — a Select routes a value, not a reference; wire or reroute it \
+                             instead",
                             crate::analysis::types::type_str(bty),
                         ),
                         br.range().clone(),
@@ -3380,6 +3638,16 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     }
                 }
             }
+            // The receiver's container type, shared by the array and map arms.
+            let container_recv = match callee.as_ref() {
+                Expr::FieldAccess { obj, field, .. }
+                    if crate::catalog::arrays::is_array_method(field)
+                        || crate::catalog::maps::is_map_method(field) =>
+                {
+                    method_receiver_type(ctx, obj)
+                }
+                _ => None,
+            };
             // Array method call: arr.push(val), arr.length(), arr.pop(), etc.
             // Any array-typed receiver works — a bare `var ids: T[]`, an `array`
             // decl, or a record field holding one (`g.ready.sum()`) — gated on
@@ -3390,7 +3658,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 range: fa_range,
             } = callee.as_ref()
                 && let Some(method) = crate::catalog::arrays::array_method(field)
-                && let Some(Type::Array(inner)) = container_receiver_type(ctx, obj)
+                && let Some(Type::Array(inner)) = container_recv.clone()
             {
                 let elem = inner.as_ref().clone();
                 // Every array method lowers to an `Exec_*` gate (a mutation runs
@@ -3417,9 +3685,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 // arity, else "expects at most 0, got N" would wrongly fire).
                 // Every other method arity-checks normally.
                 let check_arity = field.as_str() != "sortMultiple";
+                let mut sig = method.signature(&elem);
+                precheck_ref_element_args(ctx, &elem, &mut sig.params, args);
                 check_args(
                     ctx,
-                    &method.signature(&elem),
+                    &sig,
                     args,
                     0,
                     check_arity,
@@ -3443,7 +3713,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 range: fa_range,
             } = callee.as_ref()
                 && let Some(method) = crate::catalog::maps::map_method(field)
-                && let Some(Type::Map(k, v)) = container_receiver_type(ctx, obj)
+                && let Some(Type::Map(k, v)) = container_recv
             {
                 let (key, value) = (k.as_ref().clone(), v.as_ref().clone());
                 // Same rule as the array guard above: every map method is an
@@ -3463,9 +3733,12 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         fa_range.clone(),
                     );
                 }
+                let mut sig = method.signature(&key, &value);
+                precheck_ref_element_args(ctx, &key, &mut sig.params, args);
+                precheck_ref_element_args(ctx, &value, &mut sig.params, args);
                 check_args(
                     ctx,
-                    &method.signature(&key, &value),
+                    &sig,
                     args,
                     0,
                     /*check_arity=*/ true,
@@ -3894,6 +4167,16 @@ pub(crate) fn coerce_or_emit(ctx: &mut TypeCheckCtx, from: &Type, to: &Type, ran
             range.clone(),
         );
     }
+}
+
+/// WS085: `*` on a reference that has no value behind it to read.
+pub(crate) fn emit_deref_not_a_scalar_ref(ctx: &mut TypeCheckCtx, t: &Type, range: &SourceRange) {
+    let why = if matches!(t, Type::Brick) {
+        "a brick is a value, and nothing reads through one".to_string()
+    } else {
+        format!("an array or map ref is used directly, with no `*` (`rows[y].push(v)`); this one is {t}")
+    };
+    ctx.emit("WS085", format!("`*` does not apply here: {why}"), range.clone());
 }
 
 #[cfg(test)]

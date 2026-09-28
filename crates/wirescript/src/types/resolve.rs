@@ -35,6 +35,7 @@ pub fn primitive(name: &str) -> Option<Type> {
         "entity" => Type::Entity,
         "character" => Type::Character,
         "controller" => Type::Controller,
+        "brick" => Type::Brick,
         "zone" => Type::Zone,
         "teleport" => Type::Teleport,
         "prefab" => Type::PrefabRef,
@@ -235,8 +236,19 @@ fn resolve_type_at_depth(
             ));
             Type::Any
         }
-        TypeExpr::Ref { inner, .. } => {
-            distribute_ref(resolve_type_at_depth(inner, cx, diags, depth, in_progress))
+        TypeExpr::Ref { inner, range } => {
+            let resolved = resolve_type_at_depth(inner, cx, diags, depth, in_progress);
+            if matches!(resolved, Type::Ref(_)) {
+                diags.push(Diagnostic::error(
+                    "WS086",
+                    format!(
+                        "'*{resolved}' is a ref to a ref, which has no storage in the game: \
+                         hold the ref itself, a '{resolved}'"
+                    ),
+                    range.clone(),
+                ));
+            }
+            distribute_ref(resolved)
         }
         TypeExpr::Array { inner, .. } => {
             Type::Array(Box::new(resolve_type_at_depth(inner, cx, diags, depth, in_progress)))

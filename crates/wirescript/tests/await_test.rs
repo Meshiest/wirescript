@@ -96,6 +96,26 @@ on start {
 }"));
 }
 
+#[test]
+fn await_sleep_ticks_placeholder_compiles() {
+    // Regression: `_` (the documented anonymous armed-flag placeholder,
+    // `await SleepTicks(_, delay = N)` / `await Sleep(_, delay = x)`) binds a
+    // generic passthrough builtin's `T`-typed port. `SleepTicks`'s `Input`/
+    // `Output` ports (`catalog/calls/flow.rs`) used to stay the CallSpec's bare
+    // `Type::Param("T")` through lowering whenever the argument wasn't an
+    // inlined constant - which `_` never is - so this reached
+    // `emit::variants::var_type_to_wire_value` as `Type::Param` and tripped its
+    // debug_assert ("Type::Param reached emit"). `compiles` runs the full
+    // `wirescript::compile::compile` pipeline (through emit), so a debug build
+    // (`debug_assertions` on, no override in this workspace's `Cargo.toml`)
+    // catches a regression here as a panic, not a silent release-only
+    // `WireValue::Number(0.0)` default.
+    assert!(compiles("\
+on ReadBrickGrid() {
+  await SleepTicks(_, delay = 10)
+  BroadcastChatMessage(\"done\")
+}"));
+}
 
 // --- await CustomEvent data capture ---
 

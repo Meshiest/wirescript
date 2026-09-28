@@ -439,6 +439,22 @@ fn compare_binary(op: &'static str, gate_class: &'static str) -> OpSpec {
                 ports: COMPARE_PORTS,
             });
         }
+        // A ref (`*T`, an array or map ref, a brick) compares by identity with
+        // one of its own kind. Typecheck has already required both sides to be
+        // the same type, so these match by variant only.
+        for t in [
+            Ref(Box::new(Any)),
+            Array(Box::new(Any)),
+            Map(Box::new(Any), Box::new(Any)),
+            Brick,
+        ] {
+            rules.push(OpRule {
+                operands: Box::leak(Box::new([t.clone(), t])),
+                result: Bool,
+                gate_class,
+                ports: COMPARE_PORTS,
+            });
+        }
     }
     OpSpec {
         op,

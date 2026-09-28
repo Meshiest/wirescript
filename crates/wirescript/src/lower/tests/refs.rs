@@ -1,0 +1,576 @@
+//! Ref values in lowering: `&x`, reads and writes through a ref, container
+//! operations on a runtime ref, parameters bound to one, and the read-cache
+//! invalidation a write through a ref needs.
+
+use super::*;
+use crate::ir::gate_class as gc;
+use crate::ir::NodeId;
+
+/// What drives `(node, port)`: the source node and port.
+pub(super) fn source_of(r: &LowerResult, node: NodeId, port: WirePort) -> Option<(NodeId, WirePort)> {
+    r.module
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == node && w.target.port == port)
+        .map(|w| (w.source.node_id, w.source.port))
+}
+
+/// Every root-module gate of `class`, in source order.
+pub(super) fn gates(r: &LowerResult, class: &str) -> Vec<NodeId> {
+    let mut v: Vec<&crate::ir::Node> =
+        r.module.nodes.values().filter(|n| n.gate_class == class).collect();
+    v.sort_by_key(|n| (n.source_range.start.offset, n.source_range.end.offset));
+    v.into_iter().map(|n| n.id).collect()
+}
+
+fn class_of(r: &LowerResult, id: NodeId) -> &'static str {
+    r.module.nodes[&id].gate_class
+}
+
+#[test]
+fn ref_of_a_var_wires_its_varref_into_the_consumer() {
+    let r = compile("var a: int = 0\nvar h: *int\nin go: exec\non go { h = &a }");
+    assert_no_errors(&r);
+    let set = gates(&r, gc::VAR_SET)[0];
+    let (src, port) = source_of(&r, set, WirePort::Value).expect("Value wired");
+    assert_eq!(class_of(&r, src), gc::VAR);
+    assert_eq!(port, WirePort::VarRef, "`&a` is a's VarRef, not its value");
+}
+
+#[test]
+fn ref_of_an_array_is_its_arrayvarref() {
+    let r = compile("var row: int[]\nvar rows: int[][]\nin go: exec\non go { rows.push(&row) }");
+    assert_no_errors(&r);
+    let push = gates(&r, gc::ARRAY_PUSH)[0];
+    let (src, port) = source_of(&r, push, WirePort::Value).expect("Value wired");
+    assert_eq!(class_of(&r, src), gc::ARRAY_VAR);
+    assert_eq!(port, WirePort::ArrayVarRef);
+}
+
+#[test]
+fn a_write_through_a_ref_takes_its_varref_from_a_read_of_the_holder() {
+    let r = compile("var a: int = 0\nvar h: *int\nin go: exec\non go { h = &a\n *h = 5 }");
+    assert_no_errors(&r);
+    let sets = gates(&r, gc::VAR_SET);
+    assert_eq!(sets.len(), 2, "h = &a, then *h = 5");
+    let (src, _) = source_of(&r, sets[1], WirePort::VarRef).expect("VarRef wired");
+    assert_eq!(class_of(&r, src), gc::VAR_GET, "the ref comes off a read of h");
+    let (holder, _) = source_of(&r, src, WirePort::VarRef).unwrap();
+    assert_eq!(class_of(&r, holder), gc::VAR);
+}
+
+#[test]
+fn a_read_through_a_ref_is_a_var_get_off_the_ref() {
+    let r = compile("var h: *int\nvar n: int = 0\nin go: exec\non go { n = *h }");
+    assert_no_errors(&r);
+    let reads = gates(&r, gc::VAR_GET);
+    assert_eq!(reads.len(), 2, "read h, then read through it");
+    let chained: Vec<_> = reads
+        .iter()
+        .filter(|g| source_of(&r, **g, WirePort::VarRef).map(|s| class_of(&r, s.0)) == Some(gc::VAR_GET))
+        .collect();
+    assert_eq!(chained.len(), 1, "exactly one read takes its VarRef off the other read's Value");
+}
+
+#[test]
+fn an_increment_through_a_ref_is_a_var_increment() {
+    let r = compile("var h: *int\nin go: exec\non go { *h += 2 }");
+    assert_no_errors(&r);
+    let inc = gates(&r, gc::VAR_INCREMENT);
+    assert_eq!(inc.len(), 1, "`*h += 2` is one Var_Increment");
+    let (src, _) = source_of(&r, inc[0], WirePort::VarRef).unwrap();
+    assert_eq!(class_of(&r, src), gc::VAR_GET);
+}
+
+/// Reads of the var whose gate feeds the first `Var_Get`.
+fn reads_of_first_var(r: &LowerResult) -> usize {
+    let all = gates(r, gc::VAR_GET);
+    let (var, _) = source_of(r, all[0], WirePort::VarRef).unwrap();
+    all.iter()
+        .filter(|g| source_of(r, **g, WirePort::VarRef).map(|s| s.0) == Some(var))
+        .count()
+}
+
+#[test]
+fn a_read_after_a_write_through_a_ref_is_fresh() {
+    // Review Focus 4. `n = a` reads a; `*h = ...` may have written a; the
+    // second `n = a` must read again rather than reuse the first read.
+    let head = "var a: int = 0\nvar n: int = 0\nvar h: *int\nin go: exec\n";
+    for body in [
+        "on go { n = a\n *h = 5\n n = a }",
+        "on go { n = a\n if n > 0 { *h = 1 }\n n = a }",
+        "on go { n = a\n for i in 0..3 { *h = i }\n n = a }",
+    ] {
+        let r = compile(&format!("{head}{body}"));
+        assert_no_errors(&r);
+        assert_eq!(reads_of_first_var(&r), 2, "{body}");
+    }
+}
+
+#[test]
+fn an_address_taken_var_is_never_folded() {
+    let r = compile_folded(
+        "var a: int = 3\nvar n: int = 0\nvar h: *int\nin go: exec\non go { h = &a\n *h = 5\n n = a + 1 }",
+    );
+    assert_no_errors(&r);
+    let sets = gates(&r, gc::VAR_SET);
+    let (a_var, _) = source_of(&r, sets[0], WirePort::Value).unwrap();
+    assert!(
+        gates(&r, gc::VAR_GET)
+            .iter()
+            .any(|g| source_of(&r, *g, WirePort::VarRef).map(|s| s.0) == Some(a_var)),
+        "`n = a + 1` must read a at runtime"
+    );
+}
+
+/// Some chip-instance module (`W_*`), at any depth, holds a `Var_Set`.
+fn instance_writes(m: &crate::ir::Module) -> bool {
+    m.chips.values().any(|c| {
+        (crate::intern::resolve(c.name).starts_with("W_")
+            && c.nodes.values().any(|n| n.gate_class == gc::VAR_SET))
+            || instance_writes(c)
+    })
+}
+
+#[test]
+fn a_read_after_a_chip_write_in_a_loop_is_fresh() {
+    // A chip instance lowers in its own module, so its writes draw no wire out
+    // of the caller's storage and bump no caller counter. The loop must still
+    // drop the pre-loop read of `a`.
+    let head = "var a: int = 0\nvar n: int = 0\nvar h: *int\n";
+    for chip in ["chip W() { *h = 5 }", "chip W() { a = 5 }"] {
+        let r = compile(&format!(
+            "{head}{chip}\nin go: exec\non go {{ n = a\n for i in 0..3 {{ W() }}\n n = a }}"
+        ));
+        assert_no_errors(&r);
+        assert!(
+            instance_writes(&r.module),
+            "{chip}: W() lowers as a chip instance holding the write"
+        );
+        assert_eq!(reads_of_first_var(&r), 2, "{chip}");
+    }
+}
+
+#[test]
+fn a_method_on_an_array_element_takes_its_ref_from_the_element() {
+    let r = compile("var rows: int[][]\nin go: exec\non go { rows[0].push(7) }");
+    assert_no_errors(&r);
+    let push = gates(&r, gc::ARRAY_PUSH)[0];
+    let (src, _) = source_of(&r, push, WirePort::ArrayVarRef).unwrap();
+    assert_eq!(class_of(&r, src), gc::ARRAY_GET, "the inner array's ref is the element");
+}
+
+#[test]
+fn an_element_read_two_levels_deep_goes_through_the_inner_ref() {
+    let r = compile("var rows: int[][]\nvar n: int = 0\nin go: exec\non go { n = rows[0][1] }");
+    assert_no_errors(&r);
+    let reads = gates(&r, gc::ARRAY_GET);
+    assert_eq!(reads.len(), 2);
+    let (src, _) = source_of(&r, reads[1], WirePort::ArrayVarRef).unwrap();
+    assert_eq!(src, reads[0]);
+}
+
+#[test]
+fn an_element_write_two_levels_deep_goes_through_the_inner_ref() {
+    // Review Focus 3.
+    let r = compile("var rows: int[][]\nin go: exec\non go { rows[0][1] = 5 }");
+    assert_no_errors(&r);
+    let set = gates(&r, gc::ARRAY_SET_AT_INDEX)[0];
+    let (src, _) = source_of(&r, set, WirePort::ArrayVarRef).unwrap();
+    assert_eq!(class_of(&r, src), gc::ARRAY_GET);
+}
+
+#[test]
+fn a_var_holding_an_array_ref_is_used_directly() {
+    let r = compile(
+        "var rows: int[][]\nvar cur: *int[]\nvar n: int = 0\nin go: exec\n\
+         on go { cur = rows[0]\n cur.push(1)\n n = cur.length()\n cur[0] = 2 }",
+    );
+    assert_no_errors(&r);
+    for class in [gc::ARRAY_PUSH, gc::ARRAY_GET_LENGTH, gc::ARRAY_SET_AT_INDEX] {
+        let g = gates(&r, class)[0];
+        let (src, _) = source_of(&r, g, WirePort::ArrayVarRef).unwrap();
+        assert_eq!(class_of(&r, src), gc::VAR_GET, "{class} reads cur's held ref");
+    }
+}
+
+#[test]
+fn a_map_of_array_refs_and_an_array_of_map_refs() {
+    let r = compile(
+        "var grids: Map<string, int[]>\nvar ms: Map<string, int>[]\nin go: exec\n\
+         on go { grids[\"g\"].push(1)\n ms[0].set(\"k\", 2)\n ms[0][\"j\"] = 3 }",
+    );
+    assert_no_errors(&r);
+    let push = gates(&r, gc::ARRAY_PUSH)[0];
+    assert_eq!(class_of(&r, source_of(&r, push, WirePort::ArrayVarRef).unwrap().0), gc::MAP_GET);
+    for set in gates(&r, gc::MAP_SET) {
+        assert_eq!(class_of(&r, source_of(&r, set, WirePort::MapVarRef).unwrap().0), gc::ARRAY_GET);
+    }
+}
+
+#[test]
+fn an_array_ref_is_a_dual_array_argument() {
+    let r = compile("var rows: int[][]\nvar all: int[]\nin go: exec\non go { all.append(rows[1]) }");
+    assert_no_errors(&r);
+    assert!(
+        r.module.wires.iter().any(|w| r.module.nodes[&w.source.node_id].gate_class == gc::ARRAY_GET
+            && r.module.nodes[&w.target.node_id].gate_class != gc::ARRAY_GET),
+        "append's source array comes off rows[1]"
+    );
+}
+
+fn has_error(r: &LowerResult, code: &str) -> bool {
+    r.diagnostics
+        .iter()
+        .any(|d| d.code == code && d.severity == crate::diagnostic::Severity::Error)
+}
+
+#[test]
+fn a_method_on_a_placeholder_field_still_reports_ws044() {
+    let r = compile(
+        "const T: int[] = [1, 2, 3]\nvar n: int = 0\nin go: exec\n\
+         on go { let r = { t: T }\n n = r.t.length() }",
+    );
+    assert!(has_error(&r, "WS044"), "{:?}", r.diagnostics);
+}
+
+#[test]
+fn a_method_on_a_namespaced_const_still_reports_ws044() {
+    let tbl = "const TABLE: int[] = [10, 20, 30]\nconst GRID: int[][] = [[1, 2], [3, 4]]\n";
+    for body in ["n = S.TABLE.length()", "n = S.GRID[i].length()"] {
+        let r = compile_multi(
+            &format!(
+                "import * as S from \"tbl\"\nvar i: int = 1\nvar n: int = 0\nin go: exec\n\
+                 on go {{ {body} }}"
+            ),
+            &[("tbl", tbl)],
+        );
+        assert!(has_error(&r, "WS044"), "{body}: {:?}", r.diagnostics);
+    }
+}
+
+#[test]
+fn a_namespaced_var_element_is_a_runtime_container() {
+    let r = compile_multi(
+        "import * as V from \"vmod\"\nin go: exec\n\
+         on go { V.rows[0].push(1)\n V.ms[0].set(\"k\", 2) }",
+        &[("vmod", "var rows: int[][]\nvar ms: Map<string, int>[]\n")],
+    );
+    assert_no_errors(&r);
+    let push = gates(&r, gc::ARRAY_PUSH)[0];
+    assert_eq!(class_of(&r, source_of(&r, push, WirePort::ArrayVarRef).unwrap().0), gc::ARRAY_GET);
+    let set = gates(&r, gc::MAP_SET)[0];
+    assert_eq!(class_of(&r, source_of(&r, set, WirePort::MapVarRef).unwrap().0), gc::ARRAY_GET);
+}
+
+#[test]
+fn the_value_of_a_let_bound_map_get_is_a_runtime_container() {
+    let r = compile(
+        "var m: Map<string, int[]>\nvar all: int[]\nvar n: int = 0\nin go: exec\n\
+         on go { let e = m.get(\"k\")\n n = e.Value[0]\n e.Value[1] = 5\n all.append(e.Value)\n e.Value.push(2) }",
+    );
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    assert!(gates(&r, gc::UNSUPPORTED).is_empty());
+    for class in [gc::ARRAY_GET, gc::ARRAY_SET_AT_INDEX, gc::ARRAY_PUSH] {
+        let g = gates(&r, class)[0];
+        let (src, _) = source_of(&r, g, WirePort::ArrayVarRef).unwrap();
+        assert_eq!(class_of(&r, src), gc::MAP_GET, "{class} takes its ref from the map get");
+    }
+    let append = gates(&r, gc::ARRAY_APPEND)[0];
+    let (src, _) = source_of(&r, append, WirePort::SourceRef).unwrap();
+    assert_eq!(class_of(&r, src), gc::MAP_GET);
+
+    let r = compile(
+        "var mm: Map<string, Map<string, int> >\nin go: exec\n\
+         on go { let e = mm.get(\"k\")\n e.Value.set(\"j\", 2) }",
+    );
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    let set = gates(&r, gc::MAP_SET)[0];
+    assert_eq!(class_of(&r, source_of(&r, set, WirePort::MapVarRef).unwrap().0), gc::MAP_GET);
+}
+
+#[test]
+fn a_ref_value_binds_an_inline_mods_ref_param_to_its_wire() {
+    let r = compile(
+        "var pixels: (*color)[]\nmod paint(c: *color) { c = Color(1.0, 0.0, 0.0) }\n\
+         in go: exec\non go { paint(pixels[0]) }",
+    );
+    assert_no_errors(&r);
+    let set = gates(&r, gc::VAR_SET)[0];
+    let (src, _) = source_of(&r, set, WirePort::VarRef).unwrap();
+    assert_eq!(class_of(&r, src), gc::ARRAY_GET, "the write goes through the element's ref");
+}
+
+#[test]
+fn a_ref_holding_var_binds_the_ref_it_holds_not_itself() {
+    // Review Focus 1, inline.
+    let r = compile("var h: *int\nmod set7(p: *int) { p = 7 }\nin go: exec\non go { set7(h) }");
+    assert_no_errors(&r);
+    let set = gates(&r, gc::VAR_SET)[0];
+    let (src, _) = source_of(&r, set, WirePort::VarRef).unwrap();
+    assert_eq!(class_of(&r, src), gc::VAR_GET, "p names the var h points at, read off h");
+}
+
+#[test]
+fn a_plain_var_still_binds_a_ref_param_by_alias() {
+    let r = compile("var a: int = 0\nmod set7(p: *int) { p = 7 }\nin go: exec\non go { set7(a)\n set7(&a) }");
+    assert_no_errors(&r);
+    let sets = gates(&r, gc::VAR_SET);
+    assert_eq!(sets.len(), 2, "one write per call");
+    for set in sets {
+        let (src, port) = source_of(&r, set, WirePort::VarRef).unwrap();
+        assert_eq!((class_of(&r, src), port), (gc::VAR, WirePort::VarRef));
+    }
+}
+
+#[test]
+fn a_dynamically_bound_param_forwards_to_a_nested_call() {
+    let r = compile(
+        "var h: *int\nmod inner(p: *int) { p = 1 }\nmod outer(q: *int) { inner(q) }\n\
+         in go: exec\non go { outer(h) }",
+    );
+    assert_no_errors(&r);
+    let set = gates(&r, gc::VAR_SET)[0];
+    let (src, _) = source_of(&r, set, WirePort::VarRef).unwrap();
+    assert_eq!(class_of(&r, src), gc::VAR_GET, "q's wire reaches inner's p unchanged");
+}
+
+#[test]
+fn an_array_element_binds_an_array_param() {
+    let r = compile(
+        "var rows: int[][]\nmod add1(xs: int[]) { xs.push(1) }\nin go: exec\non go { add1(rows[0]) }",
+    );
+    assert_no_errors(&r);
+    let push = gates(&r, gc::ARRAY_PUSH)[0];
+    let (src, _) = source_of(&r, push, WirePort::ArrayVarRef).unwrap();
+    assert_eq!(class_of(&r, src), gc::ARRAY_GET);
+}
+
+#[test]
+fn a_ref_value_crosses_a_chip_boundary_as_a_pin() {
+    // Review Focus 1, chip.
+    let r = compile("var h: *int\nchip set7(p: *int) { p = 7 }\nin go: exec\non go { set7(h) }");
+    assert_no_errors(&r);
+    let chip = r.module.chips.values().next().expect("one chip");
+    let set = chip
+        .nodes
+        .values()
+        .find(|n| n.gate_class == gc::VAR_SET)
+        .expect("Var_Set inside the chip")
+        .id;
+    let pin = chip
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == set && w.target.port == WirePort::VarRef)
+        .expect("VarRef wired")
+        .source
+        .node_id;
+    assert!(chip.inputs.contains(&pin), "the ref arrives on the chip's input pin");
+    let feed = r
+        .module
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == pin)
+        .expect("pin fed from the caller")
+        .source
+        .node_id;
+    assert_eq!(class_of(&r, feed), gc::VAR_GET, "fed from a read of h, not h's own VarRef");
+}
+
+#[test]
+fn event_data_is_a_ref_both_ways() {
+    let r = compile(
+        "var p0: color\nvar px: (*color)[]\nin go: exec\n\
+         on CustomEvent(\"reg\") -> (r: *color) { px.push(r)\n *r = Color(1.0, 0.0, 0.0) }\n\
+         on go { SendCustomEvent(\"reg\", &p0) }",
+    );
+    assert_no_errors(&r);
+    // Send: the data input carries p0's VarRef.
+    let send = gates(&r, gc::SEND_CUSTOM_EVENT)[0];
+    assert!(
+        r.module.wires.iter().any(|w| w.target.node_id == send
+            && w.source.port == WirePort::VarRef
+            && class_of(&r, w.source.node_id) == gc::VAR),
+        "the send's data comes from p0's VarRef"
+    );
+    // Receive: the write's VarRef is the event's data output.
+    let set = gates(&r, gc::VAR_SET)[0];
+    let (src, _) = source_of(&r, set, WirePort::VarRef).unwrap();
+    assert_eq!(class_of(&r, src), gc::CUSTOM_EVENT);
+}
+
+#[test]
+fn a_pure_read_of_a_chip_ref_param_bound_to_a_runtime_ref_is_ws006() {
+    let r = compile("var h: *int\nchip Get(p: *int) -> (r: int) { out r = p + 1 }\nlet g = Get(h)");
+    assert!(has_error(&r, "WS006"), "{:?}", r.diagnostics);
+}
+
+#[test]
+fn an_array_literal_binds_no_array_param() {
+    let r = compile("mod add1(xs: int[]) { xs.push(1) }\nin go: exec\non go { add1([1, 2]) }");
+    assert!(has_error(&r, "WS044"), "{:?}", r.diagnostics);
+}
+
+/// What feeds the pin that drives the Var_Set's VarRef inside the only chip.
+fn chip_ref_pin_feed(r: &LowerResult) -> Option<(NodeId, WirePort)> {
+    let chip = r.module.chips.values().next().expect("one chip");
+    let set = chip.nodes.values().find(|n| n.gate_class == gc::VAR_SET)?.id;
+    let pin = chip
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == set && w.target.port == WirePort::VarRef)?
+        .source
+        .node_id;
+    assert!(chip.inputs.contains(&pin), "the ref arrives on an input pin");
+    r.module
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == pin)
+        .map(|w| (w.source.node_id, w.source.port))
+}
+
+const RECORD_REF_FIELD: &str = "var a: int = 0\ntype R = { p: *int, n: int }\n";
+const MAP_OF_REFS: &str = "var a: int = 0\nvar m: Map<string, *int>\n";
+
+#[test]
+fn a_ref_record_field_binds_a_mods_ref_param() {
+    let r = compile(&format!(
+        "{RECORD_REF_FIELD}mod M7(q: *int) {{ q = 7 }}\nin go: exec\n\
+         on go {{ let rr: R = {{ p: &a, n: 1 }}\n M7(rr.p) }}"
+    ));
+    assert_no_errors(&r);
+    let set = gates(&r, gc::VAR_SET)[0];
+    let (src, port) = source_of(&r, set, WirePort::VarRef).unwrap();
+    assert_eq!((class_of(&r, src), port), (gc::VAR, WirePort::VarRef), "the field holds a's ref");
+}
+
+#[test]
+fn a_ref_record_field_feeds_a_chips_ref_pin() {
+    let r = compile(&format!(
+        "{RECORD_REF_FIELD}chip C7(q: *int) {{ q = 7 }}\nin go: exec\n\
+         on go {{ let rr: R = {{ p: &a, n: 1 }}\n C7(rr.p) }}"
+    ));
+    assert_no_errors(&r);
+    let (src, port) = chip_ref_pin_feed(&r).expect("the ref pin is fed");
+    assert_eq!((class_of(&r, src), port), (gc::VAR, WirePort::VarRef));
+}
+
+#[test]
+fn a_map_value_ref_binds_a_mods_ref_param() {
+    let r = compile(&format!(
+        "{MAP_OF_REFS}mod M7(q: *int) {{ q = 7 }}\nin go: exec\n\
+         on go {{ m.set(\"k\", &a)\n let e = m.get(\"k\")\n M7(e.Value) }}"
+    ));
+    assert_no_errors(&r);
+    let set = gates(&r, gc::VAR_SET)[0];
+    let (src, _) = source_of(&r, set, WirePort::VarRef).unwrap();
+    assert_eq!(class_of(&r, src), gc::MAP_GET, "the ref comes off the map read");
+}
+
+#[test]
+fn a_map_value_ref_feeds_a_chips_ref_pin() {
+    let r = compile(&format!(
+        "{MAP_OF_REFS}chip C7(q: *int) {{ q = 7 }}\nin go: exec\n\
+         on go {{ m.set(\"k\", &a)\n let e = m.get(\"k\")\n C7(e.Value) }}"
+    ));
+    assert_no_errors(&r);
+    let (src, _) = chip_ref_pin_feed(&r).expect("the ref pin is fed");
+    assert_eq!(class_of(&r, src), gc::MAP_GET);
+}
+
+#[test]
+fn a_non_ref_field_never_reaches_a_ref_param() {
+    // A scalar field of a record value, or a value map's read, has no ref on
+    // its wire: binding it would feed a number into a `VarRef`.
+    for body in [
+        "let rr: R = { p: &a, n: 1 }\n M7(rr.n)",
+        "mi.set(\"k\", 1)\n M7(mi.get(\"k\").Value)",
+    ] {
+        let r = compile(&format!(
+            "{RECORD_REF_FIELD}var mi: Map<string, int>\nmod M7(q: *int) {{ q = 7 }}\nin go: exec\n\
+             on go {{ {body} }}"
+        ));
+        assert!(has_error(&r, "WS008"), "{body}: {:?}", r.diagnostics);
+    }
+    let r = compile(&format!(
+        "{MAP_OF_REFS}var n: int = 0\nin go: exec\non go {{ let e = m.get(\"k\")\n n = e.Value + 1 }}"
+    ));
+    assert!(has_error(&r, "WS004"), "a ref is not a number: {:?}", r.diagnostics);
+}
+
+/// The gate that finally drives `(node, port)`, following chip input and
+/// output pins anywhere in the chip tree.
+fn driver_through_pins(root: &crate::ir::Module, node: NodeId, port: WirePort) -> (&'static str, WirePort) {
+    fn find(m: &crate::ir::Module, node: NodeId, port: WirePort) -> Option<(NodeId, WirePort)> {
+        m.wires
+            .iter()
+            .find(|w| w.target.node_id == node && w.target.port == port)
+            .map(|w| (w.source.node_id, w.source.port))
+            .or_else(|| m.chips.values().find_map(|c| find(c, node, port)))
+    }
+    fn class(m: &crate::ir::Module, id: NodeId) -> Option<&'static str> {
+        m.nodes.get(&id).map(|n| n.gate_class).or_else(|| m.chips.values().find_map(|c| class(c, id)))
+    }
+    let (src, src_port) = find(root, node, port).expect("driven");
+    match class(root, src).expect("a known node") {
+        gc::MICROCHIP_INPUT | gc::MICROCHIP_OUTPUT => driver_through_pins(root, src, WirePort::RerInput),
+        c => (c, src_port),
+    }
+}
+
+#[test]
+fn a_ref_output_is_driven_by_the_vars_varref() {
+    let r = compile("var b: int = 0\nout r: *int = &b");
+    assert_no_errors(&r);
+    let out = r.module.nodes.values().find(|n| n.kind == crate::ir::NodeKind::Output).unwrap().id;
+    assert_eq!(
+        driver_through_pins(&r.module, out, WirePort::RerInput),
+        (gc::VAR, WirePort::VarRef),
+        "`&b` is b's VarRef"
+    );
+}
+
+#[test]
+fn a_chip_ref_output_is_fed_from_the_ref_its_param_names() {
+    let head = "var a: int = 0\nvar h: *int\nchip Src(x: *int) -> (r: *int) { out r = &x }\n\
+                chip Dst(p: *int) { p = 9 }\nin go: exec\n";
+    // What Dst's write takes its VarRef from, through Src's `r` pin.
+    let target_of_write = |r: &LowerResult| {
+        let dst = r
+            .module
+            .chips
+            .values()
+            .find_map(|c| c.nodes.values().find(|n| n.gate_class == gc::VAR_SET))
+            .expect("Dst's write")
+            .id;
+        driver_through_pins(&r.module, dst, WirePort::VarRef)
+    };
+    // Bound statically, `&x` is the caller's storage: a's own VarRef.
+    let r = compile(&format!("{head}on go {{ let s = Src(a)\n Dst(s) }}"));
+    assert_no_errors(&r);
+    assert_eq!(target_of_write(&r), (gc::VAR, WirePort::VarRef), "r carries a's ref, not its value");
+    // Bound dynamically, `&x` is the ref that arrived on x's pin: the read of h.
+    let r = compile(&format!("{head}on go {{ let s = Src(h)\n Dst(s) }}"));
+    assert_no_errors(&r);
+    assert_eq!(target_of_write(&r).0, gc::VAR_GET);
+}
+
+#[test]
+fn an_array_literal_binds_no_chip_array_param() {
+    let r = compile("chip Add1(xs: int[]) { xs.push(1) }\nin go: exec\non go { Add1([1, 2]) }");
+    assert!(has_error(&r, "WS044"), "{:?}", r.diagnostics);
+    // Reported at the call even when the body never uses the parameter.
+    let r = compile("chip Keep(xs: int[]) { }\nin go: exec\non go { Keep([1, 2]) }");
+    assert!(has_error(&r, "WS044"), "{:?}", r.diagnostics);
+}
+
+#[test]
+fn a_dropped_ref_initializer_says_the_ref_starts_null() {
+    let r = compile("var a: int = 0\nvar h: *int = &a");
+    let w = r
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "WSP001")
+        .expect("the dropped initializer warns");
+    assert!(w.message.contains("null ref") && w.message.contains("handler"), "{}", w.message);
+}

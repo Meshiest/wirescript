@@ -186,17 +186,26 @@ on tick {
 
 ### In Pure Context
 
-In pure context, the bare name `x` refers to the **variable reference** (`ref int`), not the value. To read the value, use `.Value` or `.prev`:
+In pure context, a bare name `x` reads the var's value directly, from the
+PseudoVar's `Value` port -- the same value `.Value` and `.prev` read (see the
+note above). `&x` is `x`'s ref as a value. An unannotated `out` fed a bare
+variable name is flagged (`WS017`): annotate it `T` for the value, or write
+`out h: *T = &x` for the ref. A `*T` output carries a ref, so a bare `x` there
+is a type mismatch (`WS003`). See [Reference values](types.md#reference-values).
 
 ```wirescript
 var count: int = 0
 
-// Pure context:
-out current = count.Value    // .Value reads the current int value
+// Pure context: a bare name reads the value
+out current: int = count     // same as count.Value
 out previous = count.prev    // .prev reads the previous tick's value
+out sum = count + 1          // arithmetic reads the value too
 
-// This would be an error (WS006) if the context expected int:
-// out bad = count + 1       // count is ref int, not int, in pure context
+// The ref, explicitly:
+out h: *int = &count
+
+// An unannotated bare name is ambiguous between value and ref (WS017):
+// out either = count
 ```
 
 ### `.Value` vs `.prev` vs `*var`
@@ -206,7 +215,8 @@ out previous = count.prev    // .prev reads the previous tick's value
 | `x` (bare) | Exec | `Var_Get` | Current tick's value (auto-deref) |
 | `*x` | Exec | `Var_Get` | Current tick's value (explicit deref, same as bare) |
 | `*x` | Pure | — | **Error WS006** — use `.Value` |
-| `x` (bare) | Pure | — | Variable reference (`ref T`) |
+| `x` (bare) | Pure | `.Value` port | The same read as `x.Value`; an unannotated `out` of it is `WS017` |
+| `&x` | Either | `VarRef` port | `x`'s ref, as a value |
 | `x.Value` | Either | `.Value` port | Previous tick's value (delayed read) |
 | `x.prev` | Either | `.Value` port | Previous tick's value (same as `.Value`) |
 

@@ -254,7 +254,7 @@ fn name_prefix_span(name: &str, range: &SourceRange) -> SourceRange {
 /// matching one is refused for rename rather than left dangling.
 pub(crate) const BUILTIN_TYPE_NAMES: &[&str] = &[
     "int", "float", "bool", "string", "entity", "controller", "character", "vector", "rotator",
-    "color", "exec", "zone", "teleport", "Map", "Ref", "Array",
+    "color", "exec", "zone", "teleport", "brick", "Map", "Ref", "Array",
 ];
 
 pub(crate) fn builtin_type_names() -> &'static HashSet<&'static str> {

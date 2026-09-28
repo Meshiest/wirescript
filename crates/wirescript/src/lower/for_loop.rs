@@ -215,6 +215,7 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
     let pre_loop_caches = snapshot_var_caches(ctx);
     reset_var_get_caches(ctx);
     let wires_before = ctx.builder.module.wires.len();
+    let dyn_writes_before = ctx.dyn_ref_writes;
 
     // Enter the plane. Until the restore below, every node `ctx.add_gate`
     // creates is tagged `chip_id = shell` and so lands on the child grid.
@@ -297,6 +298,12 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
     restore_var_caches(ctx, &pre_loop_caches);
     for id in &touched {
         invalidate_var_cache(ctx, id);
+    }
+    // A write through a runtime ref draws no wire out of the storage it hits,
+    // so the wire scan above cannot see it: any such write in the body drops
+    // every pre-loop read.
+    if ctx.dyn_ref_writes != dyn_writes_before {
+        reset_var_get_caches(ctx);
     }
 
     // The loop's continuation is the shell's `Completed`, on the outer grid.

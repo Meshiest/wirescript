@@ -63,9 +63,21 @@ enum WireClass {
     Rotator,
     Quat,
     Color,
+    VarRef,
+    ArrayRef,
+    MapRef,
+    Brick,
 }
 
 fn wire_class(t: &Type) -> Option<WireClass> {
+    if let Some(k) = t.ref_kind() {
+        return Some(match k {
+            crate::ir::RefKind::Var => WireClass::VarRef,
+            crate::ir::RefKind::Array => WireClass::ArrayRef,
+            crate::ir::RefKind::Map => WireClass::MapRef,
+            crate::ir::RefKind::Brick => WireClass::Brick,
+        });
+    }
     Some(match t {
         Type::Bool => WireClass::Bool,
         Type::Int => WireClass::Int,
@@ -324,7 +336,7 @@ fn check_ce_namespace(
             let Some(t) = tmap.get(&(r.file.clone(), r.start.offset, r.end.offset)) else {
                 continue;
             };
-            let t = unwrap_ref(t);
+            let t = t.clone();
             if wire_class(&t).is_none() {
                 ctx.diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
@@ -352,7 +364,7 @@ fn check_ce_namespace(
             let Some(send_ty) = tmap.get(&(r.file.clone(), r.start.offset, r.end.offset)) else {
                 continue;
             };
-            let send_ty = unwrap_ref(send_ty);
+            let send_ty = send_ty.clone();
             let Some(send_class) = wire_class(&send_ty) else {
                 continue;
             };
@@ -422,7 +434,7 @@ pub(super) fn infer_custom_event_slots(
                         let r = expr.range();
                         if let Some(t) = tmap.get(&(r.file.clone(), r.start.offset, r.end.offset))
                         {
-                            let t = unwrap_ref(t);
+                            let t = t.clone();
                             if wire_class(&t).is_some() {
                                 slots.entry(slot).or_insert(t); // first sender wins
                             }

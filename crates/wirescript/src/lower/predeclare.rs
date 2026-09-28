@@ -284,6 +284,9 @@ pub(crate) fn default_literal_for_var_type(t: &Type) -> Option<Literal> {
         Type::Controller | Type::Character | Type::Entity => {
             Some(Literal::Object)
         }
+        // No literal spells a ref. With no initial value, emit writes the
+        // port type's null ref.
+        Type::Ref(_) | Type::Brick => None,
         _ => Some(Literal::Float(0.0)),
     }
 }
@@ -1210,7 +1213,16 @@ pub(super) fn warn_unbaked_var_init(ctx: &mut LowerCtx, v: &VarDecl, skip_array_
     if skip_array_inits && matches!(init, Expr::Array { .. }) {
         return;
     }
-    let msg = if v.is_static {
+    let holds_ref = matches!(v.typ, Some(TypeExpr::Ref { .. }))
+        || matches!(ctx.type_of(init), Type::Ref(_));
+    let msg = if holds_ref {
+        format!(
+            "'var {}' holds a ref, and a ref initializer is not baked yet — it is dropped, so \
+             the var starts as a null ref, which halts the exec chain when used; assign the \
+             ref inside an exec handler instead",
+            v.name
+        )
+    } else if v.is_static {
         format!(
             "'static var {}' initializer must be a compile-time constant — this value is dropped and the var starts at its type default",
             v.name
@@ -2844,13 +2856,12 @@ pub(super) fn pre_declare_output(
     // (typecheck validates the pair; the `ctx.connect` choke point inserts
     // any adapter, e.g. the string → bool `!= ""` compare). Deriving the
     // port type from the VALUE instead silently made `out y: bool = s` a
-    // string port. Ref annotations unwrap so `out y: *int = x` keeps the
-    // value-typed port it always had (the ref-ness lives in the AST/emit
-    // handling, not the pin type).
+    // string port. A `*T` port carries a ref, so it keeps its ref type; an
+    // array or map ref is the container itself.
     let t = if let (Some(te), Some(_)) = (typ, value) {
-        unwrap_ref(&ctx.resolve_local_type(te))
+        ctx.resolve_local_type(te).container_ref_as_value()
     } else if let Some(v) = value {
-        unwrap_ref(&ctx.type_of(v))
+        ctx.type_of(v).container_ref_as_value()
     } else if let Some(te) = typ {
         ctx.resolve_local_type(te)
     } else {

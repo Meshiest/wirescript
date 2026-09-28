@@ -137,6 +137,10 @@ pub enum Type {
     Entity,
     Character,
     Controller,
+    /// A brick, held as a value: stored, copied, compared and sent. Nothing in
+    /// the language creates one (the editor or a port supplies it) and no gate
+    /// consumes one.
+    Brick,
     /// Opaque reference to a Zone brick's `AttachedZone` (the `ZoneRef` output,
     /// consumed by the `Zone` input on zone events / `fillFromZone*`). Like a
     /// var ref, it is a *reference*, not a value: it can only be wired or
@@ -186,6 +190,19 @@ pub enum Type {
     Enum { name: String, args: Vec<Type> },
 }
 
+/// What a reference value names. Refs compare only within one kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefKind {
+    /// A `*T`: a var's `VarRef`.
+    Var,
+    /// An array's `ArrayVarRef`. An `int[]` value is always one.
+    Array,
+    /// A map's `MapVarRef`.
+    Map,
+    /// A `brick`.
+    Brick,
+}
+
 impl Type {
     /// Whether this type already carries a reference: a `ref T`, or an array/map
     /// (which wire an `ArrayVarRef`/`MapVarRef` port). Taking `&` of such a value
@@ -194,6 +211,54 @@ impl Type {
     /// reference-ONLY set (`ref`/zone/teleport/prefab — not storable/selectable).
     pub fn is_reference_backed(&self) -> bool {
         matches!(self, Type::Ref(_) | Type::Array(_) | Type::Map(_, _))
+    }
+
+    /// The kind of reference this value is, or `None` for an ordinary value.
+    /// `*int[]` (a var holding an array ref) is an array ref.
+    pub fn ref_kind(&self) -> Option<RefKind> {
+        match self {
+            Type::Ref(inner) => match inner.as_ref() {
+                Type::Array(_) => Some(RefKind::Array),
+                Type::Map(_, _) => Some(RefKind::Map),
+                _ => Some(RefKind::Var),
+            },
+            Type::Array(_) => Some(RefKind::Array),
+            Type::Map(_, _) => Some(RefKind::Map),
+            Type::Brick => Some(RefKind::Brick),
+            _ => None,
+        }
+    }
+
+    /// Whether a `*T` value may point at a `T`: the scalar value types one
+    /// `Var` gate holds. A record or enum spans several gates, and the
+    /// reference-only types and refs themselves have no var to point at.
+    pub fn is_ref_target(&self) -> bool {
+        matches!(
+            self,
+            Type::Bool
+                | Type::Int
+                | Type::Float
+                | Type::String
+                | Type::Vector
+                | Type::Rotator
+                | Type::Quat
+                | Type::Color
+                | Type::Entity
+                | Type::Character
+                | Type::Controller
+                | Type::Brick
+        )
+    }
+
+    /// `*int[]` and `int[]` are the same value: an array or map is only ever
+    /// handled by reference, so a var holding an array ref reads as the array
+    /// type itself and is used directly (`cur.push(v)`). Every other type is
+    /// returned unchanged.
+    pub fn container_ref_as_value(self) -> Type {
+        match self {
+            Type::Ref(inner) if matches!(*inner, Type::Array(_) | Type::Map(_, _)) => *inner,
+            other => other,
+        }
     }
 }
 
@@ -216,6 +281,7 @@ impl std::fmt::Display for Type {
             Type::Entity => f.write_str("entity"),
             Type::Character => f.write_str("character"),
             Type::Controller => f.write_str("controller"),
+            Type::Brick => f.write_str("brick"),
             Type::Zone => f.write_str("zone"),
             Type::Teleport => f.write_str("teleport"),
             Type::PrefabRef => f.write_str("prefab"),
@@ -225,6 +291,8 @@ impl std::fmt::Display for Type {
             Type::Any | Type::Opaque => f.write_str("any"),
             Type::Never => f.write_str("never"),
             Type::Ref(inner) => write!(f, "*{inner}"),
+            // `(*int)[]` is an array of refs; `*int[]` is a ref to an array.
+            Type::Array(inner) if matches!(inner.as_ref(), Type::Ref(_)) => write!(f, "({inner})[]"),
             Type::Array(inner) => write!(f, "{inner}[]"),
             Type::Map(k, v) => write!(f, "Map<{k}, {v}>"),
             Type::Param(n) => f.write_str(n),

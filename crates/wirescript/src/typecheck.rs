@@ -251,3 +251,6 @@ pub fn typecheck_with_inference(script: &Script, file: &str) -> (TypeCheckResult
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ref_tests;

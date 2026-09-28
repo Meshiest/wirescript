@@ -49,6 +49,22 @@ impl<'a> Parser<'a> {
 
     fn parse_type_primary(&mut self) -> TypeExpr {
         let t = self.peek().clone();
+        // `**T` lexes as one `**` token (the power operator); as a type it is
+        // a ref to a ref, which the resolver rejects (WS086) with a message
+        // about the type.
+        if t.kind == TokenKind::Op && t.text == "**" {
+            let start = self.advance().start;
+            let inner = self.parse_type_postfix();
+            let end = inner.range().end;
+            let range = self.make_range(start, end);
+            return TypeExpr::Ref {
+                inner: Box::new(TypeExpr::Ref {
+                    inner: Box::new(inner),
+                    range: range.clone(),
+                }),
+                range,
+            };
+        }
         if (t.kind == TokenKind::Kw && t.text == "ref")
             || (t.kind == TokenKind::Op && t.text == "*")
         {
@@ -63,13 +79,20 @@ impl<'a> Parser<'a> {
         if t.kind == TokenKind::LParen {
             let start = self.advance().start;
             let mut fields: Vec<TypeExpr> = Vec::new();
+            let mut saw_comma = false;
             while !self.check(TokenKind::RParen, None) {
                 fields.push(self.parse_type());
                 if self.match_tok(TokenKind::Comma, None).is_none() {
                     break;
                 }
+                saw_comma = true;
             }
             let end = self.expect(TokenKind::RParen, None).end;
+            // `(T)` groups, so `(*int)[]` is an array of refs. A tuple needs a
+            // comma: `(A, B)`, or `(A,)` for a single field.
+            if fields.len() == 1 && !saw_comma {
+                return fields.pop().expect("one field");
+            }
             return TypeExpr::Tuple {
                 fields,
                 range: self.make_range(start, end),
