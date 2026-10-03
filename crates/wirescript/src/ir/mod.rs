@@ -45,6 +45,12 @@ impl NodeId {
         })
     }
 
+    /// The id the next [`NodeId::fresh`] returns, without taking it: every
+    /// node made after this call has an id at least this large.
+    pub fn next() -> Self {
+        NODE_COUNTER.with(|c| Self(c.get()))
+    }
+
     /// Number this compile's nodes from 1, restoring the caller's numbering
     /// when the returned guard drops.
     ///
@@ -175,6 +181,13 @@ pub enum Type {
     Tuple(Vec<Type>),
     /// Record / struct; Phase 1 keeps this untyped inner (map of name→Type).
     Record(Vec<(String, Type)>),
+    /// The outputs of one gate or call read as a value: a builtin or
+    /// container method with several outputs (`fs.max()`, `Edge(b)`), an
+    /// event called as an expression, or a call of a `mod` with several
+    /// outputs. Named like a record's fields, the first being the output a
+    /// place for one value reads. Made only by [`Type::call_result`]; lowering
+    /// reads it from typecheck's type of each expression, per instantiation.
+    Outputs(Vec<(String, Type)>),
     /// `Map<K, V>` — a keyed variable collection (parallels `Array`). The key
     /// and value types are tracked for the source language; at the wire level a
     /// map is an opaque `MapVarRef`, so both sides are `any`-compatible.
@@ -260,6 +273,80 @@ impl Type {
             other => other,
         }
     }
+
+    /// The named fields of a record, or the outputs of a gate read.
+    pub fn fields(&self) -> Option<&Vec<(String, Type)>> {
+        match self {
+            Type::Record(fields) | Type::Outputs(fields) => Some(fields),
+            _ => None,
+        }
+    }
+
+    /// The value of a call, from the outputs its callee declares (a builtin's
+    /// ports, a `mod`'s or `chip`'s outputs, an event's data, a container
+    /// method's results): the type of a lone output, or for several the
+    /// outputs of one gate read. A `mod` returning one record gives that
+    /// record. Every call result typed from a callee's outputs is made here.
+    pub fn call_result(outputs: Vec<(String, Type)>) -> Type {
+        match outputs.len() {
+            0 => Type::Never,
+            1 => outputs.into_iter().next().map_or(Type::Never, |(_, t)| t),
+            _ => Type::outputs(outputs),
+        }
+    }
+
+    /// `fields` as the outputs of a gate read, unless they are a tuple's
+    /// positions or a single value.
+    pub fn outputs(fields: Vec<(String, Type)>) -> Type {
+        if fields.iter().enumerate().all(|(i, (k, _))| *k == i.to_string()) {
+            Type::Record(fields)
+        } else {
+            Type::Outputs(fields)
+        }
+    }
+
+    /// This type with every gate read in it held as the record of its
+    /// outputs.
+    pub fn as_record(&self) -> Type {
+        let fields = |fs: &[(String, Type)]| fs.iter().map(|(k, t)| (k.clone(), t.as_record())).collect();
+        match self {
+            Type::Outputs(fs) | Type::Record(fs) => Type::Record(fields(fs)),
+            Type::Ref(t) => Type::Ref(Box::new(t.as_record())),
+            Type::Array(t) => Type::Array(Box::new(t.as_record())),
+            Type::Map(k, v) => Type::Map(Box::new(k.as_record()), Box::new(v.as_record())),
+            Type::Union(ts) => Type::Union(ts.iter().map(Type::as_record).collect()),
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(Type::as_record).collect()),
+            Type::Enum { name, args } => {
+                Type::Enum { name: name.clone(), args: args.iter().map(Type::as_record).collect() }
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// What a `var` written with no type holds of a value of this type: a
+    /// gate read is its first output, in a record's fields, a tuple's
+    /// positions and an array's elements too, as the annotated `var` holds it.
+    pub fn held_by_var(&self) -> Type {
+        match self {
+            Type::Outputs(fs) if !fs.is_empty() => crate::types::mono::unwrap_ref(&fs[0].1).held_by_var(),
+            Type::Record(fs) => Type::Record(fs.iter().map(|(k, t)| (k.clone(), t.held_by_var())).collect()),
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(Type::held_by_var).collect()),
+            Type::Array(t) => Type::Array(Box::new(t.held_by_var())),
+            other => other.clone(),
+        }
+    }
+
+    /// Whether a gate read is held anywhere in this type.
+    pub fn holds_outputs(&self) -> bool {
+        match self {
+            Type::Outputs(_) => true,
+            Type::Record(fs) => fs.iter().any(|(_, t)| t.holds_outputs()),
+            Type::Ref(t) | Type::Array(t) => t.holds_outputs(),
+            Type::Map(k, v) => k.holds_outputs() || v.holds_outputs(),
+            Type::Union(ts) | Type::Tuple(ts) | Type::Enum { args: ts, .. } => ts.iter().any(Type::holds_outputs),
+            _ => false,
+        }
+    }
 }
 
 /// The source-language spelling of a type. Compound variants render by
@@ -326,6 +413,7 @@ impl std::fmt::Display for Type {
                 }
                 f.write_str(")")
             }
+            Type::Outputs(_) => write!(f, "{}", self.as_record()),
             // A record whose keys are 0, 1, 2, … is a tuple's field map — render
             // it as a tuple, matching how it was written.
             Type::Record(fields) => {

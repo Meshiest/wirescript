@@ -1349,3 +1349,58 @@ fn folding_keeps_a_self_firing_gate_and_its_handler() {
     let orphan = compile_folded("var n: int\nin unused: exec\non RoundStart() { n = 1 }\n");
     assert!(has_gate(&orphan, crate::ir::gate_class::VAR_SET));
 }
+
+/// Every literal carried by a node of `m` or its chips: a `_Literal` gate's
+/// value and every literal baked onto a port.
+fn tree_literals(m: &crate::ir::Module) -> Vec<crate::ir::Literal> {
+    let mut out: Vec<_> = m.nodes.values().flat_map(|n| n.properties.values().cloned()).collect();
+    for c in m.chips.values() {
+        out.extend(tree_literals(c));
+    }
+    out
+}
+
+/// An integer literal in a slot typechecked as `float` (a `float` parameter,
+/// an annotated `const`/`let`, a `float` return or chip output) is the float
+/// it names, so `x / 2` divides a float folded or not: never an integer 3 the
+/// fold divides as an integer while the game would see the float.
+#[test]
+fn an_int_literal_in_a_float_slot_is_a_float_folded_or_not() {
+    let head = "in go: exec\nvar x: float = 0.0\nout ox: float = x\n";
+    for body in [
+        "mod half(v: float) -> float { return v / 2 }\non go { x = half(3) }",
+        "const K: float = 3\non go { x = K / 2 }",
+        "let L: float = 3\non go { x = L / 2 }",
+        "on go {\n  let m: float = 3\n  x = m / 2\n}",
+        "mod three() -> float { return 3 }\non go { x = three() / 2 }",
+        "chip Sev() -> float { return 3 }\non go { x = Sev() / 2 }",
+    ] {
+        let src = format!("{head}{body}");
+        for r in [compile(&src), compile_folded(&src)] {
+            no_errors(&r);
+            let lits = tree_literals(&r.module);
+            assert!(!lits.contains(&crate::ir::Literal::Int(3)), "{src}\n{lits:?}");
+            assert!(
+                lits.contains(&crate::ir::Literal::Float(3.0)) || lits.contains(&crate::ir::Literal::Float(1.5)),
+                "{src}\n{lits:?}"
+            );
+        }
+    }
+}
+
+/// A builtin's `float`-declared math port takes an integer literal as
+/// written: `clamp(n, 0, 8)`, `min(n, 4)`, `max(n, 1)` on an `int` keep their
+/// integer bounds.
+#[test]
+fn an_int_literal_on_a_builtin_math_port_stays_an_int() {
+    let r = compile(
+        "in go: exec\nin n: int\nvar r: int = 0\nvar q: int = 0\nvar s: int = 0\n\
+         on go {\n  r = clamp(n, 0, 8)\n  q = min(n, 4)\n  s = max(n, 1)\n}",
+    );
+    no_errors(&r);
+    let lits = tree_literals(&r.module);
+    for v in [0, 8, 4, 1] {
+        assert!(lits.contains(&crate::ir::Literal::Int(v)), "{v}: {lits:?}");
+        assert!(!lits.contains(&crate::ir::Literal::Float(v as f64)), "{v}: {lits:?}");
+    }
+}

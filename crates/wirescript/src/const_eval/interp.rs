@@ -17,7 +17,6 @@ use crate::ast::{Block, CallArg, ChipDecl, Expr, ExprStmt, NamedOutput, Param, S
 use crate::collections::HashMap;
 use crate::diagnostic::SourceRange;
 use crate::ir::Literal;
-use crate::lower::ConstEnv;
 
 use super::destructure::bind_destructured;
 use super::error::{ConstError, ConstReason};
@@ -37,17 +36,22 @@ const MAX_STEPS: u32 = 10_000;
 const MAX_DEPTH: u32 = 32;
 
 /// Bounds on the interpreter's total work for one top-level `eval_call`.
-/// Both fields count down monotonically; hitting zero on either yields
+/// Both bounds count down monotonically; hitting zero on either yields
 /// `ConstReason::BudgetExceeded`. Construct a fresh one with
 /// [`Budget::default`].
 pub struct Budget {
     pub steps: u32,
     pub depth: u32,
+    /// Set once an evaluation under this budget applies an integer operation
+    /// the certified fold table has no result for (an overflow, a division of
+    /// mixed signs with a remainder): the value is the evaluator's, not the
+    /// gate's (see [`super::integer_ops_certified`]).
+    pub uncertified: bool,
 }
 
 impl Default for Budget {
     fn default() -> Self {
-        Budget { steps: MAX_STEPS, depth: MAX_DEPTH }
+        Budget { steps: MAX_STEPS, depth: MAX_DEPTH, uncertified: false }
     }
 }
 
@@ -81,9 +85,13 @@ impl Default for Budget {
 ///
 /// `cx.lookup_mod` is threaded through unchanged so a nested call inside the
 /// body can resolve ITS callee the same way.
+///
+/// `type_args` are the call's written type arguments (`f<float>(5)`), empty
+/// when it writes none.
 pub fn eval_call(
     decl: &ChipDecl,
     args: &[Literal],
+    type_args: &[crate::ir::Type],
     cx: &ConstCtx,
     budget: &mut Budget,
 ) -> Result<Literal, ConstError> {
@@ -92,7 +100,11 @@ pub fn eval_call(
     }
     budget.depth -= 1;
 
-    let mut env: ConstEnv = (*cx.module_consts).clone();
+    let module = cx.module_of(decl);
+    let types = cx.types.in_file(&decl.range.file);
+    let bound = type_params_of_call(decl, args, type_args, types);
+    let declared = |te: &crate::ast::TypeExpr| types.resolve_in(te, &bound);
+    let mut env = crate::const_scope::ConstNames::of(module.clone());
     for (i, param) in decl.inputs.iter().enumerate() {
         // Zipping `inputs` with `args` would silently truncate on an arity
         // mismatch, and the unbound parameter would then surface as the
@@ -105,14 +117,9 @@ pub fn eval_call(
                 range: param.range.clone(),
             });
         };
-        env.insert(param.name.clone(), arg.clone());
+        env.insert(param.name.clone(), super::coerce_const_to_type(arg.clone(), &declared(&param.typ), types));
     }
-    let mut call_cx = ConstCtx {
-        consts: std::sync::Arc::new(env),
-        module_consts: cx.module_consts.clone(),
-        enum_defs: cx.enum_defs.clone(),
-        lookup_mod: cx.lookup_mod,
-    };
+    let mut call_cx = ConstCtx { module_consts: module, type_args: bound.clone(), ..cx.with_consts(env) };
 
     // Collected OUTSIDE `call_cx`/`cx.consts` on purpose — see `exec_block`'s
     // doc comment on `Shadowed`. A taken `if` branch's own environment gets
@@ -125,7 +132,11 @@ pub fn eval_call(
         earliest_out: earliest_declared_out(&decl.body, &decl.outputs),
     };
     let flow = exec_block(&decl.body, &mut call_cx, &sig, &mut outputs, budget)?.0;
-    match flow {
+    let result = match decl.outputs.as_slice() {
+        [only] => declared(&only.typ),
+        outs => crate::ir::Type::Record(outs.iter().map(|o| (o.name.clone(), declared(&o.typ))).collect()),
+    };
+    let value = match flow {
         // A `return <value>` wins outright — and cannot disagree with
         // lowering about it, because the `Stmt::Return` arm has already
         // rejected both ways that could happen: a value returned past an
@@ -151,6 +162,75 @@ pub fn eval_call(
             ),
             range: decl.body.range.clone(),
         }),
+    };
+    value.map(|v| super::coerce_const_to_type(v, &result, types))
+}
+
+/// The types a call's written type arguments name, read in the calling file
+/// with the caller's own type parameters bound.
+pub(super) fn written_type_args(type_args: &[crate::ast::TypeExpr], cx: &ConstCtx) -> Vec<crate::ir::Type> {
+    type_args
+        .iter()
+        .map(|te| cx.types.in_file(&te.range().file).resolve_in(te, &cx.type_args))
+        .collect()
+}
+
+/// What each type parameter of `decl` stands for in a call with `args`: the
+/// written type arguments when there are as many as parameters, otherwise
+/// what the arguments bind it to, joined as typecheck joins them (an integer
+/// and a float bind `float`). A parameter neither pins is `any`, so every
+/// parameter is bound and a declared type naming one never reads an alias,
+/// enum or record of the same name.
+fn type_params_of_call(
+    decl: &ChipDecl,
+    args: &[Literal],
+    type_args: &[crate::ir::Type],
+    types: &super::DeclaredTypes,
+) -> crate::types::infer::Subst {
+    use crate::ir::Type;
+    let names: Vec<&String> = decl.type_params.iter().map(|p| &p.name).collect();
+    if type_args.len() == names.len() {
+        return names.into_iter().cloned().zip(type_args.iter().cloned()).collect();
+    }
+    let open: crate::types::infer::Subst = names.iter().map(|n| ((*n).clone(), Type::Param((*n).clone()))).collect();
+    let mut constraints = Vec::new();
+    for (param, arg) in decl.inputs.iter().zip(args) {
+        crate::types::mono::collect(&types.resolve_in(&param.typ, &open), &literal_type(arg), &mut constraints);
+    }
+    names
+        .into_iter()
+        .map(|n| {
+            let bound = constraints
+                .iter()
+                .map(|crate::types::infer::Constraint::Eq(v, t)| (v, t))
+                .filter(|(v, t)| *v == n && !matches!(t, Type::Any))
+                .map(|(_, t)| t.clone());
+            let joined = crate::types::coerce::widening_join_all(bound);
+            (n.clone(), joined.unwrap_or(Type::Any))
+        })
+        .collect()
+}
+
+/// The type of the constant `lit`, as far as its value shows it.
+fn literal_type(lit: &Literal) -> crate::ir::Type {
+    use crate::ir::Type;
+    let join = |ts: Vec<Type>| crate::types::coerce::widening_join_all(ts).unwrap_or(Type::Any);
+    match lit {
+        Literal::Bool(_) => Type::Bool,
+        Literal::Int(_) => Type::Int,
+        Literal::Float(_) => Type::Float,
+        Literal::String(_) => Type::String,
+        Literal::Vector { .. } => Type::Vector,
+        Literal::Rotator { .. } => Type::Rotator,
+        Literal::Quat { .. } => Type::Quat,
+        Literal::Color { .. } | Literal::LinearColor { .. } => Type::Color,
+        Literal::Array(items) => Type::Array(Box::new(join(items.iter().map(literal_type).collect()))),
+        Literal::Map(pairs) => Type::Map(
+            Box::new(join(pairs.iter().map(|(k, _)| literal_type(k)).collect())),
+            Box::new(join(pairs.iter().map(|(_, v)| literal_type(v)).collect())),
+        ),
+        Literal::Record(fields) => Type::Record(fields.iter().map(|(n, l)| (n.clone(), literal_type(l))).collect()),
+        _ => Type::Any,
     }
 }
 
@@ -416,7 +496,7 @@ fn exec_block(
                 // interpreter, so a plain `let` inside a const-evaluated
                 // body must ALSO have a constant initializer, and the error
                 // eval_expr produces already blames the right sub-expression.
-                let lit = eval_expr(&l.value, cx, budget)?;
+                let lit = super::eval_let_value(l, cx, budget)?;
                 // Splits `lit` into every `(name, value)` pair `l.binding`
                 // introduces — one pair for a plain `Ident`, several for a
                 // record destructure (`bind_destructured` propagates its own
@@ -439,7 +519,7 @@ fn exec_block(
                     // outer binding before the shadow appeared, while still
                     // dropping the shadow itself.
                     shadowed.push((name.clone(), cx.consts.get(name.as_str()).cloned()));
-                    std::sync::Arc::make_mut(&mut cx.consts).insert(name, value);
+                    cx.consts.insert(name, value);
                 }
             }
             Stmt::Return { value, range } => {
@@ -477,7 +557,7 @@ fn exec_block(
                     return Err(ConstError {
                         reason: ConstReason::UnsupportedMessage(
                             "this `return` of a value follows an earlier `out` in the same \
-                             const mod — the wire graph keeps that first assignment and drops \
+                             const mod. The wire graph keeps that first assignment and drops \
                              this one, so the two would disagree",
                         ),
                         range: range.clone(),
@@ -504,7 +584,7 @@ fn exec_block(
                     return Err(ConstError {
                         reason: ConstReason::UnsupportedMessage(
                             "this const mod declares several named outputs, so a `return` of a \
-                             single value has nowhere to go — assign each output with \
+                             single value has nowhere to go. Assign each output with \
                              `out name = …`, or return a record",
                         ),
                         range: range.clone(),
@@ -532,12 +612,7 @@ fn exec_block(
                 // evaluable).
                 let branch = if take_then { Some(&if_stmt.then_block) } else { if_stmt.else_block.as_ref() };
                 if let Some(taken) = branch {
-                    let mut branch_cx = ConstCtx {
-                        consts: cx.consts.clone(),
-                        module_consts: cx.module_consts.clone(),
-                        enum_defs: cx.enum_defs.clone(),
-                        lookup_mod: cx.lookup_mod,
-                    };
+                    let mut branch_cx = cx.with_consts(cx.consts.clone());
                     let (result, branch_shadowed) =
                         exec_block(taken, &mut branch_cx, sig, outputs, budget)?;
                     // Take the branch's environment WHOLESALE — every
@@ -566,13 +641,13 @@ fn exec_block(
                             // Previously bound in an enclosing scope: put
                             // that value back (mutations included).
                             Some(value) => {
-                                std::sync::Arc::make_mut(&mut cx.consts).insert(name, value)
+                                cx.consts.insert(name, value)
                             }
                             // Previously unbound: the declaration introduced
                             // the name, so it must vanish entirely rather
                             // than linger as an empty/default value.
                             None => {
-                                std::sync::Arc::make_mut(&mut cx.consts).remove(name.as_str())
+                                cx.consts.remove(name.as_str())
                             }
                         };
                     }
@@ -649,7 +724,7 @@ fn exec_call_stmt(es: &ExprStmt, cx: &mut ConstCtx, budget: &mut Budget) -> Resu
         range: es.range.clone(),
     };
 
-    let Expr::Call { callee, args, .. } = &es.expr else {
+    let Expr::Call { callee, args, type_args, .. } = &es.expr else {
         return Err(unsupported());
     };
 
@@ -678,7 +753,8 @@ fn exec_call_stmt(es: &ExprStmt, cx: &mut ConstCtx, budget: &mut Budget) -> Resu
     if budget.depth == 0 {
         return Err(ConstError { reason: ConstReason::BudgetExceeded, range: es.range.clone() });
     }
-    eval_call(&target, &arg_lits, &*cx, budget)?;
+    let written = written_type_args(type_args, cx);
+    eval_call(&target, &arg_lits, &written, &*cx, budget)?;
     Ok(())
 }
 
@@ -726,7 +802,7 @@ fn exec_mutating_method_call(
         Literal::Map(pairs) => Literal::Map(mutate_map(pairs, field, args, es, &*cx, budget)?),
         _ => return Err(unsupported()),
     };
-    std::sync::Arc::make_mut(&mut cx.consts).insert(name.clone(), updated);
+    cx.consts.insert(name.clone(), updated);
     Ok(())
 }
 
@@ -878,7 +954,7 @@ fn unsupported_collection_method(
 ) -> ConstError {
     ConstError {
         reason: ConstReason::UnsupportedMethod(format!(
-            "`.{field}(…)` is not a supported compile-time {kind} mutation — only {supported} are"
+            "`.{field}(…)` is not a supported compile-time {kind} mutation; only {supported} are"
         )),
         range: es.range.clone(),
     }

@@ -269,6 +269,125 @@ on go {
     );
 }
 
+/// A `var` or `let` initializer, and a read above the declaration, read what
+/// the name meant before it, as the compiler reads them: renaming the outer
+/// name renames those reads, and renaming the inner one leaves them.
+#[test]
+fn a_read_before_a_local_declaration_is_the_outer_name() {
+    let src = "\
+var x: int = 0
+in go: exec
+on go {
+  let q = x
+  var x: int = x + 1
+  let y = x
+  let x = x * 2
+}";
+    // The outer `var x` (line 0): its decl, the read above (line 3) and both
+    // initializers (lines 4 and 6), which read it and the inner `var`.
+    let (name, sites) = rename_sites(src, 0, 4);
+    assert_eq!(name, "x");
+    assert_eq!(sites, vec![(0, 0), (3, 10), (4, 15)], "{sites:?}");
+    // The inner `var x` (line 4): its decl, the read after it, and the read in
+    // the `let`'s initializer below it.
+    let (_, sites) = rename_sites(src, 5, 10);
+    assert_eq!(sites, vec![(4, 2), (5, 10), (6, 10)], "{sites:?}");
+}
+
+/// The storage an anonymous `chip { }` declares is named where the compiler
+/// names it: a top-level chip's from anywhere in the file, a handler above
+/// the declaration in the chip and one above the chip included; a chip in a
+/// handler's from the chip on, so a read above it is the outer name.
+#[test]
+fn anon_chip_storage_is_named_where_the_compiler_names_it() {
+    let src = "in go: exec
+var n: int = 0
+on go { n = cnt }
+chip {
+  on go { cnt = cnt + 1
+    n = cnt }
+  var cnt: int = 0
+}";
+    let (name, sites) = rename_sites(src, 6, 6);
+    assert_eq!(name, "cnt");
+    assert_eq!(sites, vec![(2, 12), (4, 10), (4, 16), (5, 8), (6, 2)], "{sites:?}");
+    let src = "var cnt: int = 7
+in go: exec
+var n: int = 0
+on go {
+  let q = cnt
+  chip { var cnt: int = 5
+    cnt = cnt + 1 }
+  n = cnt + q
+}";
+    // The chip's `var cnt` (line 5): its decl and the reads from the chip on.
+    let (_, sites) = rename_sites(src, 5, 13);
+    assert_eq!(sites, vec![(5, 9), (6, 4), (6, 10), (7, 6)], "{sites:?}");
+    // The top-level `var cnt`: its decl and the read above the chip.
+    let (_, sites) = rename_sites(src, 0, 4);
+    assert_eq!(sites, vec![(0, 0), (4, 10)], "{sites:?}");
+    // A chip nested in a top-level chip: its storage reaches a top-level
+    // handler after the outer chip.
+    let src = "in go: exec
+in go2: exec
+var n: int = 0
+chip { chip { var y: int = 3
+  on go { y = y + 1 } } }
+on go2 { n = y }";
+    let (name, sites) = rename_sites(src, 3, 18);
+    assert_eq!(name, "y");
+    assert_eq!(sites, vec![(3, 14), (4, 10), (4, 14), (5, 13)], "{sites:?}");
+    // A top-level `const` and a top-level chip's `var` of one name: the chip
+    // names its `var`, the rest of the file the `const`.
+    let src = "const ch = \"evt\"
+in go: exec
+in go2: exec
+var s: string = \"\"
+chip { var ch: string = \"x\"
+  on go { ch = \"y\" } }
+on go2 { s = ch }";
+    let (_, sites) = rename_sites(src, 4, 11);
+    assert_eq!(sites, vec![(4, 7), (5, 10)], "{sites:?}");
+    let (_, sites) = rename_sites(src, 0, 6);
+    assert_eq!(sites, vec![(0, 6), (6, 13)], "{sites:?}");
+    // A top-level `let` is named from its declaration on, as the compiler
+    // reads it: above it, the chip's storage of the name is what reads mean.
+    let src = "in go: exec
+in go2: exec
+var n2: int = 0
+chip { var x: int = 1
+ on go { x += 1 } }
+on go2 { n2 = x }
+let x = 7
+on go { n2 = x }";
+    let (name, sites) = rename_sites(src, 3, 11);
+    assert_eq!(name, "x");
+    assert_eq!(sites, vec![(3, 7), (4, 9), (4, 9), (5, 14)], "{sites:?}");
+    let (_, sites) = rename_sites(src, 6, 4);
+    assert_eq!(sites, vec![(6, 4), (7, 13)], "{sites:?}");
+    // A `mod` written in the chip names the chip's storage wherever it is
+    // called from, and a chip's `const` is the chip's inside it.
+    let src = "let x = 4
+const ch = \"evt\"
+in go: exec
+var n: int = 0
+var s: string = \"\"
+chip { var x: int = 1
+ const ch = \"inner\"
+ mod rd() -> int { return x * 10 }
+ on go { s = ch } }
+on go { n = rd() + x
+ s = ch }";
+    let (_, sites) = rename_sites(src, 5, 11);
+    assert_eq!(sites, vec![(5, 7), (7, 26)], "{sites:?}");
+    let (_, sites) = rename_sites(src, 0, 4);
+    assert_eq!(sites, vec![(0, 4), (9, 19)], "{sites:?}");
+    let (_, sites) = rename_sites(src, 6, 7);
+    assert_eq!(sites, vec![(6, 7), (8, 13)], "{sites:?}");
+    let (_, sites) = rename_sites(src, 1, 6);
+    assert_eq!(sites, vec![(1, 6), (10, 5)], "{sites:?}");
+}
+
 #[test]
 fn for_loop_binding_rename_touches_binding_and_body_use_only() {
     let src = "\
@@ -1173,4 +1292,91 @@ on go {
     // The receiver right before it is not a field name.
     let recv = char_col_of(src, 4, "r.hp");
     assert!(!field_name_at(&ast, src, 4, recv));
+}
+
+/// A name the top level declares twice is read by position, as the compiler
+/// reads it: each read names the latest declaration written before it, and a
+/// `mod` body the latest one before the `mod`.
+#[test]
+fn a_top_level_name_declared_twice_is_named_by_position() {
+    let src = "in go: exec
+in go2: exec
+var n: int = 0
+const k = 1
+mod m() -> int { return k }
+on go { n = k }
+const k = 2
+on go2 { n = k + m() }";
+    let (name, sites) = rename_sites(src, 3, 6);
+    assert_eq!(name, "k");
+    assert_eq!(sites, vec![(3, 6), (4, 24), (5, 12)], "{sites:?}");
+    let (_, sites) = rename_sites(src, 7, 13);
+    assert_eq!(sites, vec![(6, 6), (7, 13)], "{sites:?}");
+}
+
+/// Each name `k` written in `src`, by its (0-based) line and column.
+fn sites_of_k(src: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    for (line, text) in src.lines().enumerate() {
+        let bytes = text.as_bytes();
+        for (col, c) in bytes.iter().enumerate() {
+            let ident = |i: usize| bytes.get(i).is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
+            if *c == b'k' && (col == 0 || !ident(col - 1)) && !ident(col + 1) {
+                out.push((line, col));
+            }
+        }
+    }
+    out
+}
+
+/// The editor names a duplicated top-level name the declaration the compiler
+/// reads at each place: storage above every declaration, a `let` from its end,
+/// a `mod` or `chip` body as read where it is declared (the first declaration
+/// when it is above all of them), a self-reference the earlier declaration,
+/// and a library file by its own positions. Each row lists the reads that name
+/// one declaration, by the order of the `k`s written.
+#[test]
+fn a_top_level_name_declared_twice_is_named_where_the_compiler_reads_it() {
+    let head = "in go: exec\nin go2: exec\nin go3: exec\nvar n: int = 0\n";
+    let rows: [(&str, &[&[usize]]); 9] = [
+        (
+            "on go { n = k }\nvar k: int = 1\non go2 { n = k }\nlet k = 2\non go3 { n = k }",
+            &[&[0, 1, 2], &[3, 4]],
+        ),
+        (
+            "on go { n = k }\nlet k = 2\non go2 { n = k }\nvar k: int = 1\non go3 { n = k }",
+            &[&[0, 3, 4], &[1, 2]],
+        ),
+        ("buffer k: int = k + 2\non go { n = k }\nlet k = 5\non go2 { n = k }", &[&[0, 1, 2], &[3, 4]]),
+        ("const k = 1\nlet k = k + 1\non go { n = k }", &[&[0, 2], &[1, 3]]),
+        ("const k = 1\nchip C() { on go { n = k } }\nconst k = 2\nC()\non go2 { n = k }", &[&[0, 1], &[2, 3]]),
+        ("mod f() -> int { return k }\nconst k = 1\nconst k = 2\non go { n = f() + k }", &[&[0, 1], &[2, 3]]),
+        ("mod f() -> int { return k }\nlet k = 1\nvar k: int = 2\non go { n = f() + k }", &[&[0, 2, 3], &[1]]),
+        ("let k = 5\nvar k: int = k\non go { n = k }", &[&[0, 2], &[1, 3]]),
+        ("const k = 5\nstatic var k: int = k + 1\non go { n = k }", &[&[0, 2], &[1, 3]]),
+    ];
+    // A site is compared by its line: a storage declaration's site starts at
+    // its keyword.
+    let lines = |sites: &[(usize, usize)]| {
+        let mut l: Vec<usize> = sites.iter().map(|s| s.0).collect();
+        l.dedup();
+        l
+    };
+    for (body, groups) in rows {
+        let src = format!("{head}{body}");
+        let ks = sites_of_k(&src);
+        for group in groups {
+            let want: Vec<(usize, usize)> = group.iter().map(|i| ks[*i]).collect();
+            for (line, col) in &want {
+                let (name, sites) = rename_sites(&src, *line, *col);
+                assert_eq!(name, "k");
+                assert_eq!(lines(&sites), lines(&want), "from {line}:{col}\n{src}");
+            }
+        }
+    }
+    // A library file the editor opens on its own reads by position too.
+    let lib = "const k = 2\nmod fa() -> int { return k }\nconst k = 30\nmod fb() -> int { return k }";
+    let ks = sites_of_k(lib);
+    assert_eq!(rename_sites(lib, ks[1].0, ks[1].1).1, vec![ks[0], ks[1]]);
+    assert_eq!(rename_sites(lib, ks[3].0, ks[3].1).1, vec![ks[2], ks[3]]);
 }

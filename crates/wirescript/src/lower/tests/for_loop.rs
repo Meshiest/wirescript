@@ -845,3 +845,138 @@ fn a_statement_with_no_preceding_break_is_still_ws058() {
     assert!(codes.contains(&"WS058"), "expected WS058, got {codes:?}");
     assert!(!codes.contains(&"WS081"), "unexpected WS081, got {codes:?}");
 }
+
+/// Every node of `class` anywhere in the chip tree (a loop body lands on the
+/// shell's own grid).
+fn tree_nodes<'a>(m: &'a crate::ir::Module, class: &str) -> Vec<&'a crate::ir::Node> {
+    let mut out: Vec<&crate::ir::Node> = m.nodes.values().filter(|n| n.gate_class == class).collect();
+    for c in m.chips.values() {
+        out.extend(tree_nodes(c, class));
+    }
+    out
+}
+
+/// A `for` over an array or map whose elements are enums (with or without a
+/// payload) or tuples binds each element whole: the loop runs off one of the
+/// element's columns and reads every column at the element's index or key,
+/// where the source failed as WS071.
+#[test]
+fn a_for_loop_over_columnar_elements_binds_each_element() {
+    let cases = [
+        (
+            "enum E { A, B }\nvar es: E[] = []",
+            "es.push(E.B)\n for x in es { match x { A => { r += 1 } B => { r += 10 } } }\n for i, x in es { if x is E.B { r += i } }",
+            gc::MICROCHIP_FOR_EACH_ARRAY,
+            gc::ARRAY_GET,
+        ),
+        (
+            "enum E { Empty, Circle(int) }\nvar es: E[] = []",
+            "es.push(E.Circle(3))\n for x in es { match x { Empty => { r += 1 } Circle(c) => { r += c } } }",
+            gc::MICROCHIP_FOR_EACH_ARRAY,
+            gc::ARRAY_GET,
+        ),
+        (
+            "var ts: (int, int)[] = []",
+            "ts.push((1, 2))\n for t in ts { r += t.0 + t.1 }",
+            gc::MICROCHIP_FOR_EACH_ARRAY,
+            gc::ARRAY_GET,
+        ),
+        (
+            "enum E { A, B }\nvar m: Map<int, E>",
+            "m.set(1, E.B)\n for k, v in m { match v { A => { r += 1 } B => { r += k } } }",
+            gc::MICROCHIP_FOR_EACH_MAP,
+            gc::MAP_GET,
+        ),
+    ];
+    for (decls, body, shell, read) in cases {
+        let src = format!("{decls}\nvar r: int = 0\nin go: exec\non go {{\n {body}\n}}");
+        let r = compile(&src);
+        assert!(
+            r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
+            "{src}\n{:?}",
+            r.diagnostics
+        );
+        assert!(tree_nodes(&r.module, gc::UNSUPPORTED).is_empty(), "{src}");
+        let shells = tree_nodes(&r.module, shell);
+        assert!(!shells.is_empty(), "{src}");
+        // The driver pin takes a column's ref, and the body reads the columns.
+        for s in &shells {
+            let driven = r.module.wires.iter().any(|w| {
+                w.target.node_id == s.id
+                    && matches!(w.target.port, WirePort::ArrayVarRef | WirePort::MapVarRef)
+            });
+            assert!(driven, "{src}: the loop's driver pin is wired");
+        }
+        let reads = tree_nodes(&r.module, read)
+            .into_iter()
+            .filter(|n| n.chip_id.is_some() || r.module.chips.values().any(|c| c.nodes.contains_key(&n.id)))
+            .count();
+        assert!(reads >= 1, "{src}: the body reads the element's columns");
+    }
+}
+
+/// Each binding of a columnar element reads ITS column: a tuple's `.0` and
+/// `.1`, an enum's tag and each payload slot. Traced from every store in the
+/// loop body back through the plane's pins to the storage it reads.
+#[test]
+fn a_columnar_element_reads_each_field_from_its_own_column() {
+    let r = compile(
+        "enum E { Empty, Box(int, int) }\nin go: exec\nvar ts: (int, string)[] = []\nvar es: E[] = []\n\
+         var a: int = 0\nvar b: string = \"\"\nvar c: int = 0\nvar d: int = 0\nvar g: int = 0\n\
+         on go {\n  for t in ts {\n    a = t.0\n    b = t.1\n  }\n  for x in es {\n    match x { Empty => { g = 1 } Box(p, q) => { c = p\n      d = q } }\n  }\n}",
+    );
+    assert_no_errors(&r);
+    let mut nodes: HashMap<crate::ir::NodeId, &crate::ir::Node> = HashMap::default();
+    let mut wires: Vec<crate::ir::Wire> = Vec::new();
+    let mut stack = vec![&r.module];
+    while let Some(m) = stack.pop() {
+        nodes.extend(m.nodes.iter().map(|(id, n)| (*id, n)));
+        wires.extend(m.wires.iter().copied());
+        stack.extend(m.chips.values());
+    }
+    // The node driving `port` of `id`, followed back through plane pins.
+    let source = |id: crate::ir::NodeId, port: WirePort| -> Option<crate::ir::NodeId> {
+        let mut at = wires.iter().find(|w| w.target.node_id == id && w.target.port == port)?.source.node_id;
+        while let Some(w) = wires
+            .iter()
+            .find(|w| w.target.node_id == at && w.target.port == WirePort::RerInput && nodes.get(&at).is_some_and(|n| n.kind != crate::ir::NodeKind::Output))
+        {
+            at = w.source.node_id;
+        }
+        Some(at)
+    };
+    let label = |id: crate::ir::NodeId| match nodes[&id].properties.get(&crate::intern::sym::NAME_LABEL) {
+        Some(crate::ir::Literal::String(s)) => s.clone(),
+        _ => format!("{}#{id}", nodes[&id].gate_class),
+    };
+    // Each store's target var and the column its value is read from.
+    let mut read: Vec<(String, String)> = Vec::new();
+    for (id, n) in &nodes {
+        if n.gate_class != gc::VAR_SET {
+            continue;
+        }
+        let (Some(var), Some(value)) = (source(*id, WirePort::VarRef), source(*id, WirePort::Value)) else {
+            continue;
+        };
+        if nodes[&value].gate_class != gc::ARRAY_GET {
+            continue;
+        }
+        let column = source(value, WirePort::ArrayVarRef).expect("the read's column");
+        read.push((label(var), label(column)));
+    }
+    read.sort();
+    let tag_read = nodes.values().filter(|n| n.gate_class == gc::ARRAY_GET).any(|n| {
+        let column = source(n.id, WirePort::ArrayVarRef).map(label);
+        column.as_deref() == Some("es.__disc")
+    });
+    assert!(tag_read, "the match reads the tag column");
+    assert_eq!(
+        read,
+        vec![
+            ("a".to_string(), "ts.0".to_string()),
+            ("b".to_string(), "ts.1".to_string()),
+            ("c".to_string(), "es.__Box_0".to_string()),
+            ("d".to_string(), "es.__Box_1".to_string()),
+        ]
+    );
+}

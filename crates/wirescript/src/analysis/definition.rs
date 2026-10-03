@@ -331,8 +331,8 @@ fn resolve_enum_pattern_field_definition(ast: &Script, source: &str, line: usize
     let (variant_name, field_name) = hit?;
 
     let registry = crate::typecheck::enums::build_registry(&ast.decls);
-    let enum_name = crate::typecheck::enums::resolve_bare_variant_enum(&registry, variant_name, |_| false)?;
-    let e = find_enum_decl(&ast.decls, enum_name)?;
+    let def = crate::typecheck::enums::resolve_bare_variant_enum(&registry, variant_name, |_| false)?;
+    let e = find_enum_decl(&ast.decls, &def.name)?;
     let v = e.variants.iter().find(|v| v.name == variant_name)?;
     let EnumPayloadDecl::Named(decl_fields) = &v.payload else {
         return None;

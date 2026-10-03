@@ -108,11 +108,11 @@ pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
             // source is the reliable one and the `type_of_expr` fallback avoids
             // the `.field`-trigger key overlap seen in lowering.
             let record_fields: Option<Vec<(String, Type)>> = match sym.as_ref().map(|s| &s.ty) {
-                Some(Type::Record(fs)) => Some(fs.clone()),
+                Some(Type::Record(fs) | Type::Outputs(fs)) => Some(fs.clone()),
                 _ => {
                     let key = (range.file.clone(), range.start.offset, range.end.offset);
                     match ctx.type_of_expr.get(&key) {
-                        Some(Type::Record(fs)) => Some(fs.clone()),
+                        Some(Type::Record(fs) | Type::Outputs(fs)) => Some(fs.clone()),
                         _ => None,
                     }
                 }
@@ -232,54 +232,43 @@ pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
 /// Collect names assigned as outputs anywhere in a block: `out name = expr`
 /// bindings, `emit name (= expr)`, and bare `name = expr` assignments (an
 /// over-approximation — variable assigns land here too — but this set only
-/// suppresses the WS013 unassigned-output warning). Recurses into if blocks,
-/// `on` handlers, and anonymous chip blocks; nested named chips own their
-/// outputs and are skipped.
+/// suppresses the WS013 unassigned-output warning). Reaches every branch,
+/// `match` arm (statement or value), `on` handler, anonymous chip and `for`
+/// body; nested named chips own their outputs and are skipped.
 pub(super) fn collect_output_assignments(block: &Block, assigned: &mut std::collections::HashSet<String>) {
-    for s in &block.stmts {
-        match s {
-            Stmt::OutBinding(o) => {
+    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, _| {
+        match n {
+            walk::Node::Stmt(Stmt::OutBinding(o)) => {
                 assigned.insert(o.name.clone());
             }
-            Stmt::Emit(e) => {
+            walk::Node::Stmt(Stmt::Emit(e)) => {
                 assigned.insert(e.name.clone());
             }
-            Stmt::Assign(a) => {
+            walk::Node::Stmt(Stmt::Assign(a)) => {
                 if let Expr::Ident { name, .. } = &a.target {
                     assigned.insert(name.clone());
                 }
             }
-            Stmt::If(i) => {
-                collect_output_assignments(&i.then_block, assigned);
-                if let Some(eb) = &i.else_block {
-                    collect_output_assignments(eb, assigned);
-                }
-            }
-            Stmt::Handler(h) => collect_output_assignments(&h.body, assigned),
-            Stmt::AnonChip(ac) => collect_output_assignments(&ac.body, assigned),
+            walk::Node::Stmt(Stmt::ChipDecl(_)) => return false,
             _ => {}
         }
-    }
+        true
+    });
 }
 
+/// Whether a `return <value>` is reached anywhere in the body outside a nested
+/// named chip: a branch, a `match` arm, an anonymous chip or a nested handler.
 pub(super) fn block_has_return_value(block: &Block) -> bool {
-    for s in &block.stmts {
-        match s {
-            Stmt::Return { value: Some(_), .. } => return true,
-            Stmt::If(i) => {
-                if block_has_return_value(&i.then_block) {
-                    return true;
-                }
-                if let Some(eb) = &i.else_block
-                    && block_has_return_value(eb)
-                {
-                    return true;
-                }
-            }
-            _ => {}
+    let mut found = false;
+    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, _| match n {
+        walk::Node::Stmt(Stmt::Return { value: Some(_), .. }) => {
+            found = true;
+            false
         }
-    }
-    false
+        walk::Node::Stmt(Stmt::ChipDecl(_)) => false,
+        _ => !found,
+    });
+    found
 }
 
 /// Reject non-constant values in an event handler's constant-only config slots
@@ -392,7 +381,7 @@ fn check_event_config_value(
     ctx: &mut TypeCheckCtx,
     field: &str,
     e: &Expr,
-    consts: &crate::lower::ConstEnv,
+    consts: &crate::const_scope::ConstNames,
 ) {
     match crate::lower::expr_to_literal_in(e, consts) {
         Some(lit) => {

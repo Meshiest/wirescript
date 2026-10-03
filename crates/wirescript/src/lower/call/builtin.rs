@@ -27,7 +27,7 @@ fn enum_config_discriminant(ctx: &LowerCtx, arg_expr: &Expr, enum_type: &str) ->
 /// compound shapes `types::mono::substitute` does) with `Type::Any` — the
 /// fallback `typecheck::call::resolve_param_output` uses when a generic
 /// builtin's type param can't be pinned. A leftover would only happen if the
-/// call's typechecked type couldn't be recovered at all; this is the backstop
+/// call's typechecked types couldn't be recovered at all; this is the backstop
 /// that keeps the invariant `emit::variants::var_type_to_wire_value` asserts
 /// ("a `Type::Param` must never reach emit") true even then.
 fn scrub_param_type(t: Type) -> Type {
@@ -49,6 +49,58 @@ fn scrub_param_type(t: Type) -> Type {
         },
         other => other,
     }
+}
+
+/// Whether a `Type::Param` is left anywhere in `t`.
+fn has_param(t: &Type) -> bool {
+    match t {
+        Type::Param(_) => true,
+        Type::Array(inner) | Type::Ref(inner) => has_param(inner),
+        Type::Map(k, v) => has_param(k) || has_param(v),
+        Type::Union(ts) | Type::Tuple(ts) => ts.iter().any(has_param),
+        Type::Record(fs) => fs.iter().any(|(_, t)| has_param(t)),
+        Type::Enum { args, .. } => args.iter().any(has_param),
+        _ => false,
+    }
+}
+
+/// `Select(c, a, b)` of two records or enum values: the gate carries one wire,
+/// so each leaf is chosen by its own `Select` on the one condition, as
+/// `if c then a else b` chooses a record. The chosen value is stashed in
+/// `pending_inline_record` as a record-returning call's is; the port returned
+/// is its tag (a payload-free enum where one value is expected) or a leaf.
+fn select_of_records(
+    ctx: &mut LowerCtx,
+    spec: &crate::catalog::calls::CallSpec,
+    bound: &HashMap<&str, &Expr>,
+    e: &Expr,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    if spec.name != "Select" || !matches!(unwrap_ref(&ctx.type_of(e)), Type::Record(_) | Type::Enum { .. }) {
+        return None;
+    }
+    let [cond, a, b] = [0, 1, 2].map(|i| spec.params.get(i).and_then(|p| bound.get(p.name).copied()));
+    let (cond, a, b) = (cond?, a?, b?);
+    let cond_port = lower_expr(ctx, cond);
+    let a_fields = crate::lower::stmt::choice_branch_fields(ctx, a, e.range())?;
+    let b_fields = crate::lower::stmt::choice_branch_fields(ctx, b, e.range())?;
+    // `b` when the condition is true, `a` when it is false.
+    let rec = crate::lower::stmt::select_record_fields(ctx, cond_port, &b_fields, &a_fields, range);
+    if let Some(outputs) = ctx.gate_outputs(e.range()) {
+        crate::lower::stmt::mark_gate_read_choice(ctx, &rec, outputs);
+    }
+    let port = crate::lower::context::in_declared_order(ctx, &rec, e.range())
+        .into_iter()
+        .find_map(|f| crate::lower::access::binding_to_port(ctx, f, range))?;
+    ctx.pending_inline_record = Some(rec);
+    Some(port)
+}
+
+/// Whether `e` is a `Select` builtin call, whose stashed record is the chosen
+/// value itself rather than a record of named outputs.
+pub(in crate::lower) fn is_builtin_select(ctx: &LowerCtx, e: &Expr) -> bool {
+    matches!(e, Expr::Call { callee, .. } if matches!(callee.as_ref(), Expr::Ident { name, .. } if name == "Select"))
+        && crate::lower::access::called_chip_decl(ctx, e).is_none()
 }
 
 pub(in crate::lower) fn lower_builtin_call(
@@ -99,12 +151,19 @@ pub(in crate::lower) fn lower_builtin_call(
         }
     }
 
+    if let Some(port) = select_of_records(ctx, spec, &bound, e, range) {
+        return port;
+    }
+
     // Lower args first (adapters may advance exec)
     struct WireEntry {
         port: WirePort,
         val_port: PortRef,
     }
     let mut wires: Vec<WireEntry> = Vec::new();
+    // The arguments wired rather than baked, lowered after this loop in source
+    // order.
+    let mut wired: Vec<(WirePort, &Expr)> = Vec::new();
     let mut arg_types: Vec<(WirePort, Option<Type>)> = Vec::new();
     let mut properties: HashMap<crate::intern::Sym, Literal> = HashMap::default();
     // Vector2D composite layout ports (`positionX` -> "Position.X"): constant
@@ -267,7 +326,7 @@ pub(in crate::lower) fn lower_builtin_call(
                 "WS028",
                 format!(
                     "'{}' is a constant-only config field, and its value did not resolve to a \
-                     constant during lowering — the setting would be dropped and the gate would \
+                     constant during lowering, so the setting would be dropped and the gate would \
                      use its default",
                     p.port.as_str()
                 ),
@@ -275,7 +334,6 @@ pub(in crate::lower) fn lower_builtin_call(
             );
             continue;
         }
-        let val_port = lower_expr(ctx, arg_expr);
         // character and controller wire directly into each other's ports in
         // Brickadia, so no adapter gate is inserted for a character passed to
         // a controller param (or vice versa) — an adapter would need
@@ -285,16 +343,23 @@ pub(in crate::lower) fn lower_builtin_call(
         // wired node's port type for typing an `any` port: a mod return (`aimHit()
         // -> entity`) or a gate output the catalog declares loosely both reach emit
         // as `any`, while typecheck has already resolved them to the real type.
-        let arg_ty = {
-            let r = arg_expr.range();
-            ctx.type_of_expr
-                .get(&(r.file.clone(), r.start.offset, r.end.offset))
-                .cloned()
-        };
+        let arg_ty = ctx.one_value_type_at(arg_expr.range());
         arg_types.push((p.port, arg_ty));
+        wired.push((p.port, arg_expr));
+    }
+    // Arguments are evaluated in source order, each fixed at its value before a
+    // later one runs code that may change what it reads.
+    let mut order: Vec<usize> = (0..wired.len()).collect();
+    order.sort_by_key(|&i| wired[i].1.range().start.offset);
+    let exprs: Vec<&Expr> = order.iter().map(|&i| wired[i].1).collect();
+    let mut ports = vec![None; wired.len()];
+    for (i, port) in order.into_iter().zip(crate::lower::ordered::lower_in_order(ctx, &exprs)) {
+        ports[i] = Some(port);
+    }
+    for ((port, _), val_port) in wired.iter().zip(ports) {
         wires.push(WireEntry {
-            port: p.port,
-            val_port,
+            port: *port,
+            val_port: val_port.expect("every argument lowered"),
         });
     }
 
@@ -404,20 +469,42 @@ pub(in crate::lower) fn lower_builtin_call(
     // literal (the common case: `_`, a var, any non-constant argument) reaches
     // emit's `var_type_to_wire_value` as a bare `Type::Param`, which it has no
     // representation for.
+    // Every port's typechecked type speaks: each argument's against its
+    // param, and the call's own against its output (or, for a call with
+    // several outputs, each output against the record field it fills).
     let param_subst: crate::types::infer::Subst = {
         let mut constraints = Vec::new();
-        if let Some(out) = spec.outputs.first() {
-            let r = e.range();
-            if let Some(call_ty) =
-                ctx.type_of_expr.get(&(r.file.clone(), r.start.offset, r.end.offset))
-            {
-                crate::types::mono::collect(&out.ty, call_ty, &mut constraints);
+        for (port, arg_ty) in &arg_types {
+            if let (Some(p), Some(t)) = (spec.params.iter().find(|p| p.port == *port), arg_ty) {
+                crate::types::mono::collect(&p.ty, &unwrap_ref(t), &mut constraints);
+            }
+        }
+        if let Some(call_ty) = ctx.type_at(e.range()) {
+            match (spec.outputs.as_slice(), unwrap_ref(&call_ty)) {
+                ([out], t) => crate::types::mono::collect(&out.ty, &t, &mut constraints),
+                (outs, Type::Record(fields)) => {
+                    for out in outs {
+                        let name = crate::catalog::arrays::field_name_ref(out.port.as_str());
+                        if let Some((_, t)) = fields.iter().find(|(n, _)| n == name || n == out.port.as_str()) {
+                            crate::types::mono::collect(&out.ty, t, &mut constraints);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         constraints
             .into_iter()
             .map(|crate::types::infer::Constraint::Eq(n, t)| (n, t))
             .collect()
+    };
+    // A type parameter no port pins is a compiler fault, not a program's: the
+    // port would ship as `any` (the float variant) whatever the value is.
+    let mut unpinned = false;
+    let mut concrete = |t: &Type| {
+        let t = crate::types::mono::substitute(t, &param_subst);
+        unpinned |= has_param(&t);
+        scrub_param_type(t)
     };
 
     // A custom-event send declares its eight data params as `any` (the channel
@@ -439,7 +526,7 @@ pub(in crate::lower) fn lower_builtin_call(
     let is_event_send = spec.gate_class == gc::SEND_CUSTOM_EVENT
         || spec.gate_class == gc::SEND_CUSTOM_EVENT_GLOBAL;
     for p in spec.params.iter() {
-        let mut ty = scrub_param_type(crate::types::mono::substitute(&p.ty, &param_subst));
+        let mut ty = concrete(&p.ty);
         if is_event_send
             && matches!(ty, Type::Any)
             && let Some(w) = wires.iter().find(|w| w.port == p.port)
@@ -464,8 +551,15 @@ pub(in crate::lower) fn lower_builtin_call(
         ports.inputs.push(PortSpec::new(intern(p.port.as_str()), ty));
     }
     for out in &spec.outputs {
-        let ty = scrub_param_type(crate::types::mono::substitute(&out.ty, &param_subst));
+        let ty = concrete(&out.ty);
         ports.outputs.push(PortSpec::new(intern(out.port.as_str()), ty));
+    }
+    if unpinned && !ctx.template_build {
+        ctx.error(
+            crate::diagnostic::INTERNAL_ERROR,
+            format!("internal: no port of `{}` pins its type parameter, so it would be typed `any`", spec.name),
+            e.range(),
+        );
     }
 
     // Ensure all gate ports are present — the catalog may define ports

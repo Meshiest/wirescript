@@ -97,11 +97,8 @@ pub fn map_return_type(method: &str, _key: &Type, value: &Type) -> Option<Type> 
         // subscript form (which the record-map lowering also fans out per
         // field). There is no `Found` flag to expose alongside a record - the
         // `{Value, Found}` pair is kept only for a scalar value.
-        "get" if matches!(value, Type::Record(_)) => value.clone(),
-        "get" => Type::Record(vec![
-            ("Value".into(), value.clone()),
-            ("Found".into(), Type::Bool),
-        ]),
+        "get" if matches!(value, Type::Record(_)) => Type::call_result(vec![("Value".into(), value.clone())]),
+        "get" => Type::call_result(vec![("Value".into(), value.clone()), ("Found".into(), Type::Bool)]),
         "has" | "remove" => Type::Bool,
         "length" => Type::Int,
         // All void statements: `set`/`clear`/`copyFrom` mutate the map;

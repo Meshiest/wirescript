@@ -1907,3 +1907,459 @@ fn is_on_a_constant_enum_folds_away() {
         "a constant `is` must fold, not emit a compare"
     );
 }
+
+/// A statement `match`, `if let` or `let ... else` on a call's result runs the
+/// call first and tests its result after, like the `let`-bound twin: the
+/// handler's exec does not fork, and the call's effect comes before every
+/// test and before the arm's store.
+#[test]
+fn a_decision_on_a_call_result_tests_after_the_call() {
+    let head = "enum S { Sa(int), Sb(float), Sc }\nvar k: int = 3\nvar n: int = 0\nvar cnt: int = 0\nin go: exec\n\
+                mod g(x: int) -> S { cnt += 1\n if x > 2 { return S.Sb(1.5) }\n return S.Sa(x) }\n";
+    let bodies = [
+        "on go { match g(k) { S.Sa(z) => { n = z }, _ => { n = 9 } } }",
+        "on go { let t = g(k)\n match t { S.Sa(z) => { n = z }, _ => { n = 9 } } }",
+        "on go { if let S.Sa(z) = g(k) { n = z } }",
+        "on go { let t = g(k)\n if let S.Sa(z) = t { n = z } }",
+        "on go { let Sa(z) = g(k) else { return }\n n = z }",
+        "on go { let t = g(k)\n let Sa(z) = t else { return }\n n = z }",
+    ];
+    let reaches = |m: &crate::ir::Module, from: crate::ir::NodeId, to: crate::ir::NodeId| {
+        let mut seen = crate::collections::HashSet::default();
+        let mut stack = vec![from];
+        while let Some(n) = stack.pop() {
+            if n == to {
+                return true;
+            }
+            if seen.insert(n) {
+                for w in &m.wires {
+                    if w.source.node_id == n && w.target.port.as_str().starts_with("Exec") {
+                        stack.push(w.target.node_id);
+                    }
+                }
+            }
+        }
+        false
+    };
+    for body in bodies {
+        for r in [compile(&format!("{head}{body}")), compile_folded(&format!("{head}{body}"))] {
+            assert_no_errors(&r);
+            let m = &r.module;
+            let input = m.nodes.values().find(|n| n.kind == crate::ir::NodeKind::Input).expect("go").id;
+            let starts = m.wires.iter().filter(|w| w.source == input.port(WirePort::RerOutput)).count();
+            assert_eq!(starts, 1, "the handler's exec forks: {body}");
+            let inc = find_gate(&r, "BrickComponentType_Exec_Var_Increment");
+            for n in m.nodes.values() {
+                if n.gate_class == crate::ir::gate_class::BRANCH
+                    || (n.gate_class == crate::ir::gate_class::VAR_SET && n.source_range.start.line > 8)
+                {
+                    assert!(reaches(m, inc, n.id), "{} runs before the call: {body}", n.gate_class);
+                }
+            }
+        }
+    }
+}
+
+/// A constant initializer of an enum array bakes every column: the tags and
+/// each variant's payload, with a zero where a row's variant has no such
+/// payload. It baked nothing, so the array started empty. Top level, as a
+/// record field, and handler-local.
+#[test]
+fn an_enum_array_initializer_bakes_its_columns() {
+    use crate::ir::Literal;
+    let src = "enum S { A, B(int), C { w: float } }\nenum Hue { Red, Green, Blue }\n\
+               type R = { hs: Hue[], k: int }\n\
+               var xs: S[] = [S.A, S.B(3), S.C { w: 2.5 }]\nvar hu: Hue[] = [Hue.Blue, Hue.Red]\n\
+               var r: R = { hs: [Hue.Green, Hue.Blue], k: 4 }\nvar n: int = 0\nin go: exec\n\
+               on go {\n var loc: Hue[] = [Hue.Blue]\n n = xs.length() + hu.length() + r.hs.length() + loc.length()\n}";
+    for r in [compile(src), compile_folded(src)] {
+        assert_no_errors(&r);
+        let mut baked: Vec<Vec<Literal>> = r
+            .module
+            .nodes
+            .values()
+            .filter(|n| n.gate_class == crate::ir::gate_class::ARRAY_VAR)
+            .filter_map(|n| match n.properties.get(&crate::intern::sym::INITIAL_VALUE) {
+                Some(Literal::Array(items)) => Some(items.clone()),
+                _ => None,
+            })
+            .collect();
+        baked.sort_by_key(|v| format!("{v:?}"));
+        let ints = |v: &[i64]| v.iter().map(|&i| Literal::Int(i)).collect::<Vec<_>>();
+        for want in [
+            ints(&[0, 1, 2]),
+            ints(&[0, 3, 0]),
+            vec![Literal::Float(0.0), Literal::Float(0.0), Literal::Float(2.5)],
+            ints(&[2, 0]),
+            ints(&[1, 2]),
+            ints(&[2]),
+        ] {
+            assert!(baked.contains(&want), "{want:?} in {baked:?}");
+        }
+    }
+}
+
+/// A container initializer stores its values whether it spells a literal or
+/// names a constant, for enum-valued maps and records with an enum field too:
+/// each form compiles as its literal twin does, at the top level and
+/// handler-local. Top-level enum maps, the enum column of a record container
+/// and every constant-named top-level initializer baked nothing; a
+/// handler-local constant-named one was dropped with a warning.
+#[test]
+fn a_constant_container_initializer_is_its_literal_twin() {
+    let head = "enum Hue { Red, Green, Blue }\nenum S { A, B(int), C { w: float } }\n\
+                type R = { h: Hue, k: int }\nvar n: int = 0\nvar so: string = \"\"\nin go: exec\n\
+                const IS = [1, 2]\nconst SS = [\"x\", \"y\"]\nconst HS = [Hue.Red, Hue.Blue]\n\
+                const PS = [S.A, S.B(3), S.C { w: 2.5 }]\nconst M = { \"a\": 2, \"b\": 1 }\n\
+                const HM = { \"a\": Hue.Blue, \"b\": Hue.Green }\n\
+                const RS = [{ h: Hue.Blue, k: 1 }, { h: Hue.Green, k: 2 }]\n\
+                const RM = { \"a\": { h: Hue.Blue, k: 1 } }\n";
+    let forms = [
+        ("var c: int[] = IS", "[1, 2]", "n = c[1]"),
+        ("var c: string[] = SS", "[\"x\", \"y\"]", "so = c[1]"),
+        ("var c: Hue[] = HS", "[Hue.Red, Hue.Blue]", "n = c[1].ToInt()"),
+        ("var c: S[] = PS", "[S.A, S.B(3), S.C { w: 2.5 }]", "n = c.length()"),
+        ("var c: Map<string, int> = M", "{ \"a\": 2, \"b\": 1 }", "n = c.get(\"a\").Value"),
+        ("var c: Map<string, Hue> = HM", "{ \"a\": Hue.Blue, \"b\": Hue.Green }", "n = c.get(\"a\").Value.ToInt()"),
+        ("var c: R[] = RS", "[{ h: Hue.Blue, k: 1 }, { h: Hue.Green, k: 2 }]", "n = c.length()"),
+        ("var c: Map<string, R> = RM", "{ \"a\": { h: Hue.Blue, k: 1 } }", "n = c.length()"),
+    ];
+    for (decl, literal, read) in forms {
+        let twin = format!("{} = {literal}", decl.rsplit_once(" = ").unwrap().0);
+        let top = |d: &str| format!("{head}{d}\non go {{ {read} }}");
+        let local = |d: &str| format!("{head}on go {{ {d}\n {read} }}");
+        let mut pairs = vec![(top(decl), top(&twin))];
+        // The literal twin of a payload enum carries the zero payload slots
+        // through temporary vars, so that one is compared by what it pushes.
+        if !decl.contains("S[]") {
+            pairs.push((local(decl), local(&twin)));
+        }
+        for (a, b) in pairs {
+            for ((mode, ra), (_, rb)) in super::generics::both_folds(&a).into_iter().zip(super::generics::both_folds(&b)) {
+                assert_no_errors(&ra);
+                assert!(!ra.diagnostics.iter().any(|d| d.code == "WSP001"), "`{decl}` {mode}: {:?}", ra.diagnostics);
+                assert_eq!(
+                    super::generic_differential::shape(&ra),
+                    super::generic_differential::shape(&rb),
+                    "`{a}`, {mode}"
+                );
+            }
+        }
+    }
+    let pushes = |r: &LowerResult| {
+        let mut v: Vec<String> = r
+            .module
+            .nodes
+            .values()
+            .filter(|n| n.gate_class == crate::ir::gate_class::ARRAY_PUSH)
+            .map(|n| format!("{:?}", n.properties.get(&crate::intern::sym::VALUE)))
+            .collect();
+        v.sort();
+        v
+    };
+    // What the literal forms bake: the enum map's tags, and the tag column of
+    // a record array's and a record map's enum field.
+    use crate::ir::Literal;
+    let baked = |src: &str, class: &str| -> Vec<Literal> {
+        let r = compile(&format!("{head}{src}\non go {{ n = 0 }}"));
+        assert_no_errors(&r);
+        r.module
+            .nodes
+            .values()
+            .filter(|n| n.gate_class == class)
+            .filter_map(|n| n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned())
+            .collect()
+    };
+    let (s, i) = (|v: &str| Literal::String(v.into()), Literal::Int);
+    let map = crate::ir::gate_class::MAP_VAR;
+    let array = crate::ir::gate_class::ARRAY_VAR;
+    assert_eq!(
+        baked("var c: Map<string, Hue> = { \"a\": Hue.Blue, \"b\": Hue.Green }", map),
+        [Literal::Map(vec![(s("a"), i(2)), (s("b"), i(1))])]
+    );
+    let rs = baked("var c: R[] = [{ h: Hue.Blue, k: 1 }, { h: Hue.Green, k: 2 }]", array);
+    assert!(rs.contains(&Literal::Array(vec![i(2), i(1)])) && rs.contains(&Literal::Array(vec![i(1), i(2)])), "{rs:?}");
+    let rm = baked("var c: Map<string, R> = { \"a\": { h: Hue.Blue, k: 1 } }", map);
+    assert!(rm.contains(&Literal::Map(vec![(s("a"), i(2))])) && rm.contains(&Literal::Map(vec![(s("a"), i(1))])), "{rm:?}");
+    // Tags 0 1 2, `B_0` 0 3 0, `C_w` 0.0 0.0 2.5.
+    let a = compile_folded(&format!("{head}on go {{ var c: S[] = PS\n n = c.length() }}"));
+    assert_no_errors(&a);
+    let want = ["Float(0.0)", "Float(0.0)", "Float(2.5)", "Int(0)", "Int(0)", "Int(0)", "Int(1)", "Int(2)", "Int(3)"];
+    assert_eq!(pushes(&a), want.map(|w| format!("Some({w})")));
+}
+
+/// A record field initialized from a named constant container (`{ xs: IS }`)
+/// compiles as its literal twin does: at the top level, `static`, and
+/// handler-local, for scalar, record and enum elements, maps, a `let`-bound
+/// constant and a nested record. The top-level and `static` field baked an
+/// empty container, a column of records or enums was never written in a
+/// handler, and the handler-local scalar field was `WS027`.
+#[test]
+fn a_record_field_naming_a_constant_container_is_its_literal_twin() {
+    let head = "enum Hue { Red, Green, Blue }\ntype P = { x: int, y: float }\n\
+                type R = { xs: int[], fs: float[], ss: string[], m: Map<string, int>, pts: P[], hs: Hue[], \
+                pm: Map<string, P>, a: int }\ntype O = { r: R, k: int }\n\
+                var n: int = 0\nvar fo: float = 0.0\nvar so: string = \"\"\nin go: exec\n\
+                const IS = [1, 2]\nconst FS = [1.5, 2.5]\nconst SS = [\"a\", \"b\"]\nconst MS = { \"a\": 1, \"b\": 2 }\n\
+                const PS = [{ x: 1, y: 1.5 }, { x: 2, y: 2.5 }]\nconst HS = [Hue.Blue, Hue.Red]\n\
+                const PM = { \"a\": { x: 3, y: 3.5 } }\nlet LS = [7, 8, 9]\n";
+    let named = "{ xs: IS, fs: FS, ss: SS, m: MS, pts: PS, hs: HS, pm: PM, a: 1 }";
+    let literal = "{ xs: [1, 2], fs: [1.5, 2.5], ss: [\"a\", \"b\"], m: { \"a\": 1, \"b\": 2 }, \
+                   pts: [{ x: 1, y: 1.5 }, { x: 2, y: 2.5 }], hs: [Hue.Blue, Hue.Red], \
+                   pm: { \"a\": { x: 3, y: 3.5 } }, a: 1 }";
+    let read = "n = p.xs[1] + p.m.length() + p.pts.x[1] + p.hs[0].ToInt() + p.pm.length()\n \
+                fo = p.fs[1] + p.pts.y[0]\n so = p.ss[1]";
+    let nested_read = "n = o.r.xs[1] + o.r.pts.x[1] + o.r.hs[0].ToInt() + o.r.m.length()\n so = o.r.ss[0]";
+    let pairs = [
+        (named.to_string(), literal.to_string()),
+        (named.replace("xs: IS", "xs: LS"), literal.replace("xs: [1, 2]", "xs: [7, 8, 9]")),
+    ];
+    for (a, b) in pairs {
+        let forms = |init: &str| {
+            [
+                format!("{head}var p: R = {init}\non go {{ {read} }}"),
+                format!("{head}on go {{ static var p: R = {init}\n {read} }}"),
+                format!("{head}on go {{ var p: R = {init}\n {read} }}"),
+                format!("{head}var o: O = {{ r: {init}, k: 2 }}\non go {{ {nested_read} }}"),
+                format!("{head}on go {{ var o: O = {{ r: {init}, k: 2 }}\n {nested_read} }}"),
+            ]
+        };
+        for (src, twin) in forms(&a).into_iter().zip(forms(&b)) {
+            for ((mode, ra), (_, rb)) in super::generics::both_folds(&src).into_iter().zip(super::generics::both_folds(&twin)) {
+                assert_no_errors(&ra);
+                assert_no_errors(&rb);
+                assert!(!ra.diagnostics.iter().any(|d| d.code == "WSP001"), "{mode}: {src}: {:?}", ra.diagnostics);
+                assert_eq!(super::generic_differential::shape(&ra), super::generic_differential::shape(&rb), "{mode}: {src}");
+            }
+        }
+    }
+    // An imported constant is the same constant.
+    let lib = "const LIS = [1, 2]\nconst LMS = { \"a\": 1, \"b\": 2 }";
+    let main = |init: &str| {
+        format!(
+            "import {{ LIS, LMS }} from \"lib\"\nvar n: int = 0\nin go: exec\ntype R = {{ xs: int[], m: Map<string, int>, a: int }}\n\
+             var p: R = {init}\non go {{ var q: R = {init}\n n = p.xs[1] + p.m.length() + q.xs[1] + q.m.length() + LIS[0] + LMS.length() }}"
+        )
+    };
+    // A container initializer that bakes is not warned about as dropped.
+    for init in ["CR.xs", "if C then IS else JS"] {
+        let head = "var n: int = 0\nin go: exec\nconst IS = [1, 2]\nconst JS = [3]\nconst C = true\n\
+                    const CR = { xs: [3, 4, 5], a: 1 }\n";
+        for src in [
+            format!("{head}var xs: int[] = {init}\non go {{ n = xs.length() }}"),
+            format!("{head}on go {{ static var xs: int[] = {init}\n n = xs.length() }}"),
+        ] {
+            let r = compile(&src);
+            assert_no_errors(&r);
+            assert!(!r.diagnostics.iter().any(|d| d.code == "WSP001"), "{src}: {:?}", r.diagnostics);
+        }
+    }
+    let ra = compile_multi(&main("{ xs: LIS, m: LMS, a: 1 }"), &[("lib", lib)]);
+    let rb = compile_multi(&main("{ xs: [1, 2], m: { \"a\": 1, \"b\": 2 }, a: 1 }"), &[("lib", lib)]);
+    assert_no_errors(&ra);
+    assert!(!ra.diagnostics.iter().any(|d| d.code == "WSP001"), "{:?}", ra.diagnostics);
+    assert_eq!(super::generic_differential::shape(&ra), super::generic_differential::shape(&rb));
+}
+
+/// An enum field of a record var bakes its initializer, tag and payload, as an
+/// enum var does: at the top level, nested a record deeper, and for a payload
+/// enum (it started at the first variant with every slot zero).
+#[test]
+fn an_enum_field_of_a_record_var_bakes_its_initializer() {
+    use crate::intern::sym;
+    use crate::ir::Literal;
+    let src = "enum Hue { Red, Green, Blue }\nenum Shape { Dot, Circle(float), Box { w: int, h: int } }\n\
+               type Q = { x: float, h: Hue }\ntype N = { inner: Q, s: Shape }\n\
+               var p: Q = { x: 1.5, h: Hue.Green }\n\
+               var nn: N = { inner: { x: 2.5, h: Hue.Blue }, s: Shape.Circle(4.5) }\n\
+               var bx: N = { inner: { x: 0.5, h: Hue.Red }, s: Shape.Box { w: 7, h: 9 } }\n\
+               var h2: Hue = Hue.Blue\nvar n: int = 0\nvar f: float = 0.0\nin go: exec\n\
+               on go {\n n = p.h.ToInt() + nn.inner.h.ToInt() + h2.ToInt()\n\
+               match nn.s { Circle(r) => { f = r } _ => { } }\nmatch bx.s { Box { w, h } => { n = n + w * h } _ => { } }\n}";
+    for r in [compile(src), compile_folded(src)] {
+        assert_no_errors(&r);
+        let initial = |label: &str| {
+            r.module.nodes.values().find_map(|n| match n.properties.get(&*sym::NAME_LABEL) {
+                Some(Literal::String(l)) if l == label => n.properties.get(&*sym::INITIAL_VALUE).cloned(),
+                _ => None,
+            })
+        };
+        for (label, want) in [
+            ("h2.__disc", Literal::Int(2)),
+            ("p.h.__disc", Literal::Int(1)),
+            ("nn.inner.h.__disc", Literal::Int(2)),
+            ("nn.s.__disc", Literal::Int(1)),
+            ("nn.s.__Circle_0", Literal::Float(4.5)),
+            ("bx.s.__disc", Literal::Int(2)),
+            ("bx.s.__Box_w", Literal::Int(7)),
+            ("bx.s.__Box_h", Literal::Int(9)),
+        ] {
+            assert_eq!(initial(label), Some(want), "{label}");
+        }
+    }
+    // A handler's `static var` keeps only its baked initializer.
+    let src = "enum Hue { Red, Green, Blue }\ntype Q = { x: float, h: Hue }\nvar n: int = 0\nin go: exec\n\
+               on go {\n static var sp: Q = { x: 1.0, h: Hue.Blue }\n n = sp.h.ToInt()\n sp.h = Hue.Red\n}";
+    for r in [compile(src), compile_folded(src)] {
+        assert_no_errors(&r);
+        let disc = r.module.nodes.values().find_map(|n| match n.properties.get(&*sym::NAME_LABEL) {
+            Some(Literal::String(l)) if l.ends_with("sp.h.__disc") => n.properties.get(&*sym::INITIAL_VALUE).cloned(),
+            _ => None,
+        });
+        assert_eq!(disc, Some(Literal::Int(2)));
+    }
+}
+
+/// `Select(c, a, b)` of two enum values or records chooses each leaf, `b`
+/// when `c` is true: the same gates and wires as `if c then b else a` (it was
+/// WS094, a value lowered to nothing).
+#[test]
+fn select_of_enum_values_or_records_is_its_if_twin() {
+    let head = "enum K { A, B, C }\nenum Shape { Dot, Circle(float), Box { w: int, h: int } }\n\
+                type P = { x: int, y: float }\nin go: exec\nin c: bool\nvar k: K = K.A\nvar n: int = 0\n\
+                var s: Shape = Shape.Dot\nvar p: P = { x: 1, y: 2.0 }\nvar q: P = { x: 3, y: 4.0 }\n";
+    for (select, twin) in [
+        ("k = Select(c, K.B, K.C)", "k = if c then K.C else K.B"),
+        ("let j = Select(c, K.C, k)\nn = j.ToInt()", "let j = if c then k else K.C\nn = j.ToInt()"),
+        (
+            "s = Select(c, Shape.Circle(2.5), Shape.Box { w: 3, h: 4 })",
+            "s = if c then Shape.Box { w: 3, h: 4 } else Shape.Circle(2.5)",
+        ),
+        (
+            "match Select(c, K.A, K.B) { A => { n = 1 } _ => { n = 2 } }",
+            "match (if c then K.B else K.A) { A => { n = 1 } _ => { n = 2 } }",
+        ),
+        ("p = Select(c, p, q)", "p = if c then q else p"),
+    ] {
+        for fold in [false, true] {
+            let build = |body: &str| {
+                let src = format!("{head}on go {{\n{body}\n}}");
+                let r = if fold { compile_folded(&src) } else { compile(&src) };
+                assert_no_errors(&r);
+                wiring_shape(&r.module)
+            };
+            assert_eq!(build(select), build(twin), "{select} fold {fold}");
+        }
+    }
+}
+
+/// A bare read of an enum array or map (`hs.pop()`, `m.get(k)`) as the
+/// scrutinee of a `match`, `if let` or `let ... else` is the enum it reads,
+/// as it is wherever one value is expected: the same gates and wires as its
+/// `.Value` twin (it was WS066).
+#[test]
+fn a_bare_enum_container_read_is_a_scrutinee() {
+    let head = "enum Hue { Red, Green, Blue }\nenum Shape { Dot, Circle(float), Box { w: int, h: int } }\n\
+                in go: exec\nvar hs: Hue[] = [Hue.Red, Hue.Blue]\nvar ss: Shape[] = [Shape.Circle(2.5)]\n\
+                var hm: Map<string, Hue> = { \"a\": Hue.Green }\nvar n: int = 0\nvar f: float = 0.0\n";
+    for body in [
+        "match hs.pop()@ { Red => { n = 1 } Green => { n = 2 } Blue => { n = 3 } }",
+        "n = match hs.pop()@ { Red => 1, _ => 2 }",
+        "match ss.pop()@ { Circle(r) => { f = r } Box { w, h } => { n = w * h } Dot => { } }",
+        "if let Circle(r) = ss.pop()@ { f = r }",
+        "match hm.get(\"a\")@ { Green => { n = 7 } _ => { } }",
+    ] {
+        for fold in [false, true] {
+            let build = |value: &str| {
+                let src = format!("{head}on go {{\n{}\n}}", body.replace('@', value));
+                let r = if fold { compile_folded(&src) } else { compile(&src) };
+                assert_no_errors(&r);
+                assert!(!r.diagnostics.iter().any(|d| d.code == "WSP001"), "{src}: {:?}", r.diagnostics);
+                wiring_shape(&r.module)
+            };
+            assert_eq!(build(""), build(".Value"), "{body} fold {fold}");
+        }
+    }
+    for value in ["", ".Value"] {
+        let src = format!(
+            "{head}mod radius(xs: Shape[]) -> float {{\nlet Circle(r) = xs.pop(){value} else {{ return 0.0 }}\nreturn r\n}}\n\
+             on go {{ f = radius(ss) }}"
+        );
+        let r = compile(&src);
+        assert_no_errors(&r);
+        assert!(!r.diagnostics.iter().any(|d| d.code == "WSP001"), "{src}: {:?}", r.diagnostics);
+    }
+}
+
+/// An unannotated top-level array literal of enum values is an array of that
+/// enum, like its annotated twin: same gates, wires and baked columns (any
+/// method on it was WS044).
+#[test]
+fn an_unannotated_top_level_enum_array_literal_is_its_annotated_twin() {
+    use crate::ir::Literal;
+    let head = "enum Hue { Red, Green, Blue }\nenum Shape { Dot, Circle(float), Box { w: int, h: int } }\n\
+                in go: exec\nvar n: int = 0\nvar f: float = 0.0\nconst KB = Hue.Blue\nconst KC = KB\n";
+    for (decl, ty, body) in [
+        ("var hu@ = [Hue.Blue, Hue.Red]", ": Hue[]", "n = hu.length()\nhu.push(Hue.Green)\nmatch hu[0] { Red => { n = n + 10 } _ => { } }"),
+        ("var hu@ = [KB, Hue.Red]", ": Hue[]", "n = hu.length()\nmatch hu[0] { Blue => { n = n + 10 } _ => { } }"),
+        ("var hu@ = [KC, KB]", ": Hue[]", "n = hu[1].ToInt()"),
+        ("var ss@ = [Shape.Circle(2.5), Shape.Dot]", ": Shape[]", "match ss.pop() { Circle(r) => { f = r } _ => { } }"),
+    ] {
+        for fold in [false, true] {
+            let build = |t: &str| {
+                let src = format!("{head}{}\non go {{\n{body}\n}}", decl.replace('@', t));
+                let r = if fold { compile_folded(&src) } else { compile(&src) };
+                assert_no_errors(&r);
+                let mut baked: Vec<String> = r
+                    .module
+                    .nodes
+                    .values()
+                    .filter_map(|n| match n.properties.get(&crate::intern::sym::INITIAL_VALUE) {
+                        Some(v @ Literal::Array(_)) => Some(format!("{v:?}")),
+                        _ => None,
+                    })
+                    .collect();
+                baked.sort();
+                (wiring_shape(&r.module), baked)
+            };
+            assert_eq!(build(""), build(ty), "{decl} fold {fold}");
+        }
+    }
+}
+
+/// A record `var` initialized from a constant record (`var p: Q = CQ`) stores
+/// what its literal twin (`var p: Q = { .. }`) stores: nested records, an
+/// enum field's tag and payload, a container field, through a `let` and an
+/// imported constant too. Each field started at zero.
+#[test]
+fn a_record_var_initialized_from_a_constant_record_is_its_literal_twin() {
+    let types = "enum Hue { Red, Green, Blue }\nenum Sh { Circle(float), Rect(int, int), Nothing }\n\
+                 type P = { x: int, h: Hue }\ntype Q = { p: P, s: Sh, f: float, xs: int[] }\n";
+    let value = "{ p: { x: 1, h: Hue.Blue }, s: Sh.Rect(3, 4), f: 2.5, xs: [5, 6] }";
+    let tail = "in go: exec\nvar n: float = 0.0\nout on1: float = n\n";
+    let read = "n = q.p.x + q.p.h.ToInt() + q.f + q.xs[1]";
+    for (what, decl) in [
+        ("top level", "var q: Q = INIT\non go { READ }"),
+        ("static", "on go { static var q: Q = INIT\n READ }"),
+    ] {
+        for binding in ["const CQ: Q", "let CQ: Q"] {
+            let src = |init: &str| {
+                format!("{types}{binding} = {value}\n{tail}{}", decl.replace("INIT", init).replace("READ", read))
+            };
+            let (named, literal) = (super::generics::both_folds(&src("CQ")), super::generics::both_folds(&src(value)));
+            for ((mode, a), (_, b)) in named.into_iter().zip(literal) {
+                assert_no_errors(&a);
+                assert_eq!(
+                    super::generic_differential::shape(&a),
+                    super::generic_differential::shape(&b),
+                    "{what} `{binding}`, {mode}"
+                );
+            }
+        }
+    }
+    // Handler-local: the field values are stored (the literal twin also
+    // carries the payload slots of the enum through temporary vars).
+    let src = format!("{types}const CQ: Q = {value}\n{tail}on go {{ var q: Q = CQ\n {read} }}");
+    for fold in [false, true] {
+        let saved = super::float_slots::save_numbers(&src, fold);
+        for v in [Literal::Int(1), Literal::Int(2), Literal::Int(3), Literal::Int(4), Literal::Float(2.5)] {
+            assert!(saved.contains(&v), "handler-local fold {fold}: no {v:?}\n{saved:?}");
+        }
+    }
+    // An imported constant record.
+    let lib = format!("{types}pub const CQ: Q = {value}\n");
+    let main = |init: &str| format!("import {{ CQ, Q, P, Hue, Sh }} from \"lib\"\n{tail}var q: Q = {init}\non go {{ {read} }}");
+    let (a, b) = (compile_multi(&main("CQ"), &[("lib", &lib)]), compile_multi(&main(value), &[("lib", &lib)]));
+    assert_no_errors(&a);
+    assert_eq!(super::generic_differential::shape(&a), super::generic_differential::shape(&b), "imported constant");
+}

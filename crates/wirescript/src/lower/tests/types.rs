@@ -129,6 +129,12 @@ fn out_var_without_type_warns() {
         .collect();
     assert_eq!(warns.len(), 1, "out from var without type should warn WS017: {:?}", r.diagnostics);
     assert!(warns[0].message.contains("int"), "warning should mention the var's type");
+    assert!(warns[0].message.contains("`out result: *int = &x`"), "{}", warns[0].message);
+    // A var holding a ref is offered only the ref it holds: a ref to it is a
+    // `**int`, which is WS086.
+    let r = compile("var x: int = 0\nvar h: *int = &x\nout result = h");
+    let w = r.diagnostics.iter().find(|d| d.code == "WS017").expect("WS017");
+    assert!(w.message.contains("`out result: *int = h`") && !w.message.contains("**"), "{}", w.message);
 }
 
 #[test]
@@ -181,7 +187,7 @@ fn bitwise_and_still_works_with_ampersand_ref() {
         "infix & should still be bitwise AND");
 }
 
-/// `type_of_type_expr` (predeclare.rs) must include `zone`/`teleport` in its
+/// Lowering's type resolution (`resolve_local_type`) must include `zone`/`teleport` in its
 /// primitive-name match — omitting them lets a `zone`/`teleport`-annotated
 /// `in` port silently degrade to `Type::Any` on this path even though
 /// typecheck already resolved it correctly. `pre_declare_input`
@@ -232,4 +238,196 @@ fn a_self_referential_record_alias_used_as_storage_terminates() {
             "lowering did not terminate for a recursive record alias:\n{src}"
         );
     }
+}
+
+/// A local `var` initialized from an array literal of runtime values, with no
+/// annotation, is an array of the elements' type, as its annotated twin is:
+/// a string array for strings, never the `f64` default.
+#[test]
+fn an_unannotated_array_literal_of_runtime_values_takes_their_type() {
+    let head = "var k: int = 3\nvar n: int = 0\nvar so: string = \"\"\nvar st: string = \"x\"\n\
+                var vv: vector = Vec(1.0, 2.0, 3.0)\nvar vo: vector = Vec(0.0, 0.0, 0.0)\nin go: exec\n";
+    for (untyped, typed) in [
+        ("var x = [st, st]\n so = x[0]", "var x: string[] = [st, st]\n so = x[0]"),
+        ("var y = [k]\n n = y[0]", "var y: int[] = [k]\n n = y[0]"),
+        ("var z = [vv, vv]\n vo = z[1]", "var z: vector[] = [vv, vv]\n vo = z[1]"),
+        ("var w = [k, 2]\n n = w.length()", "var w: int[] = [k, 2]\n n = w.length()"),
+    ] {
+        let program = |body: &str| format!("{head}on go {{ {body} }}\n");
+        for ((mode, a), (_, b)) in
+            super::generics::both_folds(&program(untyped)).into_iter().zip(super::generics::both_folds(&program(typed)))
+        {
+            assert_no_errors(&a);
+            assert_eq!(
+                super::generic_differential::shape(&a),
+                super::generic_differential::shape(&b),
+                "`{untyped}`, {mode}"
+            );
+        }
+    }
+}
+
+/// An unannotated array literal of enums is an enum array: each compiles as
+/// its annotated twin does.
+#[test]
+fn an_unannotated_enum_array_literal_is_its_annotated_twin() {
+    let head = "enum Hue { Red, Green, Blue }\nvar c: Hue = Hue.Green\nvar d: Hue = Hue.Red\nin go: exec\n";
+    let cases = [
+        ("var x = [c, d]\n d = x[0]", "var x: Hue[] = [c, d]\n d = x[0]"),
+        ("var x = [Hue.Red, c]\n d = x[1]", "var x: Hue[] = [Hue.Red, c]\n d = x[1]"),
+    ];
+    for (untyped, typed) in cases {
+        let a = super::generics::both_folds(&format!("{head}on go {{ {untyped} }}"));
+        let b = super::generics::both_folds(&format!("{head}on go {{ {typed} }}"));
+        for ((mode, ra), (_, rb)) in a.into_iter().zip(b) {
+            assert_no_errors(&ra);
+            assert_eq!(
+                super::generic_differential::shape(&ra),
+                super::generic_differential::shape(&rb),
+                "`{untyped}`, {mode}"
+            );
+        }
+    }
+}
+
+/// An unannotated `var` initialized with an empty `[]` or `{}` is WS098,
+/// whatever the program writes to it, and the message asks for an
+/// annotation. A body checked more than once reports it once.
+#[test]
+fn an_unannotated_empty_container_is_ws098() {
+    let head = "type P = { a: int }\nvar k: int = 3\nvar n: int = 0\nvar fl: float = 1.5\nin go: exec\n\
+                mod addf(a: float[], v: float) { a.push(v) }\n";
+    for body in [
+        "var x = []\n n = x.length()",
+        "var x = []\n x.push(k)\n n = x[0]",
+        "var x = []\n x.push(k)\n x.push(fl)",
+        "var x = []\n x[0] = k",
+        "var x = []\n x.push({ a: 1 })",
+        "static var x = []\n x.push(k)",
+        "var m = {}\n m.set(k, k)\n n = m.get(k).Value",
+        // Only spreads of empty literals give no element type either.
+        "var x = [...[]]\n x.push(k)\n n = x[0]",
+        "var x = [...[], ...[]]\n x.push(k)",
+        "var x = [...[...[]]]\n x.push(k)",
+        // What the var's unknown element type leads to is not reported again.
+        "var x = []\n x.push(k)\n fl = x[0] + fl",
+        "var x = []\n x.push(k)\n x[0] += 2.5\n fl = x[0]",
+        "var x = []\n x.push(k)\n addf(x, 2.5)",
+        "var x = []\n let y: float[] = x",
+        "var x = []\n var xss: float[][]\n xss.push(x)",
+    ] {
+        for src in [format!("{head}on go {{ {body} }}"), format!("{head}chip {{ on go {{ {body} }} }}")] {
+            assert_eq!(errs(&src), ["WS098"], "`{src}`");
+        }
+    }
+    assert_eq!(errs(&format!("{head}var x = []\non go {{ x.push(k)\n n = x[0] }}")), ["WS098"]);
+    assert_eq!(errs(&format!("{head}var m = {{}}\non go {{ m.set(k, k) }}")), ["WS098"]);
+    let generic = format!(
+        "{head}var so: string = \"\"\nvar st: string = \"s\"\n\
+         mod first<T>(v: T) -> (r: T) {{ var x = []\n x.push(v)\n return x[0] }}\n\
+         on go {{ n = first(k)\n so = first(st) }}"
+    );
+    assert_eq!(errs(&generic), ["WS098"]);
+    let r = compile(&format!("{head}on go {{ var x = []\n x.push(k) }}"));
+    let d = r.diagnostics.iter().find(|d| d.code == "WS098").expect("WS098");
+    assert!(d.message.contains("Annotate the declaration") && d.message.contains("`var x: int[] = []`"), "{}", d.message);
+    let r = compile(&format!("{head}on go {{ var m = {{}} }}"));
+    let d = r.diagnostics.iter().find(|d| d.code == "WS098").expect("WS098");
+    assert!(d.message.contains("`var m: Map<string, int> = {}`"), "{}", d.message);
+    // The annotated twins compile.
+    for body in ["var x: int[] = []\n x.push(k)\n n = x[0]", "var m: Map<int, int> = {}\n m.set(k, k)"] {
+        assert_no_errors(&compile(&format!("{head}on go {{ {body} }}")));
+    }
+    // A whole compile reports the declaration alone: a hundred of them give a
+    // hundred WS098, and an enum read from one is not lowering's `any` WS003.
+    let many: String = (0..100).map(|i| format!("var a{i} = []\n")).collect();
+    let uses: String = (0..100).map(|i| format!(" a{i}.push(k)\n fl = a{i}[0] + fl\n")).collect();
+    let r = compile(&format!("{head}{many}on go {{\n{uses}}}"));
+    let codes: Vec<&str> = r.diagnostics.iter().filter(|d| d.severity == crate::diagnostic::Severity::Error).map(|d| d.code.as_str()).collect();
+    assert_eq!(codes, ["WS098"; 100]);
+    let r = compile(&format!("{head}enum Hue {{ Red, Blue }}\nvar h: Hue = Hue.Red\non go {{ var xs = []\n xs.push(Hue.Blue)\n h = xs[0] }}"));
+    let codes: Vec<&str> = r.diagnostics.iter().filter(|d| d.severity == crate::diagnostic::Severity::Error).map(|d| d.code.as_str()).collect();
+    assert_eq!(codes, ["WS098"]);
+    // An error that does not follow from the var's element type is still
+    // reported, in the same statement, expression or `match` arm.
+    let head = format!("{head}var so: string = \"\"\nmod two(a: int, b: int) -> int {{ return a + b }}\nenum E {{ A, B }}\nvar e: E = E.A\n");
+    for (body, also) in [
+        ("n = x.length() + nosuch", "WS002"),
+        ("fl = x.length() + nosuchfn(2)", "WS002"),
+        ("n = two(x.length())", "WS022"),
+        ("n = x.length() + two(1, 2, 3)", "WS022"),
+        ("n = if x.length() > 0 then \"str\" else 2", "WS003"),
+        ("var y: int = x.length() + \"s\"", "WS004"),
+        ("let r = x.push(k)", "WS072"),
+        ("x.push(k)\n so = \"a\" + x[0] + nosuch", "WS002"),
+    ] {
+        let src = format!("{head}var x = []\non go {{ {body} }}");
+        assert_eq!(errs(&src), ["WS098", also], "`{body}`");
+    }
+    let src = format!("{head}var x = []\non go {{ let r = match e {{ A => {{ fl = nosuch\n x.length() }} B => 0 }} }}");
+    assert_eq!(errs(&src), ["WS098", "WS095", "WS002"]);
+}
+
+/// An operand whose own error leaves it `any` does not also make its operator
+/// `WS004` (`no overload for '+' on Float, Any`).
+#[test]
+fn an_operand_reported_once_is_not_reported_again_by_its_operator() {
+    let src = "var vv: vector = Vec(3.0, 4.0, 0.0)\nvar fo: float = 0.0\nin go: exec\n\
+               on go { fo = 1.5 + vv.Length()\n fo = vv.Length() * 2.0 }";
+    assert_eq!(errs(src), ["WS003", "WS003"]);
+}
+
+/// An unannotated array literal with elements takes the join of its
+/// elements (`[1, 2.5]` is a `float[]`), at the top level too, where a named
+/// constant element counts by its value. Each compiles as its annotated twin.
+#[test]
+fn an_unannotated_array_literal_joins_its_elements_like_its_annotated_twin() {
+    let head = "var k: int = 3\nvar fl: float = 1.5\nvar n: int = 0\nvar fo: float = 0.0\nin go: exec\n";
+    let cases = [
+        ("var x = [1, 2.5]\n fo = x[1]", "var x: float[] = [1, 2.5]\n fo = x[1]"),
+        ("var x = [1, fl]\n fo = x[1]", "var x: float[] = [1, fl]\n fo = x[1]"),
+    ];
+    for (untyped, typed) in cases {
+        let a = super::generics::both_folds(&format!("{head}on go {{ {untyped} }}"));
+        let b = super::generics::both_folds(&format!("{head}on go {{ {typed} }}"));
+        for ((mode, ra), (_, rb)) in a.into_iter().zip(b) {
+            assert_no_errors(&ra);
+            assert_eq!(
+                super::generic_differential::shape(&ra),
+                super::generic_differential::shape(&rb),
+                "`{untyped}`, {mode}"
+            );
+        }
+    }
+    // Top level: literals typed by every element, a named constant by its
+    // value even when read above the declaration.
+    let top = [
+        ("const K = 2.5\non go { fo = x[1] }\nvar x = [1, K]", "float[]"),
+        ("var x = [1, 2.5]\non go { fo = x[1] }", "float[]"),
+    ];
+    for (untyped, elem) in top {
+        let typed = untyped.replacen("var x = ", &format!("var x: {elem} = "), 1);
+        for (mode, (ra, rb)) in [("fold off", (compile(&format!("{head}{untyped}")), compile(&format!("{head}{typed}")))),
+            ("fold auto", (compile_auto(&format!("{head}{untyped}")), compile_auto(&format!("{head}{typed}"))))]
+        {
+            assert_no_errors(&ra);
+            assert_eq!(
+                super::generic_differential::shape(&ra),
+                super::generic_differential::shape(&rb),
+                "`{untyped}`, {mode}"
+            );
+        }
+    }
+    // Each instantiation of a generic body has its own element type.
+    let generic = |decl: &str| {
+        format!(
+            "var k: int = 3\nvar st: string = \"s\"\nvar n: int = 0\nvar so: string = \"\"\nin go: exec\n\
+             mod first<T>(v: T) -> (r: T) {{ {decl}\n x.push(v)\n return x[1] }}\n\
+             on go {{ n = first(k)\n so = first(st) }}"
+        )
+    };
+    let a = compile(&generic("var x = [v]"));
+    let b = compile(&generic("var x: T[] = [v]"));
+    assert_no_errors(&a);
+    assert_eq!(super::generic_differential::shape(&a), super::generic_differential::shape(&b));
 }

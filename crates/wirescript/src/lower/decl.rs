@@ -49,16 +49,17 @@ pub(super) fn resolve_dynamic_var_labels(ctx: &mut LowerCtx, decls: &[TopDecl]) 
     for d in decls {
         let TopDecl::Var(v) = d else { continue };
         let Some(le) = &v.label_expr else { continue };
-        if expr_to_literal_in(le, &ctx.const_env).is_some() {
-            continue; // constant label — already baked as static text.
+        let view = ctx.top_view(crate::scope::top::ReadAt::code(&v.range));
+        // The host var node carries the label component at emit time. A
+        // constant label is baked as static text already.
+        if expr_to_literal_in(le, &ctx.const_lookup()).is_none()
+            && let Some(Binding::Var(rec)) = ctx.scope.get(&v.name)
+        {
+            let host = rec.node_id;
+            let src = lower_label_value(ctx, le);
+            ctx.builder.module.dynamic_labels.insert(host, src);
         }
-        // The host var node carries the label component at emit time.
-        let host = match ctx.scope.get(&v.name) {
-            Some(Binding::Var(rec)) => rec.node_id,
-            _ => continue,
-        };
-        let src = lower_label_value(ctx, le);
-        ctx.builder.module.dynamic_labels.insert(host, src);
+        ctx.restore_top_view(view);
     }
     ctx.current_exec = saved_exec;
 }
@@ -72,7 +73,7 @@ pub(super) fn resolve_dynamic_var_labels(ctx: &mut LowerCtx, decls: &[TopDecl]) 
 /// the expression may forward-reference declarations below it (hoisting).
 pub(super) fn resolve_module_label(ctx: &mut LowerCtx, module_label: Option<&Expr>) {
     let Some(le) = module_label else { return };
-    if let Some(text) = resolve_label_text(None, Some(le), &ctx.const_env) {
+    if let Some(text) = resolve_label_text(None, Some(le), &ctx.const_lookup()) {
         // Constant — baked static title text.
         ctx.builder.module.root_label_override = Some(text);
         return;
@@ -104,7 +105,14 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         TopDecl::Buffer(b) => lower_buffer_body(ctx, b),
         // Gate created in pre-pass; top level is pure, so a non-constant init
         // has no exec reset to apply it — surface the drop.
-        TopDecl::Var(v) => ctx.with_nofold(v.no_fold, |ctx| warn_unbaked_var_init(ctx, v, true)),
+        TopDecl::Var(v) => ctx.with_nofold(v.no_fold, |ctx| {
+            // Its initializer reads the declaration before it (see `scope::top`).
+            let above = ctx.top_names.initializer_read(&v.name, &v.range).map(|at| ctx.top_view(at));
+            warn_unbaked_var_init(ctx, v, true);
+            if let Some(view) = above {
+                ctx.restore_top_view(view);
+            }
+        }),
         TopDecl::Array(_) | TopDecl::Map(_) | TopDecl::In(_) => {} // handled in pre-pass
         TopDecl::Chip(c) => lower_chip_decl(ctx, c),
         TopDecl::AnonChip(ac) => lower_anon_chip(ctx, ac),
@@ -113,9 +121,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         // Shared struct with the statement forms - lower identically.
         TopDecl::IfLet(i) => lower_if_let(ctx, i),
         TopDecl::LetElse(l) => lower_let_else(ctx, l),
-        TopDecl::ExprStmt(es) => {
-            lower_expr(ctx, &es.expr);
-        }
+        TopDecl::ExprStmt(es) => crate::lower::stmt::lower_expr_stmt(ctx, &es.expr),
         TopDecl::Fn(f) => {
             // `fn` has been removed (rejected at parse with a hard error). A
             // recovered `fn` decl is still lowered as an inline mod-with-return so
@@ -414,13 +420,13 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             // route through the var instead of fanning in on the rerouter's
             // `RER_Input`, which fails to load in-game (4b).
             {
-                let mut emit_counts = crate::collections::HashMap::default();
-                for h in &ns_handlers {
-                    crate::lower::count_emits_in_handler(h, false, &mut emit_counts);
-                }
-                for ac in &ns_anon_chips {
-                    crate::lower::count_emits_in_block(&ac.body, false, &mut emit_counts);
-                }
+                // Its handlers' and anonymous chips' writes, and its mods'
+                // writes once per instantiation (`output_write_counts`).
+                let emit_counts = ctx
+                    .namespace_output_writes
+                    .get(&crate::lower::namespace_scope(ns))
+                    .cloned()
+                    .unwrap_or_default();
                 let ns_handler_ports: Vec<&OutBinding> = ns_handlers
                     .iter()
                     .flat_map(|h| crate::ast::handler_port_sites(&h.body))
@@ -517,7 +523,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             // the pass-1 step that never ran for a namespaced decl) then lower
             // the body.
             for ac in ns_anon_chips {
-                pre_declare_anon_chip(ctx, ac);
+                pre_declare_anon_chip(ctx, ac, true);
                 lower_anon_chip(ctx, ac);
             }
             // Hand each importer-owned bare name back to the importer, only now
@@ -549,10 +555,12 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 }
             }
             let ns_scope = std::sync::Arc::new(body_scope);
+            let ns_consts = std::sync::Arc::new(ctx.consts.namespace_members(&ns.name));
             for d in &ns.decls {
                 if let TopDecl::Chip(c) = d {
-                    let key = (c.range.file.to_string(), c.range.start.offset);
-                    ctx.ns_mod_scopes.insert(key, ns_scope.clone());
+                    let key = (c.range.file.clone(), c.range.start.offset);
+                    ctx.ns_mod_scopes.insert(key.clone(), ns_scope.clone());
+                    ctx.ns_mod_consts.insert(key, ns_consts.clone());
                 }
             }
             ctx.ns_by_file
@@ -611,9 +619,12 @@ fn route_ns_member(
 }
 
 pub(super) fn lower_buffer_body(ctx: &mut LowerCtx, d: &BufferDecl) {
-    let rec = match ctx.lookup_buffer(&d.name) {
-        Some(r) => r.clone(),
-        None => return,
+    // A name the top level declares more than once may name a `let` here:
+    // the buffer is the one this declaration made.
+    let key = (d.range.file.clone(), d.range.start.offset, d.name.clone());
+    let rec = match ctx.top_dup_bindings.get(&key).or_else(|| ctx.scope.get(&d.name)) {
+        Some(Binding::Buffer(r)) => r.clone(),
+        _ => return,
     };
     let saved_chain = ctx.builder.current_chain_id;
     let chain = ctx.alloc_chain();
@@ -656,6 +667,33 @@ pub(super) fn lower_anon_chip(ctx: &mut LowerCtx, d: &AnonChipDecl) {
     let Some(chip_node_id) = chip_node_id else {
         return;
     };
+    // At the top level, a binding a name the chip declares shares is what
+    // the name means again after the chip, and inside the chip no read takes
+    // the name for a top-level constant (as typecheck's
+    // `check_anon_chip_stmts`; see `scope::top`).
+    let storage = ctx.anon_chip_storage.get(&chip_node_id).cloned().unwrap_or_default();
+    let top_level = ctx.scope.depth() == 1;
+    let names: Vec<String> = match ctx.top_names.chip_at(&d.range) {
+        Some(chip) if top_level => chip.names.clone(),
+        _ => Vec::new(),
+    };
+    let mut earlier: Vec<(String, Binding)> = Vec::new();
+    for name in &names {
+        let own = storage.iter().find(|(n, _)| n == name).map(|(_, b)| b);
+        if let Some(now) = ctx.scope.get_current(name).cloned()
+            && !own.is_some_and(|b| crate::lower::context::same_binding(&now, b))
+        {
+            earlier.push((name.clone(), now));
+        }
+    }
+    for (name, binding) in &storage {
+        ctx.scope.insert(name, binding.clone());
+    }
+    let hidden = top_level.then(|| ctx.consts.hide_at_top(names.iter().cloned()));
+    if let Some(hidden_mark) = hidden {
+        let outside = earlier.clone();
+        ctx.anon_chip_shadows.push(crate::lower::context::AnonChipShadow { body: d.range.clone(), outside, hidden_mark });
+    }
 
     let saved_chip = ctx.current_anon_chip.take();
     ctx.current_anon_chip = Some(chip_node_id);
@@ -663,6 +701,18 @@ pub(super) fn lower_anon_chip(ctx: &mut LowerCtx, d: &AnonChipDecl) {
     lower_chip_body(ctx, &d.body);
 
     ctx.current_anon_chip = saved_chip;
+    if let Some(mark) = hidden {
+        let left = names.iter().filter_map(|n| Some((n.clone(), ctx.scope.get_current(n)?.clone()))).collect();
+        let held = ctx.consts.hidden_at_top().split_off(mark);
+        ctx.anon_chip_names.insert(d.range.clone(), (left, held));
+    }
+    for (name, binding) in earlier {
+        ctx.scope.insert(&name, binding);
+    }
+    if let Some(mark) = hidden {
+        ctx.anon_chip_shadows.pop();
+        ctx.consts.unhide_at_top(mark);
+    }
 }
 
 /// Whether a chip-body declaration's initializer contains a call. Must agree
@@ -697,14 +747,17 @@ fn is_pure_chip_stmt(s: &Stmt) -> bool {
 /// logic (e.g. draining an input queue with `if q.length() > 0 { … }`) still
 /// fires. Mirrors the top-level decl loop's `is_pure_top_decl` handling; the
 /// rest matches `lower_block` (pre-declare nested chips, flush handler execs,
-/// trailing-emit terminates the chain).
+/// a trailing buffered emit terminates the chain).
 fn lower_chip_body(ctx: &mut LowerCtx, block: &Block) {
     for s in &block.stmts {
         if let Stmt::AnonChip(ac) = s {
-            pre_declare_anon_chip(ctx, ac);
+            pre_declare_anon_chip(ctx, ac, false);
         }
     }
     for s in &block.stmts {
+        if ctx.current_exec.is_some() {
+            ctx.exec_closed_by_buffer_emit = false;
+        }
         let is_handler_stmt = matches!(s, Stmt::Handler(_) | Stmt::AnonChip(_));
         // Only flush when there is no ambient exec chain (see the same guard in
         // `lower/handler.rs::lower_block`): a statement after a nested `on`
@@ -725,30 +778,25 @@ fn lower_chip_body(ctx: &mut LowerCtx, block: &Block) {
             lower_stmt(ctx, s);
         }
     }
-    if let Some(Stmt::Emit(e)) = block.stmts.last()
-        && (ctx.signal_key(&e.name).is_some() || ctx.lookup_output(&e.name).is_some())
-    {
-        ctx.current_exec = None;
-    }
+    crate::lower::handler::close_on_trailing_buffered_emit(ctx, block);
 }
 
 pub(super) fn lower_chip_decl(ctx: &mut LowerCtx, d: &ChipDecl) {
     ctx.record_decl_resolution_subst(d);
     // Inline declarations (mod keyword or ref params) are stored for
     // expansion at call sites, not compiled as standalone microchips.
-    let has_ref_params = d
-        .inputs
-        .iter()
-        .any(|p| matches!(&p.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }));
+    let has_ref_params = d.inputs.iter().any(|p| ctx.ref_or_array(Some(d), &p.typ));
     if d.inline || has_ref_params {
         ctx.scope
             .insert(&d.name, Binding::Chip(std::sync::Arc::new(d.clone())));
+        ctx.record_decl_view(d);
         return;
     }
 
     // Standalone chips: register for instantiation at call sites.
     ctx.scope
         .insert(&d.name, Binding::Chip(std::sync::Arc::new(d.clone())));
+    ctx.record_decl_view(d);
 }
 
 /// Bind a record-valued RHS through the `let`'s binding form: the whole record
@@ -769,8 +817,7 @@ fn install_record_binding(
             ..
         } => install_record_destruct(ctx, &src, destruct_fields),
         LetBinding::Tuple { names, rest, .. } => {
-            let order = tuple_positions(&ctx.type_of(&d.value), names.len());
-            install_tuple_destruct(ctx, &src, names, rest.as_ref(), &order);
+            install_tuple_value(ctx, &d.value, &src, names, rest.as_ref())
         }
         _ => return false,
     }
@@ -778,6 +825,48 @@ fn install_record_binding(
 }
 
 pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
+    // Whether the initializer's value is the gates' (see
+    // `crate::const_scope::Marks::uncertified`), decided before the binding
+    // exists, like the value itself.
+    let uncertified = ctx.consts.in_frame() && {
+        let lookup = |n: &str| ctx.resolve_mod(n);
+        !crate::const_eval::integer_ops_certified(&d.value, &ctx.certified_const_ctx(Some(&lookup)))
+    };
+    let mut records = Vec::new();
+    lower_let_binding(ctx, d, &mut records);
+    if ctx.scope.depth() == 1 {
+        ctx.consts.bound_at_top(&d.range);
+    }
+    record_let_constants(ctx, d, records, uncertified);
+}
+
+/// A constant a `let` binds: the name, its value, and whether it is spelled
+/// `const`.
+type LetRecord = (String, Literal, bool);
+
+/// Record what `d` bound, now that its binding exists, mirroring
+/// `typecheck::stmt::record_let`: each name in `records` as that constant
+/// (a later entry for a name replaces an earlier one), in the innermost
+/// frame; every other name `d` binds is forgotten there, since the binding
+/// replaced whatever the frame held under it. Recording only after the
+/// binding exists keeps the initializer, lowered first, reading the names
+/// around the `let`. At the top level no frame is open and the module's
+/// constants already hold every top-level one.
+fn record_let_constants(ctx: &mut LowerCtx, d: &LetDecl, records: Vec<LetRecord>, uncertified: bool) {
+    let mut recorded: HashSet<String> = HashSet::default();
+    for (name, lit, declared) in records {
+        let marks = crate::const_scope::Marks { declared, placeholder: false, uncertified };
+        ctx.consts.record(&name, lit, marks);
+        recorded.insert(name);
+    }
+    for name in crate::const_eval::bound_names(&d.binding) {
+        if !recorded.contains(&name) {
+            ctx.consts.forget(&name);
+        }
+    }
+}
+
+fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecord>) {
     // Clear any leftover inline-mod record so only THIS statement's call can set
     // it (an inline mod call within `d.value` sets it definitively at its end).
     ctx.pending_inline_record = None;
@@ -787,12 +876,14 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     // placeholder `0` value when it has no `= ...` initializer — see the
     // parser) never names a constant, so it must not reach the const
     // recording below.
-    if let Some(TypeExpr::Name {
-        name: ref type_name,
+    if let Some(te @ TypeExpr::Name {
+        name: type_name,
         ..
-    }) = d.typ
+    }) = &d.typ
     {
-        if type_name == "exec" {
+        // Through an alias only when written with no value: `let s: Sig =
+        // go` names `go` again.
+        if type_name == "exec" || (!d.has_initializer() && crate::lower::call::is_exec_type(ctx, te)) {
             if let LetBinding::Ident { name, .. } = &d.binding {
                 // Top-level signals were already hubbed by the pre-declare
                 // pass; skip the pass-2 revisit (no exec context at top level).
@@ -810,14 +901,13 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
 
     // A plain (non-`const`) `let` re-binding a name CLEARS the `const` mark
     // and value it shadows — for EVERY binding form, and using the FULL
-    // evaluator, because that is exactly what `typecheck::stmt`'s `Stmt::Let`
-    // arm does on both of its sides (`Ident` and destructuring alike).
+    // evaluator, because that is exactly what `typecheck::stmt::record_let`
+    // does on both of its sides (`Ident` and destructuring alike).
     //
     // This is the CLEARING half of the const environment, and it has to be
     // symmetric with typecheck's for the same reason the recording half is:
-    // `scoped_const_declared` is what BOTH sides' `if` arms consult
-    // (`if_cond_const_ctx`/`const_lookup_declared_only`) to decide a condition
-    // is compile-time decidable. Clearing LESS here than typecheck clears
+    // the `const` marks are what BOTH sides' `if` arms consult
+    // (`if_cond_const_ctx`) to decide a condition is compile-time decidable. Clearing LESS here than typecheck clears
     // there is a silent wrong-branch miscompile — typecheck sees a shadowed,
     // no-longer-constant name and checks both arms, while lowering still holds
     // the stale value, decides the condition, and emits only one arm with no
@@ -828,10 +918,9 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     //     whose value only the FULL evaluator folds, so the narrow recording
     //     below never ran;
     //   the same `Ident` case with the `const` at the TOP level — the eviction
-    //     `const_lookup_declared_only` performs is driven by the name being
-    //     PRESENT in a `scoped_consts` frame and ABSENT from that frame's mark
-    //     set, so merely removing the mark evicts nothing when the value lives
-    //     in `const_env`.
+    //     a declared-only read performs is driven by the name being PRESENT in
+    //     a frame and unmarked there, so merely removing the mark evicts
+    //     nothing when the value lives in the module's constants.
     //
     // Each arm mirrors its typecheck counterpart exactly, and the difference
     // between them is load-bearing rather than an inconsistency to tidy away:
@@ -851,44 +940,32 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     // Confined to names that currently read as a DECLARED `const`
     // (`is_declared_const`): a shadow of anything else is not part of this
     // feature, and skipping it keeps the promise that a program using no
-    // `const` keyword lowers exactly as it did before — every
-    // `scoped_const_declared` frame is empty there, so this whole block is
-    // inert.
-    if !d.is_const {
+    // `const` keyword lowers exactly as it did before: nothing is declared
+    // there, so this whole block is inert. A destructured name is not recorded
+    // at all, so `record_let_constants` forgets it.
+    if !d.is_const && matches!(&d.binding, LetBinding::Ident { .. }) {
         let rebound: Vec<(String, Literal)> = {
             let lookup = |n: &str| ctx.resolve_mod(n);
             let mut budget = crate::const_eval::Budget::default();
-            crate::const_eval::eval_expr(&d.value, &ctx.const_ctx(Some(&lookup)), &mut budget)
+            crate::const_eval::eval_let_value(d, &ctx.const_ctx(Some(&lookup)), &mut budget)
                 .and_then(|lit| crate::const_eval::bind_destructured(&d.binding, lit))
                 .unwrap_or_default()
         };
-        let is_ident = matches!(&d.binding, LetBinding::Ident { .. });
         for (name, lit) in rebound {
-            if !ctx.is_declared_const(&name) {
-                continue;
-            }
-            if let Some(frame) = ctx.scoped_consts_mut() {
-                if is_ident {
-                    frame.insert(name.clone(), lit);
-                } else {
-                    frame.remove(&name);
-                }
-            }
-            if let Some(frame) = ctx.scoped_const_declared.last_mut() {
-                frame.remove(&name);
+            if ctx.is_declared_const(&name) {
+                records.push((name, lit, false));
             }
         }
     }
 
     // A body-local `let name = <constant>` is recorded in the innermost
-    // `scoped_consts` frame (mirroring how a top-level `let` lands in
-    // `const_env` via `build_const_env`), so a constant-only config arg
-    // elsewhere in this scope (or a nested one) can resolve `name` via
-    // `ctx.const_lookup()` — see `literal_for_property_port`. This is a
-    // no-op at the top level: `lower_let_decl` also handles `TopDecl::Let`
-    // (via `lower_decl`), but no `push_scope` has run there yet, so
-    // `scoped_consts` is empty and `last_mut()` finds no frame — top-level
-    // constants are already covered by `const_env`.
+    // frame (mirroring how a top-level `let` lands in the module's constants
+    // via `build_const_env`), so a constant-only config arg elsewhere in this
+    // scope (or a nested one) can resolve `name` via `ctx.const_lookup()`
+    // (see `literal_for_property_port`). This is a no-op at the top level:
+    // `lower_let_decl` also handles `TopDecl::Let` (via `lower_decl`), but
+    // no `push_scope` has run there yet, so no frame is open, and the
+    // module's constants already cover the top-level ones.
     //
     // A plain (non-`const`) `let`: NARROW evaluator, exactly as before this
     // feature existed. Widening this one would change how a program using no
@@ -903,22 +980,16 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
         && !d.is_const
         && let Some(lit) = expr_to_literal_in(&d.value, &ctx.const_lookup())
     {
-        if let Some(frame) = ctx.scoped_consts_mut() {
-            frame.insert(name.clone(), lit);
-        }
-        // A plain `let` re-binding a name CLEARS any `const` mark it had —
-        // see `LowerCtx::const_declared`'s doc comment.
-        if let Some(frame) = ctx.scoped_const_declared.last_mut() {
-            frame.remove(name);
-        }
+        // A plain `let` re-binding a name CLEARS any `const` mark it had.
+        records.push((name.clone(), crate::const_eval::in_let_annotation(d, lit, ctx.consts.types()), false));
     }
 
     // A `const` binding — EVERY binding form, `Ident` and destructuring
     // alike. This is a CORRECTNESS requirement, not a convenience:
-    // `typecheck::stmt`'s `Stmt::Let` arm records these into its own
-    // `scoped_consts`/`scoped_const_declared` using the FULL evaluator, and
-    // `scoped_const_declared` is what BOTH sides' `if` arms consult
-    // (`if_cond_const_ctx`) to decide a condition is compile-time decidable.
+    // `typecheck::stmt::record_let` records these into its own frame using
+    // the FULL evaluator, and the `const` marks are what BOTH sides' `if`
+    // arms consult (`if_cond_const_ctx`) to decide a condition is
+    // compile-time decidable.
     // Recording less here than typecheck records there makes typecheck skip
     // an untaken block that lowering still EMITS — ill-typed code reaching
     // the graph with no diagnostic at all, which is exactly the divergence
@@ -943,12 +1014,13 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     // early-returns, so it cannot delete a gate: `lower_ident` consults
     // `const_lookup()` only for a name with NO scope binding at all, so every
     // runtime read still resolves through the port binding the ordinary
-    // lowering installs.
+    // lowering installs. Recording happens once that binding exists
+    // (`record_let_constants`).
     if d.is_const {
         let pairs = {
             let lookup = |n: &str| ctx.resolve_mod(n);
             let mut budget = crate::const_eval::Budget::default();
-            crate::const_eval::eval_expr(&d.value, &ctx.const_ctx(Some(&lookup)), &mut budget)
+            crate::const_eval::eval_let_value(d, &ctx.const_ctx(Some(&lookup)), &mut budget)
                 .and_then(|lit| crate::const_eval::bind_destructured(&d.binding, lit))
                 .unwrap_or_default()
         };
@@ -972,15 +1044,43 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
             && pairs
                 .iter()
                 .any(|(_, l)| matches!(l, Literal::Array(_) | Literal::Map(_)));
+        let mut shadowing = Vec::new();
         for (name, lit) in pairs {
-            if let Some(frame) = ctx.scoped_consts_mut() {
-                frame.insert(name.clone(), lit);
+            if container && matches!(lit, Literal::Array(_) | Literal::Map(_)) {
+                shadowing.push((name.clone(), lit.clone()));
             }
-            if let Some(frame) = ctx.scoped_const_declared.last_mut() {
-                frame.insert(name);
-            }
+            records.push((name, lit, true));
         }
         if container {
+            for (name, lit) in shadowing {
+                shadow_with_const_container(ctx, &name, lit, &d.value);
+            }
+            return;
+        }
+    }
+
+    // `let x = T` / `let xs = [1, 2]`: a name bound to one constant array or
+    // map is that constant, exactly like a `const` of it. It lowers nothing
+    // here: a runtime read materializes it on demand (see
+    // `predeclare::materialize_const_container`) and a compile-time read
+    // folds, where lowering the value would bind a placeholder.
+    //
+    // Recorded in the innermost frame so those reads find THIS value; at the
+    // top level `build_const_env` already holds it, and a name it holds with
+    // any other value keeps the ordinary lowering.
+    if let LetBinding::Ident { name, .. } = &d.binding
+        && let Some(lit) = constant_container_init(ctx, &d.value)
+    {
+        let recorded = if ctx.consts.in_frame() {
+            records.push((name.clone(), lit.clone(), d.is_const));
+            true
+        } else if ctx.top_names.is_dup(&d.range.file, name) {
+            ctx.consts.dup_constant(&d.range, name) == Some(&lit)
+        } else {
+            ctx.const_lookup().get(name) == Some(&lit)
+        };
+        if recorded {
+            shadow_with_const_container(ctx, name, lit, &d.value);
             return;
         }
     }
@@ -1039,26 +1139,25 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     // `lower_ident`'s `const_lookup()` fallback.
     if expr_to_literal_in(&d.value, &ctx.const_lookup()).is_none() {
         // Scope the immutable borrows of `ctx` (the `resolve_mod` closure and
-        // `const_ctx`) so they end before the `scoped_consts` insert below
-        // needs `&mut ctx`.
+        // `const_ctx`) so they end before the lowering below needs `&mut ctx`.
         let evaluated = {
             let mut budget = crate::const_eval::Budget::default();
             // Gate 2, first: with no `lookup_mod`, `eval_expr` cannot resolve
             // any const-mod call. Success here means the value never needed
             // one, so this initializer keeps lowering exactly as it did
             // before this feature existed.
-            if crate::const_eval::eval_expr(&d.value, &ctx.const_ctx(None), &mut budget).is_ok() {
+            if crate::const_eval::eval_let_value(d, &ctx.const_ctx(None), &mut budget).is_ok() {
                 None
             } else {
                 let lookup = |n: &str| ctx.resolve_mod(n);
                 let mut budget = crate::const_eval::Budget::default();
-                crate::const_eval::eval_expr(&d.value, &ctx.const_ctx(Some(&lookup)), &mut budget)
+                crate::const_eval::eval_let_value(d, &ctx.const_ctx(Some(&lookup)), &mut budget)
                     .ok()
             }
         };
         // Split the one evaluated value across whatever names the binding
         // introduces, through the SAME `bind_destructured` the const
-        // recording above, `build_const_env` and both typecheck sites use.
+        // recording above, `build_const_env` and typecheck's `record_let` use.
         // A destructuring binding is NOT a second, lesser spelling here: a
         // multi-output `const mod` (`-> (a: …, b: …)`) evaluates to a
         // `Literal::Record`, and `const { a, b } = pair(2)` is the only way
@@ -1097,21 +1196,21 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
             // `...rest` re-collects one) still keep their existing lowering.
             && !pairs.iter().any(|(_, l)| matches!(l, Literal::Record(_)))
         {
+            // Body-local only, exactly like the narrow recording above: a
+            // top-level `let`/`const` has no open frame here and is already
+            // covered by `build_const_env`. A plain `let` that reaches this
+            // path (its value NEEDED a `const mod` call) is still just a plain
+            // `let`.
             for (name, lit) in pairs {
-                // Body-local only, exactly like the narrow recording above: a
-                // top-level `let`/`const` has no open frame here and is already
-                // covered by `build_const_env`.
-                if let Some(frame) = ctx.scoped_consts_mut() {
-                    frame.insert(name.clone(), lit);
-                }
-                // Same is_const tracking as the narrow recording above — a
-                // plain `let` that reaches this path (its value NEEDED a
-                // `const mod` call) is still just a plain `let`.
-                if let Some(frame) = ctx.scoped_const_declared.last_mut() {
-                    if d.is_const {
-                        frame.insert(name);
-                    } else {
-                        frame.remove(&name);
+                records.push((name, lit, d.is_const));
+            }
+            // A name the top level declares again binds nothing here, so a
+            // read of this declaration finds its constant, not the binding
+            // an earlier declaration left (see `keep_top_dup_bindings`).
+            if ctx.scope.depth() == 1 {
+                for name in crate::const_eval::bound_names(&d.binding) {
+                    if ctx.top_names.is_dup(&d.range.file, &name) {
+                        ctx.scope.set_root(&name, None);
                     }
                 }
             }
@@ -1136,7 +1235,8 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     // Handle record literals specially — they produce a Binding::Record,
     // not a single PortRef.
     if let Expr::RecordLit { fields, .. } = &d.value {
-        let record = lower_record_lit(ctx, fields);
+        let lit = ctx.type_of(&d.value);
+        let record = lower_record_lit(ctx, fields, Slots::Of(&lit));
         match &d.binding {
             LetBinding::Ident { name, .. } => {
                 ctx.scope.insert(&name, Binding::Record(record));
@@ -1150,8 +1250,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 return;
             }
             LetBinding::Tuple { names, rest, .. } => {
-                let order = tuple_positions(&ctx.type_of(&d.value), names.len());
-                install_tuple_destruct(ctx, &record, names, rest.as_ref(), &order);
+                install_tuple_value(ctx, &d.value, &record, names, rest.as_ref());
                 return;
             }
             _ => {
@@ -1220,6 +1319,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
             | Expr::TuplePick { .. }
             | Expr::IfExpr { .. }
             | Expr::MatchExpr { .. }
+            | Expr::RefOf { .. }
     ) && matches!(ctx.type_of(&d.value), Type::Record(_) | Type::Enum { .. })
         && let Some(src) = crate::lower::stmt::value_record_fields(ctx, &d.value)
     {
@@ -1231,7 +1331,12 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     // Clear any leftover inline record so only THIS value's lowering can set it
     // (mirrors the return / out / `value_record_fields` consumers).
     ctx.pending_inline_record = None;
+    let saved_record_call = std::mem::replace(
+        &mut ctx.record_result_call,
+        matches!(&d.value, Expr::Call { .. }).then(|| d.value.range().clone()),
+    );
     let rhs_port = lower_expr(ctx, &d.value);
+    ctx.record_result_call = saved_record_call;
     let rhs_type = ctx.type_of(&d.value);
 
     // Record-shaped RHS: a multi-output inline mod call OR an enum CONSTRUCTION
@@ -1246,7 +1351,12 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
         && let Some(record) = ctx
             .pending_inline_record
             .take()
-            .map(crate::lower::stmt::unwrap_single_record_output)
+            .map(|rec| crate::lower::stmt::unwrap_call_record(ctx, &d.value, rec))
+        // Annotated as an enum, a call with several outputs is its first.
+        && let record = match d.typ.as_ref().map(|t| ctx.resolve_local_type(t)) {
+            Some(Type::Enum { .. }) => crate::lower::stmt::one_enum_value(ctx, &d.value, record),
+            _ => record,
+        }
     {
         match &d.binding {
             LetBinding::Ident { name, .. } => {
@@ -1259,8 +1369,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 install_record_destruct(ctx, &record, destruct_fields);
             }
             LetBinding::Tuple { names, rest, .. } => {
-                let order = tuple_positions(&rhs_type, names.len());
-                install_tuple_destruct(ctx, &record, names, rest.as_ref(), &order);
+                install_tuple_value(ctx, &d.value, &record, names, rest.as_ref());
             }
             _ => {}
         }
@@ -1284,8 +1393,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                         install_record_destruct(ctx, &record, destruct_fields);
                     }
                     LetBinding::Tuple { names, rest, .. } => {
-                        let order = tuple_positions(&rhs_type, names.len());
-                        install_tuple_destruct(ctx, &record, names, rest.as_ref(), &order);
+                        install_tuple_value(ctx, &d.value, &record, names, rest.as_ref());
                     }
                     _ => {}
                 }
@@ -1313,14 +1421,18 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
             // already resolves siblings through the node's ports, and making it
             // a record would break bare use of the result (`let p = a.pop()`
             // reads the popped element, not a record).
-            if !record.is_empty()
-                && let LetBinding::RecordDestruct {
-                    fields: destruct_fields,
-                    ..
-                } = &d.binding
-            {
-                install_record_destruct(ctx, &record, destruct_fields);
-                return;
+            if !record.is_empty() {
+                match &d.binding {
+                    LetBinding::RecordDestruct { fields: destruct_fields, .. } => {
+                        install_record_destruct(ctx, &record, destruct_fields);
+                        return;
+                    }
+                    LetBinding::Tuple { names, rest, .. } => {
+                        install_tuple_value(ctx, &d.value, &record, names, rest.as_ref());
+                        return;
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -1346,6 +1458,26 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
             ctx.scope
                 .insert(&name, Binding::Local(LocalRecord { port: rhs_port }));
         }
+        // A gate read held on its gate's first output (`let k = fs.max()`)
+        // destructures by the names its outputs are declared with.
+        LetBinding::Tuple { .. } | LetBinding::RecordDestruct { .. } if ctx.gate_outputs(d.value.range()).is_some() => {
+            let record: HashMap<crate::intern::Sym, Binding> = ctx
+                .gate_outputs(d.value.range())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|(n, _)| {
+                    let port = resolve_output_field_port(ctx, rhs_port.node_id, n)?;
+                    Some((crate::intern::intern(n), Binding::Local(LocalRecord { port })))
+                })
+                .collect();
+            match &d.binding {
+                LetBinding::Tuple { names, rest, .. } => {
+                    install_tuple_value(ctx, &d.value, &record, names, rest.as_ref());
+                }
+                LetBinding::RecordDestruct { fields, .. } => install_record_destruct(ctx, &record, fields),
+                _ => {}
+            }
+        }
         LetBinding::Tuple { names, .. } | LetBinding::Record { names, .. } => {
             let source_node = ctx.builder.module.nodes.get(&rhs_port.node_id).cloned();
             if let Some(node) = source_node {
@@ -1368,10 +1500,27 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     }
 }
 
+/// The array/map literal a `let` initializer evaluates to, when it is an
+/// array/map literal or names a constant with no runtime binding. A name that
+/// is bound (a `var`, a materialized `const`) is left to the aliasing paths.
+fn constant_container_init(ctx: &LowerCtx, value: &Expr) -> Option<Literal> {
+    match value {
+        Expr::Array { .. } | Expr::MapLit { .. } => {}
+        Expr::Ident { name, .. } if ctx.scope.get(name).is_none() => {}
+        _ => return None,
+    }
+    let lookup = |n: &str| ctx.resolve_mod(n);
+    let mut budget = crate::const_eval::Budget::default();
+    match crate::const_eval::eval_expr(value, &ctx.const_ctx(Some(&lookup)), &mut budget) {
+        Ok(lit @ (Literal::Array(_) | Literal::Map(_))) => Some(lit),
+        _ => None,
+    }
+}
+
 /// Whether a record-literal field value may be record-shaped, so it is worth
 /// probing with `value_record_fields`: anything typecheck did not type as a
 /// single-wire value. A scalar field skips the probe and is lowered once.
-fn record_valued(ctx: &LowerCtx, value: &Expr) -> bool {
+pub(super) fn record_valued(ctx: &LowerCtx, value: &Expr) -> bool {
     !matches!(
         unwrap_ref(&ctx.type_of(value)),
         Type::Bool
@@ -1389,69 +1538,208 @@ fn record_valued(ctx: &LowerCtx, value: &Expr) -> bool {
     )
 }
 
-/// Lower a record literal into a `HashMap<Sym, Binding>`.
+/// Lower a record literal into a `HashMap<Sym, Binding>`. A field naming
+/// storage binds that storage and is read where the record is used, so an
+/// earlier field is held at its value before a later field's gates may change
+/// what it reads (see `ordered::Ordered`): `{ x: q, y: bump() }` keeps
+/// the `q` from before `bump()`.
 pub(super) fn lower_record_lit(
     ctx: &mut LowerCtx,
     fields: &[RecordLitField],
+    lit: Slots,
 ) -> HashMap<crate::intern::Sym, Binding> {
-    let mut map = HashMap::default();
-    for field in fields {
-        match field {
-            RecordLitField::Named { name, value, .. } => {
-                if let Expr::RecordLit {
-                    fields: inner_fields,
-                    ..
-                } = value
-                {
-                    let inner = lower_record_lit(ctx, inner_fields);
-                    map.insert(crate::intern::intern(name), Binding::Record(inner));
-                } else if let Some(binding) = resolve_field_chain(ctx, value).cloned() {
-                    // Value references something in scope (possibly through a record chain).
-                    map.insert(crate::intern::intern(name), binding);
-                } else if let Some(inner) = record_valued(ctx, value)
-                    .then(|| crate::lower::stmt::value_record_fields(ctx, value))
-                    .flatten()
-                {
-                    // A record-shaped field value with no binding of its own:
-                    // a record-returning call, an enum construction, a record
-                    // array/map element. The `lower_expr` fallback below keeps
-                    // one port and discards the rest, so such a field arrives as
-                    // a `Binding::Local`, which every consumer that walks a
-                    // `Binding::Record` target skips without a diagnostic. For
-                    // the parallel-array consumers that desyncs the columns'
-                    // LENGTHS, misaligning every later row. Uses the same
-                    // resolver as the spread arm below. Only a value typecheck
-                    // did not type as a scalar is probed, so a scalar field is
-                    // lowered once, through `lower_expr` below.
-                    map.insert(crate::intern::intern(name), Binding::Record(inner));
-                } else {
-                    // A call the record probe above already lowered for this
-                    // same value keeps that one gate.
-                    let port = match crate::lower::stmt::take_value_record_port(ctx, value) {
-                        Some(port) => port,
-                        None => lower_expr(ctx, value),
-                    };
-                    map.insert(
-                        crate::intern::intern(name),
-                        Binding::Local(LocalRecord { port }),
-                    );
+    let mut out = HashMap::default();
+    let mut ord = crate::lower::ordered::Ordered::default();
+    let mut slots: HashMap<crate::intern::Sym, usize> = HashMap::default();
+    for (i, field) in fields.iter().enumerate() {
+        // A field a later one supplies again is never read, so never held.
+        let later = supplied_by(ctx, &fields[i + 1..]);
+        let range = match field {
+            RecordLitField::Named { range, .. } | RecordLitField::Shorthand { range, .. } | RecordLitField::Spread { range, .. } => range,
+        };
+        let mut keys = Vec::new();
+        let slot = ord.source(ctx, "", None, range, |ctx| {
+            let map = lower_record_field(ctx, field, lit);
+            let mut kept = HashMap::default();
+            for (k, b) in map {
+                keys.push(k);
+                out.insert(k, b.clone());
+                if !later.contains(&k) {
+                    kept.insert(k, b);
                 }
             }
-            RecordLitField::Shorthand { name, .. } => {
-                // { foo } means { foo: foo } — look up foo in scope.
-                if let Some(binding) = ctx.scope.get(name).cloned() {
-                    map.insert(crate::intern::intern(name), binding);
-                }
+            Some(Binding::Record(kept))
+        });
+        for k in keys {
+            if let Some(slot) = slot
+                && let Some(earlier) = slots.insert(k, slot)
+            {
+                ord.drop_key(earlier, k);
+            }
+        }
+    }
+    for (k, b) in out.iter_mut() {
+        if let Some(Binding::Record(now)) = slots.get(k).and_then(|s| ord.value(ctx, *s))
+            && let Some(now) = now.get(k)
+        {
+            *b = now.clone();
+        }
+    }
+    out
+}
+
+/// The field names `fields` supply, as far as they are known before lowering
+/// them: a spread supplies every field of its record type.
+pub(super) fn supplied_by(ctx: &LowerCtx, fields: &[RecordLitField]) -> HashSet<crate::intern::Sym> {
+    let mut out = HashSet::default();
+    for f in fields {
+        match f {
+            RecordLitField::Named { name, .. } | RecordLitField::Shorthand { name, .. } => {
+                out.insert(crate::intern::intern(name));
             }
             RecordLitField::Spread { value, .. } => {
-                // A `...expr` spread merges the fields of any record value (a
-                // scope binding, a nested record literal, an index/map read, or
-                // a record-returning call), later fields overriding earlier ones.
-                if let Some(src_fields) = crate::lower::stmt::value_record_fields(ctx, value) {
-                    for (k, v) in src_fields {
-                        map.insert(k, v);
-                    }
+                if let Type::Record(fs) = unwrap_ref(&ctx.type_of(value)) {
+                    out.extend(fs.iter().map(|(n, _)| crate::intern::intern(n)));
                 }
+            }
+        }
+    }
+    out
+}
+
+/// What a record literal's fields hold, as typecheck typed the literal.
+#[derive(Clone, Copy)]
+pub(super) enum Slots<'t> {
+    /// Unknown: each field holds what its value is.
+    Unknown,
+    /// The literal's type: a record's fields by name, a tuple's by position.
+    Of(&'t Type),
+    /// Every field holds one value.
+    OneValue,
+    /// Every field holds one enum value.
+    OneEnum,
+}
+
+impl Slots<'_> {
+    /// The type the literal gives its field `name`.
+    pub(super) fn of(self, name: &str) -> Option<Type> {
+        let Slots::Of(lit) = self else { return None };
+        match unwrap_ref(lit) {
+            Type::Record(fields) | Type::Outputs(fields) => {
+                fields.into_iter().find(|(n, _)| n == name).map(|(_, t)| t)
+            }
+            Type::Tuple(elems) => elems.into_iter().nth(name.parse().ok()?),
+            _ => None,
+        }
+    }
+
+    /// Whether the literal's field `name` holds one value: a gate read
+    /// there is its first output.
+    pub(super) fn one_value(self, name: &str) -> bool {
+        match self {
+            Slots::OneValue | Slots::OneEnum => true,
+            _ => self.of(name).is_some_and(|t| takes_one_value(&t)),
+        }
+    }
+
+    /// Whether the literal's field `name` holds one enum value, one value
+    /// held in several slots.
+    pub(super) fn one_enum(self, name: &str) -> bool {
+        match self {
+            Slots::OneEnum => true,
+            _ => matches!(self.of(name).map(|t| unwrap_ref(&t)), Some(Type::Enum { .. })),
+        }
+    }
+
+    /// What the literal's field `name` alone holds.
+    pub(super) fn field(self, name: &str) -> Slots<'static> {
+        match (self.one_value(name), self.one_enum(name)) {
+            (true, true) => Slots::OneEnum,
+            (true, false) => Slots::OneValue,
+            _ => Slots::Unknown,
+        }
+    }
+}
+
+/// `binding`, the value at `at` of the record literal field `name`: a gate
+/// read in a field holding one value is its first output.
+fn field_value(ctx: &LowerCtx, binding: Binding, at: &SourceRange, lit: Slots, name: &str) -> Binding {
+    match &binding {
+        Binding::Record(rec) if lit.one_value(name) => {
+            held_output(ctx, rec, at, OutputPick::First).unwrap_or(binding)
+        }
+        _ => binding,
+    }
+}
+
+/// One field of a record literal whose fields hold `lit`, lowered: the
+/// fields it supplies.
+fn lower_record_field(
+    ctx: &mut LowerCtx,
+    field: &RecordLitField,
+    lit: Slots,
+) -> Vec<(crate::intern::Sym, Binding)> {
+    let mut map = Vec::new();
+    match field {
+        RecordLitField::Named { name, value, .. } => {
+            let one_value = lit.one_value(name) && ctx.gate_outputs(value.range()).is_some();
+            let enum_slot = lit.one_enum(name);
+            if let Expr::RecordLit {
+                fields: inner_fields,
+                ..
+            } = value
+            {
+                let slot = lit.of(name);
+                let slots = slot.as_ref().map_or(Slots::Unknown, Slots::Of);
+                let inner = lower_record_lit(ctx, inner_fields, slots);
+                map.push((crate::intern::intern(name), Binding::Record(inner)));
+            } else if let Some(binding) = resolve_field_chain(ctx, value)
+                .filter(|_| !crate::lower::expr::reads_constant_as_other_number(ctx, value))
+                .cloned()
+            {
+                // Value references something in scope (possibly through a record chain).
+                let binding = field_value(ctx, binding, value.range(), lit, name);
+                map.push((crate::intern::intern(name), binding));
+            } else if let Some(inner) = (record_valued(ctx, value) && (!one_value || enum_slot))
+                .then(|| crate::lower::stmt::value_record_fields(ctx, value))
+                .flatten()
+            {
+                // A record-shaped field value with no binding of its own:
+                // a record-returning call, an enum construction, a record
+                // array/map element. The `lower_expr` fallback below keeps
+                // one port and discards the rest, so such a field arrives as
+                // a `Binding::Local`, which every consumer that walks a
+                // `Binding::Record` target skips without a diagnostic. For
+                // the parallel-array consumers that desyncs the columns'
+                // LENGTHS, misaligning every later row. Uses the same
+                // resolver as the spread arm below. Only a value typecheck
+                // did not type as a scalar is probed, so a scalar field is
+                // lowered once, through `lower_expr` below.
+                let binding = Binding::Record(inner);
+                map.push((crate::intern::intern(name), field_value(ctx, binding, value.range(), lit, name)));
+            } else {
+                // A call the record probe above already lowered for this
+                // same value keeps that one gate.
+                let port = match crate::lower::stmt::take_value_record_port(ctx, value) {
+                    Some(port) => port,
+                    None => lower_expr(ctx, value),
+                };
+                map.push((crate::intern::intern(name), Binding::Local(LocalRecord { port })));
+            }
+        }
+        RecordLitField::Shorthand { name, range } => {
+            // { foo } means { foo: foo } — look up foo in scope.
+            if let Some(binding) = ctx.scope.get(name).cloned() {
+                let binding = field_value(ctx, binding, range, lit, name);
+                map.push((crate::intern::intern(name), binding));
+            }
+        }
+        RecordLitField::Spread { value, .. } => {
+            // A `...expr` spread merges the fields of any record value (a
+            // scope binding, a nested record literal, an index/map read, or
+            // a record-returning call), later fields overriding earlier ones.
+            if let Some(src_fields) = crate::lower::stmt::value_record_fields(ctx, value) {
+                map.extend(src_fields);
             }
         }
     }
@@ -1486,11 +1774,11 @@ pub(super) fn install_record_destruct(
                     let suggestion = available
                         .iter()
                         .find(|f| f.eq_ignore_ascii_case(name))
-                        .map(|f| format!(" — did you mean `{f}`?"))
+                        .map(|f| format!("; did you mean `{f}`?"))
                         .unwrap_or_else(|| {
                             let mut names = available.clone();
                             names.sort();
-                            format!(" — available fields: {}", names.join(", "))
+                            format!("; available fields: {}", names.join(", "))
                         });
                     ctx.diagnostics.push(Diagnostic::error(
                         "WS002",
@@ -1519,6 +1807,25 @@ pub(super) fn tuple_positions(ty: &Type, arity: usize) -> Vec<String> {
         Type::Record(fields) => fields.iter().map(|(n, _)| n.clone()).collect(),
         _ => (0..arity).map(|i| i.to_string()).collect(),
     }
+}
+
+/// Bind a tuple pattern against `src`, the value of `value`: a gate read's
+/// outputs by position in the order it declares them (see [`held_output`]),
+/// any other record by [`tuple_positions`].
+fn install_tuple_value(
+    ctx: &mut LowerCtx,
+    value: &Expr,
+    src: &HashMap<crate::intern::Sym, Binding>,
+    names: &[String],
+    rest: Option<&String>,
+) {
+    if let Some(Binding::Record(positions)) = held_output(ctx, src, value.range(), OutputPick::Positions) {
+        let order: Vec<String> = (0..positions.len()).map(|i| i.to_string()).collect();
+        install_tuple_destruct(ctx, &positions, names, rest, &order);
+        return;
+    }
+    let order = tuple_positions(&ctx.type_of(value), names.len());
+    install_tuple_destruct(ctx, src, names, rest, &order);
 }
 
 /// Bind a tuple pattern positionally against `src`, reading the positions in

@@ -8,11 +8,11 @@
 use crate::ast::Pattern;
 use crate::collections::HashMap;
 use crate::ir::{Literal, Type};
-use crate::typecheck::enums::{EnumDef, Payload, VariantDef};
+use crate::typecheck::enums::{Payload, VariantDef};
 // Reused from the usefulness engine (Task 11) so the Binding->unit-variant
 // reinterpretation, payload expansion, and generic-instantiation column typing
 // stay single-sourced with typecheck.
-use crate::typecheck::patterns::{ColEnum, expand_matching, head_variant_name, payload_arity, resolve_col_type};
+use crate::typecheck::patterns::{ColEnum, Enums, expand_matching, head_variant_name, payload_arity, resolve_col_type};
 
 /// One step of the path from the scrutinee root to a nested payload value:
 /// navigate into a payload slot by its interned field name (the same
@@ -61,16 +61,14 @@ struct Row {
 }
 
 /// Build the decision tree for `arms` matched against `scrutinee`.
-pub fn build(enum_defs: &HashMap<String, EnumDef>, scrutinee: &Type, arms: &[Pattern]) -> Decision {
+pub fn build(enums: Enums<'_>, scrutinee: &Type, arms: &[Pattern]) -> Decision {
     let root = match scrutinee {
-        Type::Enum { name, args } => {
-            enum_defs.get(name).map(|edef| ColEnum { edef, args: args.clone() })
-        }
+        Type::Enum { args, .. } => enums.defs.of(scrutinee).map(|edef| ColEnum { edef, args: args.clone() }),
         _ => None,
     };
     let cols = vec![Col { path: vec![], ty: root }];
     let rows: Vec<Row> = arms.iter().enumerate().map(|(i, p)| Row { arm: i, cells: vec![p.clone()] }).collect();
-    compile(&cols, &rows, enum_defs)
+    compile(&cols, &rows, enums)
 }
 
 /// Walk `decision` down to its terminal (`Leaf`/`Fail`) node using a
@@ -149,13 +147,13 @@ fn payload_columns<'a>(
     parent: &[PathStep],
     parent_ty: &ColEnum<'a>,
     v: &VariantDef,
-    enum_defs: &'a HashMap<String, EnumDef>,
+    enums: Enums<'a>,
 ) -> Vec<Col<'a>> {
     let mut cols = Vec::new();
     let mut push = |slot: String, te| {
         let mut path = parent.to_vec();
         path.push(PathStep::Field(slot));
-        cols.push(Col { path, ty: resolve_col_type(te, parent_ty, enum_defs) });
+        cols.push(Col { path, ty: resolve_col_type(te, parent_ty, enums) });
     };
     match &v.payload {
         Payload::Unit => {}
@@ -184,13 +182,13 @@ fn specialize_rows<'a>(
     v: &VariantDef,
     matching: &[usize],
     wilds: &[usize],
-    enum_defs: &'a HashMap<String, EnumDef>,
+    enums: Enums<'a>,
 ) -> (Vec<Col<'a>>, Vec<Row>) {
     let arity = payload_arity(&v.payload);
     let parent_ty = cols[idx].ty.as_ref().expect("a switched column has a governing enum");
     let mut new_cols = Vec::with_capacity(cols.len() + arity);
     new_cols.extend(clone_cols(&cols[..idx]));
-    new_cols.extend(payload_columns(&cols[idx].path, parent_ty, v, enum_defs));
+    new_cols.extend(payload_columns(&cols[idx].path, parent_ty, v, enums));
     new_cols.extend(clone_cols(&cols[idx + 1..]));
 
     // `matching` and `wilds` are ascending row indices; their merge preserves
@@ -257,7 +255,7 @@ fn clone_cols<'a>(cols: &[Col<'a>]) -> Vec<Col<'a>> {
 /// present, plus a `default` (the recursion on the default matrix - which is
 /// `Fail` when nothing wildcard-like remains) whenever the cases do not cover
 /// every variant.
-fn compile(cols: &[Col], rows: &[Row], enum_defs: &HashMap<String, EnumDef>) -> Decision {
+fn compile(cols: &[Col], rows: &[Row], enums: Enums<'_>) -> Decision {
     let Some(first) = rows.first() else {
         return Decision::Fail;
     };
@@ -304,8 +302,8 @@ fn compile(cols: &[Col], rows: &[Row], enum_defs: &HashMap<String, EnumDef>) -> 
             continue;
         }
         let (sub_cols, sub_rows) =
-            specialize_rows(cols, rows, idx, v, &by_variant[vi], &wilds, enum_defs);
-        cases.push((v.discriminant, compile(&sub_cols, &sub_rows, enum_defs)));
+            specialize_rows(cols, rows, idx, v, &by_variant[vi], &wilds, enums);
+        cases.push((v.discriminant, compile(&sub_cols, &sub_rows, enums)));
     }
 
     let complete = by_variant.iter().all(|g| !g.is_empty());
@@ -313,7 +311,7 @@ fn compile(cols: &[Col], rows: &[Row], enum_defs: &HashMap<String, EnumDef>) -> 
         None
     } else {
         let (def_cols, def_rows) = default_matrix_rows(cols, rows, idx, &wilds);
-        Some(Box::new(compile(&def_cols, &def_rows, enum_defs)))
+        Some(Box::new(compile(&def_cols, &def_rows, enums)))
     };
 
     Decision::Switch { path: cols[idx].path.clone(), cases, default }
@@ -325,7 +323,26 @@ mod tests {
     use crate::ast::{TypeExpr, TypeParam};
     use crate::diagnostic::SourceRange;
     use crate::parser::parse_pattern_str;
-    use crate::typecheck::enums::{Payload, VariantDef};
+    use crate::typecheck::enums::{EnumDef, EnumRegistry, Payload, VariantDef};
+
+    /// A test registry with the type declarations its payload fields are
+    /// read against.
+    struct Reg {
+        defs: std::sync::Arc<EnumRegistry>,
+        types: crate::const_eval::DeclaredTypes,
+    }
+
+    impl Reg {
+        fn new(defs: EnumRegistry) -> Self {
+            let defs = std::sync::Arc::new(defs);
+            let types = crate::const_eval::DeclaredTypes::for_program(&[], &defs);
+            Self { defs, types }
+        }
+
+        fn enums(&self) -> Enums<'_> {
+            Enums { defs: &self.defs, types: &self.types }
+        }
+    }
 
     fn dummy_range() -> SourceRange {
         SourceRange::default()
@@ -404,23 +421,23 @@ mod tests {
         }
     }
 
-    fn shape_enums() -> HashMap<String, EnumDef> {
-        let mut m: HashMap<String, EnumDef> = Default::default();
-        m.insert("Shape".to_string(), shape_enum_def());
+    fn shape_enums() -> EnumRegistry {
+        let mut m: EnumRegistry = Default::default();
+        m.insert(shape_enum_def());
         m
     }
 
-    fn tree_enums() -> HashMap<String, EnumDef> {
-        let mut m: HashMap<String, EnumDef> = Default::default();
-        m.insert("Tree".to_string(), tree_enum_def());
-        m.insert("Option".to_string(), option_enum_def());
+    fn tree_enums() -> EnumRegistry {
+        let mut m: EnumRegistry = Default::default();
+        m.insert(tree_enum_def());
+        m.insert(option_enum_def());
         m
     }
 
-    fn wrap_enums() -> HashMap<String, EnumDef> {
-        let mut m: HashMap<String, EnumDef> = Default::default();
-        m.insert("Wrap".to_string(), wrap_enum_def());
-        m.insert("Option".to_string(), option_enum_def());
+    fn wrap_enums() -> EnumRegistry {
+        let mut m: EnumRegistry = Default::default();
+        m.insert(wrap_enum_def());
+        m.insert(option_enum_def());
         m
     }
 
@@ -442,7 +459,7 @@ mod tests {
 
     #[test]
     fn flat_match_builds_a_single_switch() {
-        let d = build(&shape_enums(), &enum_ty("Shape"), &pats(&["Circle(_)", "Rect(_, _)", "Empty"]));
+        let d = build(Reg::new(shape_enums()).enums(), &enum_ty("Shape"), &pats(&["Circle(_)", "Rect(_, _)", "Empty"]));
         let Decision::Switch { path, cases, .. } = d else { panic!("{d:?}") };
         assert!(path.is_empty());
         assert_eq!(cases.len(), 3);
@@ -459,7 +476,7 @@ mod tests {
 
     #[test]
     fn nested_match_switches_on_sub_disc() {
-        let d = build(&tree_enums(), &enum_ty("Tree"), &pats(&["Node(Some(_))", "Node(None)", "Leaf(_)"]));
+        let d = build(Reg::new(tree_enums()).enums(), &enum_ty("Tree"), &pats(&["Node(Some(_))", "Node(None)", "Leaf(_)"]));
         fn has_nested_switch(d: &Decision) -> bool {
             match d {
                 Decision::Switch { cases, default, .. } => {
@@ -475,7 +492,7 @@ mod tests {
 
     #[test]
     fn nonexhaustive_adds_a_fail_default() {
-        let d = build(&shape_enums(), &enum_ty("Shape"), &pats(&["Circle(_)"]));
+        let d = build(Reg::new(shape_enums()).enums(), &enum_ty("Shape"), &pats(&["Circle(_)"]));
         let Decision::Switch { cases, default, .. } = d else { panic!("{d:?}") };
         assert_eq!(cases.len(), 1);
         assert_eq!(default.as_deref(), Some(&Decision::Fail));
@@ -483,13 +500,13 @@ mod tests {
 
     #[test]
     fn nested_positional_slot_uses_indexed_key() {
-        let d = build(&tree_enums(), &enum_ty("Tree"), &pats(&["Node(Some(_))", "Node(None)", "Leaf(_)"]));
+        let d = build(Reg::new(tree_enums()).enums(), &enum_ty("Tree"), &pats(&["Node(Some(_))", "Node(None)", "Leaf(_)"]));
         assert!(any_switch_path_eq(&d, &["__Node_0"]));
     }
 
     #[test]
     fn nested_named_slot_uses_field_key() {
-        let d = build(&wrap_enums(), &enum_ty("Wrap"), &pats(&["W { inner: Some(_) }", "W { inner: None }"]));
+        let d = build(Reg::new(wrap_enums()).enums(), &enum_ty("Wrap"), &pats(&["W { inner: Some(_) }", "W { inner: None }"]));
         assert!(any_switch_path_eq(&d, &["__W_inner"]));
     }
 
@@ -501,10 +518,10 @@ mod tests {
         }
     }
 
-    fn opt_inner_enums() -> HashMap<String, EnumDef> {
-        let mut m: HashMap<String, EnumDef> = Default::default();
-        m.insert("Option".to_string(), option_enum_def());
-        m.insert("Inner".to_string(), inner_enum_def());
+    fn opt_inner_enums() -> EnumRegistry {
+        let mut m: EnumRegistry = Default::default();
+        m.insert(option_enum_def());
+        m.insert(inner_enum_def());
         m
     }
 
@@ -518,7 +535,7 @@ mod tests {
         // through the instantiation, so the decision tree switches on the
         // nested `__Some_0` disc to tell `Some(On)` from `Some(Off)`. A
         // still-opaque payload would collapse both into one wildcard leaf.
-        let d = build(&opt_inner_enums(), &opt_inner_ty(), &pats(&["Some(On)", "Some(Off)", "None"]));
+        let d = build(Reg::new(opt_inner_enums()).enums(), &opt_inner_ty(), &pats(&["Some(On)", "Some(Off)", "None"]));
         assert!(any_switch_path_eq(&d, &["__Some_0"]), "{d:?}");
     }
 }

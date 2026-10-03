@@ -49,10 +49,10 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         } => (callee, args, type_args, range),
         _ => return synthesise_unsupported(ctx, e),
     };
-    if let Expr::Ident { name, .. } = callee.as_ref() {
+    if let Expr::Ident { name, range: name_range } = callee.as_ref() {
         // User-defined chips/mods shadow builtins of the same name, so a program
         // can define e.g. `chip Toggle` without colliding with the builtin.
-        if let Some(chip_decl) = ctx.lookup_chip(name).cloned() {
+        if let Some(chip_decl) = ctx.call_target_chip(name, &name_range.file).cloned() {
             return lower_chip_call(ctx, &chip_decl, args, type_args, range);
         }
         if let Some(spec) = find_call(name) {
@@ -103,18 +103,22 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         // order): the call would otherwise synthesise an `_Unsupported` gate
         // that silently reads its default (0) at runtime — make it a hard error.
         // Names that are not chips/mods at all (e.g. a builtin not yet lowered)
-        // fall through to the usual placeholder path.
+        // fall through to the usual placeholder path. A chip/mod in scope that
+        // the calling file can't name is the type checker's `WS002`.
+        if ctx.lookup_chip(name).is_some() {
+            return synthesise_unsupported_range(ctx, &format!("the call `{name}(..)`"), range);
+        }
         if ctx.known_fn_names.contains(name) {
             ctx.diagnostics.push(Diagnostic::error(
                 "WS021",
                 format!(
-                    "call to undeclared function `{name}` — chips and mods must be \
+                    "call to undeclared function `{name}`: chips and mods must be \
                      declared before the point where they are used (move the \
                      declaration above its first caller)"
                 ),
                 range.clone(),
             ));
-            return synthesise_unsupported_range(ctx, range);
+            return synthesise_unsupported_range(ctx, &format!("the call `{name}(..)`"), range);
         }
     }
     // Namespace calls: ns.foo(args)
@@ -240,7 +244,8 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             // mod/chip whose first parameter is named `self`. Desugars to
             // `dist(v, o)` by prepending the receiver as positional arg 0.
             // Typecheck classifies a builtin of the same name first, so the
-            // builtin wins (WS035 rejects a self-mod shadowing a builtin).
+            // builtin wins on its own receiver type (WS035 rejects a self-mod
+            // shadowing a builtin).
             Some(MethodTarget::SelfMod(name)) => {
                 // Re-check `is_self_receiver` at the lowering scope: the
                 // recorded target names a chip that WAS a self-receiver where
@@ -248,9 +253,7 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 // non-`self` chip with the same name (e.g. a different generic
                 // instantiation's local) would otherwise get the receiver
                 // prepended silently.
-                if let Some(chip_decl) = ctx.lookup_chip(&name).cloned()
-                    && chip_decl.is_self_receiver()
-                {
+                if let Some(chip_decl) = ctx.self_mod_chip(&name, &range.file).cloned() {
                     let mut recv_args = Vec::with_capacity(args.len() + 1);
                     recv_args.push(CallArg::Positional(obj.as_ref().clone()));
                     recv_args.extend(args.iter().cloned());
@@ -283,7 +286,7 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
 fn event_config_props_from_call_args(
     evt: &crate::catalog::events::EventSpec,
     args: &[CallArg],
-    consts: &ConstEnv,
+    consts: &crate::const_scope::ConstNames,
 ) -> HashMap<crate::intern::Sym, Literal> {
     let mut props: HashMap<crate::intern::Sym, Literal> = HashMap::default();
     let mut positional = 0;

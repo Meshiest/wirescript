@@ -22,6 +22,95 @@ pub(super) fn check_block(
     ctx.pop_scope();
 }
 
+/// What a `let`'s initializer evaluates to, split across the names its binding
+/// introduces, and whether that value derives from a PLACEHOLDER (see
+/// [`crate::const_scope::Admit::NoPlaceholders`]).
+pub(super) struct LetValue {
+    pairs: Result<Vec<(String, crate::ir::Literal)>, crate::const_eval::ConstError>,
+    from_placeholder: bool,
+    /// Computed through an integer operation the certified fold table has no
+    /// result for (see `crate::const_scope::Marks::uncertified`).
+    uncertified: bool,
+}
+
+/// Evaluate `l`'s initializer before its binding exists, so the names it reads
+/// are the ones around the `let`, never the ones it binds.
+///
+/// The value is evaluated against every constant, and a value that does
+/// evaluate is probed again with placeholders removed. Placeholder-ness is
+/// TRANSITIVE: `const t = m + 1` inside a body with a `const` param `m` only
+/// evaluates because `m` is seeded as a type-shaped zero, so `t`'s value is
+/// just as fictional and must not be allowed to decide a branch either.
+/// Detecting it by re-evaluation rather than by scanning the expression for
+/// names keeps it exact: any read of a placeholder, however deeply nested,
+/// makes the clean probe fail.
+pub(super) fn evaluate_let(ctx: &TypeCheckCtx, l: &LetDecl) -> LetValue {
+    let lookup = |n: &str| ctx.resolve_mod(n);
+    let mut budget = crate::const_eval::Budget::default();
+    let pairs = crate::const_eval::eval_let_value(l, &ctx.const_ctx(Some(&lookup)), &mut budget)
+        .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit));
+    let from_placeholder = pairs.is_ok() && {
+        let mut probe = crate::const_eval::Budget::default();
+        crate::const_eval::eval_expr(&l.value, &ctx.const_ctx_without_placeholders(Some(&lookup)), &mut probe)
+            .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit))
+            .is_err()
+    };
+    let uncertified =
+        pairs.is_ok() && !crate::const_eval::integer_ops_certified(&l.value, &ctx.certified_const_ctx(Some(&lookup)));
+    LetValue { pairs, from_placeholder, uncertified }
+}
+
+/// Record what `l` bound, now that its binding exists: each name it binds to a
+/// constant, in the innermost frame, so a constant-only config arg elsewhere in
+/// this scope (or a nested one) can resolve it the same way a top-level `let`
+/// resolves; every other name it binds is forgotten there, since the binding
+/// replaced whatever the frame held under it.
+///
+/// `let` folds OPPORTUNISTICALLY: a failed evaluation just leaves it as a
+/// runtime value, same as always. `const` is a GUARANTEE: the same failure is
+/// the evaluator's own error (WS046, or WS047/WS048 for a refused or
+/// budget-exceeded evaluation).
+///
+/// Only a single name or a `const` destructure is recorded, mirroring
+/// `lower::decl`'s own `is_const` gate exactly. Recording a plain `let`
+/// destructure would make the two sides disagree in the one direction that is
+/// never safe: typecheck would treat the name as a compile-time constant while
+/// lowering would not, since its non-`const` path is the NARROW
+/// `expr_to_literal_in`, which cannot fold the record literal such a binding
+/// destructures. The name then satisfies a constant-only config slot at check
+/// time and is silently dropped at fold time (`lower::call::builtin`), so
+/// `let { chan } = { chan: "evt" }` + `SendCustomEvent(chan, v)` would compile
+/// clean and ship a gate with an EMPTY channel name.
+pub(super) fn record_let(ctx: &mut TypeCheckCtx, l: &LetDecl, value: LetValue) {
+    let single = matches!(l.binding, LetBinding::Ident { .. });
+    match value.pairs {
+        Ok(pairs) if single || l.is_const => {
+            let marks = crate::const_scope::Marks {
+                declared: l.is_const,
+                placeholder: value.from_placeholder,
+                uncertified: value.uncertified,
+            };
+            for (name, lit) in pairs {
+                ctx.consts.record(&name, lit, marks);
+            }
+            check_const_recorded(ctx, l);
+        }
+        Ok(pairs) => {
+            for (name, _) in pairs {
+                ctx.consts.forget(&name);
+            }
+        }
+        Err(err) => {
+            for name in crate::const_eval::bound_names(&l.binding) {
+                ctx.consts.forget(&name);
+            }
+            if l.is_const && !err.reported_elsewhere() {
+                ctx.emit(err.code(), err.message(), err.range.clone());
+            }
+        }
+    }
+}
+
 /// Does `block` diverge on every path - end in a terminating statement so exec
 /// cannot fall through past it? Used by `let ... else` (WS062): the `else` must
 /// diverge, since the pattern's binding is unavailable on the non-match path.
@@ -30,23 +119,32 @@ pub(super) fn check_block(
 /// `emit` (the exec ends there), or an `if`/`if let`/`match` whose branches ALL
 /// diverge. Anything else (including an empty block) does not.
 fn block_diverges(block: &Block) -> bool {
+    block_ends(block, true)
+}
+
+/// Does `block` `return` on every path: [`block_diverges`] without counting an
+/// `emit`, after which the chain goes on.
+pub(super) fn block_returns(block: &Block) -> bool {
+    block_ends(block, false)
+}
+
+fn block_ends(block: &Block, emit_ends: bool) -> bool {
     match block.stmts.last() {
-        Some(Stmt::Return { .. }) | Some(Stmt::Emit(_)) => true,
-        Some(Stmt::If(i)) => {
-            i.else_block
-                .as_ref()
-                .is_some_and(|eb| block_diverges(&i.then_block) && block_diverges(eb))
-        }
-        Some(Stmt::IfLet(i)) => {
-            i.else_block
-                .as_ref()
-                .is_some_and(|eb| block_diverges(&i.then_block) && block_diverges(eb))
-        }
+        Some(Stmt::Return { .. }) => true,
+        Some(Stmt::Emit(_)) => emit_ends,
+        Some(Stmt::If(i)) => i
+            .else_block
+            .as_ref()
+            .is_some_and(|eb| block_ends(&i.then_block, emit_ends) && block_ends(eb, emit_ends)),
+        Some(Stmt::IfLet(i)) => i
+            .else_block
+            .as_ref()
+            .is_some_and(|eb| block_ends(&i.then_block, emit_ends) && block_ends(eb, emit_ends)),
         Some(Stmt::ExprStmt(es)) => match &es.expr {
             Expr::MatchExpr { arms, .. } => {
                 !arms.is_empty()
                     && arms.iter().all(|a| match &a.body {
-                        MatchBody::Block(b) => block_diverges(b),
+                        MatchBody::Block(b) => block_ends(b, emit_ends),
                         MatchBody::Expr(_) => false,
                     })
             }
@@ -61,8 +159,37 @@ pub(super) fn check_anon_chip_stmts(
     stmts: &[Stmt],
     pre_registered: bool,
 ) {
+    // At the top level, a declaration a name the chip declares shares is
+    // what the name means again after the chip, and inside the chip no read
+    // takes the name for a top-level constant (see `scope::top`).
+    let top_level = ctx.scope.depth() == 1;
+    let names = if top_level { crate::scope::top::declared_names(stmts) } else { Vec::new() };
+    let within = |r: &SourceRange| {
+        stmts.first().zip(stmts.last()).is_some_and(|(a, b)| {
+            let (a, b) = (a.range(), b.range());
+            r.file == a.file && a.start.offset <= r.start.offset && r.end.offset <= b.end.offset
+        })
+    };
+    let earlier: Vec<(String, SymbolInfo)> = names
+        .iter()
+        .filter_map(|name| {
+            let now = ctx.scope.binding_frame(name).map(|(_, s)| s).filter(|now| !within(&now.decl_range))?;
+            Some((name.clone(), now.clone()))
+        })
+        .collect();
+    let hidden = top_level.then(|| ctx.consts.hide_at_top(names.iter().cloned()));
     if !pre_registered {
         register_anon_chip_decls(ctx, stmts);
+    }
+    // The chip's own storage is what its statements name, whatever the top
+    // level declared of the name before the chip.
+    for s in stmts {
+        if let Some((name, range)) = super::register::anon_chip_storage_decl(s)
+            && let Some(sym) = ctx.anon_chip_storage.get(&(range.file.clone(), range.start.offset)).cloned()
+            && ctx.scope.lookup(name).is_none_or(|now| now.decl_range != *range)
+        {
+            ctx.scope.declare(name, sym);
+        }
     }
     // An anonymous chip is a physical microchip, so its `in`/`out` cross
     // ports even inside a mod body.
@@ -96,6 +223,12 @@ pub(super) fn check_anon_chip_stmts(
         }
     }
     ctx.inline_body_depth = saved_inline;
+    for (name, sym) in earlier {
+        ctx.scope.declare(&name, sym);
+    }
+    if let Some(mark) = hidden {
+        ctx.consts.unhide_at_top(mark);
+    }
 }
 
 /// Whether a chip-body declaration's initializer contains a call. Must agree
@@ -145,6 +278,22 @@ pub(super) fn check_stmt(
     s: &Stmt,
 ) {
     ctx.with_nofold(stmt_no_fold(s), |ctx| check_stmt_inner(ctx, s));
+    // A `let` declared with a type naming `T`, or taking a value declared
+    // so, is declared with that type parameter too.
+    if let Stmt::Let(l) = s
+        && let LetBinding::Ident { name, .. } = &l.binding
+        && !ctx.unbounded_type_params.is_empty()
+    {
+        let tp = match &l.typ {
+            Some(te) => ctx.unbounded_type_params.iter().find(|p| super::enums::type_expr_mentions(te, p)).cloned(),
+            None => ctx.unbounded_root_of(&l.value).map(str::to_string),
+        };
+        if let Some(tp) = tp
+            && let Some(decl) = ctx.scope.lookup(name).map(|sym| sym.decl_range.clone())
+        {
+            ctx.unbounded_typed_params.push((decl, tp));
+        }
+    }
 }
 
 fn check_stmt_inner(
@@ -153,7 +302,50 @@ fn check_stmt_inner(
 ) {
     match s {
         Stmt::Var(v) => {
+            // `var x = <init reading x>`: the initializer reads the `x` around
+            // the declaration, as a `let`'s does, so the var is declared under
+            // a name of its own and `x` names it once it exists.
+            let here = ctx.scope.depth() - 1;
+            if !ctx.scope.binding_frame(&v.name).is_some_and(|(i, _)| i == here)
+                && let Some(apart) = v.declared_apart()
+            {
+                let mark = ctx.diagnostics.len();
+                check_stmt_inner(ctx, &Stmt::Var(apart.clone()));
+                // Nothing around the declaration has the name it reads.
+                let unknown = format!("unknown identifier '{}'", v.name);
+                // The declaration as written, or with the type its initializer
+                // gives it when that type is known.
+                let ty = match &v.typ {
+                    Some(te) => Some(crate::analysis::types::type_expr_str(te)),
+                    None => ctx
+                        .scope
+                        .lookup(&apart.name)
+                        .map(|sym| unwrap_ref(&sym.ty))
+                        .filter(|t| !matches!(t, Type::Any | Type::Opaque | Type::Never))
+                        .map(|t| crate::analysis::types::type_str(&t)),
+                };
+                let declared = ty.map_or(String::new(), |ty| {
+                    format!(" (`{}var {}: {ty}`)", if v.is_static { "static " } else { "" }, v.name)
+                });
+                for d in &mut ctx.diagnostics[mark..] {
+                    if d.code == "WS002" && d.message == unknown {
+                        d.message = format!(
+                            "{unknown}: `{}` is not declared before this `var`, and a `var`'s initializer \
+                             cannot read the variable it declares. Declare it without one{declared}, \
+                             or initialize it from another value",
+                            v.name
+                        );
+                    }
+                }
+                if let Some(mut info) = ctx.scope.lookup(&apart.name).cloned() {
+                    info.name = v.name.clone();
+                    ctx.scope.declare(&v.name, info);
+                }
+                ctx.consts.forget(&v.name);
+                return;
+            }
             register_decl(ctx, &TopDecl::Var(v.clone()));
+            ctx.consts.forget(&v.name);
             if let Some(ty) = ctx.scope.lookup(&v.name).map(|s| s.ty.clone()) {
                 check_aggregate_record(ctx, &ty, &v.range);
             }
@@ -194,7 +386,17 @@ fn check_stmt_inner(
                     // routing through the generic `infer` position guard.
                     // An empty `{}` is an empty-map init.
                     check_map_literal(ctx, entries, k, v_ty);
+                    ctx.record_expr_type(init.range(), &inner);
                 } else {
+                    // An unannotated array literal with an element that is not
+                    // a literal registers from its literal elements alone (or
+                    // as `any[]`); its elements' own types decide it here.
+                    let untyped_array = v.typ.is_none()
+                        && (inner == Type::Array(Box::new(Type::Any))
+                            || matches!(init, Expr::Array { elements, .. } if elements.iter().any(|el| {
+                                !matches!(el, ArrayElem::Item(e) if literal_expr_type(e).is_some())
+                            })));
+                    let inner = if untyped_array { Type::Any } else { inner };
                     let t = infer::check_stored_value(ctx, init, &inner);
                     // Reject a void-mutation `Never` init on an unannotated var
                     // (annotated already mismatches via `check`), same as the
@@ -206,13 +408,19 @@ fn check_stmt_inner(
                     // non-literal init, same as the top-level decl path.
                     if v.typ.is_none() && matches!(inner, Type::Any) {
                         // A ref value is what the var holds, not a place to read.
-                        let u = if matches!(t, Type::Ref(_)) { t.clone() } else { unwrap_ref(&t) };
-                        if var_storable(&u) {
+                        let u =
+                            if matches!(t, Type::Ref(_)) { t.clone() } else { unwrap_ref(&t).held_by_var() };
+                        let storable = match &u {
+                            Type::Array(elem) => untyped_array && super::untyped_arrays::inferable_element(elem),
+                            other => super::resolve::unannotated_var_holds(other),
+                        };
+                        if storable {
                             ctx.scope.set_type(&v.name, Type::Ref(Box::new(u)));
                         }
                     }
                 }
             }
+            super::untyped_arrays::declare(ctx, v);
         }
         Stmt::Buffer(b) => {
             register_decl(ctx, &TopDecl::Buffer(b.clone()));
@@ -233,171 +441,10 @@ fn check_stmt_inner(
             }
             record_single_output_alias(ctx, &l.binding, &l.value);
             record_let_ref_values(ctx, &l.binding, &l.value);
-            bind_let(ctx, &l.binding, &t);
-            // A body-local `let name = <constant>` is recorded in the
-            // innermost `scoped_consts` frame (mirroring how a top-level
-            // `let` lands in `const_env`), so a constant-only config arg
-            // elsewhere in this scope (or a nested one) can resolve `name`
-            // via `ctx.const_lookup()`. Only the simple `Ident` binding form
-            // can name a single constant — a destructured `let` can't.
-            //
-            // `let` folds OPPORTUNISTICALLY: a failed evaluation just leaves
-            // it as a runtime value, same as always. `const` is a GUARANTEE —
-            // the same failure is the evaluator's own error (WS046, or
-            // WS047/WS048 for a refused/budget-exceeded evaluation).
-            if let LetBinding::Ident { name, .. } = &l.binding {
-                // Evaluate against the FULL environment, and — for a value
-                // that does evaluate — probe again with
-                // placeholders removed. Placeholder-ness is TRANSITIVE:
-                // `const t = m + 1` inside a body with a `const` param `m`
-                // only evaluates because `m` is seeded as a type-shaped zero,
-                // so `t`'s value is just as fictional and must not be allowed
-                // to decide a branch either. Detecting it by re-evaluation
-                // rather than by scanning the expression for names keeps it
-                // exact: any read of a placeholder, however deeply nested,
-                // makes the clean probe fail. Both evaluations happen up
-                // front so their borrows of `ctx` end before the recording
-                // below needs `&mut ctx`.
-                let (evaluated, derives_from_placeholder) = {
-                    let lookup = |n: &str| ctx.resolve_mod(n);
-                    let mut budget = crate::const_eval::Budget::default();
-                    let evaluated =
-                        crate::const_eval::eval_expr(&l.value, &ctx.const_ctx(Some(&lookup)), &mut budget);
-                    let derived = evaluated.is_ok() && {
-                        let mut probe = crate::const_eval::Budget::default();
-                        crate::const_eval::eval_expr(
-                            &l.value,
-                            &ctx.const_ctx_without_placeholders(Some(&lookup)),
-                            &mut probe,
-                        )
-                        .is_err()
-                    };
-                    (evaluated, derived)
-                };
-                match evaluated {
-                    Ok(lit) => {
-                        // The value itself is still recorded from the full
-                        // environment — the presence-only readers this was
-                        // built for (e.g. `validate_scalar_config_arg`'s
-                        // WS028) must keep seeing `name` as constant.
-                        if let Some(frame) = ctx.scoped_consts.last_mut() {
-                            frame.insert(name.clone(), lit);
-                        }
-                        // Record whether THIS binding is spelled `const` —
-                        // see `const_declared`'s doc comment. Same
-                        // rebind-clears-the-mark discipline as the
-                        // placeholder set just below.
-                        if let Some(frame) = ctx.scoped_const_declared.last_mut() {
-                            if l.is_const {
-                                frame.insert(name.clone());
-                            } else {
-                                frame.remove(name);
-                            }
-                        }
-                        if let Some(frame) = ctx.scoped_const_placeholders.last_mut() {
-                            // Re-binding the same name in the same frame must
-                            // be able to CLEAR the mark as well as set it.
-                            if derives_from_placeholder {
-                                frame.insert(name.clone());
-                            } else {
-                                frame.remove(name);
-                            }
-                        }
-                        check_const_recorded(ctx, l);
-                    }
-                    Err(err) if l.is_const => ctx.emit(err.code(), err.message(), err.range.clone()),
-                    Err(_) => {}
-                }
-            } else {
-                // Same shape as the `Ident` arm above, generalized to every
-                // name a destructuring binding introduces: evaluate the WHOLE
-                // right-hand side once, split it via `bind_destructured`, and
-                // probe again with placeholders removed to detect whether the
-                // split-out values are themselves fictional. The same
-                // transitivity the `Ident` arm's comment describes applies
-                // here unchanged — every name THIS destructure binds comes
-                // from the SAME evaluated record, so they are all equally
-                // placeholder-derived (or not) together.
-                let (evaluated, derives_from_placeholder) = {
-                    let lookup = |n: &str| ctx.resolve_mod(n);
-                    let mut budget = crate::const_eval::Budget::default();
-                    let evaluated =
-                        crate::const_eval::eval_expr(&l.value, &ctx.const_ctx(Some(&lookup)), &mut budget)
-                            .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit));
-                    let derived = evaluated.is_ok() && {
-                        let mut probe = crate::const_eval::Budget::default();
-                        crate::const_eval::eval_expr(
-                            &l.value,
-                            &ctx.const_ctx_without_placeholders(Some(&lookup)),
-                            &mut probe,
-                        )
-                        .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit))
-                        .is_err()
-                    };
-                    (evaluated, derived)
-                };
-                match evaluated {
-                    // ONLY a `const` destructure is recorded, mirroring
-                    // `lower::decl`'s own `if d.is_const` gate exactly.
-                    //
-                    // Recording a plain `let` here too would make the two
-                    // sides disagree in the one direction that is never
-                    // safe: typecheck would treat the name as a compile-time
-                    // constant while lowering — whose non-`const` path is
-                    // the NARROW `expr_to_literal_in`, and which therefore
-                    // cannot fold the record literal such a binding
-                    // destructures — would not. The name then satisfies a
-                    // constant-only config slot at check time and is
-                    // silently dropped at fold time (`lower::call::builtin`),
-                    // so `let { chan } = { chan: "evt" }` +
-                    // `SendCustomEvent(chan, v)` would compile clean and ship
-                    // a gate with an EMPTY channel name. Gating here keeps
-                    // WS028 rejecting that program.
-                    //
-                    // Widening LOWERING to match instead would not work: its
-                    // non-`const` path is narrow by design (see
-                    // `lower::decl`'s own comment on why widening it changes
-                    // how a `const`-free program compiles), and the narrow
-                    // evaluator cannot fold a record literal at all — so the
-                    // value would still be dropped.
-                    Ok(pairs) if l.is_const => {
-                        for (name, lit) in pairs {
-                            if let Some(frame) = ctx.scoped_consts.last_mut() {
-                                frame.insert(name.clone(), lit);
-                            }
-                            if let Some(frame) = ctx.scoped_const_declared.last_mut() {
-                                frame.insert(name.clone());
-                            }
-                            if let Some(frame) = ctx.scoped_const_placeholders.last_mut() {
-                                if derives_from_placeholder {
-                                    frame.insert(name.clone());
-                                } else {
-                                    frame.remove(&name);
-                                }
-                            }
-                        }
-                        check_const_recorded(ctx, l);
-                    }
-                    // A plain `let` destructure re-binding a name must still
-                    // CLEAR any `const` mark and value it shadows, or the
-                    // outer constant would keep resolving through the shadow.
-                    Ok(pairs) => {
-                        for (name, _) in pairs {
-                            if let Some(frame) = ctx.scoped_consts.last_mut() {
-                                frame.remove(&name);
-                            }
-                            if let Some(frame) = ctx.scoped_const_declared.last_mut() {
-                                frame.remove(&name);
-                            }
-                            if let Some(frame) = ctx.scoped_const_placeholders.last_mut() {
-                                frame.remove(&name);
-                            }
-                        }
-                    }
-                    Err(err) if l.is_const => ctx.emit(err.code(), err.message(), err.range.clone()),
-                    Err(_) => {}
-                }
-            }
+            let value = evaluate_let(ctx, l);
+            let bound = let_binding_type(ctx, l, &t);
+            bind_let(ctx, &l.binding, &bound, &l.value);
+            record_let(ctx, l, value);
         }
         Stmt::LetElse(l) => {
             // A refutable pattern can never be `const`: `let <pattern> = e else`
@@ -412,7 +459,7 @@ fn check_stmt_inner(
                     l.range.clone(),
                 );
             }
-            let scrut_ty = unwrap_ref(&infer::infer(ctx, &l.scrutinee));
+            let scrut_ty = infer::infer_scrutinee(ctx, &l.scrutinee);
             if !matches!(scrut_ty, Type::Enum { .. }) {
                 ctx.emit(
                     "WS066",
@@ -440,6 +487,11 @@ fn check_stmt_inner(
             // continuation), so the rest of the enclosing block can read them.
             let mutable = scrutinee_is_mutable(ctx, &l.scrutinee);
             infer::check_match_pattern(ctx, &l.pattern, &scrut_ty, mutable);
+            let mut captures = Vec::new();
+            crate::lower::collect_pattern_captures(&l.pattern, &mut Vec::new(), &mut captures);
+            for (name, _) in captures {
+                ctx.consts.forget(&name);
+            }
         }
         Stmt::Assign(a) => {
             if ctx.exec_mode() != ExecMode::Exec {
@@ -452,20 +504,31 @@ fn check_stmt_inner(
                     a.range.clone(),
                 );
             }
-            let target_ty = infer_assign_target(ctx, &a.target);
-            if let Expr::MapLit { entries, .. } = &a.value
+            let (target_ty, through_ref) = match &a.target {
+                Expr::Deref { operand, range } => infer_deref_target(ctx, operand, range),
+                target => (infer_assign_target(ctx, target), false),
+            };
+            if let Some(entries) = map_init_entries(&a.value)
                 && let Type::Map(k, v) = &target_ty
             {
                 // Assigning a map literal to a map var: the other valid slot —
                 // validate entries directly instead of routing through the
-                // generic `infer` position guard.
+                // generic `infer` position guard. An empty `{}` empties it.
                 check_map_literal(ctx, entries, k, v);
+                ctx.record_expr_type(a.value.range(), &target_ty);
             } else {
                 infer::check_stored_value(ctx, &a.value, &target_ty);
-                check_deref_write_is_exact(ctx, &a.target, &a.value, &target_ty);
+                if through_ref {
+                    check_deref_write_is_exact(ctx, &a.value, &target_ty);
+                }
             }
         }
         Stmt::OutBinding(b) => {
+            // A port of the enclosing chip's signature had its type checked where
+            // it was declared; only a port this statement declares is new.
+            let boundary = ctx.out_ctx.len() <= 1;
+            let declared = !boundary
+                && ctx.out_ctx.last().is_some_and(|o| o.iter().any(|f| f.name == b.name));
             // An anon-chip's statement-level `out` carries a type annotation
             // too (`chip { @bottom out done: any = 5 }`); mirror the top-level
             // `TopDecl::Out` any-warn so `any` there is flagged like anywhere
@@ -479,8 +542,8 @@ fn check_stmt_inner(
                     // and primitive → string — pass). A `*T` port carries a
                     // ref, never the value it points at; mirrors `TopDecl::Out`.
                     let value_ty = infer::infer(ctx, value);
-                    if ctx.inline_body_depth == 0 {
-                        check_port_record(ctx, &b.name, &resolved, &b.range);
+                    if ctx.inline_body_depth == 0 && !declared {
+                        check_port_record(ctx, &b.name, &resolved, &b.range, boundary);
                     }
                     infer::coerce_or_emit(
                         ctx,
@@ -503,15 +566,18 @@ fn check_stmt_inner(
                         value.range(),
                     );
                     check_port_declaration(ctx, &b.name, &resolved, &type_expr_range(te));
+                    infer::int_constants_in_slot(ctx, value, &resolved);
                 }
             } else if let Some(value) = &b.value {
                 // No annotation of its own, so the port's declared type is the
                 // only thing the value answers to.
                 let value_ty = infer::infer(ctx, value);
-                if ctx.inline_body_depth == 0 {
-                    check_port_record(ctx, &b.name, &value_ty, &b.range);
+                if ctx.inline_body_depth == 0 && !declared {
+                    check_port_record(ctx, &b.name, &value_ty, &b.range, boundary);
                 }
-                check_port_write(ctx, &b.name, &value_ty, value.range());
+                check_port_write_value(ctx, &b.name, value, &value_ty);
+                check_untyped_port_write(ctx, &b.name, value, &value_ty);
+                port_write_literals(ctx, &b.name, value);
             }
         }
         Stmt::Emit(e) => {
@@ -528,10 +594,20 @@ fn check_stmt_inner(
                 // variable exactly the way an `out` binding does, so the
                 // payload answers to the same declared type. A local exec
                 // signal has no declared type and passes straight through.
-                check_port_write(ctx, &e.name, &t, val.range());
+                check_port_write_value(ctx, &e.name, val, &t);
+                check_untyped_port_write(ctx, &e.name, val, &t);
+                port_write_literals(ctx, &e.name, val);
                 // Remember the ferried payload type so a later
                 // `let { .. } = await sig` can type its destructured fields.
-                ctx.signal_payload_types.insert(e.name.clone(), t);
+                // A gate read ferries its first output, as does each field
+                // of a record literal, which ferries field by field.
+                let payload = match &t {
+                    Type::Record(fs) if matches!(val, Expr::RecordLit { .. }) => {
+                        Type::Record(fs.iter().map(|(n, ft)| (n.clone(), infer::first_output(ft))).collect())
+                    }
+                    other => infer::first_output(other),
+                };
+                ctx.signal_payload_types.insert(e.name.clone(), payload);
             }
         }
         Stmt::Await(a) => {
@@ -649,7 +725,7 @@ fn check_stmt_inner(
                 };
                 for (field, local) in fields {
                     let fty = match &payload_ty {
-                        Some(Type::Record(fs)) => fs
+                        Some(Type::Record(fs) | Type::Outputs(fs)) => fs
                             .iter()
                             .find(|(n, _)| n == field)
                             .map(|(_, t)| t.clone())
@@ -682,7 +758,8 @@ fn check_stmt_inner(
                 (i.range.file.clone(), i.range.start.offset),
                 ctx.exec_mode() == ExecMode::Exec,
             );
-            infer::infer(ctx, &i.cond);
+            let ct = infer::infer(ctx, &i.cond);
+            infer::record_read_as_one_value(ctx, &i.cond, &ct);
             // `if constexpr` semantics: a const-evaluable condition is
             // resolved right here, through the SAME evaluator lowering's
             // `lower_if` uses, so the two stages agree on exactly which
@@ -693,7 +770,7 @@ fn check_stmt_inner(
             // that only exists for a different mode), which is the point of
             // the feature.
             //
-            // THREE guards keep the agreement exact, and all exist because
+            // FOUR guards keep the agreement exact, and all exist because
             // dropping a block HERE that lowering still EMITS ships
             // never-type-checked code:
             //
@@ -701,8 +778,8 @@ fn check_stmt_inner(
             //    gates its own elision on. Under `@nofold` lowering builds a
             //    real `Branch` and lowers BOTH blocks, so this stage must
             //    check both too.
-            // 2. Placeholder removal — a `const` PARAMETER is seeded into
-            //    `scoped_consts` as a type-shaped zero while a mod body is
+            // 2. Placeholder removal: a `const` PARAMETER is recorded as a
+            //    type-shaped zero while a mod body is
             //    checked (once, before any call site exists), and a
             //    placeholder must never decide a branch: lowering inlines
             //    the REAL argument and would pick the other way. Dropping
@@ -713,10 +790,14 @@ fn check_stmt_inner(
             //    fold (no `const` keyword anywhere) must NOT gain this
             //    elision: the feature's own rule is that a program using no
             //    `const` compiles identically to before. `if_cond_const_ctx`
-            //    restricts the environment to names actually spelled `const`
-            //    (see `const_declared`'s doc comment), so a condition built
-            //    from a plain `let` simply fails to evaluate here and falls
-            //    through to the general Branch path below.
+            //    restricts the environment to names actually spelled `const`,
+            //    so a condition built from a plain `let` simply fails to
+            //    evaluate here and falls through to the general Branch path
+            //    below.
+            // 4. Scope: a name the condition reads is the constant it names
+            //    here only (`crate::const_scope`): a parameter, local, loop
+            //    variable or pattern binding named like an outer constant is
+            //    that binding, so the condition does not evaluate.
             let cond_result = if ctx.nofold_depth > 0 {
                 None
             } else {
@@ -753,7 +834,7 @@ fn check_stmt_inner(
             }
         }
         Stmt::IfLet(i) => {
-            let scrut_ty = unwrap_ref(&infer::infer(ctx, &i.scrutinee));
+            let scrut_ty = infer::infer_scrutinee(ctx, &i.scrutinee);
             if !matches!(scrut_ty, Type::Enum { .. }) {
                 ctx.emit(
                     "WS066",
@@ -810,14 +891,34 @@ fn check_stmt_inner(
                     range.clone(),
                 );
             }
+            // A `match` statement runs its arms for their effects, so an arm
+            // that is only a value computes it for nothing.
+            if let Expr::MatchExpr { arms, .. } = &es.expr {
+                for arm in arms {
+                    if let MatchBody::Expr(v) = &arm.body
+                        && is_plain_value(v)
+                    {
+                        ctx.emit(
+                            "WS092",
+                            "this `match` arm is a value in statement position, which does \
+                             nothing: in a `match` used as a statement each arm runs for its \
+                             effects. Write the arm as a block (`A => { ... }`), or use the \
+                             `match` as a value (`let r = match ...`)",
+                            v.range().clone(),
+                        );
+                    }
+                }
+            }
+            ctx.statement_match = matches!(es.expr, Expr::MatchExpr { .. });
             infer::infer(ctx, &es.expr);
+            ctx.statement_match = false;
         }
         Stmt::In(i) => {
             register_decl(ctx, &TopDecl::In(i.clone()));
             if ctx.inline_body_depth == 0
                 && let Some(ty) = ctx.scope.lookup(&i.name).map(|s| s.ty.clone())
             {
-                check_port_record(ctx, &i.name, &ty, &i.range);
+                check_port_record(ctx, &i.name, &ty, &i.range, ctx.out_ctx.len() <= 1);
             }
         }
         Stmt::Handler(h) => {
@@ -856,7 +957,20 @@ fn check_stmt_inner(
                     range.clone(),
                 );
             }
-            if let Some(expr) = value {
+            if let Some(expr) = value
+                && ctx.out_ctx.len() <= 1
+            {
+                // Outside every mod and chip there is no output for the value:
+                // the module's `out` ports are written by name.
+                infer::infer(ctx, expr);
+                ctx.emit(
+                    "WS099",
+                    "`return <value>` outside a `mod` or `chip` has no output to give the value \
+                     to: only a mod or chip returns one. Write it to an `out` port by name \
+                     (`emit o = value`), then `return` with no value.",
+                    range.clone(),
+                );
+            } else if let Some(expr) = value {
                 // `return <value>` is a port write: lowering wires it straight
                 // into the enclosing boundary's output when there is exactly
                 // one. That includes a handler-declared port, which is why the
@@ -943,6 +1057,12 @@ fn check_stmt_inner(
             }
 
             ctx.push_scope();
+            // A name taken from a container declared with a type naming an
+            // unbounded `T` is declared with it too.
+            let over = match &f.source {
+                ForSource::Collection { expr, .. } => ctx.unbounded_root_of(expr).map(str::to_string),
+                ForSource::Range(_) => None,
+            };
             for (pat, slot) in f.bindings.iter().zip(&slots) {
                 match slot {
                     ForSlot::RangeSlotNames => {
@@ -952,6 +1072,11 @@ fn check_stmt_inner(
                     }
                     ForSlot::Slot(i) => bind_for_pat(ctx, pat, &slot_tys[*i]),
                     ForSlot::OverBound => {}
+                }
+                if let (Some(tp), ForPat::Name(name, _)) = (&over, pat)
+                    && let Some(decl) = ctx.scope.lookup(name).map(|sym| sym.decl_range.clone())
+                {
+                    ctx.unbounded_typed_params.push((decl, tp.clone()));
                 }
             }
             ctx.loop_depth += 1;
@@ -980,21 +1105,25 @@ fn check_stmt_inner(
 
 /// Type-check a `for` range source's endpoints and stride, and enforce WS077.
 ///
-/// `infer` walks each bound so an identifier resolves (or reports WS002) and
-/// hover data covers it, but nothing here constrains it to `int`. Only the
-/// stride's SIGN is checked: a zero or negative one silently loops the wrong
-/// way rather than producing a wrong value in an otherwise well-typed
-/// program.
+/// Each bound and count is an `int` place. The stride is not: a float stride
+/// steps by its value. Only the stride's SIGN is checked: a zero, negative or
+/// NaN one silently loops the wrong way rather than producing a wrong value
+/// in an otherwise well-typed program.
 fn check_for_range(ctx: &mut TypeCheckCtx, r: &RangeSource) {
+    // Each bound and count is an `int` place.
+    let int_place = |ctx: &mut TypeCheckCtx, e: &Expr| {
+        infer::infer(ctx, e);
+        infer::int_constants_in_slot(ctx, e, &Type::Int);
+    };
     match &r.extent {
         RangeExtent::Bounds { start, end } => {
-            infer::infer(ctx, start);
-            infer::infer(ctx, end);
+            int_place(ctx, start);
+            int_place(ctx, end);
         }
         RangeExtent::Count { count, from } => {
-            infer::infer(ctx, count);
+            int_place(ctx, count);
             if let Some(from) = from {
-                infer::infer(ctx, from);
+                int_place(ctx, from);
             }
         }
     }
@@ -1004,20 +1133,36 @@ fn check_for_range(ctx: &mut TypeCheckCtx, r: &RangeSource) {
     // Only a compile-time-constant step can be checked here; a runtime step
     // is the program's own responsibility (same "check what we can, at
     // compile time" stance as `Stmt::If`'s const-elision).
-    let no_lookup: Option<&dyn Fn(&str) -> Option<Arc<ChipDecl>>> = None;
-    let cx = ctx.const_ctx(no_lookup);
+    let lookup = |n: &str| ctx.resolve_mod(n);
+    let cx = ctx.const_ctx(Some(&lookup));
     let mut budget = crate::const_eval::Budget::default();
-    if let Ok(crate::ir::Literal::Int(n)) = crate::const_eval::eval_expr(step, &cx, &mut budget)
-        && n <= 0
-    {
+    let got = match crate::const_eval::eval_expr(step, &cx, &mut budget) {
+        Ok(crate::ir::Literal::Int(n)) if n <= 0 => Some(n.to_string()),
+        Ok(crate::ir::Literal::Float(f)) if f.is_nan() || f <= 0.0 => Some(stride_as_written(step, f)),
+        _ => None,
+    };
+    if let Some(got) = got {
         ctx.emit(
             "WS077",
             format!(
-                "a loop stride must be greater than zero, got {n}. To count \
+                "a loop stride must be greater than zero, got {got}. To count \
                  down, use `.rev()`."
             ),
             r.range.clone(),
         );
+    }
+}
+
+/// A float stride's value for a diagnostic: a literal as written, anything
+/// else as the value it evaluates to.
+fn stride_as_written(step: &Expr, value: f64) -> String {
+    match step {
+        Expr::FloatLit { text, .. } => text.clone(),
+        Expr::UnOp { op, operand, .. } if op == "-" => match operand.as_ref() {
+            Expr::FloatLit { text, .. } => format!("-{text}"),
+            _ => crate::const_eval::written_float(value),
+        },
+        _ => crate::const_eval::written_float(value),
     }
 }
 
@@ -1265,6 +1410,14 @@ pub(crate) fn is_ref_able(ctx: &TypeCheckCtx, e: &Expr) -> bool {
             None => false,
         },
         Expr::IndexAccess { obj, .. } => is_ref_able(ctx, obj),
+        // A field of a record `let` (a namespace member included) that names
+        // a var is that var: `&s.cpsr` on `let s = { cpsr }` is cpsr's ref.
+        Expr::FieldAccess { .. } | Expr::TuplePick { .. }
+            if let_place(ctx, e) =>
+        {
+            true
+        }
+        Expr::TuplePick { .. } => false,
         // A namespaced state member (`S.g`): ref-able when the member is a
         // var/array/map, exactly like its plain-imported form. Lowering wires
         // `&S.g` correctly, so without this arm the `&` check would wrongly
@@ -1299,6 +1452,25 @@ pub(crate) fn is_ref_able(ctx: &TypeCheckCtx, e: &Expr) -> bool {
     }
 }
 
+/// Whether `e` projects a place off a record `let`, directly or as a
+/// namespace member.
+fn let_place(ctx: &TypeCheckCtx, e: &Expr) -> bool {
+    let (root, segs) = crate::typecheck::infer::flatten_access(e);
+    let Expr::Ident { name, range } = root else {
+        return false;
+    };
+    let is_let = match ctx.scope.lookup(name).map(|s| s.kind) {
+        Some(SymbolKind::LetBinding) => true,
+        Some(SymbolKind::Namespace) => segs.first().is_some_and(|m| {
+            ctx.ns_members(name, &range.file)
+                .and_then(|ms| ms.get(m.as_str()))
+                .is_some_and(|info| info.kind == SymbolKind::LetBinding)
+        }),
+        _ => false,
+    };
+    is_let && crate::typecheck::infer::projection_is_place(ctx, e)
+}
+
 fn infer_assign_target(
     ctx: &mut TypeCheckCtx,
     e: &Expr,
@@ -1308,6 +1480,10 @@ fn infer_assign_target(
             return Type::Any;
         }
         let sym = ctx.scope.lookup(name).cloned();
+        #[cfg(test)]
+        if let Some(s) = &sym {
+            ctx.ident_decls.push((range.clone(), s.decl_range.clone(), true));
+        }
         match sym {
             None => {
                 ctx.emit(
@@ -1337,7 +1513,7 @@ fn infer_assign_target(
                 ctx.emit(
                     "WS007",
                     format!(
-                        "'{name}' is a `const` array/map and can't be written — a `const` \
+                        "'{name}' is a `const` array/map and can't be written: a `const` \
                          container is immutable so its compile-time value and its runtime \
                          contents can never disagree; declare it `var` to make it mutable"
                     ),
@@ -1373,7 +1549,7 @@ fn infer_assign_target(
                 ctx.emit(
                     "WS007",
                     format!(
-                        "'{name}' is a `let` binding and can't be assigned — declare it `var` to make it mutable"
+                        "'{name}' is a `let` binding and can't be assigned; declare it `var` to make it mutable"
                     ),
                     range.clone(),
                 );
@@ -1400,8 +1576,7 @@ fn infer_assign_target(
         // (`rows[y][x] = v`) from the OBJECT's type, not just the element's.
         {
             let r = obj.range();
-            ctx.type_of_expr
-                .insert((r.file.clone(), r.start.offset, r.end.offset), obj_ty.clone());
+            ctx.record_expr_type(r, &obj_ty);
         }
         ctx.record_container_kind(obj, &obj_ty);
         infer::check_index_type(ctx, &obj_ty, index);
@@ -1438,6 +1613,10 @@ fn infer_assign_target(
         // A namespace member (`u.xs[1] = 2`) types as the member, as it does
         // when read.
         if let Some(ty) = infer::namespace_member_type(ctx, obj, field) {
+            // The namespace name keeps its hover type, as on a read.
+            let mark = ctx.diagnostics.len();
+            infer::infer(ctx, obj);
+            ctx.diagnostics.truncate(mark);
             return unwrap_ref(&ty);
         }
         let obj_ty = unwrap_ref(&infer::infer(ctx, obj));
@@ -1451,7 +1630,7 @@ fn infer_assign_target(
         match &obj_ty {
             // A `*T` field aliases the caller's storage, so writing through
             // one writes the pointee: the target's type is what it points at.
-            Type::Record(fields) => fields
+            Type::Record(fields) | Type::Outputs(fields) => fields
                 .iter()
                 .find(|(n, _)| n == field)
                 .map(|(_, t)| unwrap_ref(t))
@@ -1463,34 +1642,13 @@ fn infer_assign_target(
         let obj_ty = unwrap_ref(&infer::infer(ctx, obj));
         match &obj_ty {
             Type::Tuple(fields) => fields.get(*index).map(unwrap_ref).unwrap_or(Type::Any),
-            Type::Record(fields) => {
+            Type::Record(fields) | Type::Outputs(fields) => {
                 fields.get(*index).map(|(_, t)| unwrap_ref(t)).unwrap_or(Type::Any)
             }
             _ => Type::Any,
         }
     } else if let Expr::Deref { operand, range } = e {
-        // `*h = v` writes through the ref `h` holds.
-        let t = infer::infer(ctx, operand);
-        match t {
-            Type::Ref(inner) => *inner,
-            Type::Any => Type::Any,
-            t @ (Type::Array(_) | Type::Map(_, _) | Type::Brick) => {
-                infer::emit_deref_not_a_scalar_ref(ctx, &t, range);
-                Type::Any
-            }
-            _ if is_ref_able(ctx, operand) => infer_assign_target(ctx, operand),
-            other => {
-                ctx.emit(
-                    "WS003",
-                    format!(
-                        "`*` needs a reference, got {}",
-                        crate::analysis::types::type_str(&other)
-                    ),
-                    range.clone(),
-                );
-                Type::Any
-            }
-        }
+        infer_deref_target(ctx, operand, range).0
     } else {
         // Any other target shape (a call result `f() = 5`, a literal, an
         // operator expression) is not an lvalue. It used to fall through to
@@ -1507,29 +1665,56 @@ fn infer_assign_target(
     }
 }
 
+/// The type `*operand = v` writes, and whether it writes through a ref value
+/// `operand` holds (`*h = v` with `h: *int`) rather than to a var `*x` names.
+fn infer_deref_target(ctx: &mut TypeCheckCtx, operand: &Expr, range: &SourceRange) -> (Type, bool) {
+    let t = infer::infer(ctx, operand);
+    match t {
+        Type::Ref(inner) => (*inner, true),
+        Type::Any => (Type::Any, false),
+        t @ (Type::Array(_) | Type::Map(_, _) | Type::Brick) => {
+            infer::emit_deref_not_a_scalar_ref(ctx, &t, range);
+            (Type::Any, false)
+        }
+        _ if is_ref_able(ctx, operand) => (infer_assign_target(ctx, operand), false),
+        other => {
+            ctx.emit(
+                "WS003",
+                format!("`*` needs a reference, got {}", crate::analysis::types::type_str(&other)),
+                range.clone(),
+            );
+            (Type::Any, false)
+        }
+    }
+}
+
 /// A write through a dynamic ref (`*h = v`) wires directly into whatever
 /// `Var_Set` gate `h` currently points at, with no coercion adapter the way an
 /// ordinary assignment to a statically named var gets - the same reasoning
 /// behind the `*T` call-argument invariance in `sig::check_wire_arg`. So
 /// unlike a plain `n = 1.5`, a numeric widen/narrow through a ref is still a
-/// mismatch. Only fires for a genuine ref write (`target`'s deref operand
-/// itself inferred `Type::Ref`); `*x = v` on a plain auto-deref var already
-/// went through `infer_assign_target`'s ordinary, lenient path.
-fn check_deref_write_is_exact(ctx: &mut TypeCheckCtx, target: &Expr, value: &Expr, target_ty: &Type) {
-    let Expr::Deref { operand, .. } = target else {
-        return;
-    };
-    let recorded = |ctx: &TypeCheckCtx, e: &Expr| {
-        let r = e.range();
-        ctx.type_of_expr
-            .get(&(r.file.clone(), r.start.offset, r.end.offset))
-            .cloned()
-    };
-    if !matches!(recorded(ctx, operand), Some(Type::Ref(_))) {
+/// mismatch. Called only for a genuine ref write (see `infer_deref_target`);
+/// `*x = v` on a plain auto-deref var already went through
+/// `infer_assign_target`'s ordinary, lenient path.
+fn check_deref_write_is_exact(ctx: &mut TypeCheckCtx, value: &Expr, target_ty: &Type) {
+    let r = value.range();
+    let value_ty = ctx
+        .type_of_expr
+        .get(&(r.file.clone(), r.start.offset, r.end.offset))
+        .cloned()
+        .unwrap_or(Type::Any);
+    if matches!(value_ty, Type::Any) || matches!(target_ty, Type::Any) {
         return;
     }
-    let value_ty = recorded(ctx, value).unwrap_or(Type::Any);
-    if matches!(value_ty, Type::Any) || matches!(target_ty, Type::Any) {
+    // A float constant is not narrowed through a ref either, though it is
+    // recorded as the integer an `int` slot would store.
+    let value_ty = match (target_ty, super::infer::float_constant_value(ctx, value)) {
+        (Type::Int, Some(_)) => Type::Float,
+        _ => value_ty,
+    };
+    // An integer literal is written as the float it names, as it is into a
+    // `float` var.
+    if matches!(target_ty, Type::Float) && int_literal(value).is_some() {
         return;
     }
     if coerce(&value_ty, target_ty) == CoerceRule::Coerce {
@@ -1541,6 +1726,15 @@ fn check_deref_write_is_exact(ctx: &mut TypeCheckCtx, target: &Expr, value: &Exp
             ),
             value.range().clone(),
         );
+    }
+}
+
+/// The value of an integer literal, optionally negated (`0`, `-2`).
+pub(crate) fn int_literal(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::IntLit { value, .. } => Some(*value),
+        Expr::UnOp { op, operand, .. } if op == "-" => int_literal(operand).map(|v| v.wrapping_neg()),
+        _ => None,
     }
 }
 
@@ -1577,4 +1771,25 @@ fn is_custom_event_call(e: &Expr) -> bool {
         Expr::Call { callee, .. }
             if matches!(callee.as_ref(), Expr::Ident { name, .. } if name == "CustomEvent" || name == "GlobalCustomEvent")
     )
+}
+
+/// A value whose evaluation has no effect: a literal, a name, a field of one,
+/// or a record or tuple built from them.
+fn is_plain_value(e: &Expr) -> bool {
+    match e {
+        Expr::IntLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::StringLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::NullLit { .. }
+        | Expr::Ident { .. } => true,
+        Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } => is_plain_value(obj),
+        Expr::RecordLit { fields, .. } => fields.iter().all(|f| match f {
+            crate::ast::RecordLitField::Named { value, .. } | crate::ast::RecordLitField::Spread { value, .. } => {
+                is_plain_value(value)
+            }
+            crate::ast::RecordLitField::Shorthand { .. } => true,
+        }),
+        _ => false,
+    }
 }

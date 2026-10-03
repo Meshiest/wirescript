@@ -2902,3 +2902,83 @@ fn spread_multi_output_call_result_binds() {
     assert_no_errors(&m);
     assert!(!has_gate(&m, "_Unsupported"), "inline call-result spread must bind");
 }
+
+// ── sortMultiple's parallel arrays: at most 7, each resolved or loud ──
+
+const SORT_DECLS: &str = "var k: int[]\nvar a1: int[]\nvar a2: int[]\nvar a3: int[]\n\
+    var a4: int[]\nvar a5: int[]\nvar a6: int[]\nvar a7: int[]\nvar a8: int[]\n\
+    var rows: int[][]\nin go: exec\nin d: bool\n";
+
+/// The gate has ArrayVarRef2..8, so an 8th parallel array has no port. It
+/// must be rejected, not dropped.
+#[test]
+fn sort_multiple_with_more_than_seven_arrays_is_an_error() {
+    for call in [
+        "k.sortMultiple(a1, a2, a3, a4, a5, a6, a7, a8)",
+        "k.sortMultiple(a1, a2, a3, a4, a5, a6, a7, rows[0])",
+        "k.sortMultiple(a1, a2, a3, a4, a5, a6, a7, a8, true)",
+    ] {
+        let src = format!("{SORT_DECLS}on go {{\n  {call}\n}}");
+        let e = errs(&src);
+        assert!(e.iter().any(|c| c == "WS011"), "{call}: {e:?}");
+    }
+    let src = format!("{SORT_DECLS}on go {{\n  k.sortMultiple(a1, a2, a3, a4, a5, a6, a7, d)\n}}");
+    let r = compile(&src);
+    assert_no_errors(&r);
+    let sort = find_gate(&r, crate::ir::gate_class::ARRAY_SORT_MULTIPLE);
+    let into = |port: WirePort| r.module.wires.iter().filter(|w| w.target.node_id == sort && w.target.port == port).count();
+    assert_eq!(into(WirePort::ArrayVarRef8), 1, "the 7th array fills ArrayVarRef8");
+    assert_eq!(into(WirePort::BDescending), 1, "a trailing bool is `descending`");
+}
+
+/// Only a trailing bool may be `descending`. Any other positional is an
+/// array, and one that does not resolve is WS044 rather than a wire into
+/// `bDescending`.
+#[test]
+fn sort_multiple_never_wires_an_array_argument_into_descending() {
+    let e = errs(&format!("{SORT_DECLS}on go {{\n  k.sortMultiple(a1, 5)\n}}"));
+    assert!(e.iter().any(|c| c == "WS003"), "a non-array, non-bool positional: {e:?}");
+    let e = errs(&format!("{SORT_DECLS}on go {{\n  k.sortMultiple(d, a1)\n}}"));
+    assert!(e.iter().any(|c| c == "WS003"), "a bool before an array: {e:?}");
+
+    let r = compile(&format!("{SORT_DECLS}on go {{\n  k.sortMultiple(a1, [1, 2])\n}}"));
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS044"),
+        "an unresolved array argument must be WS044: {:?}",
+        r.diagnostics
+    );
+    assert!(
+        !r.module.wires.iter().any(|w| w.target.port == WirePort::BDescending),
+        "an array argument reached bDescending"
+    );
+
+    // A record array is carried along as every one of its columns; it used to
+    // fail to resolve and be wired into bDescending, then overwritten by `d`.
+    let r = compile(&format!(
+        "type Row = {{ u: string, g: float, f: string }}\nvar rs: Row[]\n{SORT_DECLS}\
+         on go {{\n  k.sortMultiple(a1, rs, a2, d)\n}}"
+    ));
+    assert_no_errors(&r);
+    let sort = find_gate(&r, crate::ir::gate_class::ARRAY_SORT_MULTIPLE);
+    let into = |port: WirePort| r.module.wires.iter().filter(|w| w.target.node_id == sort && w.target.port == port).count();
+    for port in [WirePort::ArrayVarRef2, WirePort::ArrayVarRef3, WirePort::ArrayVarRef4, WirePort::ArrayVarRef5, WirePort::ArrayVarRef6] {
+        assert_eq!(into(port), 1, "{port:?}");
+    }
+    assert_eq!(into(WirePort::BDescending), 1);
+    let r = compile(&format!(
+        "type Row = {{ u: string, g: float, f: string }}\nvar rs: Row[]\n{SORT_DECLS}\
+         on go {{\n  k.sortMultiple(a1, rs, a2, a3, a4, a5)\n}}"
+    ));
+    assert!(r.diagnostics.iter().any(|d| d.code == "WS011"), "{:?}", r.diagnostics);
+
+    let r = compile(&format!(
+        "const T = [3, 1, 2]\n{SORT_DECLS}on go {{\n  k.sortMultiple(a1, T)\n}}"
+    ));
+    assert!(
+        r.diagnostics
+            .iter()
+            .any(|d| d.code == "WS044" && d.message.contains("would change")),
+        "sortMultiple reorders its parallel arrays, so a const one is rejected: {:?}",
+        r.diagnostics
+    );
+}

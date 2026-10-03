@@ -1,6 +1,6 @@
 # Chips
 
-Chips are Wirescript's primary mechanism for organizing and reusing wire graph logic. They map to physical microchip bricks in Brickadia -- a separate grid of gates contained within a single brick. (A module-level [`@flat`](#compiling-without-microchips-flat) compiles the same program onto one grid instead, with no microchip bricks at all.)
+Chips are Wirescript's primary mechanism for organizing and reusing wire graph logic. They map to physical microchip bricks in Brickadia: a separate grid of gates contained within a single brick. (A module-level [`@flat`](#compiling-without-microchips-flat) compiles the same program onto one grid instead, with no microchip bricks at all.)
 
 <!-- toc -->
 ## Contents
@@ -38,7 +38,29 @@ chip {
 out xValue = x.Value
 ```
 
-Anonymous chips are purely organizational -- they group related gates into a microchip brick without creating an isolated scope.
+Anonymous chips group related gates into a microchip brick and share the scope around them, except for a name the chip declares itself where the top level declares it too.
+
+### Names a Chip Shares With the Top Level
+
+A top-level anonymous chip may declare a name (a `var`, array, map, buffer, `const` or `let`) that the top level declares as well. Inside the chip the name is the chip's declaration: in the chip's statements, and in the body of every `mod` or `chip` written inside it, wherever that `mod` or `chip` is called from. Everywhere else the top-level declaration is what the name means: before the chip and after it, in a constant-only setting such as an event name or a `Sleep` delay, and in a `mod` or `chip` written outside the chip even when it is called inside.
+
+```wirescript
+in tick: exec
+in go: exec
+let limit = 10
+var hits: int = 0
+chip {
+  var limit: int = 3
+  mod over(n: int) -> bool { return n > limit }  // the chip's `limit`
+  on tick { limit += 1 }
+}
+on go {
+  if over(hits) { hits = 0 }  // still the chip's `limit`
+  hits = hits + limit         // the top-level `limit`, 10
+}
+```
+
+A name only the chip declares is visible across the file. A top-level declaration is named from where it is written on, so a read above it reads the chip's declaration of the name. Two declarations of one name in one chip are `WS013`. Two at the top level itself are read by position (`WS108`): a read names the latest one visible where it is written (storage, declared ahead of everything, above both), as described in [Declaring a Name Again](statements.md#declaring-a-name-again). A chip nested in another names its storage from where it is written on, past the enclosing chip.
 
 ### `open` Modifier
 
@@ -128,7 +150,7 @@ chip on moved {
 
 ## Named Chips
 
-Named chips define reusable components with explicit inputs and outputs. They create an isolated scope -- the chip body cannot see the parent scope's variables (except what is passed through parameters).
+Named chips define reusable components with explicit inputs and outputs. They create an isolated scope: the chip body cannot see the parent scope's variables (except what is passed through parameters).
 
 ```wirescript ignore
 chip Name(params) -> outputs {
@@ -185,7 +207,7 @@ mod sum((a, b): (int, int)) -> int { return a + b }
 
 ### Outputs
 
-Outputs are declared after `->`. A single output can omit the parentheses — it defaults to the name `_`:
+Outputs are declared after `->`. A single output can omit the parentheses, in which case it defaults to the name `_`:
 
 ```wirescript
 // Single output (defaults to name "_")
@@ -250,18 +272,18 @@ let mm1 = MinMax(1, 10)
 let mm2 = MinMax(5, 20)  // independent from mm1
 ```
 
-> **Note:** The `-> (...)` outputs declare the chip's public interface. Use `out name = expr` in the body to wire values to those outputs. Do not redeclare the same name in both the signature and the body — this produces a warning.
+> **Note:** The `-> (...)` outputs declare the chip's public interface. Use `out name = expr` in the body to wire values to those outputs. Do not redeclare the same name in both the signature and the body. Doing so produces a warning.
 
 ### Exec Chips
 
 A chip whose body contains statement-level exec calls (array methods,
-`DisplayText`, `emit signal`, ...) is an **exec chip** — the body runs
+`DisplayText`, `emit signal`, ...) is an **exec chip**: the body runs
 as one exec chain. How it gets its trigger depends on the call site:
 
 - **Called inside a handler**, the body joins the caller's exec chain
   automatically and execution continues after it.
 - **Called outside an exec context** (e.g. a top-level `let`), pass the
-  trigger as an `exec = ...` named argument — the same convention as builtin
+  trigger as an `exec = ...` named argument, the same convention as builtin
   exec calls like `Random(0, 10, exec = trigger)`.
 
 ```wirescript
@@ -292,7 +314,7 @@ on t.exec { }        // or treat it as an event
 ```
 
 To bind body work to a specific exec **parameter** instead, declare the param
-and use an `on` handler — the param does not implicitly invoke the body:
+and use an `on` handler, because the param does not implicitly invoke the body:
 
 ```wirescript
 chip Counter(bump: exec) -> (value: int) {
@@ -303,7 +325,7 @@ chip Counter(bump: exec) -> (value: int) {
 ```
 
 > **Note:** chip bodies reference top-level `var`s, `array`s, buffers, and
-> record bindings freely — wire refs cross chip boundaries, so the body's
+> record bindings freely. Wire refs cross chip boundaries, so the body's
 > gates connect to the outer nodes directly (`vals` above).
 
 ### Reference Parameters (`ref T` / `*T`)
@@ -328,7 +350,7 @@ chip Swap(a: ref int, b: ref int) { ... }
 chip Swap(a: *int, b: *int) { ... }
 ```
 
-At call sites, pass variables directly -- the compiler handles the reference wiring:
+At call sites, pass variables directly, and the compiler handles the reference wiring:
 
 ```wirescript
 var x: int = 10
@@ -340,7 +362,7 @@ Swap(x, y)  // x and y are passed by reference
 
 A `mod` or `chip` parameter can be marked `const`, requiring the caller's
 argument to be a compile-time constant. Inside the body the parameter reads
-as one -- usable anywhere a `const` binding is (see
+as one, usable anywhere a `const` binding is (see
 [`const` -- Compile-Time Binding](statements.md#const----compile-time-binding)):
 
 ```wirescript
@@ -361,17 +383,17 @@ mod ping(channel: const string) { SendCustomEvent(channel) }
 on go { ping(name) }   // WS046 -- 'name' is a runtime value
 ```
 
-`v` above stays an ordinary wired parameter -- a `mod`/`chip` can freely mix
+`v` above stays an ordinary wired parameter: a `mod`/`chip` can freely mix
 `const` and non-`const` parameters. A `const` parameter costs no pin: it
 never becomes a `MicrochipInput`, so it doesn't shift the pin index of any
 parameter that follows it. For a `chip` (not a `mod`), each distinct
-constant value passed to a `const` parameter gets its own compiled instance
--- two call sites passing the same constant share one instance, since the
+constant value passed to a `const` parameter gets its own compiled instance.
+Two call sites passing the same constant share one instance, since the
 body is cached by a template key that includes the const value.
 
 ### `const mod`
 
-`const mod` marks every parameter of an inlined chip `const` in one step --
+`const mod` marks every parameter of an inlined chip `const` in one step,
 equivalent to writing `const` on each parameter individually:
 
 ```wirescript
@@ -380,10 +402,10 @@ const mod double(n: int) -> int { return n * 2 }
 
 A call to a `const mod` is itself const-evaluable (see
 [What's const-evaluable](statements.md#whats-const-evaluable)), so it can be
-used to build a `const` value out of one or more calls -- including calls to
+used to build a `const` value out of one or more calls, including calls to
 other `const mod`s and reads of module-level constants.
 
-`const chip` is a parse error -- a `chip` compiles to one shared physical
+`const chip` is a parse error, because a `chip` compiles to one shared physical
 microchip template reused across call sites, so "every parameter is const"
 isn't a property the declaration can have the way it is for an inlined
 `mod`. Mark the parameters you need constant individually instead:
@@ -395,7 +417,7 @@ chip C(name: const string, v: int) -> (r: int) { out r = v }   // fine
 ```
 
 A `const` BINDING inside a named `chip`'s body is compile-time throughout that
-chip -- its handlers, its `out`s, and its constant-only config slots -- the
+chip (its handlers, its `out`s, and its constant-only config slots), the
 same as inside a `mod`. Two places it is not: the body of an **anonymous**
 `chip { }`, and a chip *declared inside* another chip, which does not inherit
 the enclosing chip's body constants (pass them in as `const` parameters). Both
@@ -459,12 +481,12 @@ never checked for it. The editor's hover on a dropped block explains why it
 was dropped (e.g. `` `MODE == 1` is true here ``).
 
 **This does not work for a `const` parameter.** A `mod`/`chip` body is
-type-checked exactly once, before any call site exists -- there is no real
+type-checked exactly once, before any call site exists, so there is no real
 argument yet to decide the branch with. A `const` parameter is seeded with a
 type-shaped placeholder during that one-time check, and the placeholder is
 deliberately never allowed to decide a branch: letting it choose would ship a
-branch the placeholder happened to select while the OTHER branch -- the one a
-real call actually takes -- goes unchecked. So **both branches of an `if` on
+branch the placeholder happened to select while the OTHER branch (the one a
+real call actually takes) goes unchecked. So **both branches of an `if` on
 a const parameter (or a `const` derived from one) are type-checked**, and
 each must be independently valid code, even though only one of them lowers
 per call site:
@@ -482,8 +504,8 @@ mod f(mode: const int) {
 ```
 
 Both arms must compile for every possible constant value, not just the ones
-any call site actually passes. A top-level `const` -- or one read from inside
-a mod body that is not itself a parameter -- does not have this restriction;
+any call site actually passes. A top-level `const` (or one read from inside
+a mod body that is not itself a parameter) does not have this restriction;
 only the parameter itself, and anything derived from it, carries the
 placeholder.
 
@@ -515,7 +537,7 @@ place:
 }
 ```
 
-`@closed` works on every chip form -- `chip Name(...)`, `chip { ... }`,
+`@closed` works on every chip form: `chip Name(...)`, `chip { ... }`,
 `chip on`, and `chip let`. `open chip { ... }` still parses, but is now a
 redundant no-op; combining `@closed` with `open` on the same chip is an
 error.
@@ -524,7 +546,7 @@ error.
 
 A module-level `@flat` at the top of the entry file inlines every chip body
 into the module that instantiates it. The program then emits **no microchip
-bricks and no nested grids** -- every gate lands on one grid, and a wire that
+bricks and no nested grids**: every gate lands on one grid, and a wire that
 would have crossed a chip wall becomes an ordinary same-grid wire instead of a
 pair of wires through a boundary pin.
 
@@ -552,14 +574,14 @@ and its plane header:
 
 `@label` also applies to `in`/`out` declarations at any nesting level, and
 stacks with a `@left`/`@right`/`@top`/`@bottom` side annotation in either
-order -- see [Outer Rerouter Pins](statements.md#left--right--top--bottom----outer-rerouter-pins).
+order (see [Outer Rerouter Pins](statements.md#left--right--top--bottom----outer-rerouter-pins)).
 There it overrides the port's floating display label (and its rerouter pin
 label); the port's wiring-UI name is unaffected either way.
 
 The `@label` argument may also be an expression: a constant folds to baked
 text, and on a top-level `var` a runtime expression becomes a **dynamic
-label** that shows the value live -- see
-[Expression labels](statements.md#expression-labels-labelexpr). A chip
+label** that shows the value live (see
+[Expression labels](statements.md#expression-labels-labelexpr)). A chip
 label must be a constant (its shell brick has no wired text component).
 
 Each opened plane with a title or doc comment gets a header at its top
@@ -580,12 +602,14 @@ chip Counter(bump: exec) -> (value: int) {
 ```
 
 `mod` declarations always inline into their callers and never become a
-physical chip, so any annotation -- `@closed`, `@label`, or a side pin --
+physical chip, so any annotation (`@closed`, `@label`, or a side pin)
 on a `mod` is an error.
 
 ## `mod` -- Inline Chips
 
 The `mod` keyword declares a chip that is always **inlined** at call sites. Instead of creating a separate microchip brick, the `mod`'s gates are expanded directly into the caller's grid.
+
+Only the gates are expanded into the caller. Every name in the body resolves where the `mod` is declared, exactly as a `chip` body's does: a `var`, `let`, parameter or nested `mod` the caller declares under the same name is never the one the body reads, writes or calls.
 
 ```wirescript ignore
 mod Name(params) {
@@ -611,7 +635,9 @@ mod clamp(v: int, lo: int, hi: int) -> (result: int) {
 let clamped = clamp(x, 0, 255)  // clamped is directly an int
 ```
 
-> **Note:** A single `return expr` wires the value directly (pure, zero-tick). Multiple `return expr` statements cause the compiler to insert a hidden variable — each branch does a `Var_Set`, and a `Var_Get` after the return union reads the result. This adds exec gates but is correct within the same tick's exec chain.
+> **Note:** A single `return expr` wires the value directly (pure, zero-tick). Multiple `return expr` statements cause the compiler to insert a hidden variable: each branch does a `Var_Set`, and a `Var_Get` after the return union reads the result. This adds exec gates but is correct within the same tick's exec chain.
+
+An output set by name (`emit name = v` or `out name = v`) works the same way when it is set in more than one place, under a branch or loop, or beside a `return`: every write goes to the hidden variable, and the call reads the value the path that ran left there. A `mod` output behaves exactly like a `chip` output here, per call site for a `mod` and per instance for a `chip`: a path that does not write it leaves it holding its last value, which starts at the type's default (`0`, `""` or `false`). A write from an `on` handler nested in the mod lands whenever that handler fires, and the caller sees it until the caller's own chain writes the output again. A `return` inside such a handler is one of those writes: it sets the outputs and ends that handler's run, not the call. A `return` inside an anonymous `chip { }` is an ordinary return of the body.
 
 ### When to Use `mod`
 
@@ -636,7 +662,7 @@ mod slide(a: *int, b: *int, c: *int, d: *int) {
 A `mod` (only a `mod`, never a `chip`) can end its parameter list with a `...rest`
 variadic that captures every argument past the fixed parameters. Because a mod is
 inlined at each call site, `rest` is a compile-time tuple of the actual extra
-arguments -- there is no runtime variadic. A `...rest` in the body then splats that
+arguments. There is no runtime variadic. A `...rest` in the body then splats that
 tuple onward into another call, one element per positional slot:
 
 ```wirescript
@@ -653,7 +679,7 @@ on go {
 ```
 
 The fixed parameters are still required (passing fewer is an arity error); only the
-trailing count is open. The same `...tuple` splat works on any call -- spread a bound
+trailing count is open. The same `...tuple` splat works on any call: spread a bound
 tuple, a tuple literal, or a multi-output result into consecutive arguments:
 
 ```wirescript
@@ -666,7 +692,7 @@ out total = add3(n, ...pair)         // -> add3(n, 2, 3)
 
 Because the body is type-checked once (at the declaration, where the captured arity
 isn't known yet), a `...rest` forward is not statically arity-checked against a
-fixed-arity target -- it is validated when the mod inlines at each call. Forwarding
+fixed-arity target. It is validated when the mod inlines at each call. Forwarding
 into `SendCustomEvent`/`SendGlobalCustomEvent` (whose data slots accept any type) is
 the common case and always sound.
 
@@ -675,7 +701,8 @@ the common case and always sound.
 | Feature | `chip` | `mod` |
 |---------|--------|-------|
 | Physical microchip | Yes | No (inlined) |
-| Isolated scope | Yes | Expanded into caller |
+| Gates | Own grid | Expanded into caller |
+| Names in the body | Resolved where declared | Resolved where declared |
 | Outputs with `->` | Yes (multi) | Yes (single, with `return expr`) |
 | `ref`/`*` params | Yes | Yes |
 | Reusable | Yes (separate instance per call) | Yes (expanded per call) |
@@ -684,12 +711,12 @@ the common case and always sound.
 
 ## Boundary Pins
 
-Every wire that crosses a chip wall -- a value, an exec trigger, or a
-variable reference alike -- routes through a labeled `MicrochipInput` or
+Every wire that crosses a chip wall (a value, an exec trigger, or a
+variable reference alike) routes through a labeled `MicrochipInput` or
 `MicrochipOutput` rerouter at that wall, one pin per external source, even
 if the source isn't a declared parameter. Multiple consumers inside the
 chip fan out from the same pin rather than each getting their own. A
-constant argument is the one exception -- it's inlined directly into the
+constant argument is the one exception: it's inlined directly into the
 gate that uses it rather than wired in, so it never costs a pin.
 
 ## Nested Chips

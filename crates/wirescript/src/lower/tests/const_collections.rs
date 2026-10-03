@@ -809,3 +809,380 @@ fn an_unfoldable_const_container_read_in_pure_context_is_reported() {
         );
     }
 }
+
+/// Compiles `src` and asserts it lowered clean: no error, no WSP001
+/// placeholder warning, and no `_Unsupported` gate in any module.
+fn lowers_clean(src: &str) -> LowerResult {
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
+        "a const container fell to a placeholder:\n{src}\n{:?}",
+        r.diagnostics
+    );
+    assert!(
+        nodes_of(&r.module, crate::ir::gate_class::UNSUPPORTED).is_empty(),
+        "a const container lowered to `_Unsupported`:\n{src}"
+    );
+    r
+}
+
+/// The baked `InitialValue` of every array container gate in any module.
+fn baked_arrays(r: &LowerResult) -> Vec<Option<Literal>> {
+    nodes_of(&r.module, crate::ir::gate_class::ARRAY_VAR)
+        .into_iter()
+        .map(|n| n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned())
+        .collect()
+}
+
+fn ints(xs: &[i64]) -> Option<Literal> {
+    Some(Literal::Array(xs.iter().map(|&x| Literal::Int(x)).collect()))
+}
+
+/// `let x = T` aliases the const table: `x[i]` reads the materialized gate,
+/// not a placeholder wired into `m`'s Var_Set.
+#[test]
+fn a_let_bound_to_a_const_array_reads_the_materialized_gate() {
+    for src in [
+        "const T = [10, 20, 30]\nvar m: int = 0\nin go: exec\nin i: int\n\
+         on go {\n  let x = T\n  m = x[i]\n}\nout r: int = m",
+        "const T = [10, 20, 30]\nvar m: int = 0\nin go: exec\nin i: int\nlet x = T\n\
+         on go { m = x[i] }\nout r: int = m",
+        "const T = [10, 20, 30]\nvar m: int = 0\nin go: exec\nin i: int\n\
+         on go {\n  let x = T\n  let y = x\n  m = y[i]\n}\nout r: int = m",
+        "const T = [10, 20, 30]\nvar m: int = 0\nin go: exec\nin i: int\n\
+         on go {\n  const x = T\n  m = x[i]\n}\nout r: int = m",
+    ] {
+        let r = lowers_clean(src);
+        assert_eq!(baked_arrays(&r), vec![ints(&[10, 20, 30])], "{src}");
+        let arr = find_gate(&r, crate::ir::gate_class::ARRAY_VAR);
+        let get = find_gate(&r, crate::ir::gate_class::ARRAY_GET);
+        assert!(
+            r.module.wires.iter().any(|w| w.source.node_id == arr
+                && w.target.node_id == get
+                && w.target.port == WirePort::ArrayVarRef),
+            "the index read must take the const table's ref:\n{src}"
+        );
+    }
+}
+
+/// Every other value position a const container can take materializes it the
+/// same way instead of wiring a placeholder.
+#[test]
+fn a_const_container_in_a_value_position_materializes() {
+    for (src, arrays) in [
+        (
+            "const T = [10, 20, 30]\nconst U = [1, 2]\nvar m: int = 0\nin go: exec\nin i: int\n\
+             in c: bool\non go {\n  let x = if c then T else U\n  m = x[i]\n}\nout r: int = m",
+            2,
+        ),
+        (
+            "const T = [10, 20, 30]\ntype R = { xs: int[], n: int }\nvar m: int = 0\n\
+             in go: exec\nin i: int\non go {\n  let q: R = { xs: T, n: 1 }\n  m = q.xs[i]\n}\n\
+             out r: int = m",
+            1,
+        ),
+        (
+            "const T = [10, 20, 30]\nvar m: int = 0\nin go: exec\nin i: int\n\
+             on go {\n  let (a, b) = (T, 1)\n  m = a[i] + b\n}\nout r: int = m",
+            1,
+        ),
+        (
+            "const T = [10, 20, 30]\nmod f() -> int[] { return T }\nvar m: int = 0\n\
+             in go: exec\nin i: int\non go {\n  let a = f()\n  m = a[i]\n}\nout r: int = m",
+            1,
+        ),
+        (
+            "const T = [10, 20, 30]\nvar m: int = 0\nin go: exec\n\
+             on go {\n  for v in T { m += v }\n}\nout r: int = m",
+            1,
+        ),
+        (
+            "const T = [10, 20, 30]\nvar a: int[]\nin go: exec\n\
+             on go {\n  a.append(T)\n  a.copyFrom(T)\n}",
+            2,
+        ),
+        (
+            "var m: int = 0\nin go: exec\nin i: int\n\
+             on go {\n  let xs = [10, 20, 30]\n  chip C() { m = xs[i] }\n  C()\n}\nout r: int = m",
+            1,
+        ),
+        (
+            "var m: int = 0\nin go: exec\nin i: int\n\
+             mod pick(xs: int[], at: int) -> int { return xs[at] }\n\
+             on go { m = pick([10, 20, 30], i) }\nout r: int = m",
+            1,
+        ),
+        (
+            "var a: int[]\nin go: exec\non go { a.append([10, 20, 30]) }",
+            2,
+        ),
+    ] {
+        let r = lowers_clean(src);
+        let baked = baked_arrays(&r);
+        assert_eq!(
+            baked.iter().filter(|b| **b == ints(&[10, 20, 30])).count(),
+            1,
+            "exactly one gate carries T's contents:\n{src}\n{baked:?}"
+        );
+        assert_eq!(baked.len(), arrays, "{src}\n{baked:?}");
+    }
+}
+
+/// The map half of the `let` alias.
+#[test]
+fn a_let_bound_to_a_const_map_reads_the_materialized_gate() {
+    let r = lowers_clean(
+        "const M = { \"a\": 1, \"b\": 2 }\nvar m: int = 0\nin go: exec\nin k: string\n\
+         on go {\n  let x = M\n  m = x.get(k).Value\n}\nout r: int = m",
+    );
+    assert_eq!(nodes_of(&r.module, crate::ir::gate_class::MAP_VAR).len(), 1);
+    assert_eq!(nodes_of(&r.module, crate::ir::gate_class::MAP_GET).len(), 1);
+}
+
+/// An alias of a const container is the same immutable gate, so mutating it
+/// is the const-mutation WS044, not the unresolved-receiver one.
+#[test]
+fn mutating_an_alias_of_a_const_container_is_rejected() {
+    for src in [
+        "const T = [10, 20, 30]\nin go: exec\non go {\n  let x = T\n  x.push(4)\n}",
+        "const T = [10, 20, 30]\nvar v: int[]\nin go: exec\nin c: bool\n\
+         on go {\n  let x = if c then v else T\n  x.push(4)\n}",
+        "const T = [10, 20, 30]\ntype R = { xs: int[] }\nin go: exec\n\
+         on go {\n  let q: R = { xs: T }\n  q.xs.push(4)\n}",
+    ] {
+        let r = compile(src);
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS044" && d.message.contains("would change")),
+            "mutating a const container through an alias must be the const WS044:\n{src}\n{:?}",
+            r.diagnostics
+        );
+    }
+}
+
+/// A const container passed to a CHIP container parameter reaches the pin as
+/// the materialized gate, for arrays and maps alike.
+#[test]
+fn a_const_container_passed_to_a_chip_container_param_materializes() {
+    let r = lowers_clean(
+        "const T = [10, 20, 30]\n\
+         chip C(go: exec, xs: int[], i: int) -> (o: int) {\n\
+           var m: int = 0\n\
+           on go { m = xs[i] }\n\
+           out o = m\n\
+         }\n\
+         in go: exec\nin i: int\nlet c = C(go, T, i)\nout r: int = c",
+    );
+    assert_eq!(baked_arrays(&r), vec![ints(&[10, 20, 30])]);
+    assert_eq!(nodes_of(&r.module, crate::ir::gate_class::ARRAY_GET).len(), 1);
+
+    let r = lowers_clean(
+        "const M = { \"a\": 1, \"b\": 2 }\n\
+         chip C(go: exec, xs: Map<string, int>, k: string) -> (o: int) {\n\
+           var m: int = 0\n\
+           on go { m = xs.get(k).Value }\n\
+           out o = m\n\
+         }\n\
+         in go: exec\nin k: string\nlet c = C(go, M, k)\nout r: int = c",
+    );
+    assert_eq!(nodes_of(&r.module, crate::ir::gate_class::MAP_VAR).len(), 1);
+    assert_eq!(nodes_of(&r.module, crate::ir::gate_class::MAP_GET).len(), 1);
+}
+
+/// An array literal passed to a chip container parameter gets the same
+/// immutable runtime form a `const` table does.
+#[test]
+fn an_array_literal_passed_to_a_chip_container_param_materializes() {
+    let r = lowers_clean(
+        "chip C(go: exec, xs: int[], i: int) -> (o: int) {\n\
+           var m: int = 0\n\
+           on go { m = xs[i] }\n\
+           out o = m\n\
+         }\n\
+         in go: exec\nin i: int\nlet c = C(go, [10, 20, 30], i)\nout r: int = c",
+    );
+    assert_eq!(baked_arrays(&r), vec![ints(&[10, 20, 30])]);
+}
+
+/// A chip body that mutates its container parameter cannot take a const
+/// container, whichever order the calls come in: the cached body built for a
+/// `var` argument must not let a later const argument through.
+#[test]
+fn a_chip_that_mutates_its_container_param_rejects_a_const_argument() {
+    const CHIP: &str = "chip Wipe(go: exec, xs: int[]) {\n  on go { xs.clear() }\n}\n\
+                        chip Put(go: exec, xs: Map<string, int>) {\n  on go { xs.set(\"a\", 1) }\n}\n\
+                        in go: exec\nvar v: int[]\nvar w: Map<string, int>\n\
+                        const T = [10, 20, 30]\nconst M = { \"a\": 5 }\n";
+    let r = compile(&format!("{CHIP}Wipe(go, v)\nPut(go, w)"));
+    assert_no_errors(&r);
+    for calls in [
+        "Wipe(go, T)",
+        "Wipe(go, v)\nWipe(go, T)",
+        "Wipe(go, [1, 2])",
+        "Put(go, M)",
+        "Put(go, w)\nPut(go, M)",
+    ] {
+        let r = compile(&format!("{CHIP}{calls}"));
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS044" && d.message.contains("would change")),
+            "a chip mutating a const argument must be WS044:\n{calls}\n{:?}",
+            r.diagnostics
+        );
+    }
+}
+
+/// The node wired into `class`'s `ArrayVarRef` input, for every `class` gate.
+fn array_ref_sources(r: &LowerResult, class: &str) -> Vec<crate::ir::NodeId> {
+    let gates: Vec<crate::ir::NodeId> = nodes_of(&r.module, class).iter().map(|n| n.id).collect();
+    let mut wires: Vec<&crate::ir::Wire> = r.module.wires.iter().collect();
+    for chip in r.module.chips.values() {
+        wires.extend(chip.wires.iter());
+    }
+    wires
+        .into_iter()
+        .filter(|w| gates.contains(&w.target.node_id) && w.target.port == WirePort::ArrayVarRef)
+        .map(|w| w.source.node_id)
+        .collect()
+}
+
+fn baked_of(r: &LowerResult, node: crate::ir::NodeId) -> Option<Literal> {
+    nodes_of(&r.module, crate::ir::gate_class::ARRAY_VAR)
+        .into_iter()
+        .find(|n| n.id == node)
+        .and_then(|n| n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned())
+}
+
+/// A constant `let`/`const` shadows an outer binding of the same name (a
+/// `var`, an `in` port, a mod parameter): its reads use its own contents, and
+/// a mutation is the const WS044, never a write to the outer container.
+#[test]
+fn a_constant_container_let_shadows_an_outer_binding() {
+    for src in [
+        "var x: int[] = [1, 2]\nvar m: int = 0\nin go: exec\nin i: int\n\
+         on go {\n  let x = [10, 20, 30]\n  m = x[i]\n}\nout r: int = m",
+        "var x: int[] = [1, 2]\nvar m: int = 0\nin go: exec\nin i: int\n\
+         on go {\n  const x = [10, 20, 30]\n  m = x[i]\n}\nout r: int = m",
+        "const T = [10, 20, 30]\nvar x: int[] = [1, 2]\nvar m: int = 0\nin go: exec\nin i: int\n\
+         on go {\n  let x = T\n  m = x[i]\n}\nout r: int = m",
+        "in go: exec\nin i: int\nvar m: int = 0\nin xs: int[]\n\
+         on go {\n  let xs = [10, 20, 30]\n  m = xs[i]\n}\nout o: int = m",
+        "var m: int = 0\nin go: exec\nin i: int\n\
+         mod f(x: int[]) -> int {\n  let x = [10, 20, 30]\n  return x[i]\n}\n\
+         var v: int[] = [1, 2]\non go { m = f(v) }\nout r: int = m",
+    ] {
+        let r = lowers_clean(src);
+        let sources = array_ref_sources(&r, crate::ir::gate_class::ARRAY_GET);
+        assert_eq!(sources.len(), 1, "{src}");
+        assert_eq!(baked_of(&r, sources[0]), ints(&[10, 20, 30]), "the read must use the shadowing constant:\n{src}");
+    }
+    let r = compile(
+        "var x: int[] = [1, 2]\nin go: exec\non go {\n  let x = [10, 20, 30]\n  x.push(4)\n}",
+    );
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS044" && d.message.contains("would change")),
+        "{:?}",
+        r.diagnostics
+    );
+}
+
+/// A chip cannot mutate a constant through a `*T[]` parameter or through an
+/// alias chosen by an `if`, as the inline-mod path already refuses.
+#[test]
+fn a_chip_cannot_mutate_a_constant_through_a_ref_param_or_a_select_alias() {
+    for src in [
+        "const T = [10, 20, 30]\nchip P(go: exec, xs: *int[]) { on go { xs.push(1) } }\nin go: exec\nP(go, T)",
+        "const T = [10, 20, 30]\nchip P(go: exec, xs: *int[]) { on go { xs.push(1) } }\nin go: exec\nP(go, &T)",
+        "const T = [10, 20, 30]\nvar v: int[]\nin c: bool\n\
+         chip P(go: exec, xs: int[]) { on go { xs.push(1) } }\nin go: exec\n\
+         on go {\n  let x = if c then v else T\n  P(go, x)\n}",
+    ] {
+        let r = compile(src);
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS044" && d.message.contains("would change")),
+            "{src}\n{:?}",
+            r.diagnostics
+        );
+    }
+}
+
+/// Storing a constant container's ref where it can be read back and changed
+/// (an array or map element, a ref var, an output port, event data) is WS044.
+#[test]
+fn storing_a_constant_containers_ref_is_ws044() {
+    for src in [
+        "const T = [10, 20, 30]\nvar rows: int[][]\nin go: exec\non go { rows.push(T) }",
+        "const T = [10, 20, 30]\nvar ms: Map<string, int[]>\nin go: exec\non go { ms.set(\"a\", T) }",
+        "const T = [10, 20, 30]\nin go: exec\nvar h: *int[]\non go { h = &T }",
+        "var h: *int[]\nin go: exec\non go {\n  let x = [10, 20, 30]\n  h = &x\n}",
+        "const T = [10, 20, 30]\nout o: int[] = T",
+        "const T = [10, 20, 30]\nin go: exec\non go { SendGlobalCustomEvent(\"c\", T) }",
+        "const T = [10, 20, 30]\nchip C() -> (o: int[]) { out o = T }\nout r: int[] = C()",
+    ] {
+        let r = compile(src);
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS044" && d.message.contains("reference to a constant")),
+            "{src}\n{:?}",
+            r.diagnostics
+        );
+    }
+    // A var container stores fine.
+    let r = compile("var v: int[]\nvar rows: int[][]\nin go: exec\non go { rows.push(v) }");
+    assert_no_errors(&r);
+}
+
+/// Whether any diagnostic is the const-mutation or const-store WS044.
+fn const_ws044(r: &LowerResult) -> bool {
+    r.diagnostics.iter().any(|d| {
+        d.code == "WS044" && (d.message.contains("would change") || d.message.contains("reference to a constant"))
+    })
+}
+
+/// A constant reaching a chip pin by any computed route (here an inline mod's
+/// result) is immutable in the chip, and a buffer holding one keeps it
+/// immutable.
+#[test]
+fn a_constant_stays_immutable_through_a_mod_result_and_a_buffer() {
+    for src in [
+        "const T = [10, 20, 30]\nchip P(go: exec, xs: int[]) { on go { xs.push(1) } }\n\
+         mod pick() -> int[] {\n  return T\n}\nin go: exec\non go { P(go, pick()) }",
+        "const T = [10, 20, 30]\nin go: exec\nbuffer b = &T\non go { b.push(1) }",
+        "const T = [10, 20, 30]\nin go: exec\nbuffer b = T\non go { b.push(1) }",
+    ] {
+        let r = compile(src);
+        assert!(const_ws044(&r), "{src}\n{:?}", r.diagnostics);
+    }
+}
+
+/// An array literal in a storing position is a constant container like any
+/// other: a store of its reference is WS044, never a WSP001 placeholder.
+#[test]
+fn an_array_literal_in_a_storing_position_is_loud() {
+    for src in [
+        "in go: exec\non go { SendGlobalCustomEvent(\"c\", [10, 20, 30]) }",
+        "var rows: int[][]\nin go: exec\non go { rows.push([10, 20, 30]) }",
+        "chip P(go: exec) -> (o: int[]) {\n  return [1, 2]\n}\nin go: exec\nlet q = P(go)",
+        "out o: int[] = [1, 2]",
+        "in n: int\nout o: int[] = [n, 2]",
+    ] {
+        let r = compile(src);
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WSP001"),
+            "{src}\n{:?}",
+            r.diagnostics
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS044"),
+            "{src}\n{:?}",
+            r.diagnostics
+        );
+    }
+    // Read-only uses of a literal still work.
+    let r = lowers_clean("var a: int[]\nin go: exec\non go { a.append([10, 20, 30]) }");
+    assert!(baked_arrays(&r).contains(&ints(&[10, 20, 30])));
+}

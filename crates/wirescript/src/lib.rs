@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod collections;
 pub mod compile;
 pub(crate) mod const_eval;
+pub(crate) mod const_scope;
 pub mod diagnostic;
 pub mod emit;
 pub(crate) mod hash;

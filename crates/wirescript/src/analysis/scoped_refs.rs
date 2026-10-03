@@ -166,6 +166,15 @@ pub(crate) struct Binding {
     /// other binding, including a `TopDecl::Namespace` alias (a different,
     /// already-resolved construct — see `walk_top_decl`).
     pub(crate) import_export: Option<String>,
+    /// For a statement's `var` or `let`: the byte offset its name is visible
+    /// from, the end of the declaration. A read before it, the initializer's
+    /// own included, reads what the name meant there.
+    pub(crate) visible_from: Option<usize>,
+    /// For a declaration of an anonymous chip at the top level (storage, a
+    /// `let` or `const`): the chip. Inside it the declaration is what its
+    /// name means; outside it, a declaration of the name made elsewhere at
+    /// the top level is (see `scope::top`).
+    pub(crate) home: Option<SourceRange>,
 }
 
 /// One value- or type-position identifier *use*, populated by
@@ -208,6 +217,11 @@ pub(crate) struct ScopeModel {
     /// its own initializer/body (e.g. `var x: int = p.field`, whose `var`
     /// binding's coarse range spans the whole statement, `field` included).
     pub(crate) field_name_spans: Vec<SourceRange>,
+    /// What each free name means at the top level (see `scope::top`).
+    pub(crate) top: crate::scope::top::TopNames,
+    /// Each top-level declaration, as the top level is read from it: a
+    /// `mod` or `chip` as a body, anything else as code.
+    pub(crate) top_reads: Vec<crate::scope::top::ReadAt>,
 }
 
 /// The [`SourceRange`] of the `field`-length identifier token that ends
@@ -269,7 +283,20 @@ pub(crate) fn builtin_type_names() -> &'static HashSet<&'static str> {
 /// can bind to a file-scope decl or a block-local that appears later in the
 /// source (forward references) — see [`resolve_uses`].
 pub(crate) fn build_scope_model(script: &Script) -> ScopeModel {
-    let mut model = ScopeModel::default();
+    let top = crate::scope::top::TopNames::of(&script.decls);
+    let top_reads = script
+        .decls
+        .iter()
+        .map(|d| match d {
+            TopDecl::Chip(_) | TopDecl::Fn(_) => crate::scope::top::ReadAt::body(d.range()),
+            // A `var` initializer reads the declaration before the `var`.
+            TopDecl::Var(v) => top
+                .initializer_read(&v.name, &v.range)
+                .unwrap_or_else(|| crate::scope::top::ReadAt::code(d.range())),
+            _ => crate::scope::top::ReadAt::code(d.range()),
+        })
+        .collect();
+    let mut model = ScopeModel { top, top_reads, ..Default::default() };
     let mut walker = Walker { model: &mut model };
     walker.walk_script(script);
     widen_hoisted_out_bindings(script, &mut model);
@@ -431,7 +458,17 @@ impl<'a> Walker<'a> {
             coarse,
             is_shorthand: false,
             import_export: None,
+            visible_from: None,
+            home: None,
         });
+    }
+
+    /// Make the bindings pushed from index `from` on visible only after the
+    /// declaration at `range`.
+    fn visible_after(&mut self, from: usize, range: &SourceRange) {
+        for b in &mut self.model.bindings[from..] {
+            b.visible_from = Some(range.end.offset);
+        }
     }
 
     /// Mark the just-`push`ed binding as a record-destructure shorthand decl
@@ -586,12 +623,7 @@ impl<'a> Walker<'a> {
             }
             TopDecl::Fn(f) => self.register_fn(f),
             TopDecl::Chip(c) => self.register_chip(c, None, true),
-            TopDecl::AnonChip(ac) => {
-                if let Some(e) = &ac.label_expr {
-                    self.walk_expr(e);
-                }
-                self.walk_block(&ac.body);
-            }
+            TopDecl::AnonChip(ac) => self.walk_anon_chip(ac, None, None),
             TopDecl::Event(e) => {
                 self.push(e.name.clone(), RefNs::Value, e.range.clone(), None, "event", true, true);
                 self.walk_expr(&e.source);
@@ -619,8 +651,12 @@ impl<'a> Walker<'a> {
                 }
             }
             TopDecl::Handler(h) => self.register_handler(h),
+            // A top-level `let` is named from its declaration on, as the
+            // compiler reads it; a top-level `var` is declared up front.
             TopDecl::Let(l) => {
+                let from = self.model.bindings.len();
                 self.register_let(l, None, true);
+                self.visible_after(from, &l.range);
                 self.walk_expr(&l.value);
             }
             // Task 18: parser-only stub, same minimal treatment as
@@ -926,6 +962,44 @@ impl<'a> Walker<'a> {
         self.walk_stmts(&block.stmts, block.range.clone());
     }
 
+    /// An anonymous `chip { }` body: its storage is declared in the scope the
+    /// chip shares (`scope`), visible from `visible_from` on (the chip's start
+    /// for a chip in a body, everywhere for one at the top level), whichever
+    /// of its statements reads it.
+    fn walk_anon_chip(&mut self, ac: &AnonChipDecl, scope: Option<SourceRange>, visible_from: Option<usize>) {
+        if let Some(e) = &ac.label_expr {
+            self.walk_expr(e);
+        }
+        for s in &ac.body.stmts {
+            // A chip nested in a top-level one shares the top level too: its
+            // storage is named from the nested chip on, past the outer chip.
+            if let (None, Stmt::AnonChip(nested)) = (&scope, s) {
+                self.walk_anon_chip(nested, None, Some(nested.range.start.offset));
+                continue;
+            }
+            let from = self.model.bindings.len();
+            self.walk_stmt(s, &ac.body.range);
+            if matches!(s, Stmt::Var(_) | Stmt::Buffer(_) | Stmt::Array(_) | Stmt::Map(_))
+                && let Some(b) = self.model.bindings.get_mut(from)
+            {
+                b.home = scope.is_none().then(|| ac.range.clone());
+                b.scope = scope.clone();
+                b.visible_from = visible_from;
+            }
+            // A `let`/`const` of a top-level chip is its declaration too,
+            // named from where it is written.
+            if let (None, Stmt::Let(l)) = (&scope, s) {
+                let names = crate::const_eval::bound_names(&l.binding);
+                for b in &mut self.model.bindings[from..] {
+                    if b.ns == RefNs::Value && b.scope.as_ref() == Some(&ac.body.range) && names.contains(&b.name) {
+                        b.home = Some(ac.range.clone());
+                        b.scope = None;
+                    }
+                }
+            }
+        }
+    }
+
     fn walk_stmts(&mut self, stmts: &[Stmt], scope: SourceRange) {
         for s in stmts {
             self.walk_stmt(s, &scope);
@@ -936,6 +1010,7 @@ impl<'a> Walker<'a> {
         match s {
             Stmt::Var(v) => {
                 self.push(v.name.clone(), RefNs::Value, v.range.clone(), Some(scope.clone()), "var", false, true);
+                self.visible_after(self.model.bindings.len() - 1, &v.range);
                 if let Some(t) = &v.typ {
                     self.walk_type_expr(t);
                 }
@@ -969,7 +1044,9 @@ impl<'a> Walker<'a> {
                 }
             }
             Stmt::Let(l) => {
+                let from = self.model.bindings.len();
                 self.register_let(l, Some(scope.clone()), false);
+                self.visible_after(from, &l.range);
                 self.walk_expr(&l.value);
             }
             // Task 18: parser-only stub, block-scoped like `Stmt::Let` above.
@@ -998,12 +1075,7 @@ impl<'a> Walker<'a> {
                 }
             }
             Stmt::Handler(h) => self.register_handler(h),
-            Stmt::AnonChip(ac) => {
-                if let Some(e) = &ac.label_expr {
-                    self.walk_expr(e);
-                }
-                self.walk_block(&ac.body);
-            }
+            Stmt::AnonChip(ac) => self.walk_anon_chip(ac, Some(scope.clone()), Some(ac.range.start.offset)),
             Stmt::ChipDecl(c) => self.register_chip(c, Some(scope.clone()), false),
             Stmt::If(i) => self.walk_if(&i.cond, &i.then_block, &i.else_block),
             Stmt::IfLet(i) => {
@@ -1408,7 +1480,7 @@ fn range_len(r: &SourceRange) -> usize {
 /// use whose name matches nothing in its namespace (a builtin type name, an
 /// undefined global) is left `resolved: None` — not a rename target.
 fn resolve_uses(model: &mut ScopeModel) {
-    let ScopeModel { bindings, uses, .. } = model;
+    let ScopeModel { bindings, uses, top, top_reads, .. } = model;
     for u in uses.iter_mut() {
         // A type use naming a builtin (`character`, `int`, `Map`, …) never
         // resolves to a user binding, even if one happens to share the name
@@ -1423,8 +1495,32 @@ fn resolve_uses(model: &mut ScopeModel) {
         // `current` tracks the winning binding id plus its scope's byte span
         // (`None` = file scope, which loses to any local match).
         let mut current: Option<(usize, Option<usize>)> = None;
+        // Between two file-scope bindings, the one the compiler's rule names
+        // (`scope::top`): the declaration of the chip around the use, else
+        // the top level's, else a chip's.
+        let home = top.resolve_name(&u.name, &u.range);
+        let home_rank = |b: &Binding| match (&b.home, home) {
+            (Some(h), crate::scope::top::Home::Chip(c)) if *h == c.range => 0,
+            (None, crate::scope::top::Home::Top) => 0,
+            (None, _) => 1,
+            (Some(_), _) => 2,
+        };
+        // The top-level declaration the use is written in, as the top level is
+        // read from it: a `mod` or `chip` as a body, which names a top-level
+        // `let` declared below it, anything else as code.
+        let read = top_reads
+            .iter()
+            .find(|r| crate::scope::top::within(&r.range, &u.range))
+            .cloned()
+            .unwrap_or_else(|| crate::scope::top::ReadAt::code(&u.range));
         for b in bindings.iter() {
             if b.ns != u.ns || b.name != u.name {
+                continue;
+            }
+            let hoisted = read.body && b.scope.is_none() && b.home.is_none();
+            if !hoisted
+                && b.visible_from.is_some_and(|at| b.name_range.file == u.range.file && u.range.start.offset < at)
+            {
                 continue;
             }
             let scope_len = match &b.scope {
@@ -1441,11 +1537,27 @@ fn resolve_uses(model: &mut ScopeModel) {
                 (Some((_, None)), Some(_)) => true,
                 (Some((_, Some(_))), None) => false,
                 (Some((_, Some(cur_len))), Some(new_len)) => new_len < *cur_len,
-                (Some((_, None)), None) => false,
+                (Some((cur, None)), None) => home_rank(b) < home_rank(&bindings[*cur]),
             };
             if better {
                 current = Some((b.id, scope_len));
             }
+        }
+        // A name the top level of the file declares more than once names the
+        // declaration visible where the compiler reads it.
+        if let Some((id, None)) = current
+            && bindings[id].home.is_none()
+            && u.ns == RefNs::Value
+            && let Some(Some(seen)) = top.visible_decl(&u.name, &read)
+            && let Some(b) = bindings.iter().find(|b| {
+                b.ns == u.ns
+                    && b.name == u.name
+                    && b.scope.is_none()
+                    && b.home.is_none()
+                    && crate::scope::top::within(&seen.range, &b.name_range)
+            })
+        {
+            current = Some((b.id, None));
         }
         u.resolved = current.map(|(id, _)| id);
     }

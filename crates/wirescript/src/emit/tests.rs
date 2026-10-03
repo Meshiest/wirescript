@@ -922,3 +922,19 @@
         let m = map_from_type(&Type::Map(Box::new(Type::Int), Box::new(Type::Brick)));
         assert_eq!((m.key_type, m.value_type), ("i64", "brick_handle"));
     }
+
+    /// A literal bakes as its own variant whatever the port declares: lowering
+    /// already made an integer literal in a `float` slot a float literal, and
+    /// a builtin's `float`-declared port (`clamp(n, 0, 8)` with `n: int`)
+    /// takes the integer as written.
+    #[test]
+    fn a_literal_bakes_as_its_own_variant() {
+        let floats = crate::ir::GateIO::var_write(Type::Float);
+        assert_eq!(literal_to_wire_value_or_default(&Literal::Int(-2), &floats, "Value"), WireValue::Int(-2));
+        assert_eq!(
+            literal_to_wire_value_or_default(&Literal::Float(-2.0), &floats, "Value"),
+            WireValue::Number(-2.0)
+        );
+        let ints = crate::ir::GateIO::var_write(Type::Int);
+        assert_eq!(literal_to_wire_value_or_default(&Literal::Int(3), &ints, "Value"), WireValue::Int(3));
+    }

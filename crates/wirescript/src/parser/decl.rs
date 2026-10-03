@@ -197,7 +197,7 @@ impl<'a> Parser<'a> {
                         "chip" => {
                             let kw = self.peek().clone();
                             self.error(
-                                "`const chip` is not allowed — use `const mod`, or mark \
+                                "`const chip` is not allowed. Use `const mod`, or mark \
                                  individual parameters `const` (`chip C(name: const \
                                  string, …)`)",
                                 kw.start,
@@ -395,7 +395,7 @@ impl<'a> Parser<'a> {
             ) {
                 self.error(
                     format!(
-                        "unexpected `{}` after output port `{name}` — write `out {name} = <expr>` \
+                        "unexpected `{}` after output port `{name}`. Write `out {name} = <expr>` \
                          to bind a value, or `out {name}` to declare a port driven by `emit`",
                         t.text
                     ),
@@ -595,13 +595,15 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        // `let name: exec` — local exec signal, no value needed
+        // `let name: exec` declares a local exec signal, which needs no value.
+        // A name that is an alias of `exec` declares one too; whether it is
+        // one is known only once types resolve, so typecheck rejects the rest.
         if let Some(TypeExpr::Name {
-            name: ref type_name,
             range: ref type_range,
+            ..
         }) = typ
         {
-            if type_name == "exec" && !self.check(TokenKind::Op, Some("=")) {
+            if !self.check(TokenKind::Op, Some("=")) {
                 let end = type_range.end;
                 self.eat_stmt_end();
                 return TopDecl::Let(LetDecl {
@@ -803,7 +805,7 @@ impl<'a> Parser<'a> {
         // with `var NAME: T[]` (identical storage). Reject, but keep parsing the
         // rest so a stray `array` decl doesn't derail the whole file.
         self.error(
-            "`array` declarations have been removed — declare an array with `var NAME: T[]` instead",
+            "`array` declarations have been removed; declare an array with `var NAME: T[]` instead",
             kw.start,
             kw.end,
         );
@@ -851,7 +853,7 @@ impl<'a> Parser<'a> {
         // The `map` declaration keyword has been removed — maps are declared with
         // `var NAME: Map<K, V>` (identical storage). Reject, but keep parsing.
         self.error(
-            "`map` declarations have been removed — declare a map with `var NAME: Map<K, V>` instead",
+            "`map` declarations have been removed; declare a map with `var NAME: Map<K, V>` instead",
             kw.start,
             kw.end,
         );
@@ -907,7 +909,7 @@ impl<'a> Parser<'a> {
         }
         self.advance(); // consume `<`
         let mut params = Vec::new();
-        while !self.check(TokenKind::Op, Some(">")) && self.peek().kind != TokenKind::Eof {
+        while !self.check_closing_angle() && self.peek().kind != TokenKind::Eof {
             let name_tok = self.expect(TokenKind::Ident, None);
             let mut end = name_tok.end;
             let bound = if self.match_tok(TokenKind::Colon, None).is_some() {
@@ -926,7 +928,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        self.expect(TokenKind::Op, Some(">"));
+        self.expect_closing_angle();
         params
     }
 
@@ -1369,7 +1371,7 @@ impl<'a> Parser<'a> {
         // value. Reject, but keep parsing the rest so a stray `fn` doesn't derail
         // the whole file (mirrors the removed `array`/`map` decl keywords).
         self.error(
-            "`fn` declarations have been removed — use `mod NAME(params) -> T { return <expr> }` instead",
+            "`fn` declarations have been removed; use `mod NAME(params) -> T { return <expr> }` instead",
             kw.start,
             kw.end,
         );

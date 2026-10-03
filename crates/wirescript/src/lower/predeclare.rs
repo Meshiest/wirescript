@@ -25,6 +25,88 @@ pub(super) fn pre_declare_chip_name(ctx: &mut LowerCtx, c: &ChipDecl) {
     }
 }
 
+/// Whether a body declaring its storage before its statements run declares
+/// `name`, the storage `stmts[at]` declares, there. A name the body's frame
+/// already binds (a parameter, or a member of the body's `import * as`
+/// module) is not: the statement declares it where it is written, so the
+/// code before it still reads that binding, as it type-checked. Nor is a
+/// name that means something outside the body (an outer frame's binding, a
+/// constant, an enum or variant, a namespace) when a statement before it, or
+/// its own initializer, reads the name: those read what it meant there.
+pub(super) fn hoists_storage(ctx: &LowerCtx, stmts: &[Stmt], at: usize, name: &str) -> bool {
+    if ctx.scope.get_current(name).is_some() {
+        return false;
+    }
+    let means_something = ctx.scope.get(name).is_some() || ctx.consts.resolved_by_name(name);
+    !means_something
+        || !stmts[..=at].iter().any(|s| crate::ast::walk::mentions(crate::ast::walk::Node::Stmt(s), name))
+}
+
+/// [`hoists_storage`], for the body pre-declare loops: a declaration it
+/// leaves to its statement is recorded, so that statement declares fresh
+/// storage even though the frame already binds the name (see
+/// `LowerCtx::unhoisted`).
+pub(super) fn hoist_or_defer(ctx: &mut LowerCtx, stmts: &[Stmt], at: usize, name: &str, range: &SourceRange) -> bool {
+    let hoists = hoists_storage(ctx, stmts, at, name);
+    if !hoists {
+        ctx.unhoisted.insert((range.file.clone(), range.start.offset));
+    }
+    hoists
+}
+
+/// For each `chip`/`mod` declared anywhere in a statement of `body`, the
+/// storage names `body` declares in its later statements (see
+/// `LowerCtx::decl_later_storage`). Called for a body whose storage is
+/// declared before its statements run, with the body's frame current and
+/// before that storage is declared.
+pub(super) fn record_later_storage(ctx: &mut LowerCtx, body: &Block) {
+    // The declarations anywhere inside a statement, not inside another
+    // declaration's body.
+    fn decls_in<'a>(s: &'a Stmt, out: &mut Vec<&'a ChipDecl>) {
+        use crate::ast::walk::{Ctx, Node, walk};
+        if let Stmt::ChipDecl(c) = s {
+            out.push(c);
+            return;
+        }
+        walk(Node::Stmt(s), Ctx::default(), &mut |n, _| match n {
+            Node::Stmt(Stmt::ChipDecl(c)) => {
+                out.push(c);
+                false
+            }
+            _ => true,
+        });
+    }
+    let frame = ctx.scope.current_id();
+    for (i, s) in body.stmts.iter().enumerate() {
+        let mut decls = Vec::new();
+        decls_in(s, &mut decls);
+        if decls.is_empty() {
+            continue;
+        }
+        let stmts = &body.stmts;
+        let names: Vec<crate::intern::Sym> = (i + 1..stmts.len())
+            .filter_map(|j| match &stmts[j] {
+                Stmt::Var(v) => Some(&v.name).filter(|n| hoists_storage(ctx, stmts, j, n)),
+                Stmt::Array(a) => Some(&a.name).filter(|n| hoists_storage(ctx, stmts, j, n)),
+                Stmt::Map(m) => Some(&m.name).filter(|n| hoists_storage(ctx, stmts, j, n)),
+                Stmt::Buffer(b) => Some(&b.name).filter(|n| hoists_storage(ctx, stmts, j, n)),
+                // A chip body's ports are always declared up front.
+                Stmt::In(p) => Some(&p.name),
+                _ => None,
+            })
+            .map(|n| crate::intern::intern(n))
+            .collect();
+        for c in decls {
+            let at = (c.range.file.clone(), c.range.start.offset);
+            let entry = ctx.decl_later_storage.entry(at).or_default();
+            entry.retain(|(f, _)| *f != frame && ctx.scope.has_frame(*f));
+            if !names.is_empty() {
+                entry.push((frame, names.clone()));
+            }
+        }
+    }
+}
+
 /// Pre-declare a top-level storage/input decl, deduped by source location.
 /// When the same SOURCE declaration was already lowered — reached through
 /// another import of the same file (a plain + `import * as` pair, `import {g}`
@@ -89,7 +171,7 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             )
         }),
         TopDecl::Let(l) => pre_declare_exec_signal(ctx, l),
-        TopDecl::AnonChip(ac) => pre_declare_anon_chip(ctx, ac),
+        TopDecl::AnonChip(ac) => pre_declare_anon_chip(ctx, ac, true),
         _ => {}
     }
 }
@@ -97,22 +179,40 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
 /// Create an anonymous chip's Chip node and register its body's storage
 /// declarations. Callable directly with the `AnonChipDecl` so a statement-level
 /// `chip { }` need not be rewrapped in a cloned `TopDecl` first.
-pub(super) fn pre_declare_anon_chip(ctx: &mut LowerCtx, ac: &AnonChipDecl) {
+/// Create the anonymous chip `ac`'s node and declare its storage. `hoisted`
+/// for a chip at a module's top level, whose storage every statement there
+/// names; one in a body is named from the chip on, so what its storage's
+/// names bound before it is bound again until `lower_anon_chip`.
+pub(super) fn pre_declare_anon_chip(ctx: &mut LowerCtx, ac: &AnonChipDecl, hoisted: bool) {
+    let storage_name = |s: &Stmt| match s {
+        Stmt::Var(VarDecl { name, .. })
+        | Stmt::Buffer(BufferDecl { name, .. })
+        | Stmt::Array(ArrayDecl { name, .. })
+        | Stmt::Map(MapDecl { name, .. }) => Some(name.clone()),
+        _ => None,
+    };
+    let before: Vec<(String, Option<Binding>)> = if hoisted {
+        Vec::new()
+    } else {
+        ac.body.stmts.iter().filter_map(storage_name).map(|n| {
+            let b = ctx.scope.get_current(&n).cloned();
+            (n, b)
+        }).collect()
+    };
     let chip_node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::MICROCHIP_ALT,
         source_range: ac.range.clone(),
         ports: GateIO::default(),
         ..Default::default()
     });
+    let consts = ctx.const_lookup();
     if let Some(node) = ctx.builder.module.nodes.get_mut(&chip_node_id) {
         node.kind = NodeKind::Chip;
         let props = std::sync::Arc::make_mut(&mut node.properties);
         if ac.closed {
             props.insert(*sym::CHIP_CLOSED, Literal::Bool(true));
         }
-        if let Some(label) =
-            resolve_label_text(ac.label.as_deref(), ac.label_expr.as_ref(), &ctx.const_env)
-        {
+        if let Some(label) = resolve_label_text(ac.label.as_deref(), ac.label_expr.as_ref(), &consts) {
             props.insert(*sym::NAME_LABEL, Literal::String(label));
         }
         if let Some(doc) = ctx.doc_comments.get(&crate::parser::doc_key(&ac.range)) {
@@ -169,6 +269,24 @@ pub(super) fn pre_declare_anon_chip(ctx: &mut LowerCtx, ac: &AnonChipDecl) {
             _ => {}
         }
     }
+    // The storage the body declares, for `lower_anon_chip` to bind again.
+    let storage: Vec<(String, Binding)> = ac
+        .body
+        .stmts
+        .iter()
+        .filter_map(storage_name)
+        .filter_map(|n| {
+            let b = ctx.scope.get_current(&n)?.clone();
+            Some((n, b))
+        })
+        .collect();
+    ctx.anon_chip_storage.insert(chip_node_id, storage);
+    for (name, b) in before {
+        match b {
+            Some(b) => ctx.scope.insert(&name, b),
+            None => ctx.scope.remove(&name),
+        };
+    }
     ctx.current_anon_chip = saved;
 }
 
@@ -178,13 +296,13 @@ pub(super) fn pre_declare_anon_chip(ctx: &mut LowerCtx, ac: &AnonChipDecl) {
 /// `emit x` paths into the hub's `ExecA`. Non-`exec` lets are ignored here (they
 /// lower normally in pass 2).
 pub(super) fn pre_declare_exec_signal(ctx: &mut LowerCtx, l: &LetDecl) {
-    let Some(TypeExpr::Name {
+    let Some(te @ TypeExpr::Name {
         name: type_name, ..
     }) = &l.typ
     else {
         return;
     };
-    if type_name != "exec" {
+    if type_name != "exec" && (l.has_initializer() || !crate::lower::call::is_exec_type(ctx, te)) {
         return;
     }
     let LetBinding::Ident { name, .. } = &l.binding else {
@@ -218,21 +336,6 @@ pub(super) fn build_exec_signal_hub(ctx: &mut LowerCtx, name: &str, range: &Sour
     ctx.exec_signal_hubs.insert(key.clone(), hub);
     ctx.exec_signal_keys.insert(hub, key.clone());
     ctx.pending_emits.entry(key).or_default();
-}
-
-/// Resolve a lowering-side type annotation to its `Type`. Delegates to the
-/// crate's single canonical resolver (`types::resolve::resolve_type`); no
-/// generic params or type aliases are in scope on this path (typecheck has
-/// already resolved + flagged anything exotic with WS002), so an empty
-/// params/aliases context is correct and the returned diagnostics are
-/// discarded.
-pub(super) fn type_of_type_expr(t: &TypeExpr) -> Type {
-    let cx = crate::types::resolve::ResolveCtx {
-        params: &[],
-        type_aliases: &crate::collections::HashMap::default(),
-        generic_aliases: &crate::collections::HashMap::default(),
-    };
-    crate::types::resolve::resolve_type(t, &cx, &mut Vec::new())
 }
 
 #[allow(dead_code)]
@@ -296,6 +399,8 @@ pub(crate) fn default_literal_for_var_type(t: &Type) -> Option<Literal> {
 /// instead of restating its value.
 pub type ConstEnv = crate::collections::HashMap<String, Literal>;
 
+use crate::const_scope::Constants;
+
 /// Every `let`/`const` declaration that belongs to the module's TOP-LEVEL
 /// constant scope, in source order.
 ///
@@ -307,17 +412,19 @@ pub type ConstEnv = crate::collections::HashMap<String, Literal>;
 /// `push_scope`). A binding declared directly in such a body is therefore a
 /// top-level binding that happens to be drawn inside a box, and its constant
 /// must live in the same environment as the rest — nothing else ever opens a
-/// `scoped_consts` frame for it, so without this descent an anonymous chip's
+/// frame of constants for it, so without this descent an anonymous chip's
 /// `const` would be recorded NOWHERE and would read back as a runtime value.
 ///
 /// Descends through nested anonymous chips (each shares the same parent scope
 /// in turn) and STOPS at anything that does open a scope of its own — a
 /// handler, a named `chip`/`mod` body, an `if` block. Those already record
-/// their body constants into their own `scoped_consts` frame.
+/// their body constants into their own frame.
 /// A `let x: exec` local exec signal (parser-desugared to `= 0`), which must
 /// never be collected as a constant (see the call site in `build_const_env`).
+/// A `let` written with no value is one through an alias of `exec` (any
+/// other type is an error), whatever the alias.
 fn is_exec_signal_let(l: &LetDecl) -> bool {
-    matches!(&l.typ, Some(TypeExpr::Name { name, .. }) if name == "exec")
+    matches!(&l.typ, Some(TypeExpr::Name { name, .. }) if name == "exec") || !l.has_initializer()
 }
 
 fn scope_lets(decls: &[TopDecl]) -> Vec<&LetDecl> {
@@ -330,12 +437,19 @@ fn scope_lets(decls: &[TopDecl]) -> Vec<&LetDecl> {
             }
         }
     }
-    let mut out = Vec::new();
+    // The top level's own declarations first: where a chip declares a name
+    // the top level does too, the module's constant is the top level's, which
+    // is what the name means outside the chip (see `scope::top`).
+    let mut out: Vec<&LetDecl> = decls
+        .iter()
+        .filter_map(|d| match d {
+            TopDecl::Let(l) => Some(l),
+            _ => None,
+        })
+        .collect();
     for d in decls {
-        match d {
-            TopDecl::Let(l) => out.push(l),
-            TopDecl::AnonChip(ac) => walk_block(&ac.body, &mut out),
-            _ => {}
+        if let TopDecl::AnonChip(ac) = d {
+            walk_block(&ac.body, &mut out);
         }
     }
     out
@@ -412,8 +526,41 @@ fn scope_mods(decls: &[TopDecl]) -> HashMap<String, Arc<ChipDecl>> {
 /// typecheck both read a `const` enum value's tag from.
 pub fn build_const_env(
     decls: &[TopDecl],
-    enum_defs: &Arc<crate::collections::HashMap<String, crate::typecheck::enums::EnumDef>>,
+    enum_defs: &Arc<crate::typecheck::enums::EnumRegistry>,
 ) -> ConstEnv {
+    let types = Arc::new(crate::const_eval::DeclaredTypes::for_program(decls, enum_defs));
+    build_const_env_in(decls, enum_defs, &Arc::default(), &types)
+}
+
+/// [`build_const_env`] for a program whose files import each other: a
+/// `const mod` named like a builtin is called only where `imports` says the
+/// calling file can name it.
+pub fn build_const_env_in(
+    decls: &[TopDecl],
+    enum_defs: &Arc<crate::typecheck::enums::EnumRegistry>,
+    imports: &Arc<crate::ast::ImportScope>,
+    types: &Arc<crate::const_eval::DeclaredTypes>,
+) -> ConstEnv {
+    build_const_env_at(decls, enum_defs, imports, types, &Arc::new(crate::scope::top::TopNames::of(decls))).0
+}
+
+/// The constant of each declaration of a name a file declares more than once
+/// at its top level, by the declaration's file, start offset and the name.
+pub(crate) type DupConsts = HashMap<(Arc<str>, usize, String), Literal>;
+
+/// [`build_const_env_in`], with `top` the names of `decls`' top level. A name
+/// a file declares more than once at its top level is read by position (see
+/// [`crate::scope::top::TopNames::visible_decl`]): an initializer reads the
+/// declaration visible where it is written, the module's table holds the last
+/// declaration's constant, and each declaration's constant comes back in the
+/// [`DupConsts`].
+pub(crate) fn build_const_env_at(
+    decls: &[TopDecl],
+    enum_defs: &Arc<crate::typecheck::enums::EnumRegistry>,
+    imports: &Arc<crate::ast::ImportScope>,
+    types: &Arc<crate::const_eval::DeclaredTypes>,
+    top: &Arc<crate::scope::top::TopNames>,
+) -> (ConstEnv, DupConsts) {
     let mods = scope_mods(decls);
     let lookup_mod = move |name: &str| mods.get(name).cloned();
 
@@ -435,7 +582,7 @@ pub fn build_const_env(
     // root const that reads a namespaced member settles.
     for d in decls {
         if let TopDecl::Namespace(ns) = d {
-            for (name, value) in build_const_env(&ns.decls, enum_defs) {
+            for (name, value) in build_const_env_in(&ns.decls, enum_defs, imports, types) {
                 std::sync::Arc::make_mut(&mut env)
                     .entry(format!("{}.{}", ns.name, name))
                     .or_insert(value);
@@ -450,6 +597,14 @@ pub fn build_const_env(
     // later pass. A decl whose initializer does NOT yet evaluate is left
     // unsettled — that is exactly what the fixpoint exists to retry.
     let mut settled = vec![false; lets.len()];
+    // `scope_lets` lists the top level's own `let`s first.
+    let top_lets = decls.iter().filter(|d| matches!(d, TopDecl::Let(_))).count();
+    let dup_names: HashSet<&str> = top.dups().map(|(n, _)| n).collect();
+    let mut dup_consts = DupConsts::default();
+    // What a `const mod` body reads (`ModDups`), rebuilt when `env` or
+    // `dup_consts` changes; counted by `env_rev`.
+    let mut env_rev = 0usize;
+    let mut mod_view: Option<(usize, Arc<crate::const_eval::ModDups>)> = None;
     loop {
         let mut changed = false;
         for (i, l) in lets.iter().enumerate() {
@@ -470,14 +625,33 @@ pub fn build_const_env(
             // the whole (game-derived, growing) enum registry. Scoped so the
             // `ConstCtx` is dropped before `make_mut` runs below.
             let evaluated = {
-                let cx = crate::const_eval::ConstCtx {
-                    consts: env.clone(),
-                    module_consts: env.clone(),
-                    enum_defs: enum_defs.clone(),
-                    lookup_mod: Some(&lookup_mod),
-                };
+                let value = crate::ast::walk::Node::Expr(&l.value);
+                let reads_dup = dup_names.iter().any(|n| crate::ast::walk::mentions(value, n));
+                let seen = if reads_dup { Arc::new(dup_env_at(&env, top, &dup_consts, &l.range)) } else { env.clone() };
+                let mod_dups = (!dup_names.is_empty()).then(|| match &mod_view {
+                    Some((at, view)) if *at == env_rev => view.clone(),
+                    _ => {
+                        let view = Arc::new(crate::const_eval::ModDups::new(
+                            env.clone(),
+                            top.clone(),
+                            Arc::new(dup_consts.clone()),
+                        ));
+                        mod_view = Some((env_rev, view.clone()));
+                        view
+                    }
+                });
+                let cx = crate::const_eval::ConstCtx::new(
+                    crate::const_scope::ConstNames::of(seen),
+                    env.clone(),
+                    Arc::default(),
+                    enum_defs.clone(),
+                    imports.clone(),
+                    types.clone(),
+                    Some(&lookup_mod),
+                )
+                .with_mod_dups(mod_dups);
                 let mut budget = crate::const_eval::Budget::default();
-                crate::const_eval::eval_expr(&l.value, &cx, &mut budget)
+                crate::const_eval::eval_let_value(l, &cx, &mut budget)
             };
             let Ok(lit) = evaluated else {
                 continue; // not constant YET — retry on a later pass
@@ -495,6 +669,12 @@ pub fn build_const_env(
                 continue;
             };
             for (name, value) in pairs {
+                if i < top_lets && top.is_dup(&l.range.file, &name) {
+                    dup_consts.insert((l.range.file.clone(), l.range.start.offset, name), value);
+                    env_rev += 1;
+                    changed = true;
+                    continue;
+                }
                 // FIRST declaration of a name wins: a duplicate must not
                 // overwrite it, or the fixpoint could alternate and never
                 // converge.
@@ -502,20 +682,54 @@ pub fn build_const_env(
                     continue;
                 }
                 std::sync::Arc::make_mut(&mut env).insert(name, value);
+                env_rev += 1;
                 changed = true;
             }
         }
         if !changed {
+            for (name, decls) in top.dups() {
+                let last = decls.last().and_then(|d| dup_consts.get(&dup_key(d, name)));
+                match last {
+                    Some(lit) => std::sync::Arc::make_mut(&mut env).insert(name.to_string(), lit.clone()),
+                    None => std::sync::Arc::make_mut(&mut env).remove(name),
+                };
+            }
             // Sole owner here, so this hands back the table itself.
-            return std::sync::Arc::try_unwrap(env).unwrap_or_else(|env| (*env).clone());
+            return (std::sync::Arc::try_unwrap(env).unwrap_or_else(|env| (*env).clone()), dup_consts);
         }
     }
 }
 
+/// `env` as a read at `at` sees it: each name a file declares more than once
+/// at its top level holds the constant of the declaration visible at `at`
+/// (the last one, read from another file), and is absent when that is no
+/// constant or not settled yet.
+fn dup_env_at(env: &ConstEnv, top: &crate::scope::top::TopNames, dup_consts: &DupConsts, at: &SourceRange) -> ConstEnv {
+    let mut out = env.clone();
+    for (name, decls) in top.dups() {
+        let decl = if decls[0].range.file == at.file {
+            top.visible_decl(name, &crate::scope::top::ReadAt::code(at)).flatten()
+        } else if top.is_dup(&at.file, name) {
+            continue;
+        } else {
+            decls.last()
+        };
+        match decl.and_then(|d| dup_consts.get(&dup_key(d, name))) {
+            Some(lit) => out.insert(name.to_string(), lit.clone()),
+            None => out.remove(name),
+        };
+    }
+    out
+}
+
+/// The [`DupConsts`] key of `name` declared by `d`.
+pub(crate) fn dup_key(d: &crate::scope::top::TopDup, name: &str) -> (Arc<str>, usize, String) {
+    (d.range.file.clone(), d.range.start.offset, name.to_string())
+}
+
 /// Every TOP-LEVEL name declared with the `const` keyword (`const x = …`),
 /// as opposed to a plain `let` that merely happens to fold — the set
-/// [`TypeCheckCtx::const_declared`](crate::typecheck::TypeCheckCtx)/
-/// `LowerCtx::const_declared` gate the widened `if`-condition elision on
+/// [`crate::const_scope::ConstScope`] gates the widened `if`-condition elision on
 /// (see `Stmt::If`/`lower_if`): the feature's own first design principle is
 /// that a program using no `const` compiles identically to before, so the
 /// generalised const-eval elision may only fire for a condition built
@@ -542,6 +756,65 @@ pub fn build_const_declared_names(decls: &[TopDecl]) -> crate::collections::Hash
         .collect()
 }
 
+/// The names in `env` ([`build_const_env_in`]'s result for `decls`) whose
+/// value is computed through an integer operation the certified fold table
+/// has no result for, directly, in a `const mod` it calls, or through another
+/// such name (see [`crate::const_eval::integer_ops_certified`]). Such a value
+/// is the evaluator's, not the gate's, so a `float` slot is not given it as a
+/// literal. A namespace's members are keyed `Ns.name`, as in `env`.
+pub fn build_const_uncertified(
+    decls: &[TopDecl],
+    enum_defs: &Arc<crate::typecheck::enums::EnumRegistry>,
+    imports: &Arc<crate::ast::ImportScope>,
+    env: &ConstEnv,
+    types: &Arc<crate::const_eval::DeclaredTypes>,
+) -> crate::collections::HashSet<String> {
+    let mut tainted: crate::collections::HashSet<String> = crate::collections::HashSet::default();
+    for d in decls {
+        if let TopDecl::Namespace(ns) = d {
+            let prefix = format!("{}.", ns.name);
+            let own: ConstEnv = env
+                .iter()
+                .filter_map(|(k, v)| k.strip_prefix(&prefix).map(|n| (n.to_string(), v.clone())))
+                .collect();
+            for name in build_const_uncertified(&ns.decls, enum_defs, imports, &own, types) {
+                tainted.insert(format!("{prefix}{name}"));
+            }
+        }
+    }
+    let mods = scope_mods(decls);
+    let lookup_mod = move |name: &str| mods.get(name).cloned();
+    let lets = scope_lets(decls);
+    loop {
+        let certified: Arc<ConstEnv> =
+            Arc::new(env.iter().filter(|(n, _)| !tainted.contains(*n)).map(|(n, v)| (n.clone(), v.clone())).collect());
+        let cx = crate::const_eval::ConstCtx::new(
+            crate::const_scope::ConstNames::of(certified.clone()),
+            certified,
+            Arc::default(),
+            enum_defs.clone(),
+            imports.clone(),
+            types.clone(),
+            Some(&lookup_mod),
+        );
+        let mut changed = false;
+        for l in &lets {
+            let names: Vec<String> = crate::const_eval::bound_names(&l.binding)
+                .into_iter()
+                .filter(|n| env.contains_key(n) && !tainted.contains(n))
+                .collect();
+            if names.is_empty() || crate::const_eval::integer_ops_certified(&l.value, &cx) {
+                continue;
+            }
+            tainted.extend(names);
+            changed = true;
+        }
+        if !changed {
+            return tainted;
+        }
+    }
+}
+
 /// Resolve an explicit `@label` override to its baked display text: the
 /// string form (`@label("text")`) is used as-is; the expression form
 /// (`@label(expr)`) is const-folded against the script's constant
@@ -549,10 +822,10 @@ pub fn build_const_declared_names(decls: &[TopDecl]) -> crate::collections::Hash
 /// non-constant expression, so a fold failure here just yields no override
 /// (rather than double-reporting the error). `None` means "no override" —
 /// the caller's own default (e.g. the decl's name) applies.
-pub(super) fn resolve_label_text(
+pub(super) fn resolve_label_text<C: Constants + ?Sized>(
     label: Option<&str>,
     label_expr: Option<&Expr>,
-    env: &ConstEnv,
+    env: &C,
 ) -> Option<String> {
     if let Some(s) = label {
         return Some(s.to_string());
@@ -602,7 +875,7 @@ pub(crate) fn eval_const_unop(operator: &str, v: Literal) -> Option<Literal> {
 /// types are not needed to find it. A non-finite float is refused rather than
 /// baked, mirroring the driver guard at `fold/mod.rs`: that keeps float
 /// `x / 0.0` on the `0.0` law below instead of baking `inf`.
-fn certified_binop(operator: &str, l: &Literal, r: &Literal) -> Option<Literal> {
+pub(crate) fn certified_binop(operator: &str, l: &Literal, r: &Literal) -> Option<Literal> {
     let class = crate::catalog::operators::operators()
         .iter()
         .find(|s| s.op == operator)?
@@ -730,25 +1003,25 @@ pub(crate) fn eval_const_binop(operator: &str, l: Literal, r: Literal) -> Option
 /// emitting the `MakeRotation` gate it must. Use [`expr_to_literal_in`] for the
 /// initializer paths, where richer constants are wanted.
 pub fn expr_to_literal(e: &Expr) -> Option<Literal> {
-    expr_to_literal_impl(e, None)
+    expr_to_literal_impl::<ConstEnv>(e, None)
 }
 
 /// [`expr_to_literal`], plus named top-level constants and operators over them —
 /// so an initializer can read `1 << C_FLAG` or `WIDTH * HEIGHT` instead of a
 /// magic number. Only the `var` initializer paths pass an environment;
 /// everywhere else keeps the narrower behaviour above.
-pub fn expr_to_literal_in(e: &Expr, env: &ConstEnv) -> Option<Literal> {
+pub(crate) fn expr_to_literal_in<C: Constants + ?Sized>(e: &Expr, env: &C) -> Option<Literal> {
     expr_to_literal_impl(e, Some(env))
 }
 
 /// `env == None` reproduces the original syntactic folding exactly; `Some`
 /// additionally resolves named constants and evaluates operators.
-fn expr_to_literal_impl(e: &Expr, env: Option<&ConstEnv>) -> Option<Literal> {
+fn expr_to_literal_impl<C: Constants + ?Sized>(e: &Expr, env: Option<&C>) -> Option<Literal> {
     let expr_to_literal = |e: &Expr| expr_to_literal_impl(e, env);
     match e {
         // -- Constant-environment forms: initializers only. --
         // With no environment these fall through to `_ => None`.
-        Expr::Ident { name, .. } => env?.get(name).cloned(),
+        Expr::Ident { name, .. } => env?.constant(name).cloned(),
         Expr::BinOp {
             op, left, right, ..
         } if env.is_some() => eval_const_binop(op, expr_to_literal(left)?, expr_to_literal(right)?),
@@ -813,7 +1086,7 @@ pub(crate) fn fold_constructor(name: &str, args: &[Literal]) -> Option<Literal> 
 
 /// The constructor / reference cases, split out to keep the dispatch above
 /// readable.
-fn expr_to_literal_lit(e: &Expr, env: Option<&ConstEnv>) -> Option<Literal> {
+fn expr_to_literal_lit<C: Constants + ?Sized>(e: &Expr, env: Option<&C>) -> Option<Literal> {
     let expr_to_literal = |e: &Expr| expr_to_literal_impl(e, env);
     match e {
         // Constructor calls on constant numeric args fold to literals, so
@@ -925,9 +1198,9 @@ pub(crate) fn fold_srgb_color(e: &Expr) -> Option<Literal> {
 /// for a gate's `MeshColors: Color[]` data field. Returns `None` (a clean
 /// call-site error) if any element is non-constant or not a `ColorSRGB(..)`,
 /// or the named constant isn't bound to a matching array; spreads never fold.
-pub(crate) fn fold_mesh_colors(e: &Expr, env: &ConstEnv) -> Option<Literal> {
+pub(crate) fn fold_mesh_colors<C: Constants + ?Sized>(e: &Expr, env: &C) -> Option<Literal> {
     if let Expr::Ident { name, .. } = e {
-        return match env.get(name) {
+        return match env.constant(name) {
             Some(lit @ Literal::Array(items))
                 if items.iter().all(|c| matches!(c, Literal::Color { .. })) =>
             {
@@ -973,9 +1246,9 @@ fn is_ammo_override_shape(top: &[Literal]) -> bool {
 /// … ] ]`; the emitter decodes this exact shape. Returns `None` on any
 /// non-constant value, unexpected field, or a named constant that isn't bound
 /// to a matching array.
-pub(crate) fn fold_ammo_override(e: &Expr, env: &ConstEnv) -> Option<Literal> {
+pub(crate) fn fold_ammo_override<C: Constants + ?Sized>(e: &Expr, env: &C) -> Option<Literal> {
     if let Expr::Ident { name, .. } = e {
-        return match env.get(name) {
+        return match env.constant(name) {
             Some(lit @ Literal::Array(top)) if is_ammo_override_shape(top) => Some(lit.clone()),
             _ => None,
         };
@@ -1061,17 +1334,15 @@ fn fold_resource_amount(e: &Expr) -> Option<Literal> {
 /// `wire_map_variant_from_literals` then can't match against the declared
 /// value kind and silently zero-falls-back to `false` — a typechecked
 /// program baking the wrong data.
-fn coerce_literal_to_type(lit: Literal, ty: &Type) -> Literal {
+pub(super) fn coerce_literal_to_type(lit: Literal, ty: &Type) -> Literal {
     match ty {
         Type::Int => match lit {
-            Literal::Int(n) => Literal::Int(n),
-            Literal::Float(f) => Literal::Int(f as i64),
             Literal::Bool(b) => Literal::Int(b as i64),
-            other => other,
+            number => crate::const_eval::number_in_type(number, ty),
         },
         Type::Float => match lit {
             Literal::Float(f) => Literal::Float(f),
-            Literal::Int(n) => Literal::Float(n as f64),
+            Literal::Int(n) => crate::const_eval::number_in_type(Literal::Int(n), ty),
             Literal::Bool(b) => Literal::Float(b as i64 as f64),
             other => other,
         },
@@ -1166,13 +1437,13 @@ fn bake_map_init(
         }
         Err(MapBakeMiss::ObjectKeys) => ctx.warn(
             format!(
-                "'{name}' initializer has object/asset-typed keys, which can't bake as literals — it starts empty; assign entries inside an exec handler"
+                "'{name}' initializer has object/asset-typed keys, which can't bake as literals, so it starts empty; assign entries inside an exec handler"
             ),
             init.as_ref().unwrap().range(),
         ),
         Err(MapBakeMiss::NonConstant) => ctx.warn(
             format!(
-                "'{name}' initializer has non-constant entries — they are dropped here; assign them inside an exec handler"
+                "'{name}' initializer has non-constant entries, which are dropped here; assign them inside an exec handler"
             ),
             init.as_ref().unwrap().range(),
         ),
@@ -1181,7 +1452,7 @@ fn bake_map_init(
 
 /// A `var` initializer that can't bake into the gate as a constant: returns it
 /// for diagnosis. `None` = no initializer, or it bakes fine. Takes the whole
-/// `ctx` (not just `&ctx.const_env`) so the array branch can route through
+/// `ctx` (not just its constants) so the array branch can route through
 /// `array_elem_literal`'s `const_eval` check — otherwise this would disagree
 /// with what `pre_declare_var` actually baked, and warn about an initializer
 /// that baked just fine (e.g. a const-mod call per element).
@@ -1210,9 +1481,19 @@ fn var_init_unbaked<'a>(v: &'a VarDecl, ctx: &LowerCtx) -> Option<&'a Expr> {
         // scalar warning below would be a false positive even when a payload
         // arg doesn't itself fold (the discriminant still bakes).
         e if matches!(ctx.type_of(e), Type::Enum { .. }) => false,
-        e => expr_to_literal_in(e, &ctx.const_env).is_none(),
+        e => {
+            expr_to_literal_in(e, &ctx.const_lookup()).is_none()
+                && const_container_init(ctx, e).is_none()
+                && !constant_record(ctx, e)
+        }
     };
     unbaked.then_some(init)
+}
+
+/// Whether `e` names a constant record (`CP`, `ns.LP`), which bakes field by
+/// field (see `bake_const_record`).
+fn constant_record(ctx: &LowerCtx, e: &Expr) -> bool {
+    matches!(e, Expr::Ident { .. } | Expr::FieldAccess { .. }) && matches!(fold_const(ctx, e), Some(Literal::Record(_)))
 }
 
 /// Whether some field of a record-literal initializer can't bake into its
@@ -1256,7 +1537,11 @@ fn field_init_unbaked(ctx: &LowerCtx, value: &Expr) -> bool {
         }
         Expr::NullLit { .. } => false,
         e if matches!(ctx.type_of(e), Type::Enum { .. }) => false,
-        e => expr_to_literal_in(e, &ctx.const_lookup()).is_none(),
+        e => {
+            expr_to_literal_in(e, &ctx.const_lookup()).is_none()
+                && const_container_init(ctx, e).is_none()
+                && !constant_record(ctx, e)
+        }
     }
 }
 
@@ -1273,24 +1558,24 @@ pub(super) fn warn_unbaked_var_init(ctx: &mut LowerCtx, v: &VarDecl, skip_array_
     if skip_array_inits && matches!(init, Expr::Array { .. }) {
         return;
     }
-    let holds_ref = matches!(v.typ, Some(TypeExpr::Ref { .. }))
+    let holds_ref = v.typ.as_ref().is_some_and(|te| matches!(ctx.declared_shape(None, te), TypeExpr::Ref { .. }))
         || matches!(ctx.type_of(init), Type::Ref(_));
     let msg = if holds_ref {
         format!(
-            "'var {}' holds a ref, and a ref initializer is not baked yet — it is dropped, so \
+            "'var {}' holds a ref, and a ref initializer is not baked yet. It is dropped, so \
              the var starts as a null ref, which halts the exec chain when used; assign the \
              ref inside an exec handler instead",
-            v.name
+            v.shown_name()
         )
     } else if v.is_static {
         format!(
-            "'static var {}' initializer must be a compile-time constant — this value is dropped and the var starts at its type default",
-            v.name
+            "'static var {}' initializer must be a compile-time constant: this value is dropped and the var starts at its type default",
+            v.shown_name()
         )
     } else {
         format!(
-            "'var {}' initializer is not a compile-time constant — outside an exec context it is dropped and the var starts at its type default; assign the value inside an exec handler instead",
-            v.name
+            "'var {}' initializer is not a compile-time constant. Outside an exec context it is dropped and the var starts at its type default; assign the value inside an exec handler instead",
+            v.shown_name()
         )
     };
     ctx.warn(msg, init.range());
@@ -1398,7 +1683,7 @@ fn make_map_var_gate(
 /// Build just the `Pseudo_Var` scalar gate (no scope binding) — the gate half of
 /// [`pre_declare_var`]'s scalar tail, shared with [`record_field_storage`]'s
 /// per-field scalar backing.
-fn make_scalar_var_gate(
+pub(super) fn make_scalar_var_gate(
     ctx: &mut LowerCtx,
     inner_type: &Type,
     properties: HashMap<crate::intern::Sym, Literal>,
@@ -1482,7 +1767,8 @@ fn record_field_storage(
         ctx.diagnostics.push(Diagnostic::error(
             "WS002",
             format!(
-                "record type nests more than {MAX_RECORD_FIELD_DEPTH} levels deep at                  `{label}` - a record alias that names itself has no finite storage layout"
+                "record type nests more than {MAX_RECORD_FIELD_DEPTH} levels deep at \
+                 `{label}`: a record alias that names itself has no finite storage layout"
             ),
             range.clone(),
         ));
@@ -1510,6 +1796,14 @@ fn record_field_storage(
                 ),
             );
         }
+        // A nested record named rather than spelled (`{ i: CI }`) bakes as
+        // `var p: P = CP` does.
+        if kind == VarStorage::Var
+            && let Some(lit @ Literal::Record(_)) =
+                init.filter(|e| !matches!(e, Expr::RecordLit { .. })).and_then(|e| fold_const(ctx, e))
+        {
+            bake_record_var_fields(ctx, &fmap, &lit);
+        }
         return Binding::Record(fmap);
     }
     // An ENUM field is multi-gate exactly as a nested record is: its own
@@ -1527,10 +1821,12 @@ fn record_field_storage(
     if let Some(cols) = enum_container_columns(ctx, field_typ, range).filter(|_| !too_deep) {
         if kind == VarStorage::Var {
             let field_type = ctx.resolve_local_type(field_typ);
-            if let Type::Enum { name: enum_name, args } = &field_type
-                && let Some(def) = ctx.enum_defs.get(enum_name).cloned()
+            if let Type::Enum { args, .. } = &field_type
+                && let Some(def) = ctx.enum_defs.of(&field_type).cloned()
             {
-                let fields = build_enum_fields(ctx, &def, args, &label, None, None, range);
+                // The field's initializer bakes as a top-level enum var's does.
+                let known = init.and_then(|e| static_enum_ctor(ctx, &def, e));
+                let fields = build_enum_fields(ctx, &def, args, &label, known.as_ref(), None, range);
                 return Binding::Record(fields);
             }
         }
@@ -1573,6 +1869,9 @@ fn record_field_storage(
                     if lits.len() == elements.len() {
                         properties.insert(*sym::INITIAL_VALUE, Literal::Array(lits));
                     }
+                } else if let Some(Literal::Array(items)) = init.and_then(|e| const_container_init(ctx, e)) {
+                    let lits = items.into_iter().map(|lit| bake_string_bool(lit, elem)).collect();
+                    properties.insert(*sym::INITIAL_VALUE, Literal::Array(lits));
                 }
                 let node_id = make_array_var_gate(ctx, elem, properties, range);
                 Binding::Var(VarRecord {
@@ -1590,6 +1889,10 @@ fn record_field_storage(
                     && let Ok(pairs) = map_literal_pairs(ctx, entries, k, v)
                 {
                     properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs));
+                } else if let Some(Literal::Map(pairs)) = init.and_then(|e| const_container_init(ctx, e)) {
+                    let coerce =
+                        |(a, b): (Literal, Literal)| (coerce_literal_to_type(a, k), coerce_literal_to_type(b, v));
+                    properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs.into_iter().map(coerce).collect()));
                 }
                 let node_id = make_map_var_gate(ctx, &map_type, properties, range);
                 Binding::Var(VarRecord {
@@ -1670,13 +1973,9 @@ fn container_alias(ctx: &LowerCtx, te: &TypeExpr) -> Option<TypeExpr> {
     let mut cur = te.clone();
     for _ in 0..MAX_RECORD_FIELD_DEPTH {
         let next = match &cur {
-            TypeExpr::Name { name, .. } => ctx.type_aliases.get(name.as_str())?.clone(),
-            TypeExpr::Generic { name, args, .. } if !is_container(&cur) => {
-                crate::types::resolve::instantiate_generic_alias(
-                    name,
-                    args,
-                    &ctx.generic_type_aliases,
-                )?
+            TypeExpr::Name { name, range } => ctx.alias_at(name, range)?.clone(),
+            TypeExpr::Generic { name, args, range } if !is_container(&cur) => {
+                ctx.generic_alias_at(name, args, range)?
             }
             _ => return None,
         };
@@ -1739,14 +2038,19 @@ fn columnar_container_field(
                 })
                 .collect();
             if rows.len() == elements.len() {
-                bake_record_array_columns(ctx, &fmap, &rows);
+                bake_array_rows(ctx, &fmap, &rows);
             }
         }
         Some(Expr::MapLit { entries, .. }) if kind == VarStorage::Map => {
             let pairs: Vec<(&Expr, &Expr)> = entries.iter().map(|en| (&en.key, &en.value)).collect();
             bake_record_map_pairs(ctx, &fmap, &pairs);
         }
-        _ => {}
+        Some(e) => {
+            if let Some(lit) = const_container_init(ctx, e) {
+                bake_constant_columns(ctx, &fmap, lit);
+            }
+        }
+        None => {}
     }
     Some(Binding::Record(fmap))
 }
@@ -1797,7 +2101,7 @@ fn bake_record_array_columns(
             continue;
         };
         match binding {
-            Binding::Record(sub) => bake_record_array_columns(ctx, sub, &cols),
+            Binding::Record(sub) => bake_array_rows(ctx, sub, &cols),
             Binding::Var(v) if v.storage == VarStorage::Array => {
                 let elem = v.inner_type.clone();
                 let node_id = v.node_id;
@@ -1807,6 +2111,45 @@ fn bake_record_array_columns(
                     .map(|l| bake_string_bool(l, &elem))
                     .collect();
                 if lits.len() == cols.len() {
+                    set_initial_value(ctx, node_id, Literal::Array(lits));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Bake constant rows already folded to their columns (an enum value folds to
+/// `__disc` plus its variant's payload columns) into each backing array's
+/// `InitialValue`; a column a row has no value for (another variant's
+/// payload) takes its type's zero.
+fn bake_folded_columns(
+    ctx: &mut LowerCtx,
+    rec: &HashMap<crate::intern::Sym, Binding>,
+    rows: &[Vec<(String, Literal)>],
+) {
+    for (fkey, binding) in rec {
+        let fname = crate::intern::resolve(*fkey);
+        let field = |row: &Vec<(String, Literal)>| row.iter().find(|(n, _)| *n == fname).map(|(_, l)| l.clone());
+        match binding {
+            Binding::Record(sub) => {
+                let sub_rows: Vec<Vec<(String, Literal)>> = rows
+                    .iter()
+                    .map(|r| match field(r) {
+                        Some(Literal::Record(fields)) => fields,
+                        _ => Vec::new(),
+                    })
+                    .collect();
+                bake_folded_columns(ctx, sub, &sub_rows);
+            }
+            Binding::Var(v) if v.storage == VarStorage::Array => {
+                let elem = v.inner_type.clone();
+                let node_id = v.node_id;
+                let lits: Option<Vec<Literal>> = rows
+                    .iter()
+                    .map(|r| field(r).or_else(|| default_literal_for_var_type(&elem)).map(|l| bake_string_bool(l, &elem)))
+                    .collect();
+                if let Some(lits) = lits {
                     set_initial_value(ctx, node_id, Literal::Array(lits));
                 }
             }
@@ -1834,7 +2177,7 @@ fn bake_record_map_pairs(
             continue;
         };
         match binding {
-            Binding::Record(sub) => bake_record_map_pairs(ctx, sub, &cols),
+            Binding::Record(sub) => bake_map_rows(ctx, sub, &cols),
             Binding::Var(v) if v.storage == VarStorage::Map => {
                 let (key_ty, val_ty) = match &v.inner_type {
                     Type::Map(k, vv) => ((**k).clone(), (**vv).clone()),
@@ -1859,6 +2202,147 @@ fn bake_record_map_pairs(
     }
 }
 
+/// A constant map entry: its key, and its value folded to its columns.
+type FoldedEntry = (Literal, Vec<(String, Literal)>);
+
+/// The map twin of [`bake_folded_columns`]: constant entries whose values are
+/// already folded to their columns, baked into each backing map's
+/// `InitialValue` under the entry's key.
+fn bake_folded_map_columns(ctx: &mut LowerCtx, rec: &HashMap<crate::intern::Sym, Binding>, rows: &[FoldedEntry]) {
+    for (fkey, binding) in rec {
+        let fname = crate::intern::resolve(*fkey);
+        let field = |row: &Vec<(String, Literal)>| row.iter().find(|(n, _)| *n == fname).map(|(_, l)| l.clone());
+        match binding {
+            Binding::Record(sub) => {
+                let sub_rows: Vec<FoldedEntry> = rows
+                    .iter()
+                    .map(|(k, r)| match field(r) {
+                        Some(Literal::Record(fields)) => (k.clone(), fields),
+                        _ => (k.clone(), Vec::new()),
+                    })
+                    .collect();
+                bake_folded_map_columns(ctx, sub, &sub_rows);
+            }
+            Binding::Var(v) if v.storage == VarStorage::Map => {
+                let Type::Map(key_ty, val_ty) = &v.inner_type else { continue };
+                let node_id = v.node_id;
+                let pairs: Option<Vec<(Literal, Literal)>> = rows
+                    .iter()
+                    .map(|(k, r)| {
+                        let value = field(r).or_else(|| default_literal_for_var_type(val_ty))?;
+                        Some((coerce_literal_to_type(k.clone(), key_ty), coerce_literal_to_type(value, val_ty)))
+                    })
+                    .collect();
+                if let Some(pairs) = pairs {
+                    set_initial_value(ctx, node_id, Literal::Map(pairs));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Bake constant entries into per-column maps: record literals field by
+/// field, and enum values (`{ "a": Hue.Blue }`) by folding each to its tag and
+/// payload columns.
+fn bake_map_rows(ctx: &mut LowerCtx, rec: &HashMap<crate::intern::Sym, Binding>, entries: &[(&Expr, &Expr)]) {
+    if entries.iter().all(|(_, v)| matches!(v, Expr::RecordLit { .. })) {
+        bake_record_map_pairs(ctx, rec, entries);
+        return;
+    }
+    let folded: Option<Vec<FoldedEntry>> = entries
+        .iter()
+        .map(|(k, v)| match (fold_const(ctx, k), fold_const(ctx, v)) {
+            (Some(k), Some(Literal::Record(fields))) => Some((k, fields)),
+            _ => None,
+        })
+        .collect();
+    if let Some(folded) = folded {
+        bake_folded_map_columns(ctx, rec, &folded);
+    }
+}
+
+/// The value of a container initializer that names a constant rather than
+/// spelling a literal (`var xs: int[] = IS`, `var m: Map<string, int> = M`):
+/// the folded array or map. `None` for a literal, which its own path bakes.
+pub(super) fn const_container_init(ctx: &LowerCtx, init: &Expr) -> Option<Literal> {
+    if matches!(init, Expr::Array { .. } | Expr::MapLit { .. }) {
+        return None;
+    }
+    fold_const(ctx, init).filter(|l| matches!(l, Literal::Array(_) | Literal::Map(_)))
+}
+
+/// Bake a constant record initializer named rather than spelled (`var p: P =
+/// CP`, `CP` a constant record) into the per-field variables bound as `name`,
+/// as a record literal's fields bake: a nested record and an enum field
+/// (its tag and payload slots) field by field, an array or map field whole.
+fn bake_const_record(ctx: &mut LowerCtx, name: &str, init: Option<&Expr>) {
+    let Some(init) = init.filter(|e| !matches!(e, Expr::RecordLit { .. })) else { return };
+    let Some(lit @ Literal::Record(_)) = fold_const(ctx, init) else { return };
+    let Some(Binding::Record(rec)) = ctx.scope.get(name).cloned() else { return };
+    bake_record_var_fields(ctx, &rec, &lit);
+}
+
+fn bake_record_var_fields(ctx: &mut LowerCtx, rec: &HashMap<crate::intern::Sym, Binding>, lit: &Literal) {
+    let Literal::Record(values) = lit else { return };
+    for (field, value) in values {
+        match rec.get(&crate::intern::intern(field)) {
+            Some(Binding::Record(sub)) => bake_record_var_fields(ctx, sub, value),
+            Some(Binding::Var(v)) => {
+                let baked = match (v.storage, value) {
+                    (VarStorage::Array, Literal::Array(items)) => Literal::Array(
+                        items.iter().map(|l| bake_literal_for_type(l.clone(), &v.inner_type)).collect(),
+                    ),
+                    (VarStorage::Map, Literal::Map(pairs)) => match &v.inner_type {
+                        Type::Map(k, t) => {
+                            let coerce = |(a, b): &(Literal, Literal)| {
+                                (coerce_literal_to_type(a.clone(), k), coerce_literal_to_type(b.clone(), t))
+                            };
+                            Literal::Map(pairs.iter().map(coerce).collect())
+                        }
+                        _ => continue,
+                    },
+                    (VarStorage::Var, value) => bake_literal_for_type(value.clone(), &v.inner_type),
+                    _ => continue,
+                };
+                set_initial_value(ctx, v.node_id, baked);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Bake a constant initializer named rather than spelled (see
+/// [`const_container_init`]) into the per-column arrays or maps of the
+/// record or enum container bound as `name`.
+fn bake_const_columns(ctx: &mut LowerCtx, name: &str, init: Option<&Expr>) {
+    let Some(lit) = init.and_then(|e| const_container_init(ctx, e)) else { return };
+    let Some(Binding::Record(rec)) = ctx.scope.get(name).cloned() else { return };
+    bake_constant_columns(ctx, &rec, lit);
+}
+
+/// Bake a constant array or map of records or enums, `lit`, into the
+/// per-column arrays or maps `rec`.
+fn bake_constant_columns(ctx: &mut LowerCtx, rec: &HashMap<crate::intern::Sym, Binding>, lit: Literal) {
+    let row = |l: &Literal| match l {
+        Literal::Record(fields) => Some(fields.clone()),
+        _ => None,
+    };
+    match lit {
+        Literal::Array(rows) => {
+            if let Some(rows) = rows.iter().map(row).collect::<Option<Vec<_>>>() {
+                bake_folded_columns(ctx, rec, &rows);
+            }
+        }
+        Literal::Map(pairs) => {
+            if let Some(rows) = pairs.iter().map(|(k, v)| row(v).map(|r| (k.clone(), r))).collect::<Option<Vec<_>>>() {
+                bake_folded_map_columns(ctx, rec, &rows);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Bake a record ARRAY initializer (`= [{..}, ..]`) into the per-field arrays,
 /// once the `Binding::Record` for `name` already exists. Spreads have no constant
 /// form, so an initializer containing one bakes nothing (starts empty).
@@ -1876,7 +2360,27 @@ fn bake_record_array_init(ctx: &mut LowerCtx, name: &str, elements: &[ArrayElem]
     if rows.len() != elements.len() {
         return;
     }
-    bake_record_array_columns(ctx, &rec, &rows);
+    bake_array_rows(ctx, &rec, &rows);
+}
+
+/// Bake constant rows into per-column arrays: record literals field by field,
+/// and enum values (`[Hue.Red, S.B(3)]`) by folding each to its tag and
+/// payload columns.
+fn bake_array_rows(ctx: &mut LowerCtx, rec: &HashMap<crate::intern::Sym, Binding>, rows: &[&Expr]) {
+    if rows.iter().all(|r| matches!(r, Expr::RecordLit { .. })) {
+        bake_record_array_columns(ctx, rec, rows);
+        return;
+    }
+    let folded: Option<Vec<Vec<(String, Literal)>>> = rows
+        .iter()
+        .map(|r| match fold_const(ctx, r) {
+            Some(Literal::Record(fields)) => Some(fields),
+            _ => None,
+        })
+        .collect();
+    if let Some(folded) = folded {
+        bake_folded_columns(ctx, rec, &folded);
+    }
 }
 
 /// Bake a record MAP initializer (`= { k => {..} }`) into the per-field maps.
@@ -1885,7 +2389,7 @@ fn bake_record_map_init(ctx: &mut LowerCtx, name: &str, entries: &[crate::ast::M
         return;
     };
     let pairs: Vec<(&Expr, &Expr)> = entries.iter().map(|en| (&en.key, &en.value)).collect();
-    bake_record_map_pairs(ctx, &rec, &pairs);
+    bake_map_rows(ctx, &rec, &pairs);
 }
 
 /// Decompose a record-typed storage declaration (`var p: Rec`, `var a: Rec[]`,
@@ -1912,15 +2416,9 @@ pub(super) fn enum_container_columns(
     range: &SourceRange,
 ) -> Option<Vec<crate::ast::RecordTypeField>> {
     use crate::typecheck::enums::Payload;
-    // Keyed off the ANNOTATION, not the resolved `Type`: the enum fast path in
-    // `resolve_local_type` only fires for a bare `TypeExpr::Name`, so the
-    // element of an `S[]` resolves to `Type::Any` and never names its enum.
-    let name = match elem_te {
-        TypeExpr::Name { name, .. } => name,
-        TypeExpr::Generic { name, .. } => name,
-        _ => return None,
-    };
-    let def = ctx.enum_defs.get(name)?;
+    // The element's own annotation, read where it is written (an alias as the
+    // type it names).
+    let def = ctx.enum_defs.of(&ctx.resolve_local_type(elem_te))?;
     let mut cols = vec![crate::ast::RecordTypeField {
         name: "__disc".to_string(),
         typ: TypeExpr::Name {
@@ -2025,13 +2523,12 @@ pub(super) struct StaticEnumCtor {
 /// variant, per [`StaticEnumCtor`]. `None` for anything else (a non-constant
 /// enum-typed expression, a different enum, a plain identifier, ...) - general
 /// enum const-eval is a later task; this is deliberately narrow.
-fn static_enum_ctor(ctx: &LowerCtx, enum_name: &str, e: &Expr) -> Option<StaticEnumCtor> {
-    let def = ctx.enum_defs.get(enum_name)?;
+fn static_enum_ctor(ctx: &LowerCtx, def: &crate::typecheck::enums::EnumDef, e: &Expr) -> Option<StaticEnumCtor> {
+    let enum_name = def.name.as_str();
     // `Enum.Variant` matches `enum_name` - every construction form starts
     // with this same `obj.field` shape (bare for unit, as a call callee for
     // positional, as a VariantCtor path for named).
-    let is_enum_obj =
-        |obj: &Expr| matches!(obj, Expr::Ident { name, .. } if name == enum_name);
+    let is_enum_obj = |obj: &Expr| ctx.enum_head(obj) == Some(enum_name);
     match e {
         Expr::FieldAccess { obj, field: variant, .. } if is_enum_obj(obj) => {
             let vdef = def.variants.iter().find(|v| &v.name == variant)?;
@@ -2160,13 +2657,13 @@ fn static_enum_ctor_from_literal(
 fn declare_enum_container(
     ctx: &mut LowerCtx,
     name: &str,
-    enum_name: &str,
+    enum_ty: &Type,
     args: &[Type],
     label_base: &str,
     init: Option<&Expr>,
     range: &SourceRange,
 ) {
-    let Some(def) = ctx.enum_defs.get(enum_name).cloned() else {
+    let Some(def) = ctx.enum_defs.of(enum_ty).cloned() else {
         // Unknown enum shouldn't happen post-typecheck (or in the isolated
         // resource-estimation `LowerCtx`, which seeds `enum_defs` empty) -
         // fall back to a bare scalar so lowering doesn't panic.
@@ -2182,7 +2679,7 @@ fn declare_enum_container(
         );
         return;
     };
-    let known = init.and_then(|e| static_enum_ctor(ctx, enum_name, e));
+    let known = init.and_then(|e| static_enum_ctor(ctx, &def, e));
     let fields = build_enum_fields(ctx, &def, args, label_base, known.as_ref(), None, range);
     ctx.scope.insert(name, Binding::Record(fields));
 }
@@ -2323,8 +2820,8 @@ fn enum_payload_slot(
     range: &SourceRange,
 ) -> Binding {
     let field_type = resolve_payload_slot_type(ctx, field_typ, type_params, args);
-    if let Type::Enum { name: nested_name, args: nested_args } = &field_type
-        && let Some(nested_def) = ctx.enum_defs.get(nested_name).cloned()
+    if let Type::Enum { args: nested_args, .. } = &field_type
+        && let Some(nested_def) = ctx.enum_defs.of(&field_type).cloned()
     {
         // A nested enum initializer folds to a `Literal::Record` for THIS slot
         // (`Outer.W(Color.Green)` -> `{__disc: Int(1)}`); recover its variant so
@@ -2345,6 +2842,17 @@ fn enum_payload_slot(
         );
         return Binding::Record(fields);
     }
+    // A payload typed by one of the enum's own type parameters (`Opt<P>`'s
+    // `Some(T)`) is laid out as the record or tuple this instantiation binds
+    // it to, field by field, exactly as a payload written `Some(P)` is.
+    let instantiated;
+    let field_typ = match &field_type {
+        Type::Record(_) | Type::Tuple(_) if ctx.record_or_tuple_fields(field_typ).is_none() => {
+            instantiated = super::context::type_expr_of(&field_type, range);
+            &instantiated
+        }
+        _ => field_typ,
+    };
     if let Some(sub_fields) = ctx.record_or_tuple_fields(field_typ) {
         // `init_lit` for a record slot arrives as a `Literal::Record` (the
         // folded `{ a: 7, b: 9 }`), so its per-field values are threaded down
@@ -2427,8 +2935,9 @@ fn enum_payload_slot(
 /// inside a `mod`/`chip` body materializes per inline instance exactly as a
 /// `var` there does.
 ///
-/// Returns `None` — changing nothing — unless `obj` is a bare name that is
-/// `const`-declared, holds an array/map literal, and has NO binding of its own
+/// Returns `None` — changing nothing — unless `obj` is a bare name that is a
+/// constant (a `const`, or a `let` bound to a constant array/map, see
+/// `lower_let_decl`), holds an array/map literal, and has NO binding of its own
 /// yet. That last condition is what keeps a real container of the same name
 /// winning: this can only ever fill a hole, never shadow. An already
 /// materialized name simply returns its existing record.
@@ -2443,14 +2952,21 @@ pub(super) fn materialize_const_container(
         return None;
     };
     if let Some(rec) = ctx.lookup_var(name) {
-        return matches!(rec.storage, VarStorage::Array | VarStorage::Map).then(|| rec.clone());
-    }
-    if ctx.scope.get(name).is_some() {
+        // A gate built further out for another constant of this name (an
+        // importer's, around a namespaced body recording its own module's)
+        // is not this constant's: this one gets a gate of its own.
+        let other = ctx.immutable_containers.contains(&rec.node_id)
+            && ctx.const_container_literal(name).is_some_and(|lit| {
+                ctx.builder.module.nodes.get(&rec.node_id).and_then(|n| n.properties.get(&*sym::INITIAL_VALUE))
+                    != Some(&lit)
+            });
+        if !other {
+            return matches!(rec.storage, VarStorage::Array | VarStorage::Map).then(|| rec.clone());
+        }
+    } else if ctx.scope.get(name).is_some() {
         return None;
     }
     let lit = ctx.const_container_literal(name)?;
-    let mut properties = HashMap::default();
-    properties.insert(*sym::NAME_LABEL, Literal::String(name.clone()));
     // Prefer the type CHECKED for this very read over one re-derived from the
     // literal: typecheck's symbol type is what picked the method signature and
     // the element/value types the call was validated against, so taking any
@@ -2458,6 +2974,191 @@ pub(super) fn materialize_const_container(
     // signature the program was accepted under. The literal is the fallback for
     // a read typecheck recorded nothing for.
     let checked = unwrap_ref(&ctx.type_of(obj));
+    let rec = const_container_gate(ctx, name, lit, checked, range)?;
+    ctx.scope.insert(name, Binding::Var(rec.clone()));
+    Some(rec)
+}
+
+/// A constant container `name` a body records (a namespaced body's module
+/// constant) while a gate further out holds another constant of the name (the
+/// importer's, materialized where the body can see it): every read of `name`
+/// in the body would find that gate first, so the body's own is built and
+/// bound here.
+pub(super) fn own_constant_container(ctx: &mut LowerCtx, name: &str, lit: &Literal, range: &SourceRange) {
+    if matches!(lit, Literal::Array(_) | Literal::Map(_)) && ctx.lookup_var(name).is_some() {
+        materialize_const_container(ctx, &Expr::Ident { name: name.to_string(), range: range.clone() });
+    }
+}
+
+/// A constant `let`/`const` container that SHADOWS a binding of the same name
+/// (a `var`, an `in` port, a parameter, an earlier materialization): it cannot
+/// stay lazy, since every runtime read would find the outer binding first, so
+/// its immutable gate is built and bound here. A no-op for an unbound name.
+pub(super) fn shadow_with_const_container(ctx: &mut LowerCtx, name: &str, lit: Literal, value: &Expr) {
+    if ctx.scope.get(name).is_none() {
+        return;
+    }
+    let checked = unwrap_ref(&ctx.type_of(value));
+    if let Some(rec) = const_container_gate(ctx, name, lit, checked, value.range()) {
+        ctx.scope.insert(name, Binding::Var(rec));
+    }
+}
+
+/// Bind `const` parameter `name`, whose value is `lit` of type `ty`, in the
+/// body's own frame: a record or enum value field by field, always; a scalar
+/// as its literal and an array or map as its immutable container when an
+/// outer binding of that name would otherwise answer a read of it. With no
+/// outer binding a scalar or container read already resolves through the
+/// constant environment, and nothing is bound for it. An array or map field
+/// `body` never reads gets no container.
+pub(super) fn bind_shadowing_const_param(
+    ctx: &mut LowerCtx,
+    name: &str,
+    lit: Literal,
+    ty: Type,
+    range: &SourceRange,
+    body: &crate::ast::Block,
+) {
+    if ctx.scope.get(name).is_none() && !matches!(lit, Literal::Record(_)) {
+        return;
+    }
+    let read = field_reads(body, name);
+    /// A constant value of type `ty` as literal gates: a record (or enum
+    /// value) field by field, an array or map field as its immutable
+    /// container labelled `label` when `read` holds it.
+    fn literal_binding(
+        ctx: &mut LowerCtx,
+        label: &str,
+        lit: Literal,
+        ty: &Type,
+        range: &SourceRange,
+        read: &Option<HashSet<String>>,
+    ) -> Option<Binding> {
+        match lit {
+            Literal::Record(fields) => {
+                let mut out = HashMap::default();
+                for (f, v) in fields {
+                    let fty = match unwrap_ref(ty) {
+                        Type::Record(tf) => tf.iter().find(|(n, _)| *n == f).map(|(_, t)| t.clone()),
+                        _ => None,
+                    };
+                    let fty = fty.unwrap_or(Type::Any);
+                    let path = format!("{label}.{f}");
+                    let unread = read.as_ref().is_some_and(|r| {
+                        !r.iter().any(|w| {
+                            w == &path
+                                || w.strip_prefix(path.as_str()).is_some_and(|rest| rest.starts_with('.'))
+                                || path.strip_prefix(w.as_str()).is_some_and(|rest| rest.starts_with('.'))
+                        })
+                    });
+                    if unread && matches!(v, Literal::Array(_) | Literal::Map(_)) {
+                        continue;
+                    }
+                    let field = literal_binding(ctx, &path, v, &fty, range, read)?;
+                    out.insert(crate::intern::intern(&f), field);
+                }
+                Some(Binding::Record(out))
+            }
+            lit @ (Literal::Array(_) | Literal::Map(_)) => {
+                const_container_gate(ctx, label, lit, unwrap_ref(ty), range).map(Binding::Var)
+            }
+            lit => crate::lower::expr::wire_type_of_literal(&lit).map(|t| {
+                Binding::Local(LocalRecord { port: crate::lower::expr::literal_node_range(ctx, range, t, lit) })
+            }),
+        }
+    }
+    let binding = literal_binding(ctx, name, lit, &ty, range, &read);
+    if let Some(b) = binding {
+        ctx.scope.insert(name, b);
+    }
+}
+
+/// Every field path `body` reads whole off the name `root` (`q.i.s` for
+/// `q.i.s[k]`, `q.i` for `let inner = q.i`, which reads every field below
+/// it), or `None` when it uses `root` other than to read a field of it,
+/// which may read every field.
+fn field_reads(body: &crate::ast::Block, root: &str) -> Option<HashSet<String>> {
+    use crate::ast::walk::{Ctx, Node, walk};
+    fn path(e: &Expr, root: &str) -> Option<String> {
+        match e {
+            Expr::Ident { name, .. } if name == root => Some(name.clone()),
+            Expr::FieldAccess { obj, field, .. } => Some(format!("{}.{field}", path(obj, root)?)),
+            _ => None,
+        }
+    }
+    let mut reads: HashMap<String, (usize, usize)> = HashMap::default();
+    let (mut uses, mut field_uses) = (0usize, 0usize);
+    walk(Node::Block(body), Ctx::default(), &mut |n, _| {
+        if let Node::Expr(e) = n {
+            match e {
+                Expr::Ident { name, .. } if name == root => uses += 1,
+                // A method's receiver (`q.i.f()`) is read whole.
+                Expr::Call { callee, .. } => {
+                    if let Expr::FieldAccess { obj, .. } = callee.as_ref()
+                        && let Some(q) = path(obj, root)
+                    {
+                        reads.entry(q).or_default().0 += 1;
+                    }
+                }
+                Expr::FieldAccess { obj, .. } => {
+                    if let Some(p) = path(e, root) {
+                        reads.entry(p).or_default().0 += 1;
+                        match obj.as_ref() {
+                            Expr::Ident { name, .. } if name == root => field_uses += 1,
+                            inner => {
+                                if let Some(q) = path(inner, root) {
+                                    reads.entry(q).or_default().1 += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
+    });
+    (uses == field_uses).then(|| reads.into_iter().filter(|(_, (all, deeper))| all > deeper).map(|(p, _)| p).collect())
+}
+
+/// An array/map literal ARGUMENT (`C(go, [10, 20, 30])`) as an immutable
+/// container gate, the same form a `const` table gets, bound to no name. `None`
+/// unless `e` is an array/map literal whose value is a compile-time constant.
+pub(super) fn materialize_literal_container(
+    ctx: &mut LowerCtx,
+    e: &Expr,
+    label: &str,
+) -> Option<VarRecord> {
+    let e = &*ctx.with_map_literals(e);
+    if !matches!(e, Expr::Array { .. } | Expr::MapLit { .. }) {
+        return None;
+    }
+    let lit = {
+        let lookup = |n: &str| ctx.resolve_mod(n);
+        let mut budget = crate::const_eval::Budget::default();
+        crate::const_eval::eval_expr(e, &ctx.const_ctx(Some(&lookup)), &mut budget).ok()?
+    };
+    let checked = unwrap_ref(&ctx.type_of(e));
+    // A record/tuple/enum element is several columns, not one gate.
+    let columnar = |t: &Type| matches!(t, Type::Record(_) | Type::Tuple(_) | Type::Enum { .. });
+    if matches!(&checked, Type::Array(t) | Type::Map(_, t) if columnar(t)) {
+        return None;
+    }
+    const_container_gate(ctx, label, lit, checked, e.range())
+}
+
+/// The immutable container gate holding `lit`, labelled `label`: an ArrayVar
+/// or MapVar with the contents baked into `InitialValue`, added to
+/// `ctx.immutable_containers`. `None` for a literal that is not an array/map.
+fn const_container_gate(
+    ctx: &mut LowerCtx,
+    label: &str,
+    lit: Literal,
+    checked: Type,
+    range: &SourceRange,
+) -> Option<VarRecord> {
+    let mut properties = HashMap::default();
+    properties.insert(*sym::NAME_LABEL, Literal::String(label.to_string()));
     match lit {
         Literal::Array(items) => {
             let elem_type = match checked {
@@ -2468,14 +3169,24 @@ pub(super) fn materialize_const_container(
                     .unwrap_or(Type::Any),
             };
             // Element-wise compile-time string → bool, the same `!= ""` law the
-            // `var` paths bake through (see `bake_string_bool`).
+            // `var` paths bake through (see `bake_string_bool`), and an integer
+            // in a `float` table is the float it names.
             let items: Vec<Literal> = items
                 .into_iter()
-                .map(|lit| bake_string_bool(lit, &elem_type))
+                .map(|lit| {
+                    let lit = crate::const_eval::coerce_const_to_type(lit, &elem_type, ctx.consts.types());
+                    bake_string_bool(lit, &elem_type)
+                })
                 .collect();
             properties.insert(*sym::INITIAL_VALUE, Literal::Array(items));
-            let node_id = declare_array_var(ctx, name, elem_type, properties, range);
+            let node_id = make_array_var_gate(ctx, &elem_type, properties, range);
             ctx.immutable_containers.insert(node_id);
+            Some(VarRecord {
+                node_id,
+                inner_type: elem_type,
+                get_node_for_handler: None,
+                storage: VarStorage::Array,
+            })
         }
         Literal::Map(pairs) => {
             let (key_ty, val_ty) = match checked {
@@ -2502,12 +3213,17 @@ pub(super) fn materialize_const_container(
                 .collect();
             properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs));
             let map_type = Type::Map(Box::new(key_ty), Box::new(val_ty));
-            let node_id = declare_map_var(ctx, name, map_type, properties, range);
+            let node_id = make_map_var_gate(ctx, &map_type, properties, range);
             ctx.immutable_containers.insert(node_id);
+            Some(VarRecord {
+                node_id,
+                inner_type: map_type,
+                get_node_for_handler: None,
+                storage: VarStorage::Map,
+            })
         }
-        _ => return None,
+        _ => None,
     }
-    ctx.lookup_var(name).cloned()
 }
 
 /// The VALUE type-expression of a `Map<K, V>` annotation (following an outer
@@ -2524,7 +3240,7 @@ fn map_value_typeexpr(te: Option<&TypeExpr>) -> Option<&TypeExpr> {
 /// The text a `var`'s storage gate is labelled with in-game: its `@label` /
 /// `@label(expr)` when it has one, its source name otherwise.
 fn var_label(ctx: &LowerCtx, d: &VarDecl) -> String {
-    resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
+    resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_lookup())
         .unwrap_or_else(|| d.name.clone())
 }
 
@@ -2533,11 +3249,32 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     let expanded = d.typ.as_ref().and_then(|te| container_alias(ctx, te));
     let typ = expanded.as_ref().or(d.typ.as_ref());
     // `resolve_local_type` monomorphizes a `T` annotation inside a generic mod
-    // body (and is identical to `type_of_type_expr` everywhere else).
+    // body and reads every alias where it is declared.
+    // A gate read holds its first output, in a record's field too.
     let inner_type = typ
         .map(|te| ctx.resolve_local_type(te))
-        .or_else(|| d.init.as_ref().map(|e| ctx.type_of(e)))
+        .or_else(|| d.init.as_ref().and_then(|e| ctx.held_by_var_at(e.range())))
         .unwrap_or(Type::Any);
+    // An unannotated array literal of enums (`var x = [c, d]`) is declared as
+    // `var x: Hue[]` would be.
+    let inferred_enum_array = match (&d.typ, &inner_type) {
+        (None, Type::Array(elem)) => match elem.as_ref() {
+            Type::Enum { name, args } if args.is_empty() => Some(TypeExpr::Array {
+                inner: Box::new(TypeExpr::Name { name: name.clone(), range: d.range.clone() }),
+                range: d.range.clone(),
+            }),
+            _ => None,
+        },
+        _ => None,
+    };
+    let typ = typ.or(inferred_enum_array.as_ref());
+    // An unannotated `var` of a record or tuple (`var r = m.get(k)` on a map
+    // of records) is declared as its type written out would be.
+    let written_out = match (typ, &inner_type) {
+        (None, Type::Record(_) | Type::Tuple(_)) => Some(crate::lower::context::type_expr_of(&inner_type, &d.range)),
+        _ => None,
+    };
+    let typ = typ.or(written_out.as_ref());
 
     // `var foo: T[]` is an array — desugar to an ArrayVar gate so the array
     // methods actually work. A `= [..]` initializer carries its constant
@@ -2566,6 +3303,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
             if let Some(Expr::Array { elements, .. }) = &d.init {
                 bake_record_array_init(ctx, &d.name, elements);
             }
+            bake_const_columns(ctx, &d.name, d.init.as_ref());
             return;
         }
         // `var arr: S[]` for an enum `S`: an enum value spans several wires
@@ -2587,6 +3325,10 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
                 None,
                 &d.range,
             );
+            if let Some(Expr::Array { elements, .. }) = &d.init {
+                bake_record_array_init(ctx, &d.name, elements);
+            }
+            bake_const_columns(ctx, &d.name, d.init.as_ref());
             return;
         }
         let elem_type = elem.as_ref().clone();
@@ -2605,6 +3347,9 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
             if lits.len() == elements.len() {
                 properties.insert(intern_static("InitialValue"), Literal::Array(lits));
             }
+        } else if let Some(Literal::Array(lits)) = d.init.as_ref().and_then(|e| const_container_init(ctx, e)) {
+            let lits = lits.into_iter().map(|lit| bake_string_bool(lit, &elem_type)).collect();
+            properties.insert(intern_static("InitialValue"), Literal::Array(lits));
         }
         declare_array_var(ctx, &d.name, elem_type, properties, &d.range);
         return;
@@ -2635,6 +3380,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
             if let Some(Expr::MapLit { entries, .. }) = &d.init {
                 bake_record_map_init(ctx, &d.name, entries);
             }
+            bake_const_columns(ctx, &d.name, d.init.as_ref());
             return;
         }
         // The map twin of the enum-element array above: one parallel map per
@@ -2653,6 +3399,10 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
                 Some(key_ty),
                 &d.range,
             );
+            if let Some(Expr::MapLit { entries, .. }) = &d.init {
+                bake_record_map_init(ctx, &d.name, entries);
+            }
+            bake_const_columns(ctx, &d.name, d.init.as_ref());
             return;
         }
         let (key_ty, value_ty) = (key_ty.as_ref().clone(), value_ty.as_ref().clone());
@@ -2660,6 +3410,13 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         let label = var_label(ctx, d);
         properties.insert(*sym::NAME_LABEL, Literal::String(label));
         bake_map_init(ctx, &mut properties, &d.name, &d.init, &key_ty, &value_ty);
+        if let Some(Literal::Map(pairs)) = d.init.as_ref().and_then(|e| const_container_init(ctx, e)) {
+            let pairs = pairs
+                .into_iter()
+                .map(|(k, v)| (coerce_literal_to_type(k, &key_ty), coerce_literal_to_type(v, &value_ty)))
+                .collect();
+            properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs));
+        }
         declare_map_var(ctx, &d.name, inner_type, properties, &d.range);
         return;
     }
@@ -2672,10 +3429,10 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     // statically-known constructor initializer (`= Dir.E`) bakes `__disc` (and
     // any literal payload args) into `InitialValue` directly - general enum
     // const-eval is a later task (see `static_enum_ctor`).
-    if let Type::Enum { name: enum_name, args } = &inner_type {
+    if let Type::Enum { args, .. } = &inner_type {
         let label = var_label(ctx, d);
         let args = args.clone();
-        declare_enum_container(ctx, &d.name, enum_name, &args, &label, d.init.as_ref(), &d.range);
+        declare_enum_container(ctx, &d.name, &inner_type, &args, &label, d.init.as_ref(), &d.range);
         return;
     }
 
@@ -2698,6 +3455,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
             None,
             &d.range,
         );
+        bake_const_record(ctx, &d.name, d.init.as_ref());
         return;
     }
 
@@ -2921,12 +3679,12 @@ fn record_input_pins(
             out.insert(crate::intern::intern(&field.name), Binding::Record(inner));
             continue;
         }
-        let ft = type_of_type_expr(&field.typ);
+        let ft = ctx.resolve_local_type(&field.typ);
         let node_id = ctx.add_input(&port_name, ft.clone(), range.clone());
         // Array / Map / ref fields of a record-typed input port bind a
         // container ref-port (see `container_binding`); a scalar field is a
         // plain by-value input.
-        let binding = match super::context::container_binding(&field.typ, &ft) {
+        let binding = match super::context::container_binding(ctx.ref_storage(None, &field.typ), &ft) {
             Some((storage, inner)) => Binding::Var(VarRecord {
                 node_id,
                 inner_type: inner,
@@ -2965,7 +3723,7 @@ pub(super) fn record_output_pins(
             out.insert(crate::intern::intern(&field.name), Binding::Record(inner));
             continue;
         }
-        let ft = type_of_type_expr(&field.typ);
+        let ft = ctx.resolve_local_type(&field.typ);
         let node_id = ctx.add_output(&port_name, ft.clone(), range.clone());
         out.insert(
             crate::intern::intern(&field.name),
@@ -2987,19 +3745,36 @@ pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
         ctx.scope.insert(&d.name, Binding::Record(record_fields));
         return;
     }
-    let t = type_of_type_expr(&d.typ);
+    // A payload-free enum crosses the boundary as one wire, its tag, so the
+    // name binds the enum value whose `__disc` is the port.
+    let unit_enum = unit_enum_port(ctx, &ctx.resolve_local_type(&d.typ));
+    let t = if unit_enum { Type::Int } else { ctx.resolve_local_type(&d.typ) };
     let node_id = ctx.add_input(&d.name, t.clone(), d.range.clone());
     apply_port_side(ctx, node_id, d.side, d.invisible, &d.range);
     if let Some(label) =
-        resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
+        resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_lookup())
     {
         if let Some(node) = ctx.builder.module.nodes.get_mut(&node_id) {
             std::sync::Arc::make_mut(&mut node.properties)
                 .insert(*sym::NAME_LABEL, Literal::String(label));
         }
     }
-    ctx.scope
-        .insert(&d.name, Binding::Input(NodeRecord { node_id, ty: t }));
+    let input = Binding::Input(NodeRecord { node_id, ty: t });
+    if unit_enum {
+        let mut value = HashMap::default();
+        value.insert(crate::intern::intern("__disc"), input);
+        ctx.scope.insert(&d.name, Binding::Record(value));
+        return;
+    }
+    ctx.scope.insert(&d.name, input);
+}
+
+/// Whether a port of type `t` carries a payload-free enum (a built-in game enum
+/// included), which crosses a top-level port as one wire: its tag.
+pub(super) fn unit_enum_port(ctx: &LowerCtx, t: &Type) -> bool {
+    matches!(t, Type::Enum { .. } if ctx.enum_defs.of(t).is_some_and(|d| {
+        d.variants.iter().all(|v| matches!(v.payload, crate::typecheck::enums::Payload::Unit))
+    }))
 }
 
 pub(super) fn pre_declare_output(
@@ -3045,19 +3820,36 @@ pub(super) fn pre_declare_output(
     let t = if let (Some(te), Some(_)) = (typ, value) {
         ctx.resolve_local_type(te).container_ref_as_value()
     } else if let Some(v) = value {
-        ctx.type_of(v).container_ref_as_value()
+        // A port written values of several types is stored as their join.
+        let r = v.range();
+        match ctx.resolutions.untyped_port_types.get(&(r.file.clone(), r.start.offset, r.end.offset)) {
+            Some(joined) => joined.clone(),
+            None => ctx.type_of(v).container_ref_as_value(),
+        }
     } else if let Some(te) = typ {
-        ctx.resolve_local_type(te)
+        if crate::lower::call::is_exec_type(ctx, te) { Type::Exec } else { ctx.resolve_local_type(te) }
     } else {
         Type::Any
     };
+    // A payload-free enum crosses the boundary as one wire, its tag: bound as
+    // an enum value whose `__disc` is the pin, like a record output's fields.
+    if boundary && unit_enum_port(ctx, &t) {
+        let node_id = ctx.add_output(name, Type::Int, range.clone());
+        apply_port_side(ctx, node_id, side, invisible, range);
+        let mut fields = HashMap::default();
+        fields.insert(
+            crate::intern::intern("__disc"),
+            Binding::Output(NodeRecord { node_id, ty: Type::Int }),
+        );
+        ctx.scope.insert(&crate::lower::context::output_scope_key(name), Binding::Record(fields));
+        return;
+    }
     let node_id = ctx.add_output(name, t.clone(), range.clone());
     apply_port_side(ctx, node_id, side, invisible, range);
-    if let Some(label) = resolve_label_text(label, label_expr, &ctx.const_env) {
-        if let Some(node) = ctx.builder.module.nodes.get_mut(&node_id) {
-            std::sync::Arc::make_mut(&mut node.properties)
-                .insert(*sym::NAME_LABEL, Literal::String(label));
-        }
+    if let Some(label) = resolve_label_text(label, label_expr, &ctx.const_lookup())
+        && let Some(node) = ctx.builder.module.nodes.get_mut(&node_id)
+    {
+        std::sync::Arc::make_mut(&mut node.properties).insert(*sym::NAME_LABEL, Literal::String(label));
     }
     ctx.scope.insert(
         &crate::lower::context::output_scope_key(name),
@@ -3082,7 +3874,7 @@ pub(super) fn pre_declare_output(
 /// namespaced module's members.
 pub(super) fn pre_declare_handler_outputs(ctx: &mut LowerCtx, block: &Block, boundary: bool) {
     for o in crate::ast::handler_port_sites(block) {
-        if ctx.lookup_output(&o.name).is_some() {
+        if ctx.scope.get(&crate::lower::context::output_scope_key(&o.name)).is_some() {
             continue;
         }
         ctx.with_nofold(o.no_fold, |ctx| {

@@ -502,3 +502,228 @@ fn folded_const_quat_arg_reaches_named_chip_input() {
          (pin {pin} wire-free)"
     );
 }
+
+const FORMAT_TEXT: &str = "BrickComponentType_Expr_String_FormatText";
+const CHIP_OUT: &str = "BrickComponentType_Internal_MicrochipOutput";
+
+/// The wires feeding `port` on brick `brick_id`.
+fn incoming<'w>(w: &'w brdb::World, brick_id: usize, port: &str) -> Vec<&'w brdb::WireConnection> {
+    w.wires
+        .iter()
+        .filter(|c| c.target.brick_id == brick_id && c.target.port_name.to_string() == port)
+        .collect()
+}
+
+/// Follow the wire feeding `port` on `consumer` back through boundary pins and
+/// rerouters to the brick that produces the value.
+fn traced_source<'w>(w: &'w brdb::World, consumer: &brdb::Brick, port: &str) -> &'w brdb::Brick {
+    let (mut brick_id, mut port) = (consumer.id.expect("consumer brick has an id"), port.to_string());
+    loop {
+        let feeds = incoming(w, brick_id, &port);
+        assert_eq!(
+            feeds.len(),
+            1,
+            "brick {brick_id} port {port} must have exactly one incoming wire; wires: {:?}",
+            w.wires
+        );
+        let source = find_brick(w, feeds[0].source.brick_id);
+        let is_carrier = source
+            .components
+            .iter()
+            .any(|c| component_is(c, CHIP_IN) || component_is(c, CHIP_OUT) || component_is(c, REROUTER));
+        if !is_carrier {
+            return source;
+        }
+        brick_id = feeds[0].source.brick_id;
+        port = "RER_Input".to_string();
+    }
+}
+
+/// A constant a consumer reads: numbers compare as `f64`, so a baked `i64` and
+/// an `f64` of the same value are equal.
+#[derive(Debug, PartialEq)]
+enum Const {
+    Num(f64),
+    Str(String),
+}
+
+impl From<WireValue> for Const {
+    fn from(v: WireValue) -> Self {
+        match v {
+            WireValue::Int(n) => Const::Num(n as f64),
+            WireValue::Number(f) => Const::Num(f),
+            WireValue::Str(s) => Const::Str(s),
+            other => panic!("unexpected constant {other:?}"),
+        }
+    }
+}
+
+/// The constant field `field` of the `component_type` component on `b`: a
+/// wire value, or a native `str` field.
+fn baked_field(b: &brdb::Brick, component_type: &str, field: &str) -> Option<Const> {
+    let schema = brdb::schemas::bricks_components_schema_max();
+    let comp = b.components.iter().find(|c| component_is(c, component_type))?;
+    let fid = schema.intern.get(field)?;
+    let v = comp.as_brdb_struct_prop_value(schema, fid, fid).ok()?;
+    match as_wire_value(v) {
+        Some(w) => Some(w.into()),
+        None => v.as_brdb_str().ok().map(|s| Const::Str(s.to_string())),
+    }
+}
+
+/// The value a constant gate with no wired input produces: a string carrier or
+/// concatenation, or a `MathAdd`/`MathMultiply` of two baked operands (the
+/// unfolded form of a constant expression).
+fn constant_output(w: &brdb::World, b: &brdb::Brick) -> Const {
+    let id = b.id.expect("brick has an id");
+    let class = b
+        .components
+        .iter()
+        .filter_map(|c| c.component_type().map(|t| t.to_string()))
+        .find(|t| t.starts_with("BrickComponentType_Expr_"))
+        .unwrap_or_else(|| panic!("brick {id} is not an expression gate"));
+    for port in ["InputA", "InputB"] {
+        assert!(incoming(w, id, port).is_empty(), "brick {id} {class}.{port} is wired, not constant");
+    }
+    let operand = |field: &str| baked_field(b, &class, field);
+    match class.as_str() {
+        STRING_CONCAT => {
+            let text = |field: &str| match operand(field) {
+                Some(Const::Str(s)) => s,
+                None => String::new(),
+                Some(other) => panic!("{field} holds {other:?}"),
+            };
+            let (a, sep, rest) = (text("InputA"), text("Separator"), text("InputB"));
+            Const::Str(if rest.is_empty() { a } else { format!("{a}{sep}{rest}") })
+        }
+        MATH_ADD | MATH_MULTIPLY => match (operand("InputA"), operand("InputB")) {
+            (Some(Const::Num(a)), Some(Const::Num(b))) => {
+                Const::Num(if class == MATH_ADD { a + b } else { a * b })
+            }
+            other => panic!("brick {id} {class} operands {other:?}"),
+        },
+        _ => panic!("brick {id} {class} is not a constant gate this test evaluates"),
+    }
+}
+
+/// The constant `consumer` reads on `port`: baked into its own data, or
+/// produced by the constant gate its wire traces back to.
+fn port_value(w: &brdb::World, consumer: &brdb::Brick, component_type: &str, port: &str) -> Const {
+    let id = consumer.id.expect("consumer brick has an id");
+    if !incoming(w, id, port).is_empty() {
+        return constant_output(w, traced_source(w, consumer, port));
+    }
+    baked_field(consumer, component_type, port)
+        .unwrap_or_else(|| panic!("brick {id} {component_type}.{port} is neither wired nor baked"))
+}
+
+const MATH_MULTIPLY: &str = "BrickComponentType_Expr_MathMultiply";
+
+/// Every `class` gate whose `input_port` is wired (the gates reading the
+/// runtime input) must read `expected` on `const_port`, with folding on and
+/// off. `count` is how many such gates the program has.
+fn assert_consumers_read(
+    what: &str,
+    src: &str,
+    class: &str,
+    const_port: &str,
+    input_port: &str,
+    expected: Const,
+    count: usize,
+) {
+    for fold_mode in [FoldMode::ForceOn, FoldMode::ForceOff] {
+        let w = world(src, fold_mode);
+        let consumers: Vec<&brdb::Brick> = w
+            .bricks
+            .iter()
+            .chain(w.grids.iter().flat_map(|(_, bricks)| bricks.iter()))
+            .filter(|b| b.components.iter().any(|c| component_is(c, class)))
+            .filter(|b| !incoming(&w, b.id.expect("brick has an id"), input_port).is_empty())
+            .collect();
+        assert_eq!(consumers.len(), count, "{what} ({fold_mode:?}): {class} gates reading the input");
+        for consumer in consumers {
+            assert_eq!(
+                port_value(&w, consumer, class, const_port),
+                expected,
+                "{what} ({fold_mode:?}): {class}.{const_port} must read the constant"
+            );
+        }
+    }
+}
+
+/// A top-level string constant read by the root module and by a named chip:
+/// the chip's reads are wires stored in the chip's module whose source lives
+/// in the root. Folding `"${CUR}${5}"` away left the root with one consumer of
+/// `CUR`, so literal inlining took it for single-use, baked it into that
+/// consumer and deleted it, stranding the chip's wire (a `dropped wire` emit
+/// error). The other two shapes reach the same state without folding: one
+/// root consumer to begin with, or a root consumer that bakes the string into
+/// a native `str` field before folding runs.
+const SHARED_CONST_FOLDED_TO_ONE_USE: &str = "let CUR = \"$\"\n\
+     in n: int\n\
+     chip show(s: int) -> string {\n  return \"${CUR}${s}\"\n}\n\
+     out a = \"${CUR}${n}\"\n\
+     out c = \"${CUR}${5}\"\n\
+     out b = show(n)\n";
+
+const SHARED_CONST_ONE_ROOT_USE: &str = "let CUR = \"$\"\n\
+     in n: int\n\
+     chip show(s: int) -> string {\n  return \"${CUR}${s}\"\n}\n\
+     out a = \"${CUR}${n}\"\n\
+     out b = show(n)\n";
+
+const SHARED_CONST_BAKED_ROOT_USE: &str = "let SEP = \"|\"\n\
+     in n: string\n\
+     chip show(s: string) -> string {\n  return s .. SEP\n}\n\
+     out a = n .. SEP\n\
+     out b = show(n)\n";
+
+#[test]
+fn shared_string_constant_still_reaches_named_chip() {
+    let s = |t: &str| Const::Str(t.to_string());
+    assert_consumers_read(
+        "folded to one root use",
+        SHARED_CONST_FOLDED_TO_ONE_USE,
+        FORMAT_TEXT,
+        "InputA",
+        "InputB",
+        s("$"),
+        2,
+    );
+    assert_consumers_read("one root use", SHARED_CONST_ONE_ROOT_USE, FORMAT_TEXT, "InputA", "InputB", s("$"), 2);
+    assert_consumers_read("baked root use", SHARED_CONST_BAKED_ROOT_USE, STRING_CONCAT, "InputB", "InputA", s("|"), 2);
+}
+
+/// A top-level constant EXPRESSION read by a named chip. Folding turns it into
+/// a `_Literal` in the root, and a literal reaches only its own module's
+/// consumers (emit inlines it; a boundary pin never carries one), so the
+/// chip's gate read its port default (0 or "") unless the chip gets its own
+/// copy.
+#[test]
+fn folded_constant_expression_reaches_named_chip() {
+    let n = Const::Num;
+    // Read by the root and the chip.
+    let k1 = "let K = 3 + 4\nin n: int\nchip show(s: int) -> int {\n  return s + K\n}\n\
+              out a = n + K\nout b = show(n)\n";
+    assert_consumers_read("int", k1, MATH_ADD, "InputB", "InputA", n(7.0), 2);
+    // Two root reads, so the root keeps its literal.
+    let k2 = "let K = 3 + 4\nin n: int\nin m: int\nchip show(s: int) -> int {\n  return s * K\n}\n\
+              out a = n + K\nout c = m - K\nout b = show(n)\n";
+    assert_consumers_read("int, two root reads", k2, MATH_MULTIPLY, "InputB", "InputA", n(7.0), 1);
+    let k3 = "let CUR = \"a\" .. \"b\"\nin n: int\nchip show(s: int) -> string {\n  return \"${CUR}${s}\"\n}\n\
+              out a = \"${CUR}${n}\"\nout b = show(n)\n";
+    assert_consumers_read("string", k3, FORMAT_TEXT, "InputA", "InputB", Const::Str("ab".into()), 2);
+    // A constant built on another constant.
+    let k4 = "let K = 7\nlet J = K * 2\nin n: int\nchip show(s: int) -> int {\n  return s * J\n}\n\
+              out a = n + J\nout b = show(n)\n";
+    assert_consumers_read("chained", k4, MATH_MULTIPLY, "InputB", "InputA", n(14.0), 1);
+    // Read only by the chip.
+    let k6 = "let K = 3 + 4\nin n: int\nchip show(s: int) -> int {\n  return s * K\n}\nout b = show(n)\n";
+    assert_consumers_read("chip only", k6, MATH_MULTIPLY, "InputB", "InputA", n(7.0), 1);
+    let k7 = "const K = 3 + 4\nin n: int\nchip show(s: int) -> int {\n  return s * K\n}\n\
+              out a = n + K\nout b = show(n)\n";
+    assert_consumers_read("const", k7, MATH_MULTIPLY, "InputB", "InputA", n(7.0), 1);
+    let k9 = "let K = 2.5 * 2.0\nin n: float\nchip show(s: float) -> float {\n  return s * K\n}\n\
+              out a = n + K\nout c = n - K\nout b = show(n)\n";
+    assert_consumers_read("float", k9, MATH_MULTIPLY, "InputB", "InputA", n(5.0), 1);
+}

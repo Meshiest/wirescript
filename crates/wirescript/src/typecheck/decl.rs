@@ -6,7 +6,7 @@ use crate::types::mono::unwrap_ref;
 // ---------- decl checking (2nd pass) ----------
 
 /// A type-shaped stand-in for a `const` parameter's real (call-site-only)
-/// value, used solely to seed `scoped_consts` so structural constant checks
+/// value, used solely to seed the body frame's constants so structural constant checks
 /// (WS028 and friends, via `expr_to_literal_in`) see the param as constant
 /// during a mod/chip body's one-time check. Never observed by anything that
 /// cares about the actual value — see the call site in the `TopDecl::Chip`
@@ -54,7 +54,7 @@ fn check_top_level_array_init(
                 ctx.diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
                     code: "WS024".into(),
-                    message: "asset / prefab references can't be inlined into an array initializer — \
+                    message: "asset / prefab references can't be inlined into an array initializer: \
                               they're object references wired in from their own brick. Build the array \
                               with `.push(...)` inside an exec handler instead."
                         .into(),
@@ -79,6 +79,8 @@ fn check_top_level_array_init(
                     ),
                     e.range().clone(),
                 );
+            } else {
+                infer::int_constants_in_slot(ctx, e, elem_ty);
             }
         }
     }
@@ -112,7 +114,7 @@ fn check_top_level_array_init(
 /// message, but it would change a diagnostic code that test asserts, so it's
 /// left as WS003.
 fn fold_array_init_element(ctx: &mut TypeCheckCtx, e: &Expr) -> Option<crate::ir::Literal> {
-    if let Some(lit) = crate::lower::expr_to_literal_in(e, &ctx.const_env) {
+    if let Some(lit) = crate::lower::expr_to_literal_in(e, &ctx.const_lookup()) {
         return Some(lit);
     }
     let evaluated = {
@@ -131,6 +133,7 @@ fn fold_array_init_element(ctx: &mut TypeCheckCtx, e: &Expr) -> Option<crate::ir
                 | R::TupleArityMismatch { .. } => {
                     ctx.emit(err.code(), err.message(), err.range.clone())
                 }
+                R::UnnamedConstMod(_) => {}
                 R::NotConstant(_)
                 | R::NotAConstMod(_)
                 | R::NestedConstModCall(_)
@@ -140,7 +143,7 @@ fn fold_array_init_element(ctx: &mut TypeCheckCtx, e: &Expr) -> Option<crate::ir
                 | R::Refused(_)
                 | R::BudgetExceeded => ctx.emit(
                     "WS003",
-                    "array initializer elements must be constant literals — assign the array inside an exec handler to build it from runtime values",
+                    "array initializer elements must be constant literals; assign the array inside an exec handler to build it from runtime values",
                     e.range().clone(),
                 ),
             }
@@ -207,7 +210,7 @@ fn check_map_entry_side(
     ctx.emit(
         "WS003",
         format!(
-            "map literal {side}: expected {}, got {} — a map literal entry \
+            "map literal {side}: expected {}, got {}. A map literal entry \
              can't be string-formatted; write a matching-type literal",
             crate::analysis::types::type_str(want),
             crate::analysis::types::type_str(got),
@@ -225,8 +228,10 @@ pub(super) fn check_map_literal(
     for MapLitEntry { key, value, .. } in entries {
         let kt = infer::infer(ctx, key);
         check_map_entry_side(ctx, &kt, k, "key", key);
+        infer::int_constants_in_slot(ctx, key, k);
         let vt = infer::infer(ctx, value);
         check_map_entry_side(ctx, &vt, v, "value", value);
+        infer::int_constants_in_slot(ctx, value, v);
     }
 }
 
@@ -268,16 +273,66 @@ pub(super) fn check_const_map_literal(ctx: &mut TypeCheckCtx, entries: &[MapLitE
 /// `infer`, except for the one position `infer`'s map-literal guard would
 /// wrongly reject: `const m = { … }` (see [`check_const_map_literal`]).
 pub(super) fn infer_let_init(ctx: &mut TypeCheckCtx, l: &crate::ast::LetDecl) -> Type {
+    // `let s: T` with no `= value` declares a signal when `T` is `exec`, also
+    // through a `type` alias; any other type needs its value.
+    if !l.has_initializer()
+        && let Some(te @ TypeExpr::Name { name: type_name, .. }) = &l.typ
+    {
+        let before = ctx.diagnostics.len();
+        let resolved = resolve_type_expr(ctx, te);
+        ctx.diagnostics.truncate(before);
+        let name = match &l.binding {
+            LetBinding::Ident { name, .. } => name.as_str(),
+            _ => "x",
+        };
+        if l.is_const {
+            ctx.emit(
+                "WSP001",
+                format!(
+                    "expected '=': `const {name}: {type_name}` needs a value (`const {name}: {type_name} = ..`). \
+                     A `const` is a value known while compiling; a signal is declared with `let {name}: exec`"
+                ),
+                l.range.clone(),
+            );
+            return Type::Any;
+        }
+        if !matches!(resolved, Type::Exec) {
+            ctx.emit(
+                "WSP001",
+                format!(
+                    "expected '=': `let {name}: {type_name}` needs a value (`let {name}: {type_name} = ..`). \
+                     Only a signal, typed `exec` or an alias of it, is declared without one"
+                ),
+                l.range.clone(),
+            );
+            return Type::Any;
+        }
+    }
+    // `let s: exec` declares a new signal; the parser gives the bare form a
+    // placeholder `0` at the declaration's own start. A written initializer
+    // would be dropped, since the new signal fires only on `emit s`.
+    if let (Some(TypeExpr::Name { name: type_name, .. }), LetBinding::Ident { name, .. }) = (&l.typ, &l.binding)
+        && type_name == "exec"
+        && !matches!(&l.value, Expr::IntLit { range, .. } if range.start.offset == l.range.start.offset)
+    {
+        ctx.emit(
+            "WS101",
+            format!(
+                "`let {name}: exec` declares a new signal, which fires only on `emit {name}`, so it \
+                 takes no initializer. To run code when another signal fires, write `on <signal> \
+                 {{ .. }}` with that signal directly, or give it a second name with `let {name} = \
+                 <signal>` (no annotation)."
+            ),
+            l.value.range().clone(),
+        );
+    }
     if l.is_const
         && let Expr::MapLit { entries, range } = &l.value
     {
         let t = check_const_map_literal(ctx, entries);
         // `infer` records every node it types; this replaces one `infer` call,
         // so it owes the same record.
-        ctx.type_of_expr.insert(
-            (range.file.clone(), range.start.offset, range.end.offset),
-            t.clone(),
-        );
+        ctx.record_expr_type(range, &t);
         return t;
     }
     // Expose the let's annotation as the expected-type hint, so a generic enum
@@ -287,18 +342,19 @@ pub(super) fn infer_let_init(ctx: &mut TypeCheckCtx, l: &crate::ast::LetDecl) ->
     // value-vs-type check (`check_let_type_annotation`) re-resolves and owns the
     // authoritative diagnostics, so any this resolution emits is dropped to
     // avoid double-reporting a malformed annotation.
-    let prev = match &l.typ {
-        Some(te) => {
-            let before = ctx.diagnostics.len();
-            let resolved = resolve_type_expr(ctx, te);
-            ctx.diagnostics.truncate(before);
-            Some(ctx.expected_ty.replace(resolved))
-        }
-        None => None,
-    };
+    let annotated = l.typ.as_ref().map(|te| {
+        let before = ctx.diagnostics.len();
+        let resolved = resolve_type_expr(ctx, te);
+        ctx.diagnostics.truncate(before);
+        resolved
+    });
+    let prev = annotated.clone().map(|a| ctx.expected_ty.replace(a));
     let t = infer::infer(ctx, &l.value);
     if let Some(prev) = prev {
         ctx.expected_ty = prev;
+    }
+    if let Some(slot) = &annotated {
+        infer::int_constants_in_slot(ctx, &l.value, slot);
     }
     t
 }
@@ -448,12 +504,22 @@ pub(super) fn check_aggregate_record(ctx: &mut TypeCheckCtx, ty: &Type, range: &
 /// no single reference, so neither it nor a record holding one at any depth can
 /// cross (WS049). Inside a record, an array of ANY enum counts, since a record
 /// variable stores that field as columns.
-pub(super) fn check_port_record(ctx: &mut TypeCheckCtx, name: &str, ty: &Type, range: &SourceRange) {
+///
+/// `boundary` is a top-level `in`/`out` port, where a payload-free enum crosses
+/// as its tag; at a chip parameter or output, and nested in any port type, an
+/// enum does not cross at all.
+pub(super) fn check_port_record(
+    ctx: &mut TypeCheckCtx,
+    name: &str,
+    ty: &Type,
+    range: &SourceRange,
+    boundary: bool,
+) {
     // A payload-free enum array is one column, which a single pin carries.
     let enums = ctx.enum_defs.clone();
     let columnar = |t: &Type| match t {
         Type::Record(_) | Type::Tuple(_) => true,
-        Type::Enum { name, .. } => enums.get(name).is_some_and(|d| {
+        t @ Type::Enum { .. } => enums.of(t).is_some_and(|d| {
             d.variants
                 .iter()
                 .any(|v| !matches!(v.payload, crate::typecheck::enums::Payload::Unit))
@@ -479,6 +545,21 @@ pub(super) fn check_port_record(ctx: &mut TypeCheckCtx, name: &str, ty: &Type, r
             }
             _ => None,
         })
+    }
+    if let Some(en) = enum_crossing(ctx, ty, boundary) {
+        ctx.emit(
+            "WS049",
+            format!(
+                "`{name}` holds an enum value (`{en}`), so it can't cross this port: an enum is \
+                 a tag plus a slot per payload field and a pin carries a single wire. Only a \
+                 top-level `in`/`out` port of an enum with no payloads (a built-in game enum \
+                 included) carries one, as its tag. Pass it to a `mod`, pass a chip a `*{en}` \
+                 (which wires each part), or pass the tag and payload as plain values \
+                 (`.Discriminant`, a `match` result) and build the enum inside"
+            ),
+            range.clone(),
+        );
+        return;
     }
     match unwrap_ref(ty) {
         Type::Array(e) | Type::Map(_, e) if columnar(&e) => ctx.emit(
@@ -541,6 +622,9 @@ fn check_decl_inner(
                     }) => inner.as_ref().clone(),
                     _ => Type::Any,
                 };
+                // A name the top level declares again: the initializer reads
+                // the declaration before this one (see `scope::top`).
+                let mut above = ctx.top_names.initializer_read(&v.name, &v.range).map(|at| ctx.top_view(at));
                 // An array-valued `var` declared at top level (no exec context)
                 // is baked into the gate just like an `array` decl — its elements
                 // must be constant literals.
@@ -571,6 +655,9 @@ fn check_decl_inner(
                     let force_pure = ctx.exec_mode() != ExecMode::Exec;
                     ctx.maybe_pure(force_pure, |ctx| {
                         let t = infer::check_stored_value(ctx, init, &inner);
+                        if let Some(view) = above.take() {
+                            ctx.restore_top_view(view);
+                        }
                         // An unannotated `var x = a.push(5)` adopts the init's
                         // type; reject a void-mutation `Never` here (an annotated
                         // var already mismatches via `check` above).
@@ -582,18 +669,40 @@ fn check_decl_inner(
                         // like buffers do.
                         if v.typ.is_none() && matches!(inner, Type::Any) {
                             // A ref value is what the var holds, not a place to read.
-                            let u = if matches!(t, Type::Ref(_)) { t.clone() } else { unwrap_ref(&t) };
-                            if var_storable(&u) {
+                            let u = match &t {
+                                Type::Ref(_) => t.clone(),
+                                _ => unwrap_ref(&t).held_by_var(),
+                            };
+                            if super::resolve::unannotated_var_holds(&u) {
                                 ctx.scope.set_type(&v.name, Type::Ref(Box::new(u)));
                             }
                         }
                     });
                 }
+                if let Some(view) = above {
+                    ctx.restore_top_view(view);
+                }
             }
+            super::untyped_arrays::declare(ctx, v);
         }
         TopDecl::Buffer(b) => {
+            // An annotated buffer's initializer is checked against the declared
+            // type, so `buffer b: float = 5` buffers the float 5.
+            let declared = match &b.typ {
+                Some(_) => ctx.scope.lookup(&b.name).map(|s| s.ty.clone()),
+                None => None,
+            };
             ctx.in_pure(|ctx| {
-                let t = infer::infer(ctx, &b.init);
+                let before = ctx.diagnostics.len();
+                let t = match &declared {
+                    Some(d) => infer::check(ctx, &b.init, d),
+                    None => infer::infer(ctx, &b.init),
+                };
+                for d in &mut ctx.diagnostics[before..] {
+                    if d.code == "WS003" && d.range == *b.init.range() {
+                        d.message = format!("buffer '{}' initializer: {}", b.name, d.message);
+                    }
+                }
                 if b.typ.is_none() {
                     let unwrapped = unwrap_ref(&t);
                     ctx.scope.set_type(&b.name, unwrapped);
@@ -642,7 +751,7 @@ fn check_decl_inner(
         TopDecl::In(i) => {
             // Registered already; only the port's record shape is checked here.
             if let Some(ty) = ctx.scope.lookup(&i.name).map(|s| s.ty.clone()) {
-                check_port_record(ctx, &i.name, &ty, &i.range);
+                check_port_record(ctx, &i.name, &ty, &i.range, true);
             }
         }
         TopDecl::Out(b) => {
@@ -652,12 +761,12 @@ fn check_decl_inner(
                 let before = ctx.diagnostics.len();
                 let ty = resolve_type_expr(ctx, te);
                 ctx.diagnostics.truncate(before);
-                check_port_record(ctx, &b.name, &ty, &b.range);
+                check_port_record(ctx, &b.name, &ty, &b.range, true);
             }
             if let Some(value) = &b.value {
                 if let Some(te) = &b.typ {
                     let resolved = resolve_type_expr(ctx, te);
-                    check_port_record(ctx, &b.name, &resolved, &b.range);
+                    check_port_record(ctx, &b.name, &resolved, &b.range, true);
                     warn_any_annotation(ctx, &resolved, type_expr_range(te));
                     // When out has ref type and value is a var, override to show "ref" in hover
                     if matches!(resolved, Type::Ref(_))
@@ -692,7 +801,7 @@ fn check_decl_inner(
                     // An unannotated `out y = a.push(5)` would publish a nothing;
                     // reject a void-mutation `Never`.
                     let value_ty = ctx.in_pure(|ctx| infer::infer(ctx, value));
-                    check_port_record(ctx, &b.name, &value_ty, &b.range);
+                    check_port_record(ctx, &b.name, &value_ty, &b.range, true);
                     // A `Never` value has already been reported as producing
                     // nothing, and the port check would say so a second time.
                     if !reject_never_value(ctx, &unwrap_ref(&value_ty), value.range(), &b.name) {
@@ -700,7 +809,8 @@ fn check_decl_inner(
                         // answers to whatever type the port already carries -
                         // an earlier handler-declared `out shared: int` binds
                         // a later `out shared = "x"` here.
-                        check_port_write(ctx, &b.name, &value_ty, value.range());
+                        check_port_write_value(ctx, &b.name, value, &value_ty);
+                        port_write_literals(ctx, &b.name, value);
                     }
                     if let Expr::Ident { name, .. } = value
                         && let Some(sym) = ctx.scope.lookup(name)
@@ -709,13 +819,22 @@ fn check_decl_inner(
                         ctx.diagnostics.push(Diagnostic {
                             severity: Severity::Warning,
                             code: "WS017".into(),
-                            message: format!(
-                                "out '{}' infers type from var '{}' — add explicit type: \
-                                 `out {}: {} = {}` for value, or `out {}: *{} = &{}` for ref",
-                                b.name, name,
-                                b.name, crate::analysis::types::type_str(&unwrap_ref(&sym.ty)), name,
-                                b.name, crate::analysis::types::type_str(&unwrap_ref(&sym.ty)), name,
-                            ),
+                            message: {
+                                let held = unwrap_ref(&sym.ty);
+                                let held_str = crate::analysis::types::type_str(&held);
+                                let o = &b.name;
+                                // A var holding a ref has no ref to itself to
+                                // offer: `**int` is WS086.
+                                let forms = if matches!(held, Type::Ref(_) | Type::Brick) {
+                                    format!("`out {o}: {held_str} = {name}` for the ref it holds")
+                                } else {
+                                    format!(
+                                        "`out {o}: {held_str} = {name}` for the value, or \
+                                         `out {o}: *{held_str} = &{name}` for a ref to it"
+                                    )
+                                };
+                                format!("out '{o}' takes its type from var '{name}'. Add the type: {forms}")
+                            },
                             range: b.range.clone(),
                         });
                     }
@@ -729,55 +848,44 @@ fn check_decl_inner(
             }
             record_single_output_alias(ctx, &l.binding, &l.value);
             record_let_ref_values(ctx, &l.binding, &l.value);
-            bind_let(ctx, &l.binding, &t);
             // Same is_const/let split as the `Stmt::Let` arm (typecheck/stmt.rs):
             // `let` folds opportunistically, `const` must fold or it's an error.
-            // A top-level constant is already recorded in `ctx.const_env` by the
-            // whole-program fixpoint pass (`typecheck()`, run before any decl is
-            // checked) — `scoped_consts` is empty at top level, so the success
-            // arm below is a no-op there; this re-evaluation exists to surface
-            // the WS046/WS047/WS048 a `const` binding failed with.
-            if let LetBinding::Ident { name, .. } = &l.binding {
+            // A top-level constant is already recorded in the module's
+            // constants by the whole-program fixpoint pass (`typecheck()`, run
+            // before any decl is checked), and no frame is open at the top
+            // level, so recording below is a no-op there; this evaluation
+            // exists to surface the WS046/WS047/WS048 a `const` binding failed
+            // with. Inside the frame `TopDecl::Namespace` checks a namespaced
+            // module's members in, every name the binding introduces is
+            // recorded. Evaluated before the binding exists, so the
+            // initializer reads the names around it.
+            let (evaluated, uncertified) = {
                 let lookup = |n: &str| ctx.resolve_mod(n);
                 let mut budget = crate::const_eval::Budget::default();
-                let cx = ctx.const_ctx(Some(&lookup));
-                match crate::const_eval::eval_expr(&l.value, &cx, &mut budget) {
-                    Ok(lit) => {
-                        if let Some(frame) = ctx.scoped_consts.last_mut() {
-                            frame.insert(name.clone(), lit);
-                        }
-                        check_const_recorded(ctx, l);
-                    }
-                    Err(err) if l.is_const => ctx.emit(err.code(), err.message(), err.range.clone()),
-                    Err(_) => {}
-                }
-            } else {
-                // Same as the `Ident` arm above, generalized to every name a
-                // destructuring binding introduces: evaluate the whole
-                // right-hand side once, then split it via `bind_destructured`
-                // (shared with `typecheck::stmt`'s block-scope site and
-                // `const_eval::interp`'s const-mod-body site, so all three
-                // agree on what a given binding form means). Top-level
-                // `scoped_consts` is empty (see this arm's own doc comment
-                // above), so the success path is a no-op here just like the
-                // `Ident` arm's — this exists to surface the WS046/047/048 a
-                // top-level destructuring `const` failed with.
-                let lookup = |n: &str| ctx.resolve_mod(n);
-                let mut budget = crate::const_eval::Budget::default();
-                let cx = ctx.const_ctx(Some(&lookup));
-                let result = crate::const_eval::eval_expr(&l.value, &cx, &mut budget)
+                let evaluated = crate::const_eval::eval_let_value(l, &ctx.const_ctx(Some(&lookup)), &mut budget)
                     .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit));
-                match result {
-                    Ok(pairs) => {
-                        if let Some(frame) = ctx.scoped_consts.last_mut() {
-                            for (name, lit) in pairs {
-                                frame.insert(name, lit);
-                            }
-                        }
-                        check_const_recorded(ctx, l);
+                let certified = evaluated.is_ok()
+                    && crate::const_eval::integer_ops_certified(&l.value, &ctx.certified_const_ctx(Some(&lookup)));
+                (evaluated, !certified)
+            };
+            let bound = let_binding_type(ctx, l, &t);
+            bind_let(ctx, &l.binding, &bound, &l.value);
+            ctx.consts.bound_at_top(&l.range);
+            match evaluated {
+                Ok(pairs) => {
+                    let marks = crate::const_scope::Marks { uncertified, ..Default::default() };
+                    for (name, lit) in pairs {
+                        ctx.consts.record(&name, lit, marks);
                     }
-                    Err(err) if l.is_const => ctx.emit(err.code(), err.message(), err.range.clone()),
-                    Err(_) => {}
+                    check_const_recorded(ctx, l);
+                }
+                Err(err) => {
+                    for name in crate::const_eval::bound_names(&l.binding) {
+                        ctx.consts.forget(&name);
+                    }
+                    if l.is_const && !err.reported_elsewhere() {
+                        ctx.emit(err.code(), err.message(), err.range.clone());
+                    }
                 }
             }
         }
@@ -803,6 +911,14 @@ fn check_decl_inner(
             ctx.in_pure(|ctx| {
                 infer::infer(ctx, &f.body);
             });
+            if let Some(rt) = &f.return_type {
+                // Resolved where the signature is registered, which reports
+                // a malformed one.
+                let before = ctx.diagnostics.len();
+                let rt = resolve_type_expr(ctx, rt);
+                ctx.diagnostics.truncate(before);
+                infer::int_constants_in_slot(ctx, &f.body, &rt);
+            }
             ctx.pop_scope();
         }
         TopDecl::Chip(c) => {
@@ -888,293 +1004,46 @@ fn check_decl_inner(
             // after). Non-generic decls (`combos.len() == 1`) don't move it.
             let saved_active_combos = ctx.active_combos;
             ctx.active_combos = saved_active_combos.saturating_mul(combos.len().max(1));
+            // A call may demand an instantiation the combos below leave out;
+            // it is checked later, in these same surroundings.
+            if !c.type_params.is_empty() {
+                super::instances::capture_env(ctx, c);
+            }
+            // The body being checked, for the storage it uses (WS091).
+            super::shadow::open_body(ctx, c);
+            let mut clean = Vec::with_capacity(combos.len());
             for combo in &combos {
-                // Concatenate onto the ENCLOSING substitution rather than
-                // replacing it: a nested generic decl (`Stmt::ChipDecl`,
-                // body-checked once per outer combo) must key its own body's
-                // resolutions by the outer combo too, or every outer pass
-                // would overwrite the same `(range, combo)` key with the
-                // last-checked outer type. `combo` is empty for a non-generic
-                // decl, so this leaves the key unchanged (inherits whatever
-                // the enclosing decl set, `[]` at the top level).
-                let saved_resolution_subst = std::mem::take(&mut ctx.resolution_subst);
-                ctx.resolution_subst = saved_resolution_subst
-                    .iter()
-                    .cloned()
-                    .chain(combo.iter().cloned())
-                    .collect();
-                ctx.push_scope();
-                // Same registration as the signature pass (register_decl),
-                // but in the body scope: covers annotations inside the body
-                // (e.g. `let x: T = a`). For a generic decl each type param
-                // is bound to THIS combo's concrete mask member (not
-                // `Type::Param` — an operation like `a + 1` must resolve
-                // against a real type); `combo` is empty for a non-generic
-                // decl, so this loop is a no-op there. Scope is popped at
-                // the end of each pass, so params never leak to sibling
-                // decls.
-                for (tp, ty) in c.type_params.iter().zip(combo.iter()) {
-                    ctx.scope.declare(
-                        &tp.name,
-                        SymbolInfo {
-                            kind: SymbolKind::Type,
-                            name: tp.name.clone(),
-                            ty: ty.clone(),
-                            decl_range: tp.range.clone(),
-                            signature: None,
-                            event_data: None,
-                        },
-                    );
-                }
                 let before = ctx.diagnostics.len();
-                for p in &c.inputs {
-                    let pt = resolve_type_expr(ctx, &p.typ);
-                    if !c.inline {
-                        check_port_record(ctx, &p.name, &pt, &p.range);
-                    }
-                    // `name: const T` means "inside the body the parameter
-                    // reads as [a compile-time constant]" (ast.rs's own doc
-                    // comment on `Param::is_const`) — a mod is inlined per
-                    // call site with the real argument value, so any call
-                    // site's actual constant is always literal by the time it
-                    // reaches a config port (see `lower/call/inline.rs`). This
-                    // one-time, non-generic body-check can't know that value,
-                    // so it seeds a type-shaped PLACEHOLDER into the body
-                    // scope's `scoped_consts` frame instead — just enough for
-                    // `expr_to_literal_in`/`ctx.const_lookup()`-based checks
-                    // (e.g. `validate_scalar_config_arg`'s WS028) to see the
-                    // param as "some constant" and accept it structurally.
-                    // Its VALUE must never be used for anything beyond that
-                    // presence check; lowering discards it entirely in favor
-                    // of the real argument. Recording the name in
-                    // `scoped_const_placeholders` alongside is what ENFORCES
-                    // that: the `Stmt::If` const-elision arm evaluates against
-                    // an environment with placeholders removed, so this zero
-                    // can never select a branch (which lowering, holding the
-                    // real argument, would then pick the other way — shipping
-                    // a block this pass never checked).
-                    if p.is_const {
-                        if let Some(frame) = ctx.scoped_consts.last_mut() {
-                            frame.insert(p.name.clone(), const_param_placeholder(&pt));
-                        }
-                        // `name: const T` IS a `const` declaration — mark it
-                        // so `const_lookup_declared_only` sees it (though the
-                        // placeholder removal just below already excludes it
-                        // from the `if`-condition environment either way).
-                        if let Some(frame) = ctx.scoped_const_declared.last_mut() {
-                            frame.insert(p.name.clone());
-                        }
-                        if let Some(frame) = ctx.scoped_const_placeholders.last_mut() {
-                            frame.insert(p.name.clone());
-                        }
-                    }
-                    let kind = if matches!(&p.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }) {
-                        SymbolKind::Var
-                    } else {
-                        SymbolKind::Param
-                    };
-                    // If the param has a destructuring pattern, register the
-                    // synthetic name with the full type, then also register each
-                    // destructured field with its resolved field type.
-                    if let Some(pattern) = &p.pattern {
-                        ctx.scope.declare(
-                            &p.name,
-                            SymbolInfo {
-                                kind: SymbolKind::Param,
-                                name: p.name.clone(),
-                                ty: pt.clone(),
-                                decl_range: p.range.clone(),
-                                signature: None,
-                                event_data: None,
-                            },
-                        );
-                        match pattern {
-                            crate::ast::ParamPattern::Record { fields, .. } => {
-                                let mut consumed: crate::collections::HashSet<&str> =
-                                    crate::collections::HashSet::default();
-                                for field in fields {
-                                    match field {
-                                        crate::ast::RecordDestructField::Named {
-                                            name, alias, ..
-                                        } => {
-                                            let bind_name = alias.as_ref().unwrap_or(name);
-                                            let field_ty = if let Type::Record(rec_fields) = &pt {
-                                                rec_fields
-                                                    .iter()
-                                                    .find(|(k, _)| k == name)
-                                                    .map(|(_, t)| t.clone())
-                                                    .unwrap_or(Type::Any)
-                                            } else {
-                                                Type::Any
-                                            };
-                                            consumed.insert(name.as_str());
-                                            ctx.scope.declare(
-                                                bind_name,
-                                                SymbolInfo {
-                                                    kind: SymbolKind::Param,
-                                                    name: bind_name.clone(),
-                                                    ty: field_ty,
-                                                    decl_range: p.range.clone(),
-                                                    signature: None,
-                                                    event_data: None,
-                                                },
-                                            );
-                                        }
-                                        crate::ast::RecordDestructField::Rest { name, .. } => {
-                                            let rest_ty = if let Type::Record(rec_fields) = &pt {
-                                                Type::Record(
-                                                    rec_fields
-                                                        .iter()
-                                                        .filter(|(k, _)| {
-                                                            !consumed.contains(k.as_str())
-                                                        })
-                                                        .cloned()
-                                                        .collect(),
-                                                )
-                                            } else {
-                                                Type::Any
-                                            };
-                                            ctx.scope.declare(
-                                                name,
-                                                SymbolInfo {
-                                                    kind: SymbolKind::Param,
-                                                    name: name.clone(),
-                                                    ty: rest_ty,
-                                                    decl_range: p.range.clone(),
-                                                    signature: None,
-                                                    event_data: None,
-                                                },
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            crate::ast::ParamPattern::Tuple { names, .. } => {
-                                let field_types = if let Type::Tuple(fs) = &pt {
-                                    fs.clone()
-                                } else {
-                                    vec![]
-                                };
-                                for (i, name) in names.iter().enumerate() {
-                                    let field_ty = field_types.get(i).cloned().unwrap_or(Type::Any);
-                                    ctx.scope.declare(
-                                        name,
-                                        SymbolInfo {
-                                            kind: SymbolKind::Param,
-                                            name: name.clone(),
-                                            ty: field_ty,
-                                            decl_range: p.range.clone(),
-                                            signature: None,
-                                            event_data: None,
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    } else {
-                        ctx.scope.declare(
-                            &p.name,
-                            SymbolInfo {
-                                kind,
-                                name: p.name.clone(),
-                                ty: pt,
-                                decl_range: p.range.clone(),
-                                signature: None,
-                                event_data: None,
-                            },
-                        );
-                    }
-                }
-                // A `...rest` variadic capture is bound once here with arity
-                // unknown (the body is checked a single time; each call site
-                // captures a different tuple). Type it `any` so a `...rest`
-                // spread in the body forwards leniently (an arity-dynamic
-                // spread the callee accepts) and any incidental `rest` use stays
-                // quiet — lowering supplies the real per-call elements.
-                if let Some(rest_name) = &c.rest {
-                    ctx.scope.declare(
-                        rest_name,
-                        SymbolInfo {
-                            kind: SymbolKind::Param,
-                            name: rest_name.clone(),
-                            ty: Type::Any,
-                            decl_range: c.range.clone(),
-                            signature: None,
-                            event_data: None,
-                        },
-                    );
-                }
-                // Push this combo's declared-output frame (nearest wins over
-                // the module frame) so `return`/`emit`/an unannotated `out`
-                // inside the body can be checked against it. Built AFTER the
-                // param binding above so a generic output type (`-> (r: T)`)
-                // resolves against THIS combo's concrete type param bindings,
-                // not a leftover `Type::Param`.
-                //
-                // `resolve_type_expr` emits (e.g. WS002 "unknown type"); these
-                // same output annotations are already resolved+reported by
-                // `register_decl`, so DISCARD this frame build's diagnostics by
-                // truncating back to the pre-build length. The snapshot is taken
-                // AFTER the input-param loop's `before` baseline, so this only
-                // drops the frame build's own diagnostics — the later
-                // `split_off(before)` dedup window (which still starts at
-                // `before`) keeps every real input-param and body diagnostic.
-                let chip_diag_mark = ctx.diagnostics.len();
-                let chip_outs: Vec<EventDataField> = c
-                    .outputs
-                    .iter()
-                    .map(|o| EventDataField {
-                        name: o.name.clone(),
-                        ty: resolve_type_expr(ctx, &o.typ),
-                        is_const: false,
-                    })
-                    .collect();
-                ctx.diagnostics.truncate(chip_diag_mark);
-                if !c.inline {
-                    for (o, f) in c.outputs.iter().zip(&chip_outs) {
-                        check_port_record(ctx, &o.name, &f.ty, &o.range);
-                    }
-                }
-                ctx.out_ctx.push(chip_outs);
-                let saved_inline = ctx.inline_body_depth;
-                ctx.inline_body_depth = if c.inline { saved_inline + 1 } else { 0 };
-                ctx.in_exec(|ctx| check_block(ctx, &c.body));
-                ctx.inline_body_depth = saved_inline;
-                // Warn if outputs are declared but never assigned. Assignments
-                // count anywhere in the body, including nested if blocks and
-                // `on` handlers: `out x = expr`, `emit x (= expr)`, or a plain
-                // `x = expr` assignment.
-                if !c.outputs.is_empty() && !block_has_return_value(&c.body) {
-                    let mut assigned = std::collections::HashSet::default();
-                    collect_output_assignments(&c.body, &mut assigned);
-                    for out in &c.outputs {
-                        if !assigned.contains(&out.name) {
-                            ctx.emit(
-                                "WS013",
-                                format!("output '{}' is never assigned — use `out {} = expr`, `emit {}`, or `return expr`", out.name, out.name, out.name),
-                                out.range.clone(),
-                            );
-                        }
-                    }
-                }
+                check_chip_body(ctx, c, combo);
+                clean.push(!ctx.diagnostics[before..].iter().any(|d| d.severity == Severity::Error));
                 if multi_pass {
                     // Dedup by (code, start offset): the same body error
                     // surfaces once per mask member it's invalid for, but
                     // should be reported once, at the definition.
+                    // The one naming a bound to narrow is kept whichever
+                    // member reports first.
                     for d in ctx.diagnostics.split_off(before) {
                         if seen.insert((d.code.clone(), d.range.start.offset)) {
                             deduped.push(d);
+                        } else if d.message.contains(crate::diagnostic::NARROW_THE_BOUND)
+                            && let Some(kept) = deduped.iter_mut().find(|k| {
+                                k.code == d.code
+                                    && k.range.start.offset == d.range.start.offset
+                                    && !k.message.contains(crate::diagnostic::NARROW_THE_BOUND)
+                            })
+                        {
+                            *kept = d;
                         }
                     }
                 }
-                ctx.out_ctx.pop();
-                ctx.pop_scope();
-                ctx.resolution_subst = saved_resolution_subst;
             }
             ctx.active_combos = saved_active_combos;
+            super::shadow::close_body(ctx, c);
             if multi_pass {
+                narrow_to_clean_members(c, &combos, &clean, &mut deduped);
                 ctx.diagnostics.extend(deduped);
             }
+            check_every_path_returns(ctx, c);
         }
         TopDecl::AnonChip(ac) => {
             // Anon chip shares parent scope — NO scope push/pop.
@@ -1199,9 +1068,11 @@ fn check_decl_inner(
             ctx.pop_scope();
         }
         TopDecl::ExprStmt(s) => {
+            ctx.statement_match = matches!(s.expr, Expr::MatchExpr { .. });
             ctx.in_pure(|ctx| {
                 infer::infer(ctx, &s.expr);
             });
+            ctx.statement_match = false;
         }
         TopDecl::Assign(a) => {
             check_stmt(ctx, &Stmt::Assign(a.clone()));
@@ -1308,5 +1179,534 @@ fn check_decl_inner(
             ctx.pop_scope();
         }
         TopDecl::Import(_) | TopDecl::TypeAlias(_) | TopDecl::Await(_) | TopDecl::Enum(_) => {}
+    }
+}
+
+/// A bound a `WS003` in `c`'s body suggests narrowing (see
+/// `infer::report_record_as_one_value`) names the members whose check of the
+/// body reported no error, so following it compiles: where none did, it
+/// suggests none.
+fn narrow_to_clean_members(
+    c: &ChipDecl,
+    combos: &[Vec<Type>],
+    clean: &[bool],
+    diags: &mut [Diagnostic],
+) {
+    let marker = crate::diagnostic::NARROW_THE_BOUND;
+    for (k, tp) in c.type_params.iter().enumerate() {
+        let written = format!("{marker}`<{}: ", tp.name);
+        if !diags.iter().any(|d| d.message.contains(&written)) {
+            continue;
+        }
+        let mut members: Vec<String> = Vec::new();
+        for (combo, ok) in combos.iter().zip(clean) {
+            let Some(t) = combo.get(k).filter(|_| *ok) else { continue };
+            let t = crate::analysis::types::type_str(t);
+            if !members.contains(&t) {
+                members.push(t);
+            }
+        }
+        for d in diags.iter_mut() {
+            let Some(at) = d.message.find(&written) else { continue };
+            let Some(end) = d.message[at..].find(">`").map(|e| at + e + 2) else { continue };
+            let narrowed = if members.is_empty() {
+                String::new()
+            } else {
+                format!("{written}{}>`", members.join(" | "))
+            };
+            let start = if members.is_empty() { d.message[..at].trim_end_matches("; ").len() } else { at };
+            d.message.replace_range(start..end, &narrowed);
+        }
+    }
+}
+
+/// Check `c`'s body once, with its type parameters bound to `combo` (empty for
+/// a non-generic `c`), under the enclosing body's substitution.
+pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Type]) {
+    // Concatenate onto the ENCLOSING substitution rather than
+    // replacing it: a nested generic decl (`Stmt::ChipDecl`,
+    // body-checked once per outer combo) must key its own body's
+    // resolutions by the outer combo too, or every outer pass
+    // would overwrite the same `(range, combo)` key with the
+    // last-checked outer type. `combo` is empty for a non-generic
+    // decl, so this leaves the key unchanged (inherits whatever
+    // the enclosing decl set, `[]` at the top level).
+    let saved_resolution_subst = std::mem::take(&mut ctx.resolution_subst);
+    ctx.resolution_subst = saved_resolution_subst
+        .iter()
+        .cloned()
+        .chain(combo.iter().cloned())
+        .collect();
+    let checked = (c.range.file.clone(), c.range.start.offset, c.range.end.offset, ctx.resolution_subst.clone());
+    ctx.resolutions.checked_bodies.insert(checked);
+    // The body reads the top level as its declaration sees it, wherever it
+    // is checked from.
+    let top_view = ctx.top_view(crate::scope::top::ReadAt::body(&c.range));
+    ctx.push_scope();
+    // Same registration as the signature pass (register_decl),
+    // but in the body scope: covers annotations inside the body
+    // (e.g. `let x: T = a`). For a generic decl each type param
+    // is bound to THIS combo's concrete mask member (not
+    // `Type::Param` — an operation like `a + 1` must resolve
+    // against a real type); `combo` is empty for a non-generic
+    // decl, so this loop is a no-op there. Scope is popped at
+    // the end of each pass, so params never leak to sibling
+    // decls.
+    let saved_unbounded = ctx.unbounded_type_params.len();
+    let saved_unbounded_params = ctx.unbounded_typed_params.len();
+    let saved_bounded = ctx.bounded_type_params.len();
+    for (tp, ty) in c.type_params.iter().zip(combo.iter()) {
+        if tp.bound.is_some() {
+            let mask = super::resolve::type_param_mask(ctx, tp);
+            ctx.bounded_type_params.push((tp.name.clone(), mask, ty.clone()));
+        }
+        if tp.bound.is_none() {
+            ctx.unbounded_type_params.push(tp.name.clone());
+            for p in &c.inputs {
+                if super::enums::type_expr_mentions(&p.typ, &tp.name) {
+                    ctx.unbounded_typed_params.push((p.range.clone(), tp.name.clone()));
+                }
+            }
+        }
+        ctx.scope.declare(
+            &tp.name,
+            SymbolInfo {
+                kind: SymbolKind::Type,
+                name: tp.name.clone(),
+                ty: ty.clone(),
+                decl_range: tp.range.clone(),
+                signature: None,
+                event_data: None,
+            },
+        );
+    }
+    for p in &c.inputs {
+        let pt = resolve_type_expr(ctx, &p.typ);
+        if !c.inline {
+            check_port_record(ctx, &p.name, &pt, &p.range, false);
+        }
+        // `name: const T` means "inside the body the parameter
+        // reads as [a compile-time constant]" (ast.rs's own doc
+        // comment on `Param::is_const`) — a mod is inlined per
+        // call site with the real argument value, so any call
+        // site's actual constant is always literal by the time it
+        // reaches a config port (see `lower/call/inline.rs`). This
+        // one-time, non-generic body-check can't know that value,
+        // so it records a type-shaped PLACEHOLDER in the body
+        // frame's constants instead, just enough for
+        // `expr_to_literal_in`/`ctx.const_lookup()`-based checks
+        // (e.g. `validate_scalar_config_arg`'s WS028) to see the
+        // param as "some constant" and accept it structurally.
+        // Its VALUE must never be used for anything beyond that
+        // presence check; lowering discards it entirely in favor
+        // of the real argument. Recording it AS a placeholder
+        // is what ENFORCES that: the `Stmt::If` const-elision arm evaluates against
+        // an environment with placeholders removed, so this zero
+        // can never select a branch (which lowering, holding the
+        // real argument, would then pick the other way — shipping
+        // a block this pass never checked).
+        // `name: const T` IS a `const` declaration, recorded as one (though
+        // being a placeholder already excludes it from the `if`-condition
+        // environment either way).
+        if p.is_const {
+            let marks = crate::const_scope::Marks { declared: true, placeholder: true, uncertified: false };
+            ctx.consts.record(&p.name, const_param_placeholder(&pt), marks);
+        }
+        // Decided on the type the parameter names as well as its spelling, so
+        // an alias of a ref or an array binds as the type it stands for.
+        let kind = if matches!(&p.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. })
+            || matches!(pt, Type::Ref(_) | Type::Array(_))
+        {
+            SymbolKind::Var
+        } else {
+            SymbolKind::Param
+        };
+        // If the param has a destructuring pattern, register the
+        // synthetic name with the full type, then also register each
+        // destructured field with its resolved field type.
+        if let Some(pattern) = &p.pattern {
+            ctx.scope.declare(
+                &p.name,
+                SymbolInfo {
+                    kind: SymbolKind::Param,
+                    name: p.name.clone(),
+                    ty: pt.clone(),
+                    decl_range: p.range.clone(),
+                    signature: None,
+                    event_data: None,
+                },
+            );
+            match pattern {
+                crate::ast::ParamPattern::Record { fields, .. } => {
+                    let mut consumed: crate::collections::HashSet<&str> =
+                        crate::collections::HashSet::default();
+                    for field in fields {
+                        match field {
+                            crate::ast::RecordDestructField::Named {
+                                name, alias, ..
+                            } => {
+                                let bind_name = alias.as_ref().unwrap_or(name);
+                                let field_ty = if let Type::Record(rec_fields) = &pt {
+                                    rec_fields
+                                        .iter()
+                                        .find(|(k, _)| k == name)
+                                        .map(|(_, t)| t.clone())
+                                        .unwrap_or(Type::Any)
+                                } else {
+                                    Type::Any
+                                };
+                                consumed.insert(name.as_str());
+                                ctx.scope.declare(
+                                    bind_name,
+                                    SymbolInfo {
+                                        kind: SymbolKind::Param,
+                                        name: bind_name.clone(),
+                                        ty: field_ty,
+                                        decl_range: p.range.clone(),
+                                        signature: None,
+                                        event_data: None,
+                                    },
+                                );
+                            }
+                            crate::ast::RecordDestructField::Rest { name, .. } => {
+                                let rest_ty = if let Type::Record(rec_fields) = &pt {
+                                    Type::Record(
+                                        rec_fields
+                                            .iter()
+                                            .filter(|(k, _)| {
+                                                !consumed.contains(k.as_str())
+                                            })
+                                            .cloned()
+                                            .collect(),
+                                    )
+                                } else {
+                                    Type::Any
+                                };
+                                ctx.scope.declare(
+                                    name,
+                                    SymbolInfo {
+                                        kind: SymbolKind::Param,
+                                        name: name.clone(),
+                                        ty: rest_ty,
+                                        decl_range: p.range.clone(),
+                                        signature: None,
+                                        event_data: None,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+                crate::ast::ParamPattern::Tuple { names, .. } => {
+                    let field_types = if let Type::Tuple(fs) = &pt {
+                        fs.clone()
+                    } else {
+                        vec![]
+                    };
+                    for (i, name) in names.iter().enumerate() {
+                        let field_ty = field_types.get(i).cloned().unwrap_or(Type::Any);
+                        ctx.scope.declare(
+                            name,
+                            SymbolInfo {
+                                kind: SymbolKind::Param,
+                                name: name.clone(),
+                                ty: field_ty,
+                                decl_range: p.range.clone(),
+                                signature: None,
+                                event_data: None,
+                            },
+                        );
+                    }
+                }
+            }
+        } else {
+            ctx.scope.declare(
+                &p.name,
+                SymbolInfo {
+                    kind,
+                    name: p.name.clone(),
+                    ty: pt,
+                    decl_range: p.range.clone(),
+                    signature: None,
+                    event_data: None,
+                },
+            );
+        }
+    }
+    // A `...rest` variadic capture is bound once here with arity
+    // unknown (the body is checked a single time; each call site
+    // captures a different tuple). Type it `any` so a `...rest`
+    // spread in the body forwards leniently (an arity-dynamic
+    // spread the callee accepts) and any incidental `rest` use stays
+    // quiet — lowering supplies the real per-call elements.
+    if let Some(rest_name) = &c.rest {
+        ctx.scope.declare(
+            rest_name,
+            SymbolInfo {
+                kind: SymbolKind::Param,
+                name: rest_name.clone(),
+                ty: Type::Any,
+                decl_range: c.range.clone(),
+                signature: None,
+                event_data: None,
+            },
+        );
+    }
+    // Push this combo's declared-output frame (nearest wins over
+    // the module frame) so `return`/`emit`/an unannotated `out`
+    // inside the body can be checked against it. Built AFTER the
+    // param binding above so a generic output type (`-> (r: T)`)
+    // resolves against THIS combo's concrete type param bindings,
+    // not a leftover `Type::Param`.
+    //
+    // `resolve_type_expr` emits (e.g. WS002 "unknown type"); these
+    // same output annotations are already resolved+reported by
+    // `register_decl`, so DISCARD this frame build's diagnostics by
+    // truncating back to the pre-build length. The snapshot is taken
+    // after the input-param loop, so this only drops the frame build's
+    // own diagnostics; the caller's dedup window (which starts before
+    // this body) keeps every real input-param and body diagnostic.
+    let chip_diag_mark = ctx.diagnostics.len();
+    let chip_outs: Vec<EventDataField> = c
+        .outputs
+        .iter()
+        .map(|o| EventDataField {
+            name: o.name.clone(),
+            ty: resolve_type_expr(ctx, &o.typ),
+            is_const: false,
+        })
+        .collect();
+    ctx.diagnostics.truncate(chip_diag_mark);
+    if !c.inline {
+        for (o, f) in c.outputs.iter().zip(&chip_outs) {
+            check_port_record(ctx, &o.name, &f.ty, &o.range, false);
+        }
+    }
+    ctx.out_ctx.push(chip_outs);
+    let saved_inline = ctx.inline_body_depth;
+    ctx.inline_body_depth = if c.inline { saved_inline + 1 } else { 0 };
+    ctx.in_exec(|ctx| check_block(ctx, &c.body));
+    ctx.inline_body_depth = saved_inline;
+    // Warn if outputs are declared but never assigned. Assignments
+    // count anywhere in the body, including nested if blocks and
+    // `on` handlers: `out x = expr`, `emit x (= expr)`, or a plain
+    // `x = expr` assignment.
+    if !c.outputs.is_empty() && !block_has_return_value(&c.body) {
+        let mut assigned = std::collections::HashSet::default();
+        collect_output_assignments(&c.body, &mut assigned);
+        for out in &c.outputs {
+            if !assigned.contains(&out.name) {
+                ctx.emit(
+                    "WS013",
+                    format!("output '{}' is never assigned; use `out {} = expr`, `emit {}`, or `return expr`", out.name, out.name, out.name),
+                    out.range.clone(),
+                );
+            }
+        }
+    }
+    ctx.out_ctx.pop();
+    ctx.pop_scope();
+    ctx.restore_top_view(top_view);
+    ctx.unbounded_type_params.truncate(saved_unbounded);
+    ctx.unbounded_typed_params.truncate(saved_unbounded_params);
+    ctx.bounded_type_params.truncate(saved_bounded);
+    ctx.resolution_subst = saved_resolution_subst;
+}
+
+/// WS090: a `mod`/`chip` with a value output that uses `return`, where some
+/// path ends (a bare `return`, or the end of the body) before every value
+/// output has a value on that path. With one `return <value>` in the body its
+/// value is wired to the output unconditionally, and with several the output
+/// keeps whatever the last call stored, so such a path outputs a value from
+/// another path. An output is set on a path by `return <value>` or
+/// `emit r = ...`; a continuous `out r = ...` (and any assignment inside a
+/// nested handler, anonymous chip or loop body) counts as set on every path.
+fn check_every_path_returns(ctx: &mut TypeCheckCtx, c: &ChipDecl) {
+    // Written `exec`, or through a `type` alias of it.
+    let is_exec = |t: &TypeExpr| match t {
+        TypeExpr::Name { name, .. } => {
+            name == "exec"
+                || ctx
+                    .scope
+                    .lookup(name)
+                    .is_some_and(|s| matches!(s.kind, SymbolKind::Type) && s.ty == Type::Exec)
+        }
+        _ => false,
+    };
+    let values: Vec<&str> = c
+        .outputs
+        .iter()
+        .filter(|o| !is_exec(&o.typ))
+        .map(|o| o.name.as_str())
+        .collect();
+    let Some(first_value) = c.outputs.iter().find(|o| !is_exec(&o.typ)) else {
+        return;
+    };
+    if !block_has_return(&c.body) {
+        return;
+    }
+    let mut set: crate::collections::HashSet<String> = crate::collections::HashSet::default();
+    collect_off_path_assignments(&c.body, &values, &mut set);
+    let mut bad: Option<SourceRange> = None;
+    let open = walk_paths(&c.body, set, &values, &mut bad);
+    if let Some(end) = open
+        && !values.iter().all(|v| end.contains(*v))
+    {
+        bad.get_or_insert_with(|| first_value.range.clone());
+    }
+    if let Some(range) = bad {
+        ctx.emit(
+            "WS090",
+            format!(
+                "not every path through `{}` returns a value: a path that ends here \
+                 (a bare `return`, or the end of the body) before `return <value>` or \
+                 `emit` sets every value output would output a value from another path. \
+                 Return a value on that path, or give the `if` an `else` that returns",
+                c.name
+            ),
+            range,
+        );
+    }
+}
+
+/// Whether a `return` is reached on the body's own path, through branches and
+/// `match` arms (not an anonymous chip, loop, nested handler or declaration).
+fn block_has_return(block: &Block) -> bool {
+    walk::any_below(
+        walk::Node::Block(block),
+        |f| matches!(f, walk::Flow::Seq | walk::Flow::Branch),
+        &mut |n| matches!(n, walk::Node::Stmt(Stmt::Return { .. })),
+    )
+}
+
+/// Output names set independently of any one path: every `out r = ...`, and
+/// every `emit` inside a nested handler, anonymous chip or loop body.
+fn collect_off_path_assignments(block: &Block, values: &[&str], set: &mut crate::collections::HashSet<String>) {
+    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, cx| {
+        match n {
+            walk::Node::Stmt(Stmt::OutBinding(o)) if values.contains(&o.name.as_str()) => {
+                set.insert(o.name.clone());
+            }
+            walk::Node::Stmt(Stmt::Emit(e))
+                if (cx.handler || cx.anon_chip || cx.in_loop) && values.contains(&e.name.as_str()) =>
+            {
+                set.insert(e.name.clone());
+            }
+            walk::Node::Stmt(Stmt::ChipDecl(_)) => return false,
+            _ => {}
+        }
+        true
+    });
+}
+
+/// Walk `block` from `set` (the value outputs set so far on this path).
+/// `None` when every path through it has ended; otherwise the outputs set on
+/// every path that falls through. A bare `return` reached before every value
+/// output is set records its range in `bad`.
+fn walk_paths(
+    block: &Block,
+    mut set: crate::collections::HashSet<String>,
+    values: &[&str],
+    bad: &mut Option<SourceRange>,
+) -> Option<crate::collections::HashSet<String>> {
+    fn merge(a: Option<crate::collections::HashSet<String>>, b: Option<crate::collections::HashSet<String>>) -> Option<crate::collections::HashSet<String>> {
+        match (a, b) {
+            (None, x) | (x, None) => x,
+            (Some(a), Some(b)) => Some(a.intersection(&b).cloned().collect()),
+        }
+    }
+    for s in &block.stmts {
+        // The block arms of a value `match` in the statement's own
+        // expressions run before the statement does, each on its own path,
+        // and leave through a `return` (WS095). A statement `match`'s arms
+        // are its branches, walked below.
+        let value_arms = match s {
+            Stmt::ExprStmt(ExprStmt { expr: Expr::MatchExpr { scrutinee, .. }, .. }) => {
+                walk::expr_arm_blocks(walk::Node::Expr(scrutinee))
+            }
+            _ => walk::expr_arm_blocks(walk::Node::Stmt(s)),
+        };
+        for b in value_arms {
+            walk_paths(b, set.clone(), values, bad);
+        }
+        match s {
+            Stmt::Return { value: Some(_), .. } => return None,
+            Stmt::Return { value: None, range } => {
+                if !values.iter().all(|v| set.contains(*v)) {
+                    bad.get_or_insert_with(|| range.clone());
+                }
+                return None;
+            }
+            Stmt::Emit(e) => {
+                if values.contains(&e.name.as_str()) {
+                    set.insert(e.name.clone());
+                }
+                // A back-edge closes the exec chain.
+                if e.buffer.is_some() {
+                    return None;
+                }
+            }
+            Stmt::If(i) => {
+                let a = walk_paths(&i.then_block, set.clone(), values, bad);
+                let b = match &i.else_block {
+                    Some(eb) => walk_paths(eb, set.clone(), values, bad),
+                    None => Some(set.clone()),
+                };
+                set = merge(a, b)?;
+            }
+            Stmt::IfLet(i) => {
+                let a = walk_paths(&i.then_block, set.clone(), values, bad);
+                let b = match &i.else_block {
+                    Some(eb) => walk_paths(eb, set.clone(), values, bad),
+                    None => Some(set.clone()),
+                };
+                set = merge(a, b)?;
+            }
+            Stmt::LetElse(l) => {
+                walk_paths(&l.else_block, set.clone(), values, bad);
+            }
+            Stmt::ExprStmt(es) => {
+                if let Expr::MatchExpr { arms, .. } = &es.expr
+                    && !arms.is_empty()
+                {
+                    let mut out: Option<crate::collections::HashSet<String>> = None;
+                    let mut first = true;
+                    for a in arms {
+                        let r = match &a.body {
+                            MatchBody::Block(b) => walk_paths(b, set.clone(), values, bad),
+                            MatchBody::Expr(_) => Some(set.clone()),
+                        };
+                        out = if first { r } else { merge(out, r) };
+                        first = false;
+                    }
+                    set = out?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(set)
+}
+
+/// The enum a port of type `ty` would carry that no pin can: any user or game
+/// enum inside a record or tuple, or anywhere in a chip parameter or output. A
+/// top-level (`boundary`) port of a payload-free enum is one wire, its tag, and
+/// an array or map of them one column of tags; `*E` refs each slot.
+fn enum_crossing(ctx: &TypeCheckCtx, ty: &Type, boundary: bool) -> Option<String> {
+    match ty {
+        Type::Ref(_) => None,
+        Type::Enum { name, .. } => {
+            let unit = ctx.enum_defs.of(ty).is_some_and(|d| {
+                d.variants.iter().all(|v| matches!(v.payload, crate::typecheck::enums::Payload::Unit))
+            });
+            (!(boundary && unit)).then(|| name.clone())
+        }
+        Type::Record(fields) => fields.iter().find_map(|(_, t)| enum_crossing(ctx, t, false)),
+        Type::Tuple(elems) => elems.iter().find_map(|t| enum_crossing(ctx, t, false)),
+        // A top-level port array or map of payload-free enums is one column
+        // of tags, which a pin carries as a container ref.
+        Type::Array(e) => enum_crossing(ctx, e, boundary),
+        Type::Map(k, v) => enum_crossing(ctx, k, false).or_else(|| enum_crossing(ctx, v, boundary)),
+        _ => None,
     }
 }

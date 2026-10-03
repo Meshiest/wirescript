@@ -2,36 +2,64 @@ use super::*;
 use crate::catalog::operators::OpRule;
 
 /// The operator rule for the CURRENT monomorph. Non-generic bodies read the
-/// baked `op_resolutions` map. Inside a generic mod's body that map holds the
-/// STALE last-mask-member rule — the per-mask-member body check in typecheck
-/// re-resolves every operator once per member and the last write wins
-/// (`Numeric` → Color, `Scalar` → Float, an unbounded `T` → Prefab), so a
-/// `square<int>` monomorph would otherwise emit a Color MathMultiply.
-/// Re-resolve from the operands' ACTUAL lowered port types, which already
-/// carry the concrete monomorph; nested operators resolve bottom-up because
-/// each sub-expr's output port type is fixed first.
+/// baked `op_resolutions` map, including one inlined from a generic caller:
+/// its operands may be the caller's ports, but typecheck resolved its
+/// operators once, against its declared types. Inside a generic mod's body
+/// that map holds the STALE last-mask-member rule — the per-mask-member body
+/// check in typecheck re-resolves every operator once per member and the last
+/// write wins (`Numeric` → Color, `Scalar` → Float, an unbounded `T` →
+/// Prefab), so a `square<int>` monomorph would otherwise emit a Color
+/// MathMultiply. Re-resolve from each operand's type in this instantiation
+/// (`LowerCtx::type_of`), as typecheck resolves it; an operand that has none
+/// takes its lowered port's type. A port can carry a narrower type than its
+/// operand has: an `int` argument given for a `float` parameter reaches the
+/// body on its `int` port, and `x / 2` there still divides as floats.
 fn mono_op_rule(ctx: &LowerCtx, e: &Expr, op: &str, operand_ports: &[PortRef]) -> Option<OpRule> {
     if ctx.mono_stack.is_empty() {
         return ctx.op_for(e).cloned();
     }
-    let tys: Vec<Type> = operand_ports
-        .iter()
-        .map(|&p| super::call::arg_port_type(ctx, p).unwrap_or(Type::Any))
+    let port_types = || -> Vec<Type> {
+        operand_ports
+            .iter()
+            .map(|&p| super::call::arg_port_type(ctx, p).unwrap_or(Type::Any))
+            .collect()
+    };
+    if !ctx.in_generic_instance(e.range()) {
+        return ctx
+            .op_for(e)
+            .cloned()
+            .or_else(|| crate::catalog::operators::resolve_op(op, &port_types()).cloned());
+    }
+    let operands: Vec<&Expr> = match e {
+        Expr::BinOp { left, right, .. } => vec![left, right],
+        Expr::UnOp { operand, .. } => vec![operand],
+        _ => Vec::new(),
+    };
+    let tys: Vec<Type> = port_types()
+        .into_iter()
+        .enumerate()
+        .map(|(i, port)| match operands.get(i).map(|x| operand_type(&ctx.type_of(x))) {
+            Some(t) if !matches!(t, Type::Any) => t,
+            _ => port,
+        })
         .collect();
     crate::catalog::operators::resolve_op(op, &tys)
         .cloned()
         .or_else(|| ctx.op_for(e).cloned())
 }
 
+/// The type an operand takes part in an operator as: through a ref, and a
+/// record (a multi-output result) as its first field, as typecheck does.
+fn operand_type(t: &Type) -> Type {
+    match unwrap_ref(t) {
+        Type::Record(fields) if !fields.is_empty() => operand_type(&fields[0].1),
+        other => other,
+    }
+}
+
 pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
-    let (op, left, right, range) = match e {
-        Expr::BinOp {
-            op,
-            left,
-            right,
-            range,
-        } => (op, left, right, range),
-        _ => return synthesise_unsupported(ctx, e),
+    let Expr::BinOp { left, right, .. } = e else {
+        return synthesise_unsupported(ctx, e);
     };
     // Non-generic path short-circuits on a missing rule (no operand gates
     // created). A generic body defers rule resolution until the operands are
@@ -39,8 +67,15 @@ pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     if ctx.mono_stack.is_empty() && ctx.op_for(e).is_none() {
         return synthesise_unsupported(ctx, e);
     }
-    let left_port = lower_expr(ctx, left);
-    let right_port = lower_expr(ctx, right);
+    let ports = crate::lower::ordered::lower_in_order(ctx, &[left, right]);
+    binop_gate(ctx, e, ports[0], ports[1])
+}
+
+/// The gate of the binary operator `e` over its lowered operands.
+pub(super) fn binop_gate(ctx: &mut LowerCtx, e: &Expr, left_port: PortRef, right_port: PortRef) -> PortRef {
+    let Expr::BinOp { op, range, .. } = e else {
+        return synthesise_unsupported(ctx, e);
+    };
     let rule = match mono_op_rule(ctx, e, op, &[left_port, right_port]) {
         Some(r) => r,
         None => return synthesise_unsupported(ctx, e),
@@ -219,6 +254,20 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     if ctx.mono_stack.is_empty() && ctx.op_for(e).is_none() {
         return synthesise_unsupported(ctx, e);
     }
+    // A negated integer constant (`--2`, `-(-K)`, `-K`) is the integer it
+    // names, in every fold mode: the game's MathNegate answers an integer
+    // with a float. One computed through an integer operation the certified
+    // fold table has no result for keeps its gates.
+    if op == "-" && ctx.op_for(e).is_some_and(|r| r.operands.first() == Some(&Type::Int)) {
+        let lookup = |n: &str| ctx.resolve_mod(n);
+        let cx = ctx.certified_const_ctx(Some(&lookup));
+        let mut budget = crate::const_eval::Budget::default();
+        if crate::const_eval::integer_ops_certified(e, &cx)
+            && let Ok(Literal::Int(n)) = crate::const_eval::eval_expr(e, &cx, &mut budget)
+        {
+            return literal_node_range(ctx, range, Type::Int, Literal::Int(n));
+        }
+    }
     let in_port = lower_expr(ctx, operand);
     let rule = match mono_op_rule(ctx, e, op, &[in_port]) {
         Some(r) => r,
@@ -313,6 +362,15 @@ pub(super) fn lower_interp(
     // concatenated. Literals attach to the current group; a group is flushed
     // once it holds `max` substitutions and another arrives. Parts stay in
     // order, so the concatenation reads identically to one long template.
+    // Every `${...}` is evaluated in order before the template is built.
+    let exprs: Vec<&Expr> = parts
+        .iter()
+        .filter_map(|p| match p {
+            InterpPart::Expr(e) => Some(e.as_ref()),
+            InterpPart::Lit(_) => None,
+        })
+        .collect();
+    let mut ports = crate::lower::ordered::lower_in_order(ctx, &exprs).into_iter();
     let mut groups: Vec<(String, Vec<PortRef>)> = Vec::new();
     let mut cur_fmt = String::new();
     let mut cur_slots: Vec<PortRef> = Vec::new();
@@ -321,12 +379,12 @@ pub(super) fn lower_interp(
             InterpPart::Lit(s) => {
                 cur_fmt.push_str(&s.replace('{', "{{").replace('}', "}}"));
             }
-            InterpPart::Expr(expr) => {
+            InterpPart::Expr(_) => {
                 if cur_slots.len() == max {
                     groups.push((std::mem::take(&mut cur_fmt), std::mem::take(&mut cur_slots)));
                 }
                 cur_fmt.push_str(&format!("{{{}}}", cur_slots.len()));
-                cur_slots.push(lower_expr(ctx, expr));
+                cur_slots.extend(ports.next());
             }
         }
     }

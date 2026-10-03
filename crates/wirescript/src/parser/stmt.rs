@@ -296,7 +296,7 @@ impl<'a> Parser<'a> {
                     "chip" => {
                         let kw = self.peek().clone();
                         self.error(
-                            "`const chip` is not allowed — use `const mod`, or mark \
+                            "`const chip` is not allowed. Use `const mod`, or mark \
                              individual parameters `const` (`chip C(name: const \
                              string, …)`)",
                             kw.start,

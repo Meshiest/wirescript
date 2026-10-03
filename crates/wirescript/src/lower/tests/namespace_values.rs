@@ -1258,3 +1258,15 @@ fn namespaced_non_literal_container_assign_is_ws027() {
         assert_eq!(count_gate(&lr.module, VAR_SET), 0, "`{main}` emits no Var_Set");
     }
 }
+
+/// A namespace's `*int[]` var reads as the array, as the same var does in the
+/// file that declares it: `let y: int[] = S.cur` was WS016.
+#[test]
+fn a_namespaced_array_ref_var_reads_as_the_array() {
+    let lib = "var rows: int[][]\nvar cur: *int[]\n";
+    let src = "import * as S from \"lib\"\nin go: exec\nvar n: int = 0\nout onn: int = n\non go {\n  S.cur = S.rows[0]\n  let y: int[] = S.cur\n  n = y.length() + S.cur.length()\n}";
+    let r = compile_multi(src, &[("lib", lib)]);
+    assert_no_errors(&r);
+    assert!(!r.diagnostics.iter().any(|d| d.code == "WS016"), "{:?}", r.diagnostics);
+    assert_eq!(gate_count(&r, "BrickComponentType_Exec_ArrayVar_GetLength"), 2);
+}

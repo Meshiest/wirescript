@@ -48,7 +48,7 @@ fn as_tuple_elems(t: &Type) -> Option<Vec<&Type>> {
     }
 }
 
-fn type_eq(a: &Type, b: &Type) -> bool {
+pub(crate) fn type_eq(a: &Type, b: &Type) -> bool {
     use Type::*;
     match (a, b) {
         (Bool, Bool)
@@ -82,7 +82,7 @@ fn type_eq(a: &Type, b: &Type) -> bool {
         (Tuple(ax), Tuple(bx)) => {
             ax.len() == bx.len() && ax.iter().zip(bx).all(|(a, b)| type_eq(a, b))
         }
-        (Record(ax), Record(bx)) => {
+        (Record(ax), Record(bx)) | (Outputs(ax), Outputs(bx)) => {
             ax.len() == bx.len()
                 && ax.iter().all(|(k1, t1)| {
                     bx.iter().any(|(k2, t2)| k1 == k2 && type_eq(t1, t2))
@@ -169,6 +169,11 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     }
     if matches!(from, Ref(_)) || matches!(to, Ref(_)) {
         return CoerceRule::Mismatch;
+    }
+
+    // A gate read into a record place is the record of its outputs.
+    if let (Outputs(fields), Record(_)) = (from, to) {
+        return coerce(&Record(fields.clone()), to);
     }
 
     // Pulsing → exec: bool/int/float/vector trip an exec input when their value changes.
@@ -309,10 +314,13 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     // ({Vector, Rotation}) coerces via `.Rotation`, but `.Vector` gets wired
     // into `SetRotation`. A tuple literal (an index-keyed record) never
     // scalar-unwraps: `(1, "x")` is not an `int`, it has no primary member.
-    if let Record(fields) = from
-        && !matches!(to, Record(_))
+    // A gate read gives one value its first output once: a record there is
+    // never unwrapped again.
+    if let Record(fields) | Outputs(fields) = from
+        && !matches!(to, Record(_) | Outputs(_))
         && as_tuple_elems(from).is_none()
         && let Some((_, ft)) = fields.first()
+        && !(matches!(from, Outputs(_)) && matches!(crate::types::mono::unwrap_ref(ft), Record(_)))
     {
         let rule = coerce(ft, to);
         if rule != CoerceRule::Mismatch {
@@ -335,8 +343,18 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
 /// never tries to widen through a compound's structure.
 pub fn widening_join(a: &Type, b: &Type) -> Option<Type> {
     use Type::*;
-    if type_eq(a, b) {
+    // Two gate reads naming the same outputs in another order are equal as
+    // records but not as reads: a place for one value takes each one's first.
+    let reordered =
+        matches!((a, b), (Outputs(fa), Outputs(fb)) if fa.iter().zip(fb).any(|((na, _), (nb, _))| na != nb));
+    if type_eq(a, b) && !reordered {
         return Some(a.clone());
+    }
+    // A gate read beside a record of its outputs' fields is that record.
+    if let (Outputs(fields), record @ Record(_)) | (record @ Record(_), Outputs(fields)) = (a, b)
+        && type_eq(&Record(fields.clone()), record)
+    {
+        return Some(record.clone());
     }
     // `any`/`Opaque` is neutral — it widens to whatever the other side is.
     if matches!(a, Any | Opaque) {
@@ -344,6 +362,29 @@ pub fn widening_join(a: &Type, b: &Type) -> Option<Type> {
     }
     if matches!(b, Any | Opaque) {
         return Some(a.clone());
+    }
+    // A gate read beside one value is its first output.
+    let one = |t: &Type| !matches!(t, Outputs(_) | Record(_) | Tuple(_));
+    let first = |fields: &[(std::string::String, Type)]| Some(crate::types::mono::unwrap_ref(&fields.first()?.1));
+    match (a, b) {
+        (Outputs(fields), other) | (other, Outputs(fields)) if one(other) => {
+            return widening_join(&first(fields)?, other);
+        }
+        // Two gate reads join output by output when they declare the same
+        // outputs, and otherwise by their first outputs.
+        (Outputs(fa), Outputs(fb)) => {
+            let same_names = fa.len() == fb.len() && fa.iter().zip(fb).all(|((na, _), (nb, _))| na == nb);
+            let each = fa
+                .iter()
+                .zip(fb)
+                .map(|((n, ta), (_, tb))| Some((n.clone(), widening_join(ta, tb)?)))
+                .collect::<Option<Vec<_>>>();
+            return match each {
+                Some(joined) if same_names => Some(Outputs(joined)),
+                _ => widening_join(&first(fa)?, &first(fb)?),
+            };
+        }
+        _ => {}
     }
     // Numerics: bool ⊏ int ⊏ float (widest wins).
     if is_prim_number(a) && is_prim_number(b) {

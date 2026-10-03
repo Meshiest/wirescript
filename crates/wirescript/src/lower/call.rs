@@ -14,6 +14,7 @@ mod dispatch;
 pub(super) use dispatch::*;
 mod instance_body;
 use instance_body::*;
+pub(in crate::lower) use instance_body::wire_record_backing;
 mod inline;
 pub(super) use inline::*;
 mod instance;
@@ -115,11 +116,11 @@ pub(super) fn lower_chip_call(
     range: &SourceRange,
 ) -> PortRef {
     let named = !chip_decl.name.is_empty();
-    if named && ctx.chip_call_stack.contains(&chip_decl.range) {
+    if named && ctx.chip_call_stack.iter().any(|(decl, open)| *open && *decl == chip_decl.range) {
         ctx.diagnostics.push(Diagnostic::error(
             "WS020",
             format!(
-                "recursive call to `{}` — chips and mods cannot call themselves \
+                "recursive call to `{}`: chips and mods cannot call themselves \
                  (directly or mutually): every call is expanded into the wire \
                  graph at compile time. Re-trigger an exec input or use a \
                  buffer-based loop instead.",
@@ -127,10 +128,10 @@ pub(super) fn lower_chip_call(
             ),
             range.clone(),
         ));
-        return synthesise_unsupported_range(ctx, range);
+        return synthesise_unsupported_range(ctx, &format!("the call `{}(..)`", chip_decl.name), range);
     }
     if named {
-        ctx.chip_call_stack.push(chip_decl.range.clone());
+        ctx.chip_call_stack.push((chip_decl.range.clone(), false));
     }
 
     let result = if chip_decl.inline {

@@ -141,6 +141,9 @@ fn a_ref_to_a_ref_is_ws086() {
         "var a: int = 0\nvar px: (*int)[]\nvar g: *int\nin go: exec\non go { px.push(&a)\n g = &px[0] }",
         "WS086",
     );
+    // A mod parameter's type is resolved for the signature and for the body,
+    // and reported once.
+    assert_eq!(codes("mod f(p: **int) { }\n"), ["WS086"]);
 }
 
 #[test]
@@ -149,6 +152,12 @@ fn an_element_of_a_value_array_has_no_ref() {
         "var xs: int[]\nvar h: *int\nin go: exec\non go { xs.push(1)\n h = &xs[0] }",
         "WS008",
     );
+    // Each is reported once: an element of a temporary, and a field of an
+    // element of a record array.
+    for body in ["h = &[1, 2][0]", "h = &pts[0].x"] {
+        let src = format!("type P = {{ x: int }}\nvar pts: P[]\nvar h: *int\nin go: exec\non go {{ {body} }}");
+        assert_eq!(codes(&src), ["WS008"], "{body}");
+    }
 }
 
 #[test]
@@ -210,6 +219,24 @@ fn refs_compare_only_within_their_kind() {
     assert_code(&format!("{REFS}on go {{ c = h == x }}"), "WS003");
     assert_code(&format!("{REFS}on go {{ c = h < k }}"), "WS004");
     assert_code(&format!("{REFS}on go {{ c = x < y }}"), "WS004");
+    assert_code(&format!("{REFS}on go {{ c = !h }}"), "WS004");
+    // Each accepted comparison resolves to a compare gate for lowering.
+    for (cmp, gate) in [
+        ("h == k", "CompareEqual"),
+        ("h != &a", "CompareNotEqual"),
+        ("rows[0] == row0", "CompareEqual"),
+        ("x == y", "CompareEqual"),
+    ] {
+        let src = format!("{REFS}on go {{ c = {cmp} }}");
+        let r = tc(&src);
+        let at = src.find(cmp).unwrap();
+        let rule = r
+            .op_resolutions
+            .iter()
+            .find(|((_, start, end), _)| *start == at && *end == at + cmp.len())
+            .map(|(_, rule)| rule.gate_class);
+        assert!(rule.is_some_and(|g| g.ends_with(gate)), "{cmp}: {rule:?}");
+    }
 }
 
 #[test]
@@ -502,4 +529,210 @@ fn a_ref_output_of_a_multi_output_call_is_a_ref_value() {
                 chip C(x: *int) -> (r: *int, k: int) { out r = &x\n out k = 1 }\nin go: exec\n";
     assert_code(&format!("{head}on go {{ let t = C(a)\n n = t.r + 1 }}"), "WS004");
     assert_clean(&format!("{head}on go {{ let t = C(a)\n *t.r = 5\n n = t.k }}"));
+}
+
+#[test]
+fn a_projection_of_a_place_bundle_reads_its_places() {
+    let head = "type Cpu = { regs: int[], cpsr: *int, skip: *bool }\n\
+                var regs: int[]\nvar cpsr: int = 0\nvar skip: bool = false\nvar n: int = 0\n\
+                mod bump(p: *int) { p = p + 1 }\nin go: exec\n";
+    assert_clean(&format!(
+        "{head}on go {{ let o = {{ c: {{ regs, cpsr, skip }} }}\n let s = o.c\n n = s.cpsr + 1\n bump(s.cpsr) }}"
+    ));
+    assert_clean(&format!("{head}on go {{ let t = ({{ regs, cpsr, skip }}, 1)\n let s = t.0\n n = s.cpsr + 1 }}"));
+    // A value field keeps its kind through the projection.
+    assert_code(
+        &format!("{head}var a: int = 0\non go {{ let o = {{ c: {{ p: &a }} }}\n let s = o.c\n n = s.p + 1 }}"),
+        "WS004",
+    );
+    assert_code(&format!("{head}var a: int = 0\non go {{ let o = {{ c: {{ p: &a }} }}\n n = o.c.p + 1 }}"), "WS004");
+}
+
+#[test]
+fn a_ref_value_fills_a_ref_field_of_a_record_argument() {
+    let head = "type R = { p: *int }\nvar a: int = 0\nvar hs: (*int)[]\nvar n: int = 0\n\
+                chip C(go: exec, q: R) { on go { n = q.p + 1 } }\nin go: exec\n";
+    for arg in ["{ p: &a }", "{ p: hs[0] }", "{ p: e }"] {
+        assert_clean(&format!("{head}on go {{ let e = hs[0]\n C(go, {arg}) }}"));
+    }
+    assert_code(&format!("{head}on go {{ C(go, {{ p: 5 }}) }}"), "WS008");
+}
+
+#[test]
+fn a_ref_to_a_record_of_refs_is_that_record() {
+    assert_clean("type P = { a: int, b: int }\nchip S2(q: *P) -> (r: *P) { out r = &q }");
+}
+
+const CPU_NS: &str = "type Cpu = { regs: int[], cpsr: *int, skip: *bool }\n\
+var regs: int[]\nvar cpsr: int = 0\nvar skip: bool = false\n\
+let cpu = { regs, cpsr, skip }\nlet { cpsr: cp } = cpu\nlet o = { c: cpu }\nlet { c } = o\n";
+
+fn tc_multi(entry: &str, deps: &[(&str, &str)]) -> TypeCheckResult {
+    use crate::resolve::{MemLoader, resolve};
+    let loader = MemLoader { files: deps.iter().map(|(k, v)| (format!("{k}.ws"), v.to_string())).collect() };
+    let resolved = resolve(entry, "main", &loader);
+    typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default())
+}
+
+fn multi_errors(entry: &str, deps: &[(&str, &str)]) -> Vec<String> {
+    tc_multi(entry, deps)
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| format!("[{}] {}", d.code, d.message))
+        .collect()
+}
+
+#[test]
+fn a_destructured_namespace_member_keeps_its_place() {
+    let head = "import * as u from \"u\"\nvar h: *int\nvar n: int = 0\nmod M7(v: *int) { v = v + 1 }\nin go: exec\n";
+    for body in ["n = u.cp + 1", "M7(u.cp)", "h = &u.cp", "M7(u.c.cpsr)", "n = u.c.cpsr + 1"] {
+        let e = multi_errors(&format!("{head}on go {{ {body} }}"), &[("u", CPU_NS)]);
+        assert!(e.is_empty(), "{body}: {e:?}");
+    }
+    let e = multi_errors(&format!("{head}on go {{ h = u.cp }}"), &[("u", CPU_NS)]);
+    assert!(e.iter().any(|e| e.starts_with("[WS003]")), "a place is not a ref value: {e:?}");
+}
+
+#[test]
+fn a_ref_of_a_place_is_its_vars_ref() {
+    let head = "type Cpu = { regs: int[], cpsr: *int, skip: *bool }\n\
+                var regs: int[]\nvar cpsr: int = 0\nvar skip: bool = false\nvar h: *int\nin go: exec\n";
+    for body in [
+        "let s = { regs, cpsr, skip }\n h = &s.cpsr",
+        "let { cpsr: cp } = { regs, cpsr, skip }\n h = &cp",
+        "let t = (cpsr, 1)\n h = &t.0",
+    ] {
+        assert_clean(&format!("{head}on go {{ {body} }}"));
+    }
+    // A ref value has no ref of its own.
+    assert_code(&format!("{head}var a: int = 0\non go {{ let r = {{ p: &a }}\n h = &r.p }}"), "WS086");
+}
+
+#[test]
+fn a_tuple_of_vars_bundles_places() {
+    assert_clean(
+        "var x: int = 0\nvar y: int = 0\nmod M7(v: *int) { v = v + 1 }\nin go: exec\n\
+         on go { let t = (y, x)\n M7(t.1) }",
+    );
+}
+
+#[test]
+fn an_enum_cannot_cross_a_port() {
+    let head = "enum E { A, B(int) }\n";
+    for decl in [
+        "in e: E",
+        "var v: E = E.A\nout o: E = v",
+        "var v: E = E.A\nout o = v",
+        "chip C(e: E) { }",
+        "chip C() -> (o: E) { out o = E.A }",
+    ] {
+        assert_code(&format!("{head}{decl}"), "WS049");
+    }
+    // A ref to one distributes over its slots, a mod inlines, and a game enum
+    // is one value.
+    assert_clean(&format!("{head}chip C(e: *E) {{ e = E.A }}\nmod M(e: E) -> int {{ return e.Discriminant }}"));
+    assert_clean("in ease: EasingFunction");
+}
+
+fn ws049_count(src: &str) -> usize {
+    tc(src).diagnostics.iter().filter(|d| d.code == "WS049").count()
+}
+
+#[test]
+fn an_enum_anywhere_inside_a_port_is_ws049() {
+    let head = "enum E { A, B(int) }\nenum U { X, Y }\ntype R = { e: E, n: int }\ntype Q = { u: U, n: int }\n";
+    for decl in [
+        "in r: R",
+        "in q: Q",
+        "var r: R = { e: E.A, n: 1 }\nout o: R = r",
+        "in t: (E, int)",
+        "in t: (U, int)",
+        "in es: E[]",
+        "chip C(g: exec, us: U[]) { }",
+        "chip C(g: exec, r: R) { }",
+        "chip C(g: exec) -> (o: R) { }",
+        "chip C(g: exec, u: U) { }",
+        "chip C(g: exec, e: EasingFunction) { }",
+        "chip C(g: exec) -> (o: U) { }",
+    ] {
+        assert_eq!(ws049_count(&format!("{head}{decl}\n")), 1, "{decl}: {:?}", codes(&format!("{head}{decl}\n")));
+    }
+    // One wire each: a payload-free enum or a game enum at a top-level port.
+    for decl in [
+        "in us: U[]",
+        "in m: Map<int, U>",
+        "in u: U",
+        "var v: U = U.X\nout o: U = v",
+        "in ease: EasingFunction",
+        "var v: EasingFunction = EasingFunction.Sine\nout o = v",
+    ] {
+        assert_eq!(ws049_count(&format!("{head}{decl}\n")), 0, "{decl}");
+    }
+    // Reported once for a chip output set in its body.
+    let src = format!("{head}var v: E = E.A\nchip C(g: exec) -> (o: E) {{ out o = v }}\n");
+    assert_eq!(ws049_count(&src), 1, "{:?}", codes(&src));
+}
+
+#[test]
+fn a_destructured_tuple_of_vars_keeps_its_places() {
+    let head = "var x: int = 0\nvar y: int = 0\nvar h: *int\nmod M7(v: *int) { v = v + 1 }\nin go: exec\n";
+    assert_clean(&format!("{head}on go {{ let (p, q) = (x, y)\n M7(q)\n h = &p }}"));
+    assert_code(&format!("{head}on go {{ let (p, q) = (x + 1, y)\n M7(p) }}"), "WS008");
+    assert_code(
+        &format!("{head}mod pair() -> (a: int, b: int) {{ return x, y }}\non go {{ let (p, q) = pair()\n M7(q) }}"),
+        "WS008",
+    );
+}
+
+#[test]
+fn a_value_arm_of_a_statement_match_is_an_error() {
+    let head = "enum E { A, B }\ntype P = { x: int, y: int }\nvar e: E = E.A\nvar x: int = 0\nvar y: int = 0\n\
+                var s: P = { x: 0, y: 0 }\nin go: exec\n";
+    for arm in ["{ x, y }", "{ x: 1 }", "{ ...s }"] {
+        assert_code(&format!("{head}on go {{ match e {{ A => {arm}, B => {{ x = 1 }} }} }}"), "WS092");
+    }
+    assert_code(&format!("{head}on go {{ match e {{ A => {{ x, y }}, B => {{ x, y }} }} }}"), "WS092");
+    assert_clean(&format!("{head}on go {{ match e {{ A => {{ x = 2 }}, B => {{ x = 1 }} }} }}"));
+}
+
+#[test]
+fn a_name_starting_with_two_underscores_is_reserved() {
+    for src in [
+        "var __x: int = 0",
+        "let __y = 1",
+        "mod __m() { }",
+        "mod m(__p: int) { }",
+        "type __T = { a: int }",
+        "type T = { __a: int }",
+        "var r = { __a: 1 }",
+        "enum E { __A, B }",
+        "enum __E { A }",
+        "type T = { a: int }\nvar t: T = { a: 1 }\nout o: int = t.__disc",
+        "in go: exec\non go { let { a: __b } = { a: 1 } }",
+        "in __go: exec",
+    ] {
+        assert_code(src, "WS093");
+    }
+    assert_clean("var a__b: int = 0\nvar _c: int = 0");
+}
+
+#[test]
+fn a_ref_param_given_other_storage_reads_as_one_sentence() {
+    let r = tc("var s: string = \"\"\nmod set(p: *int) { p = 1 }\nin go: exec\non go { set(s) }");
+    let d = r.diagnostics.iter().find(|d| d.code == "WS003").expect("WS003");
+    assert!(d.message.contains("so it needs a `int` variable;") && !d.message.contains("  "), "{}", d.message);
+}
+
+#[test]
+fn a_nested_container_of_several_wire_elements_names_their_kind() {
+    for (decl, kind) in [
+        ("type P = { x: int, y: int }\nvar c: P[][]", "records"),
+        ("var c: (int, float)[][]", "tuples"),
+        ("enum S { A, B(int) }\nvar c: S[][]", "enums"),
+    ] {
+        let r = tc(&format!("{decl}\nin go: exec\non go {{ }}\n"));
+        let d = r.diagnostics.iter().find(|d| d.code == "WS025").expect("WS025");
+        assert!(d.message.contains(&format!("its elements are {kind},")), "{decl}: {}", d.message);
+    }
 }

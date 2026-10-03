@@ -31,7 +31,7 @@ Wirescript has a static type system that maps directly to Brickadia's wire graph
 
 ### `exec` Type
 
-The `exec` type represents an execution trigger signal. It is not a data value -- it represents "this event fired" or "this code path should execute." Inputs of type `exec` are used as handler triggers:
+The `exec` type represents an execution trigger signal. It is not a data value. It represents "this event fired" or "this code path should execute." Inputs of type `exec` are used as handler triggers:
 
 ```wirescript
 in reset: exec
@@ -45,14 +45,14 @@ on reset {
 
 | Type | Description |
 |------|-------------|
-| `any` | Universal type -- compatible with everything, but can't back a variable gate's storage. See [`any` Type](#any-type) below. |
-| `never` | Bottom type -- no value inhabits this type. Used internally. |
+| `any` | Universal type, compatible with everything, but can't back a variable gate's storage. See [`any` Type](#any-type) below. |
+| `never` | Bottom type: no value inhabits this type. Used internally. |
 
 ### `any` Type
 
-`any` is a wildcard annotation for a value that flows through a wire without the checker pinning down (or caring about) its concrete type: `test & 1`, `test == "x"`, and every other operator overload still resolve against whatever operand type is on the other side, instead of erroring the way an actually-unknown type would. The tradeoff is spelled out by the name -- an `any` value works anywhere, but its side effects are on you: the checker can't warn you if the operator that ends up selected wasn't the one you meant.
+`any` is a wildcard annotation for a value that flows through a wire without the checker pinning down (or caring about) its concrete type: `test & 1`, `test == "x"`, and every other operator overload still resolve against whatever operand type is on the other side, instead of erroring the way an actually-unknown type would. The tradeoff is spelled out by the name. An `any` value works anywhere, but its side effects are on you: the checker can't warn you if the operator that ends up selected wasn't the one you meant.
 
-For a `mod` parameter that just passes a value through, prefer a [generic type parameter](#generics) (`<T>`) over `any` -- it keeps the checker's help instead of erasing the type. See [`any` vs. a Generic Parameter](#any-vs-a-generic-parameter).
+For a `mod` parameter that just passes a value through, prefer a [generic type parameter](#generics) (`<T>`) over `any`, because it keeps the checker's help instead of erasing the type. See [`any` vs. a Generic Parameter](#any-vs-a-generic-parameter).
 
 `any` is valid wherever a value just passes through:
 
@@ -63,7 +63,7 @@ mod f(v: any) { ... }    // mod parameter
 chip C(v: any) -> (r: any) { out r = v }  // chip parameter / output
 ```
 
-It is **not** valid as a variable gate's storage type, because a Variable gate needs one concrete wire variant to hold -- `any` has none:
+It is **not** valid as a variable gate's storage type, because a Variable gate needs one concrete wire variant to hold, and `any` has none:
 
 ```wirescript
 var foo: any = 0          // ERROR: 'any' cannot be stored
@@ -72,13 +72,13 @@ var foo: any[]          // ERROR: same
 buffer foo: any = 0       // ERROR: same
 ```
 
-An **unannotated** `var` or `buffer` is unaffected -- its placeholder type is refined from the initializer (or left as the internal "unknown" fallback), never `any`, so it never trips this rejection.
+An **unannotated** `var` or `buffer` is unaffected: its placeholder type is refined from the initializer (or left as the internal "unknown" fallback), never `any`, so it never trips this rejection.
 
 ### Object references & assets
 
-`entity`, `character`, `controller` are all **object references** -- a wire carries a handle to a game object, not a copy of it. **Asset references** (`$AssetType/AssetName`, e.g. `$BrickAudioDescriptor/BA_MUS_…`) are object references too: each lowers to its own reference gate (an `AudioReference` brick, and so on) whose output is wired wherever you use it.
+`entity`, `character`, `controller` are all **object references**: a wire carries a handle to a game object, not a copy of it. **Asset references** (`$AssetType/AssetName`, e.g. `$BrickAudioDescriptor/BA_MUS_…`) are object references too: each lowers to its own reference gate (an `AudioReference` brick, and so on) whose output is wired wherever you use it.
 
-Because they share the same underlying object wire variant, an `entity[]` array (or an object-typed `var`) can hold any of them -- including asset references:
+Because they share the same underlying object wire variant, an `entity[]` array (or an object-typed `var`) can hold any of them, including asset references:
 
 ```wirescript
 var songs: entity[]
@@ -88,7 +88,7 @@ on load {
 }
 ```
 
-**References can't be inlined into an initializer.** A constant `var` initializer (`= [...]`) only bakes *value* literals (`int` / `float` / `bool` / `string` / `vector` / …) into the gate. An object reference must be wired in from its own brick, so it can't sit in a constant initializer -- build the array with `.push(...)` inside an exec handler instead. Writing `var songs: entity[] = [$Asset/…]` silently drops the elements, and the compiler warns (`WS024`).
+**References can't be inlined into an initializer.** A constant `var` initializer (`= [...]`) only bakes *value* literals (`int` / `float` / `bool` / `string` / `vector` / …) into the gate. An object reference must be wired in from its own brick, so it can't sit in a constant initializer. Build the array with `.push(...)` inside an exec handler instead. Writing `var songs: entity[] = [$Asset/…]` silently drops the elements, and the compiler warns (`WS024`).
 
 ### `zone` & `teleport` references
 
@@ -99,12 +99,12 @@ on load {
 
 These are **reference-only** types: a wire carries a handle to a component, not
 a value. They can be passed as `in` ports, mod/chip parameters, and rerouted
-anywhere -- but, unlike a [`*T` ref value](#reference-values), which can be
+anywhere. But unlike a [`*T` ref value](#reference-values), which can be
 stored, selected and compared, a `zone`, `teleport` or prefab reference can
 **not** be:
 
-- **stored** in a `var` / `buffer` (`WS025`) -- there is no wire variant that holds one;
-- **selected** with an if-then-else (`WS031`) -- the Select gate routes a *value*, and these have none;
+- **stored** in a `var` / `buffer` (`WS025`), because there is no wire variant that holds one;
+- **selected** with an if-then-else (`WS031`), because the Select gate routes a *value*, and these have none;
 - operated on (arithmetic, comparison, string-format).
 
 ```wirescript
@@ -117,14 +117,14 @@ on ZoneEntered(zone = z) -> (character) {   // wire the zone into the event
 }
 ```
 
-To teleport an entity to a raw **position** (a vector), use `SetLocation` -- the `Teleport` gates require a teleport point, not a coordinate.
+To teleport an entity to a raw **position** (a vector), use `SetLocation`. The `Teleport` gates require a teleport point, not a coordinate.
 
 ### The `null` literal
 
 `null` is a polymorphic literal that adopts its target type and produces that
 type's zero value: an unset object for `entity`/`character`/`controller`, `0` for
 a number, `false` for `bool`, `""` for `string`, the zero vector / rotation /
-color. It needs a known target type -- a `var`/`out` annotation, an assignment, a
+color. It needs a known target type: a `var`/`out` annotation, an assignment, a
 call argument, or a record field:
 
 ```wirescript
@@ -139,15 +139,15 @@ var slot: Slot = { owner: null, count: null }
 
 `null` is only valid for a value type. A container, record, or reference-only
 type (`int[]`, `Map<K, V>`, a record, `zone`) has no null value and reports
-`WS051` -- use its own empty form (`[]`, `{}`) instead. A `*T` var or element
-that was never assigned is null -- see [Reference values](#reference-values).
+`WS051`. Use its own empty form (`[]`, `{}`) instead. A `*T` var or element
+that was never assigned is null (see [Reference values](#reference-values)).
 A bare `let x = null` with no target types as `any`.
 
 ## Compound Types
 
 ### Reference Types (`ref T`)
 
-A `ref T` is a reference to a mutable variable of type `T`. Variables declared with `var` have type `ref T` internally -- this is how the wire graph tracks that they are mutable storage rather than pure signal values.
+A `ref T` is a reference to a mutable variable of type `T`. Variables declared with `var` have type `ref T` internally. This is how the wire graph tracks that they are mutable storage rather than pure signal values.
 
 ```wirescript
 var count: int = 0  // count has type ref int internally
@@ -176,7 +176,7 @@ mod slide(a: *int, b: *int) { ... }
 #### A ref to a record, tuple, or enum refs its parts
 
 A record has no single wire to point at: stored, it becomes one backing gate per
-field. So `*T` on a record **distributes over the fields** -- `*{ a: float, b:
+field. So `*T` on a record **distributes over the fields**: `*{ a: float, b:
 float }` means `{ a: *float, b: *float }`. This is what lets a chip or mod write
 through to the caller's record:
 
@@ -232,6 +232,32 @@ on ReadBrickGrid() {
 
 **A null ref halts the chain.** A `*T` var or element that was never assigned holds a null ref. Reading or writing through it stops the exec chain in game, with no message. A `*T` var declared inside a handler must have an initializer (`WS025`), since a local var resets every run and a ref has no literal to reset to.
 
+#### Places and ref values in a record
+
+A record's `*T` field is one of two things, fixed by where the record comes from:
+
+- A **place** names a var. A field filled from a var (`{ cpsr }`, `{ p: n }`) or from a `*T` parameter is a place, and so is every `*T` field of a record parameter. A place reads as its var's value (`cpu.cpsr + 1`) and binds a `*T` parameter to that var, and `&` of it is that var's ref. It stays a place through a `let`, a field (`let s = o.c`), a tuple element, a destructuring pattern and an `import * as` namespace.
+- A **ref value** carries a ref, as a `*T` var does. A field filled from `&x`, from a var holding a ref, or from an array element, map read or event field is a ref value, and so is every `*T` field of a call's result and of a record an `if` or `match` chooses: a place that a `mod` or `chip` returns leaves it as that place's ref. A ref value reads as the ref (`*r.p` reads through it, `r.p + 1` is `WS004`) and binds a `*T` parameter to the var it points at.
+
+`&r` of a whole record is a record of refs, one per field, as `*` on a record type distributes over its fields: after `let x = &r`, `*x.a` reads `r.a`.
+
+A record parameter's fields stay places whatever the caller passes. A ref value there makes the field the var the ref points at, so it reads and writes that var in an exec context; a pure read of it is `WS006`, as for any runtime ref.
+
+```wirescript
+type R = { p: *int }
+var a: int = 0
+var n: int = 0
+mod bump(q: R) { q.p = q.p + 1 }
+mod pick() -> R { return { p: &a } }
+
+on ReadBrickGrid() {
+  bump({ p: a })            // a place: bumps a
+  bump({ p: &a })           // a ref value: bumps a too
+  let r = pick()
+  n = *r.p + 1              // a call's result carries the ref
+}
+```
+
 #### Arrays of arrays
 
 An array or map is only ever handled by reference, so an array value is its own ref. It is used directly: `&` is optional and `*` is an error (`WS085`).
@@ -254,8 +280,7 @@ on ReadBrickGrid() {
 
 Maps work the same way, as values (`Map<string, int[]>`, `Map<string, *color>`), though not as keys.
 
-A map nested in a map needs a space between the two closing brackets, since the
-parser reads `>>` as the shift operator: write `Map<string, Map<string, int> >`.
+A map nested in a map closes with `>>`, as in `Map<string, Map<string, int>>`, and the closing `>` may run straight into an initializer's `=` (`var m: Map<string, int>= {}`).
 
 ### Bricks
 
@@ -297,7 +322,7 @@ Assignment also works directly: `scores[i] = 42`.
 ### Map Types (`Map<K, V>`)
 
 A `Map<K, V>` is a keyed collection, backed by a `MapVar` gate. Like an array,
-it is stored in a `var` and starts empty — build it at runtime from an exec
+it is stored in a `var` and starts empty. Build it at runtime from an exec
 handler:
 
 ```wirescript
@@ -305,13 +330,13 @@ var scores: Map<string, int>
 ```
 
 The **key type `K` must be `int`, `string`, or an object reference**
-(`entity` / `character` / `controller`) — a map is keyed by a hashed slot, and
+(`entity` / `character` / `controller`), because a map is keyed by a hashed slot, and
 only those types have a slot representation. Any other key type is a **`WS039`**
 error. The value type `V` may be any storable variant.
 
 Maps are read and written through their methods (`get`, `set`, `has`, `remove`,
-`clear`, `copyFrom`, `length`, `keys`, `values`), which run in exec context —
-see the map-method table in [builtins.md](builtins.md) and the
+`clear`, `copyFrom`, `length`, `keys`, `values`), which run in exec context.
+See the map-method table in [builtins.md](builtins.md) and the
 [Maps statement section](statements.md#maps----var-name-mapk-v).
 
 ### Tuple Types (`(A, B, C)`)
@@ -344,7 +369,7 @@ type Point = { x: int, y: int }
 type State = { counter: *int, label: string }
 ```
 
-A record **value** -- a `let` binding, a record literal, a chip's multi-output result -- is a compile-time abstraction: it generates no gates, and each field resolves directly to its underlying binding (variable reference, local value, array, etc.). A record used as **storage** (a `var`, array, or map) is the exception -- see [Records as storage](#records-as-storage) below.
+A record **value** (a `let` binding, a record literal, a chip's multi-output result) is a compile-time abstraction: it generates no gates, and each field resolves directly to its underlying binding (variable reference, local value, array, etc.). A record used as **storage** (a `var`, array, or map) is the exception (see [Records as storage](#records-as-storage) below).
 
 **Interior mutability with `*T` fields**: A record field of type `*int` (or `ref int`) holds a reference to a mutable variable. Writing through the field mutates the original variable:
 
@@ -355,7 +380,7 @@ let s: State = { val: n }
 on RoundStart() { s.val = 42 }  // writes to n
 ```
 
-Nested records work as expected -- field access chains resolve through each level:
+Nested records work as expected: field access chains resolve through each level:
 
 ```wirescript
 type Inner = { x: *int }
@@ -371,7 +396,7 @@ on RoundStart() { o.inner.x = 42 }  // writes to x
 A record can back a `var`, an array, or a map. It decomposes into one storage
 gate **per field** (recursing through nested records), and every operation fans
 out across those per-field gates. This is what lets a record be mutated, indexed,
-and kept across ticks -- a plain record *value* cannot.
+and kept across ticks, which a plain record *value* cannot.
 
 ```wirescript
 type Point = { x: int, y: int }
@@ -410,7 +435,7 @@ var grid: Map<int, Point> = { 0 => { x: 5, y: 6 } }   // x-map {0:5}, y-map {0:6
 ```
 
 **Struct-of-arrays access.** Because a record array is *stored* as one array per
-field, that field's array is directly reachable as `pts.field` -- a real
+field, that field's array is directly reachable as `pts.field`, a real
 `T[]` you can index (`pts.x[i]`), read (`pts.x.length()`, `pts.x.sum()`,
 `pts.x.min()`, `pts.x.find(v)`), or pass on. Sorting is special-cased so it stays
 safe: `pts.field.sort(descending?)` sorts the WHOLE record BY that field,
@@ -451,11 +476,11 @@ tag and each slot alongside it.
 
 An arm that is itself a **call** splits the same way. A record-returning `mod`
 contributes its record's fields, and a multi-output gate contributes one leaf
-per output port -- so `let c = if hit then m.get(a) else m.get(b)` gives `c` a
+per output port, so `let c = if hit then m.get(a) else m.get(b)` gives `c` a
 real `Value` and a real `Found`, each chosen by its own `Select`.
 
 **Which fields are allowed.** Every leaf field must be a value the wire graph can
-store -- a number, `bool`, `string`, `vector`/`rotator`/`color`, an entity type,
+store: a number, `bool`, `string`, `vector`/`rotator`/`color`, an entity type,
 or a nested record/array/map. A reference-only field (`*T`, `zone`, `teleport`, a
 prefab reference) or an `exec` field cannot be stored, and a record with one is
 rejected with `WS049`. (A record *value* may still carry a `*T` field for interior
@@ -473,9 +498,22 @@ parameter or output), since a pin carries one reference. Pass it to a `mod`
 instead. A record literal that initializes or is assigned to a record variable
 fills its container fields the same way the field assignments would
 (`h = { pts: [{ x: 1, y: 2 }], m: { "a": 1 }, n: 0 }`), and a `...spread`
-supplies every field it names. Inside a handler, a record `var` with an
-initializer is reset to it every run, like a scalar or container `var`; a
-`static var` keeps its baked initializer.
+supplies every field it names. A record assignment is a parallel assignment:
+its sources are evaluated in source order and every field sees the values from
+before the assignment, so `p = { x: p.y, y: p.x }` swaps, and a value computed
+from a `let` that reads the record is held before the first field is written.
+As everywhere (see [Evaluation Order](expressions.md#evaluation-order)), a
+record literal's fields are evaluated in source order and each keeps its value,
+so `{ x: q, y: bump() }` keeps the `q` from before `bump()`. A container
+field is copied when its write runs rather than read up front: a container copied
+from one the assignment also replaces is copied first, two copied from each other
+(`h = { pts: h.qs, qs: h.pts }`) are `WS087`, and one that a later field's code may
+change first (`h = { ps: src, n: popper() }`, where `popper` clears `src`) is
+`WS089`; a write through a ref, an array element or a parameter pin may change
+any container of its kind. Inside a handler,
+a record `var` with an initializer is reset to it every run, like a scalar or
+container `var`, and one without resets each scalar field to its zero value, as
+`var x: int` does; a `static var` keeps its baked initializer.
 
 **Container operations.** A record array supports `push`, `pop`, `insert`,
 `remove`, `fill`, `resize`, `swap`, `reverse`, `clear`, `length`, and element
@@ -486,7 +524,7 @@ whole sub-record at that index. Operations that
 reorder elements by *value* (`sort`, `shuffle`), fold *over* whole records
 (`sum`/`min`/`max`/`average`), or need a matching second container
 (`append`/`copyFrom`/`slice`) have no per-field meaning and are rejected with
-`WS050` -- index a scalar field instead. A record map supports `set`, `get`,
+`WS050`. Index a scalar field instead. A record map supports `set`, `get`,
 `has`, `remove`, `clear`, `length`, `keys`, and `m[k]` access, with the same
 depth of nested-field access (`m[k].inner.a`, `m[k].inner`). A map **key**
 cannot be a record (`WS039`); keys must be a single wire value.
@@ -527,14 +565,14 @@ Union syntax is also how a [generic bound](#constraint-classes-bounds) names
 an ad hoc set of types (`<T: int | vector>`).
 
 Note that an `if`-then-else expression does **not** produce a union of its
-branch types -- it *widens* them to a single common type instead (see
+branch types. It *widens* them to a single common type instead (see
 [Widening Inference](#widening-inference) and the
 [if-expression note](expressions.md#conditional-expressions-if-then-else)).
 `if condition then 42 else 3.14` has type `float`, not `int | float`.
 
 ### Enum Types
 
-An `enum` is a **nominal** type with a fixed set of named variants -- unlike
+An `enum` is a **nominal** type with a fixed set of named variants. Unlike
 `Type::Union` above (which is structural: any value of a matching type
 qualifies), two enums stay distinct types even if their variants look the
 same. A variant can be a bare unit or carry a payload, which makes `enum` how
@@ -554,7 +592,7 @@ generic enums, and the built-in `Option`/`Result`.
 
 ## Generics
 
-`mod` and `chip` declarations can take type parameters -- one implementation
+`mod` and `chip` declarations can take type parameters: one implementation
 that specializes per call site instead of one copy per concrete type. A
 generic `mod` **inlines and monomorphizes** at each call: the compiler infers
 the concrete type(s) from the arguments and emits concrete gates for that
@@ -600,7 +638,7 @@ There are three built-in classes, and unbounded `<T>` means `<T: Variant>`:
 | `Numeric` | `int`, `float`, `vector`, `rotator`, `quat`, `color` |
 | `Variant` | `Numeric` + `bool`, `string`, `entity`, `character`, `controller` (all value variants) |
 
-`Scalar ⊆ Numeric ⊆ Variant`. Note `bool` is only a member of `Variant` --
+`Scalar ⊆ Numeric ⊆ Variant`. Note `bool` is only a member of `Variant`:
 `Scalar` and `Numeric` are strictly numeric-math types, and a bounded call
 with a `bool` argument is rejected:
 
@@ -622,17 +660,22 @@ mod pickAxis<T: int | vector>(v: T) -> T {
 }
 ```
 
+A union bound may name an [enum](enums.md) or a record type, which an unbounded
+`<T>` never admits. The body is still checked for every member, so `match`,
+`is` or `.Discriminant` on a `T` that may be `int` is `WS066`, and `==` on one
+that may be an enum is `WS004`.
+
 ### Widening Inference
 
 `T` is inferred as the **join** (least upper bound) of all the arguments'
-types, over a widening-only lattice -- there's no narrowing:
+types, over a widening-only lattice, with no narrowing:
 
 - Numeric types widen toward the wider type: `int` widens to `float`, so
   `pick(flag, 1, 2.0)` infers `T = float` (the `int` argument casts up).
 - Object types widen toward `entity`: `character` and `controller` both
   widen to `entity`, so `pick(flag, aCharacter, aController)` infers
   `T = entity`.
-- Incompatible operands -- e.g. `int` and `vector` -- have no common
+- Incompatible operands (e.g. `int` and `vector`) have no common
   widening and are a compile error (`WS033`):
 
 ```wirescript
@@ -644,13 +687,13 @@ let bad = pick(true, n, v)
 ```
 
 The same join is used by the built-in blend-family gates (`Blend`, `lerp`,
-`Easing`) and by [`if`-then-else expressions](expressions.md#conditional-expressions-if-then-else) --
-see the widening note there.
+`Easing`) and by [`if`-then-else expressions](expressions.md#conditional-expressions-if-then-else).
+See the widening note there.
 
 ### Body Checking Is Per-Mask-Member
 
 A generic mod's body is type-checked against **every** type in its bound's
-mask -- not just the types it happens to be called with -- so the body must
+mask, not just the types it happens to be called with, so the body must
 be valid for the whole bound, not only your call sites. This is the most
 common gotcha: `<T: Numeric>` includes `rotator`, and an operator that isn't
 defined between `rotator` and a bare `int` literal fails the definition
@@ -660,13 +703,13 @@ itself, even if you never call the mod with a `rotator`:
 mod addOne<T: Numeric>(v: T) -> T {
   return v + 1
 }
-// ERROR WS004: no overload for '+' on Rotator, Int -- rejected at the
+// ERROR WS004: no overload for '+' on rotator, int -- rejected at the
 // DEFINITION, because `Numeric` includes `rotator` and `rotator + int`
 // has no overload, even though every actual call site below uses `int`.
 ```
 
 Narrow the bound to `Scalar` when the body only needs `int`/`float`
-semantics -- `v + 1` is valid for every `Scalar` member, so this is clean:
+semantics: `v + 1` is valid for every `Scalar` member, so this is clean:
 
 ```wirescript
 mod addOne<T: Scalar>(v: T) -> T {
@@ -684,6 +727,29 @@ mod square<T: Numeric>(v: T) -> T {
 }
 ```
 
+The same holds for a method: an unbounded `T` may be a `bool`, so a string
+method on it is rejected at the definition however the mod is called. Bound
+`T` to the type the body needs:
+
+```wirescript
+mod size<T>(v: T) -> int {
+  return v.Length()
+}
+// ERROR WS003: `.Length()` is a string method, and `T` is unbounded, so `v`
+// may be a `bool`; bound it: `<T: string>`
+
+mod textSize<T: string>(v: T) -> int {
+  return v.Length()   // OK
+}
+```
+
+With several type parameters the combinations multiply. Past 64 of them the
+body is checked for a sample (each parameter varied across its bound while the
+others stay fixed) and for every combination a call uses, including calls from
+inside other generic bodies, so an error only a called combination has is
+still reported at the definition. Calls that use more than 1024 combinations
+beyond the ones the bounds cover are `WS096`.
+
 ### Ref Parameters
 
 A `*T` (or `ref T`) parameter infers `T` through the reference:
@@ -696,7 +762,7 @@ mod swap<T>(a: *T, b: *T) {
 }
 ```
 
-The same per-mask-member body checking applies -- a ref-param body that only
+The same per-mask-member body checking applies: a ref-param body that only
 assigns is fine unbounded (valid for every `Variant` member), but one that
 does arithmetic on the referenced value needs a `Scalar` bound for the same
 reason `addOne` does above:
@@ -709,7 +775,7 @@ mod inc<T: Scalar>(v: *T) {
 
 ### `any` vs. a Generic Parameter
 
-[`any`](#any-type) erases the type entirely -- the checker can't validate
+[`any`](#any-type) erases the type entirely, so the checker can't validate
 operators against it and can't tell you when you've made a mistake. A
 generic parameter keeps the type information and validates the body against
 the bound, so prefer a generic `mod` (`<T>` or `<T: Bound>`) over `any` for
@@ -729,6 +795,20 @@ An alias must be **fully applied** (`Pair` alone, or `Pair<int, float>` on a
 one-parameter alias, is a `WS002` error) and **non-recursive** (`type L<T> =
 { tail: L<T> }` is rejected, not hung).
 
+Every alias body, generic or not, is read where the alias is declared. A
+generic `mod` whose type parameter is named `T` hides an alias `T` only in what
+the `mod` itself writes, never inside another alias it uses, and a library's
+aliases are the library's own: a body imported from it reads its `F`, whatever
+the importing file calls `F`. Enums are read the same way: a library names the
+enums it declares or imports, and never one only its importer declares.
+
+A program's own type named like a builtin generic is the program's wherever it
+is declared: `type Map<K, V> = { k: K, v: V }` makes `Map<int, int>` that
+record, in every stage of the compiler. `Array<T>` and `Ref<T>` are how `T[]`
+and `*T` are written, so a `type` or `enum` named `Array` or `Ref` with one type
+parameter could never be named, and is a `WS107` error; with another number of
+type parameters it is the program's own type, as `Map` is.
+
 ### Explicit type arguments
 
 `T` is normally inferred from the arguments, but you can pin it explicitly with
@@ -740,7 +820,7 @@ let z = zero<vector>()          // REQUIRED: T appears only in the return
 ```
 
 Explicit type arguments are the only way to call a mod whose type parameter
-can't be inferred from its arguments -- e.g. a `T` that appears only in the
+can't be inferred from its arguments, e.g. a `T` that appears only in the
 return type (`mod zero<T>() -> T`). They are checked like inferred ones: the
 count must match the type parameters, and each must satisfy its bound
 (`zero<string>()` on a `<T: Numeric>` is a `WS033` error); type arguments on a
@@ -748,7 +828,7 @@ non-generic function are an error too, and on a builtin they are ignored with a
 `WS037` warning (a builtin's result type is derived from its arguments).
 
 Parsing note: `f<int>(...)` is read as a type-argument list only when the
-`<...>` is a valid list of types immediately followed by `(` -- a plain `a < b`
+`<...>` is a valid list of types immediately followed by `(`. A plain `a < b`
 comparison (or `a < b > c`) is never mistaken for it.
 
 
@@ -765,7 +845,17 @@ var y: int = true      // bool -> int: OK (true=1, false=0)
 var z: float = false   // bool -> float: OK
 ```
 
-Because `bool` coerces to `int` automatically, you do not need `if x then 1 else 0` -- just use the bool directly where an int is expected. The `if/then/else` form is only needed when you want specific non-0/1 scalar values:
+A float constant that is the whole value of an `int` place is the integer it
+truncates to: `var n: int = 2.5` and `const K: int = 2.5` both hold 2, with a
+`WS106` warning that the fraction is dropped. The constant is then an integer
+wherever it goes, so `var u = K` declares an `int` and `u / 4` divides as
+integers. The same holds for a chip argument, a field of a record or tuple
+literal, an element and a return. Custom-event data is no `int` place: a float
+constant sent to a receiver that declares `int` is sent as the float, and
+`WS030` warns of the mismatch. A float constant no `int` holds (`1e30`) is a
+`WS028` error.
+
+Because `bool` coerces to `int` automatically, you do not need `if x then 1 else 0`. Just use the bool directly where an int is expected. The `if/then/else` form is only needed when you want specific non-0/1 scalar values:
 
 ```wirescript
 let count = a + b + c            // bools coerce to 0/1 automatically
@@ -774,8 +864,8 @@ let weight = if heavy then 10 else 1  // need if/then for non-0/1 values
 
 ### Rotation Coercion (Bidirectional)
 
-Both carry their components as `float` fields — `.pitch` `.yaw` `.roll` on a
-`rotator`, `.x` `.y` `.z` `.w` on a `quat` — read through the split gates
+Both carry their components as `float` fields (`.pitch` `.yaw` `.roll` on a
+`rotator`, `.x` `.y` `.z` `.w` on a `quat`), read through the split gates
 described in [Field Access](expressions.md#vector--color--rotation-components).
 
 A `rotator` (euler) and a `quat` (quaternion) are interchangeable rotation values
@@ -802,7 +892,7 @@ The following types format to string: `bool`, `int`, `float`, `string`, `vector`
 
 ### String Coercion to Bool -- empty is false
 
-A `string` coerces to `bool` wherever a bool is expected -- a condition, a `bool`-typed `let`/`var`, a bool-typed port or chip/mod param. The semantics are exactly `s != ""`, and the compiler inserts a real `CompareNotEqual(s, "")` gate at every such coercion point:
+A `string` coerces to `bool` wherever a bool is expected: a condition, a `bool`-typed `let`/`var`, a bool-typed port or chip/mod param. The semantics are exactly `s != ""`, and the compiler inserts a real `CompareNotEqual(s, "")` gate at every such coercion point:
 
 ```wirescript
 in name: string
@@ -819,15 +909,15 @@ let hasName: bool = name   // also `name != ""`
 | `""` | `false` |
 | anything else (including `"0"`, `"false"`, `" "`) | `true` |
 
-String *literals* in bool positions (`var v: bool = "0"`, `array flags: bool[] = ["x", ""]`, `Select("0", a, b)`) are converted at compile time by the same `!= ""` law -- the baked value is already a bool, so `"0"` bakes as `true`.
+String *literals* in bool positions (`var v: bool = "0"`, `array flags: bool[] = ["x", ""]`, `Select("0", a, b)`) are converted at compile time by the same `!= ""` law: the baked value is already a bool, so `"0"` bakes as `true`.
 
-The rule is deliberately simple: **only the empty string is false**. This differs from the game's *native* bool-port behavior, which is content-aware -- a string wired manually into a bool port (e.g. via an [`any`](#any-type)-typed value, whose erased type skips the coercion, or through the logical operators' native string overloads) is read by the gate itself, where `""`, `"0"`, and `"false"` are all falsy. That native law is certified per build against the in-game gate-semantics table -- the same certification that drives constant folding of conditions, see [folding.md](folding.md). If you want the content-aware behavior, wire it manually; if you write `if someString`, you get the deterministic `!= ""`.
+The rule is deliberately simple: **only the empty string is false**. This differs from the game's *native* bool-port behavior, which is content-aware: a string wired manually into a bool port (e.g. via an [`any`](#any-type)-typed value, whose erased type skips the coercion, or through the logical operators' native string overloads) is read by the gate itself, where `""`, `"0"`, and `"false"` are all falsy. That native law is certified per build against the in-game gate-semantics table, the same certification that drives constant folding of conditions (see [folding.md](folding.md)). If you want the content-aware behavior, wire it manually; if you write `if someString`, you get the deterministic `!= ""`.
 
-This direction is one-way -- `bool` to `string` still goes through the format gate above and renders `"true"`/`"false"` text, not the other way around.
+This direction is one-way: `bool` to `string` still goes through the format gate above and renders `"true"`/`"false"` text, not the other way around.
 
 ### Pulsing Coercion to Exec
 
-Value types that "pulse" (change over time) can trigger exec inputs. This means `bool`, `int`, `float`, `vector`, `entity`, `character`, and `controller` values can be connected to `exec` inputs -- the exec fires whenever the value changes:
+Value types that "pulse" (change over time) can trigger exec inputs. This means `bool`, `int`, `float`, `vector`, `entity`, `character`, and `controller` values can be connected to `exec` inputs: the exec fires whenever the value changes:
 
 ```wirescript
 // A bool value can trigger a handler
@@ -862,15 +952,15 @@ var y: float = 0.0
 | `float` | `bool` | Coerce |
 | `character` | `entity` | Coerce (subtype) |
 | `controller` | `entity` | Coerce |
-| `entity` | `character` | Coerce (wired directly — an entity wire can carry a player, e.g. a sweep hit) |
+| `entity` | `character` | Coerce (wired directly, since an entity wire can carry a player, e.g. a sweep hit) |
 | `entity` | `controller` | Coerce (wired directly) |
 | `character` | `controller` | Coerce (wired directly) |
 | `controller` | `character` | Coerce (wired directly) |
 | `rotator` | `quat` | Coerce (interchangeable rotation values) |
 | `quat` | `rotator` | Coerce |
 | any primitive | `string` | Via format gate |
-| `string` | `bool` | Coerce (compiler inserts `!= ""` -- only empty is false) |
-| `exec` | `bool` | Coerce (true for one frame) |
+| `string` | `bool` | Coerce (compiler inserts `!= ""`, so only empty is false) |
+| `exec` | `bool` | Coerce (true for one frame) as a condition, a logical operator's operand or an `on` trigger; stored or passed as a `bool`, `WS003` (see [Logical Operators](expressions.md#logical-operators)) |
 | `bool`/`int`/`float`/`vector`/`entity`/`character`/`controller` | `exec` | Pulsing coerce |
 | `ref T` | `ref U` (T != U) | **Mismatch** |
 | `any` | anything | Same |

@@ -140,7 +140,7 @@ fn parse_variant(s: &str) -> InVariant {
         "quat" => InVariant::Quat,
         "tmpl" => InVariant::Tmpl,
         other => panic!(
-            "data/gate_semantics.json: unrecognized operand variant tag {other:?} — \
+            "data/gate_semantics.json: unrecognized operand variant tag {other:?}: \
              stale/unsupported probe shape, table.rs needs updating"
         ),
     }
@@ -151,11 +151,11 @@ fn parse_variant(s: &str) -> InVariant {
 /// text isn't shaped like a constructor call.
 fn split_ctor(raw: &str) -> (&str, Vec<f64>) {
     let open = raw.find('(').unwrap_or_else(|| {
-        panic!("malformed composite constructor {raw:?}: no '(' — stale table shape?")
+        panic!("malformed composite constructor {raw:?}: no '(', stale table shape?")
     });
     assert!(
         raw.ends_with(')'),
-        "malformed composite constructor {raw:?}: no trailing ')' — stale table shape?"
+        "malformed composite constructor {raw:?}: no trailing ')', stale table shape?"
     );
     let name = &raw[..open];
     let inner = &raw[open + 1..raw.len() - 1];

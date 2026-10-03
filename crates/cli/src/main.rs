@@ -65,18 +65,21 @@ enum Command {
     },
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() {
     // Wirescript lowering recurses in proportion to program size, so a large
     // module can overflow the default main-thread stack (RUST_MIN_STACK only
     // affects spawned threads, not main). Run the work on a worker thread with a
     // big stack so large programs compile.
-    std::thread::Builder::new()
+    let result = std::thread::Builder::new()
         .stack_size(1024 * 1024 * 1024) // 1 GiB (reserved, not committed)
         .spawn(|| run().map_err(|e| e.to_string()))
         .expect("failed to spawn compile thread")
         .join()
-        .expect("compile thread panicked")
-        .map_err(|e| e.into())
+        .expect("compile thread panicked");
+    if let Err(e) = result {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
@@ -191,7 +194,11 @@ fn report_diagnostics(diags: &[wirescript::Diagnostic], verbose: bool) {
         };
         eprintln!(
             "{color}{label}[0m [{}] {} ({}:{}:{})",
-            d.code, d.message, d.range.file, d.range.start.line, d.range.start.col
+            d.code,
+            d.message,
+            wirescript::diagnostic::display_path(&d.range.file),
+            d.range.start.line,
+            d.range.start.col
         );
     }
 }

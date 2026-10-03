@@ -8,12 +8,121 @@ fn plus_equals_uses_incvar() {
         "+= should lower to Exec_Var_Increment");
 }
 
+/// What one `Var_Increment` adds: a constant baked onto it or wired from a
+/// `_Literal`, or the node wired into its `Value` (through a `MathNegate`,
+/// the negate's own input).
+#[derive(Debug, PartialEq)]
+enum Amount {
+    Literal(crate::ir::Literal),
+    Wired(crate::ir::NodeId),
+    Negated(crate::ir::NodeId),
+}
+
+fn increment_amounts(r: &LowerResult) -> Vec<Amount> {
+    let source = |id: crate::ir::NodeId, port: WirePort| {
+        r.module
+            .wires
+            .iter()
+            .find(|w| w.target.node_id == id && w.target.port == port)
+            .map(|w| w.source.node_id)
+    };
+    let mut out = Vec::new();
+    for (id, n) in &r.module.nodes {
+        if n.gate_class != "BrickComponentType_Exec_Var_Increment" {
+            continue;
+        }
+        let Some(src) = source(*id, WirePort::Value) else {
+            out.push(Amount::Literal(n.properties.get(&crate::intern::sym::VALUE).cloned().expect("a baked amount")));
+            continue;
+        };
+        let s = &r.module.nodes[&src];
+        out.push(match s.gate_class {
+            crate::ir::gate_class::LITERAL => {
+                Amount::Literal(s.properties.get(&crate::intern::sym::VALUE).cloned().expect("literal value"))
+            }
+            "BrickComponentType_Expr_MathNegate" => Amount::Negated(source(src, WirePort::Input).expect("negated input")),
+            _ => Amount::Wired(src),
+        });
+    }
+    out
+}
+
+/// The input node named `name`.
+fn input_node(r: &LowerResult, name: &str) -> crate::ir::NodeId {
+    *r.module
+        .nodes
+        .iter()
+        .find(|(_, n)| {
+            n.kind == crate::ir::NodeKind::Input
+                && matches!(n.properties.get(&*crate::intern::sym::PORT_LABEL), Some(crate::ir::Literal::String(s)) if s == name)
+        })
+        .map(|(id, _)| id)
+        .expect("input node")
+}
+
+/// `n -= d` is `Var_Increment` by `-d`: a constant amount is negated where it
+/// is written, any other through one `MathNegate` that feeds the increment,
+/// never Get + Subtract + Set.
 #[test]
-fn minus_equals_uses_var_set() {
+fn minus_equals_uses_incvar_by_the_negated_amount() {
     let r = compile("in tick: exec\nvar n: int = 0\non tick { n -= 3 }");
     assert_no_errors(&r);
-    assert!(has_gate(&r, "BrickComponentType_Exec_Var_Set"),
-        "-= should lower to Var_Get + Sub + Var_Set");
+    assert!(!has_gate(&r, "BrickComponentType_Exec_Var_Set"));
+    assert!(!has_gate(&r, "BrickComponentType_Expr_MathSubtract"));
+    assert!(!has_gate(&r, "BrickComponentType_Expr_MathNegate"), "a constant is negated at compile time");
+    assert_eq!(increment_amounts(&r), vec![Amount::Literal(crate::ir::Literal::Int(-3))]);
+    let r = compile("in tick: exec\nin d: float\nvar n: float = 0.0\non tick { n -= d }");
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "BrickComponentType_Expr_MathSubtract"));
+    assert_eq!(increment_amounts(&r), vec![Amount::Negated(input_node(&r, "d"))]);
+    // The target on the right is a subtraction from it, not an increment.
+    let r = compile("in tick: exec\nin d: int\nvar n: int = 0\non tick { n = d - n }");
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "BrickComponentType_Exec_Var_Increment"));
+}
+
+/// An int var less a float, or a float var less an int, is not an increment:
+/// it keeps the subtraction and the store.
+#[test]
+fn minus_equals_across_int_and_float_keeps_the_subtraction() {
+    for src in [
+        "in tick: exec\nin f: float\nvar n: int = 0\non tick { n -= f }",
+        "in tick: exec\nin d: int\nvar n: float = 0.0\non tick { n -= d }",
+        "in tick: exec\nvar n: float = 0.0\non tick { n -= 1 }",
+    ] {
+        let r = compile(src);
+        assert_no_errors(&r);
+        assert!(!has_gate(&r, "BrickComponentType_Exec_Var_Increment"), "{src}");
+        assert!(!has_gate(&r, "BrickComponentType_Expr_MathNegate"), "{src}");
+        assert_eq!(gate_count(&r, "BrickComponentType_Expr_MathSubtract"), 1, "{src}");
+        assert_eq!(gate_count(&r, "BrickComponentType_Exec_Var_Set"), 1, "{src}");
+    }
+}
+
+/// `*x = *x + d` and `*x = *x - d` increment the var behind `x`, whether `x`
+/// is bound to it statically (a `*T` parameter given `&n`) or holds a ref, by
+/// `d` and `-d` respectively.
+#[test]
+fn a_self_update_through_a_ref_increments() {
+    let r = compile(
+        "in tick: exec\nin d: int\nvar n: int = 0\nvar h: *int\n\
+         mod inc(x: *int) { *x = *x + d }\nmod dec(x: *int) { *x = *x - d }\n\
+         on tick {\n  inc(&n)\n  dec(&n)\n  h = &n\n  *h = *h - 2\n  *h = *h + d\n}",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "BrickComponentType_Expr_MathSubtract"));
+    assert!(!has_gate(&r, "BrickComponentType_Expr_MathAdd"));
+    let d = input_node(&r, "d");
+    let mut got = increment_amounts(&r);
+    got.sort_by_key(|a| format!("{a:?}"));
+    let mut want = vec![
+        Amount::Wired(d),
+        Amount::Negated(d),
+        Amount::Literal(crate::ir::Literal::Int(-2)),
+        Amount::Wired(d),
+    ];
+    want.sort_by_key(|a| format!("{a:?}"));
+    assert_eq!(got, want);
 }
 
 #[test]

@@ -86,7 +86,8 @@ pub(super) fn is_enum_constant_arg(ctx: &TypeCheckCtx, enum_type: &str, e: &Expr
 /// Validate an argument bound to an enum-typed config param against the
 /// schema's member list. A bare identifier is an enum member (not a variable);
 /// an int is range-checked; anything else is rejected (config is constant-only).
-pub(super) fn validate_enum_config_arg(ctx: &mut TypeCheckCtx, enum_type: &str, e: &Expr) {
+/// `setting` names the argument as a diagnostic quotes it.
+pub(super) fn validate_enum_config_arg(ctx: &mut TypeCheckCtx, enum_type: &str, setting: &str, e: &Expr) {
     match e {
         Expr::Ident { name, range } => {
             if crate::catalog::enum_member_value(enum_type, name).is_none() {
@@ -119,7 +120,7 @@ pub(super) fn validate_enum_config_arg(ctx: &mut TypeCheckCtx, enum_type: &str, 
                 let members = crate::catalog::enum_member_names(enum_type).join(", ");
                 ctx.emit(
                     "WS028",
-                    format!("{value} is not a valid {enum_type} value; expected one of: {members}"),
+                    format!("{setting} cannot be {value}: it is not a valid {enum_type} value; expected one of: {members}"),
                     range.clone(),
                 );
             }
@@ -315,7 +316,7 @@ pub(super) fn validate_data_driven_config(
     e: &Expr,
 ) {
     if let Some(enum_type) = crate::catalog::config_field_enum_type(gate_class, &cfg.name) {
-        validate_enum_config_arg(ctx, enum_type, e);
+        validate_enum_config_arg(ctx, enum_type, &format!("setting `{}`", cfg.name), e);
         return;
     }
     match crate::lower::expr_to_literal_in(e, &ctx.const_lookup()) {

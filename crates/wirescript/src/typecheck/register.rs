@@ -2,13 +2,17 @@
 
 use super::*;
 
-/// A namespace value member built from a `let`, with `ty` as its value type.
-fn ns_let_member(ty: Option<Type>) -> NsDeclInfo {
+/// A namespace value member built from a destructuring `let`, with `ty` as its
+/// value type, bound as `name` by the pattern at `range`.
+fn ns_let_member(ty: Option<Type>, range: &SourceRange, name: &str) -> NsDeclInfo {
     NsDeclInfo {
         kind: SymbolKind::LetBinding,
         return_type: None,
+        outputs: Vec::new(),
         params: Vec::new(),
         value_type: ty,
+        let_decl: Some(super::let_binding::let_key(range, name)),
+        generic: None,
     }
 }
 
@@ -197,7 +201,7 @@ pub(super) fn register_builtin_enums(ctx: &mut TypeCheckCtx) {
                 event_data: None,
             },
         );
-        Arc::make_mut(&mut ctx.enum_defs).insert(def.name.clone(), def);
+        Arc::make_mut(&mut ctx.enum_defs).insert(def);
     }
 }
 
@@ -370,6 +374,17 @@ fn params_as_event_data(
         .collect()
 }
 
+/// The storage an anon-chip body statement declares in the scope it shares:
+/// its name and declaration.
+pub(super) fn anon_chip_storage_decl(s: &Stmt) -> Option<(&String, &SourceRange)> {
+    match s {
+        Stmt::Var(VarDecl { name, range, .. })
+        | Stmt::Buffer(BufferDecl { name, range, .. })
+        | Stmt::Array(ArrayDecl { name, range, .. }) => Some((name, range)),
+        _ => None,
+    }
+}
+
 /// Register what an anon-chip body contributes to the ENCLOSING scope. A chip
 /// shares its parent's scope, so its `var`/`buffer`/`array`/`in` declarations
 /// and its port sites name things there.
@@ -384,6 +399,12 @@ pub(super) fn register_anon_chip_decls(ctx: &mut TypeCheckCtx, stmts: &[Stmt]) {
             Stmt::Array(a) => register_decl(ctx, &TopDecl::Array(a.clone())),
             Stmt::In(i) => register_decl(ctx, &TopDecl::In(i.clone())),
             _ => {}
+        }
+        if let Some((name, range)) = anon_chip_storage_decl(s)
+            && ctx.scope.depth() == 1
+            && let Some(sym) = ctx.scope.lookup(name).filter(|sym| &sym.decl_range == range).cloned()
+        {
+            ctx.anon_chip_storage.insert((range.file.clone(), range.start.offset), sym);
         }
     }
     register_anon_chip_outputs(ctx, stmts);
@@ -414,14 +435,24 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 // No annotation: infer an array type from a `[..]` initializer so
                 // `var foo = [1, 2]` indexes/iterates as an array, not `Any`, and
                 // a scalar type from a literal initializer so `var foo = ""` is a
-                // string var (`var n = 0` an int var, …).
+                // string var (`var n = 0` an int var, …). The element type of
+                // literal elements is their join (`[1, 2.5]` is `float[]`); any
+                // other element leaves it to the elements' checked types.
                 .or_else(|| match &v.init {
                     Some(Expr::Array { elements, .. }) => {
-                        let elem = elements
+                        let literal: Option<Vec<Type>> = elements
                             .iter()
-                            .find_map(|el| literal_expr_type(el.expr()))
-                            .unwrap_or(Type::Any);
+                            .map(|el| match el {
+                                ArrayElem::Item(e) => literal_expr_type(e),
+                                ArrayElem::Spread(_) => None,
+                            })
+                            .collect();
+                        let elem = literal.and_then(widening_join_all).unwrap_or(Type::Any);
                         Some(Type::Array(Box::new(elem)))
+                    }
+                    // An empty `{}` is a map (WS098 asks for its types).
+                    Some(init) if map_init_entries(init).is_some_and(|e| e.is_empty()) => {
+                        Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any)))
                     }
                     Some(init) => literal_expr_type(init),
                     None => None,
@@ -574,6 +605,21 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             );
         }
         TopDecl::Chip(c) => {
+            // Two outputs of one name: a read of the call could take only one.
+            let mut seen: crate::collections::HashSet<&str> = Default::default();
+            for o in &c.outputs {
+                if !seen.insert(o.name.as_str()) {
+                    ctx.emit(
+                        "WS013",
+                        format!(
+                            "output '{}' is declared twice in `{}`'s outputs, so a read of the call would take \
+                             only one of them. Rename one",
+                            o.name, c.name
+                        ),
+                        o.range.clone(),
+                    );
+                }
+            }
             // Generic *chips* (physical microchips, `inline == false`) are
             // monomorphized per distinct type instantiation at lowering time:
             // `lower_chip_call_instance` builds one microchip template per
@@ -644,7 +690,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 ctx.emit(
                     "WS035",
                     format!(
-                        "`{name}` shadows the builtin receiver-method `{name}` on `{recv}` — \
+                        "`{name}` shadows the builtin receiver-method `{name}` on `{recv}`: \
                          a call like `x.{name}(…)` always resolves to the builtin, so this \
                          mod could never be reached as a method (rename it)",
                         name = c.name,
@@ -667,7 +713,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     format!(
                         "`{}` is a chip, but only a `mod` may take a `...rest` variadic \
                          parameter (a chip instantiates once and cannot capture a \
-                         per-call argument list) — make it a `mod`",
+                         per-call argument list), so make it a `mod`",
                         c.name
                     ),
                     c.range.clone(),
@@ -724,6 +770,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
         }
         TopDecl::AnonChip(ac) => register_anon_chip_decls(ctx, &ac.body.stmts),
         TopDecl::TypeAlias(t) => {
+            reject_builtin_type_name(ctx, "type", &t.name, t.type_params.len(), &t.range);
             if t.type_params.is_empty() {
                 let resolved = resolve_type_expr(ctx, &t.typ);
                 warn_any_annotation(ctx, &resolved, type_expr_range(&t.typ));
@@ -764,6 +811,15 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             }
         }
         TopDecl::Enum(e) => {
+            reject_builtin_type_name(ctx, "enum", &e.name, e.type_params.len(), &e.range);
+            for v in &e.variants {
+                ctx.reserve_check(&v.name, &v.range);
+                if let crate::ast::EnumPayloadDecl::Named(fields) = &v.payload {
+                    for (name, _, range) in fields {
+                        ctx.reserve_check(name, range);
+                    }
+                }
+            }
             // Discriminants were already assigned by the `collect_enum_defs`
             // pre-pass (before registration runs, alongside
             // `collect_generic_aliases`); this just declares the name as a
@@ -928,6 +984,27 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 is_const: p.is_const,
                             })
                             .collect();
+                        let generic = has_type_params.then(|| {
+                            let sig = FnOrChipSig {
+                                params: params.clone(),
+                                variadic: c.rest.is_some(),
+                                outputs: c
+                                    .outputs
+                                    .iter()
+                                    .map(|o| EventDataField {
+                                        name: o.name.clone(),
+                                        ty: resolve_type_expr(ctx, &o.typ),
+                                        is_const: false,
+                                    })
+                                    .collect(),
+                                type_params: c
+                                    .type_params
+                                    .iter()
+                                    .map(|tp| (tp.name.clone(), super::resolve::type_param_mask(ctx, tp)))
+                                    .collect(),
+                            };
+                            (sig, c.range.clone())
+                        });
                         if has_type_params {
                             ctx.pop_scope();
                         }
@@ -936,8 +1013,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             NsDeclInfo {
                                 kind: SymbolKind::Chip,
                                 return_type,
+                                outputs: c.outputs.iter().map(|o| (o.name.clone(), o.typ.clone())).collect(),
                                 params,
                                 value_type: None,
+                                let_decl: None,
+                                generic,
                             },
                         );
                     }
@@ -956,8 +1036,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             NsDeclInfo {
                                 kind: SymbolKind::Fn,
                                 return_type: f.return_type.clone(),
+                                outputs: f.return_type.iter().map(|t| ("_".to_string(), t.clone())).collect(),
                                 params,
                                 value_type: None,
+                                let_decl: None,
+                                generic: None,
                             },
                         );
                     }
@@ -971,7 +1054,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     // a destructuring `let` binds several and isn't reachable
                     // as one `ns.member`.
                     TopDecl::Let(l) => match &l.binding {
-                        LetBinding::Ident { name, .. } => {
+                        LetBinding::Ident { name, range } => {
                             let ty = match &l.typ {
                                 Some(te) => Some(resolve_type_expr(ctx, te)),
                                 None => ns_value_type(&ns_map, &outer_ns, &l.value),
@@ -981,8 +1064,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 NsDeclInfo {
                                     kind: SymbolKind::LetBinding,
                                     return_type: None,
+                                    outputs: Vec::new(),
                                     params: Vec::new(),
                                     value_type: ty,
+                                    let_decl: Some(super::let_binding::let_key(range, name)),
+                                    generic: None,
                                 },
                             );
                         }
@@ -990,14 +1076,14 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                         // names, each reachable as its own `ns.a`. Project them
                         // off the initializer's record type so they carry the
                         // field's type rather than `any`.
-                        LetBinding::Record { names, .. } => {
+                        LetBinding::Record { names, range } => {
                             let src = ns_value_type(&ns_map, &outer_ns, &l.value);
                             for name in names {
                                 let ty = ns_record_field(src.as_ref(), name);
-                                ns_map.insert(name.clone(), ns_let_member(ty));
+                                ns_map.insert(name.clone(), ns_let_member(ty, range, name));
                             }
                         }
-                        LetBinding::RecordDestruct { fields, .. } => {
+                        LetBinding::RecordDestruct { fields, range } => {
                             let src = ns_value_type(&ns_map, &outer_ns, &l.value);
                             for f in fields {
                                 // `{ a: x }` binds `x` to field `a`; a `...rest`
@@ -1006,7 +1092,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 if let RecordDestructField::Named { name, alias, .. } = f {
                                     let ty = ns_record_field(src.as_ref(), name);
                                     let bound = alias.as_ref().unwrap_or(name);
-                                    ns_map.insert(bound.clone(), ns_let_member(ty));
+                                    ns_map.insert(bound.clone(), ns_let_member(ty, range, bound));
                                 }
                             }
                         }
@@ -1024,8 +1110,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             NsDeclInfo {
                                 kind: SymbolKind::Var,
                                 return_type: None,
+                                outputs: Vec::new(),
                                 params: Vec::new(),
                                 value_type: ty,
+                                let_decl: None,
+                                generic: None,
                             },
                         );
                     }
@@ -1065,6 +1154,22 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             );
                         }
                     }
+                    // The module's enum, registered under its own name (see
+                    // `enums::collect_enum_defs`), is the type `Ns.Name`.
+                    TopDecl::Enum(e) => {
+                        let qualified = format!("{}.{}", ns.name, e.name);
+                        ctx.scope.declare(
+                            &qualified,
+                            SymbolInfo {
+                                kind: SymbolKind::Type,
+                                name: qualified.clone(),
+                                ty: Type::Enum { name: e.name.clone(), args: vec![] },
+                                decl_range: e.range.clone(),
+                                signature: None,
+                                event_data: None,
+                            },
+                        );
+                    }
                     // Container members carry a value type so a namespaced
                     // read (`S.scores.get(k)`, `S.arr.pop()`) can type its
                     // element/value instead of falling through to `any`.
@@ -1075,8 +1180,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             NsDeclInfo {
                                 kind: SymbolKind::Array,
                                 return_type: None,
+                                outputs: Vec::new(),
                                 params: Vec::new(),
                                 value_type: Some(Type::Array(Box::new(inner))),
+                                let_decl: None,
+                                generic: None,
                             },
                         );
                     }
@@ -1088,8 +1196,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             NsDeclInfo {
                                 kind: SymbolKind::Map,
                                 return_type: None,
+                                outputs: Vec::new(),
                                 params: Vec::new(),
                                 value_type: Some(Type::Map(Box::new(key), Box::new(value))),
+                                let_decl: None,
+                                generic: None,
                             },
                         );
                     }
@@ -1106,8 +1217,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             NsDeclInfo {
                                 kind: SymbolKind::Out,
                                 return_type: None,
+                                outputs: Vec::new(),
                                 params: Vec::new(),
                                 value_type: ty,
+                                let_decl: None,
+                                generic: None,
                             },
                         );
                     }
@@ -1118,8 +1232,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             NsDeclInfo {
                                 kind: SymbolKind::In,
                                 return_type: None,
+                                outputs: Vec::new(),
                                 params: Vec::new(),
                                 value_type: Some(ty),
+                                let_decl: None,
+                                generic: None,
                             },
                         );
                     }
@@ -1130,8 +1247,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             NsDeclInfo {
                                 kind: SymbolKind::Buffer,
                                 return_type: None,
+                                outputs: Vec::new(),
                                 params: Vec::new(),
                                 value_type: ty,
+                                let_decl: None,
+                                generic: None,
                             },
                         );
                     }
@@ -1152,8 +1272,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     ns_map.entry(o.name.clone()).or_insert(NsDeclInfo {
                         kind: SymbolKind::Out,
                         return_type: None,
+                        outputs: Vec::new(),
                         params: Vec::new(),
                         value_type: ty,
+                        let_decl: None,
+                        generic: None,
                     });
                 }
             }
@@ -1167,9 +1290,39 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
     }
 }
 
+/// `WS107` for a `type` or `enum` declared under the name of a builtin type
+/// (`float`, `string`, `any`, ...), or as `Array` or `Ref` with one type
+/// parameter (`Array<T>` and `Ref<T>` are how `T[]` and `*T` are spelled):
+/// the builtin is what that name means wherever a type is written, so the
+/// declaration would never be read. Any other builtin generic name (`Map`) is
+/// the user declaration's wherever the program declares one.
+fn reject_builtin_type_name(ctx: &mut TypeCheckCtx, what: &str, name: &str, type_params: usize, range: &SourceRange) {
+    let spelled = matches!(name, "Array" | "Ref") && type_params == 1;
+    if crate::types::resolve::primitive(name).is_none() && !spelled {
+        return;
+    }
+    if ctx.diagnostics.iter().any(|d| d.code == "WS107" && d.range == *range) {
+        return;
+    }
+    let message = if spelled {
+        let builtin = if name == "Array" { "T[]" } else { "*T" };
+        format!(
+            "`{what} {name}<..>` is named like the builtin `{name}<T>`, which is how `{builtin}` is \
+             written wherever a type is written, so this declaration would never be used. Give it another name"
+        )
+    } else {
+        format!(
+            "`{what} {name}` is named like the builtin type `{name}`, which is what `{name}` means \
+             wherever a type is written, so this declaration would never be used. Give it another name"
+        )
+    };
+    ctx.emit("WS107", message, range.clone());
+}
+
 fn declare_or_dup(ctx: &mut TypeCheckCtx, name: &str, info: SymbolInfo) {
     let range = info.decl_range.clone();
     if ctx.scope.declare(name, info).is_some() {
+        ctx.duplicate_decls.insert(name.to_string());
         ctx.emit("WS013", format!("duplicate declaration of '{name}'"), range);
     }
 }

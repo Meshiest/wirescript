@@ -72,7 +72,7 @@ fn gate_output_types(module: &Module, needle: &str) -> Vec<Type> {
     out
 }
 
-fn emit_ok(r: &LowerResult) -> Result<(), String> {
+pub(super) fn emit_ok(r: &LowerResult) -> Result<(), String> {
     let lr = crate::layout::layout(&r.module);
     let opts = crate::emit::EmitOptions::default();
     crate::emit::emit_brz(
@@ -803,7 +803,7 @@ fn explicit_type_args_pin_return_only_type_param() {
     // `zero<T>()` has `T` only in the return, so inference can't derive it —
     // an explicit type argument is the ONLY way to call it. `zero<int>()` vs
     // `zero<vector>()` must monomorphize the `z: T` storage to int / vector.
-    let src = "mod zero<T: Numeric>() -> T { static var z: T = z\n return z }\n\
+    let src = "mod zero<T: Numeric>() -> T { static var z: T\n return z }\n\
                in go: exec\nin n: int\nin vec: vector\n\
                on go { let a = zero<int>()\n let b = zero<vector>() }\n";
     let r = compile(src);
@@ -822,7 +822,7 @@ fn explicit_type_args_pin_return_only_type_param() {
 #[test]
 fn explicit_type_args_error_cases() {
     // out-of-mask: string isn't in Numeric
-    assert!(errs("mod z<T: Numeric>() -> T { static var v: T = v\n return v }\nout r: int = z<string>()\n")
+    assert!(errs("mod z<T: Numeric>() -> T { static var v: T\n return v }\nout r: int = z<string>()\n")
         .contains(&"WS033".to_string()));
     // arity mismatch
     assert!(errs("mod p<T>(a: T) -> T { return a }\nin x: int\nout r: int = p<int, float>(x)\n")
@@ -1336,12 +1336,12 @@ fn chip_in_non_generic_mod_ignores_a_generic_callers_frame() {
     // empty and every call shares one template. Inlining `helper` from a
     // generic caller must not hand `pick` that caller's frame: its pin types
     // are the same whichever call builds the shared template first.
-    let body = "enum Dir { Up, Down }\nin n: int\nin s: string\n\
+    let body = "in n: int\nin s: string\n\
                 mod helper(x: int) -> (r: int) {\n\
-                  chip pick(d: Dir, x: int) -> (y: int) {\n\
-                    out y = if d is Dir.Up then x else 0\n\
+                  chip pick(d: bool, x: int) -> (y: int) {\n\
+                    out y = if d then x else 0\n\
                   }\n\
-                  return pick(Dir.Up, x)\n\
+                  return pick(true, x)\n\
                 }\n\
                 mod outer<T: int | string>(v: T, x: int) -> (r: int) {\n\
                   return helper(x)\n\
@@ -1433,4 +1433,978 @@ fn top_level_non_generic_mod_from_generic_caller_gets_no_lexical_frame() {
     emit_ok(&r).expect("emit must succeed");
     assert_eq!(pseudo_var_value_types(&r.module), vec![Type::Int; 3]);
     assert!(!any_param_port(&r.module));
+}
+
+/// The `Pseudo_Var` value types, sorted, with the caller's own storage
+/// (`var n: string`, `var k: int`, ...) left in.
+fn sorted_var_types(module: &Module) -> Vec<Type> {
+    let mut vals = pseudo_var_value_types(module);
+    vals.sort_by_key(|t| format!("{t:?}"));
+    vals
+}
+
+#[test]
+fn type_param_inferred_only_from_an_array_arg_binds_per_call() {
+    // `A` appears only as the element type of `xs`, so the call's
+    // substitution comes from the array argument alone.
+    let src = "var ss: string[]\nvar is: int[]\nvar n: string = \"\"\nvar k: int = 0\n\
+               mod f<A: string | int>(xs: A[]) -> A {\n\
+                 var t: A = xs[0]\n\
+                 return t\n\
+               }\n\
+               in go: exec\n\
+               on go {\n  n = f(ss)\n  k = f(is)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert!(!any_param_port(&r.module), "`A` must be bound by the array argument");
+    assert_eq!(sorted_var_types(&r.module), vec![Type::Int, Type::Int, Type::String, Type::String]);
+}
+
+#[test]
+fn type_param_inferred_from_a_nested_array_arg_binds() {
+    let src = "var rows: string[][]\nvar r0: string[]\nvar n: string = \"\"\n\
+               mod f<A: string | int>(xs: A[][]) -> A {\n\
+                 var t: A = xs[0][0]\n\
+                 return t\n\
+               }\n\
+               in go: exec\n\
+               on go {\n  rows.push(r0)\n  n = f(rows)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert!(!any_param_port(&r.module));
+    assert_eq!(sorted_var_types(&r.module), vec![Type::String, Type::String]);
+    assert!(
+        !gate_output_types(&r.module, "ArrayVar_Get").contains(&Type::Int),
+        "both element reads must be string-typed, got {:?}",
+        gate_output_types(&r.module, "ArrayVar_Get")
+    );
+}
+
+#[test]
+fn type_param_inferred_from_a_ref_to_array_arg_binds() {
+    let src = "var ss: string[]\nvar n: string = \"\"\n\
+               mod f<A: string | int>(xs: *A[]) -> A {\n\
+                 var t: A = xs[0]\n\
+                 return t\n\
+               }\n\
+               in go: exec\n\
+               on go {\n  n = f(ss)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert!(!any_param_port(&r.module));
+    assert_eq!(sorted_var_types(&r.module), vec![Type::String, Type::String]);
+}
+
+#[test]
+fn generic_chip_type_param_inferred_only_from_an_array_arg_binds() {
+    let src = "var ss: string[]\nvar is: int[]\nin go: exec\n\
+               chip C<A: string | int>(xs: A[]) -> (o: A) {\n\
+                 var t: A\n\
+                 on go { t = xs[0] }\n\
+                 out o = t\n\
+               }\n\
+               out a: string = C(ss)\nout b: int = C(is)\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert!(!any_param_port(&r.module));
+    let arr = |t: Type| Type::Ref(Box::new(Type::Array(Box::new(t))));
+    assert_eq!(
+        instance_type_sets(&r.module),
+        vec![
+            (vec![Type::Int, Type::Int, arr(Type::Int), arr(Type::Int)], vec![Type::Int]),
+            (vec![arr(Type::String), arr(Type::String), Type::String, Type::String], vec![Type::String]),
+        ]
+    );
+}
+
+#[test]
+fn type_param_inferred_from_a_generic_alias_record_arg_binds() {
+    let src = "type Box<T> = { v: T, w: int }\nin s: string\nvar n: string = \"\"\n\
+               mod f<A: string | int>(b: Box<A>) -> A {\n\
+                 var t: A = b.v\n\
+                 return t\n\
+               }\n\
+               in go: exec\n\
+               on go {\n  n = f({ v: s, w: 1 })\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert!(!any_param_port(&r.module));
+    assert_eq!(sorted_var_types(&r.module), vec![Type::String, Type::String]);
+}
+
+#[test]
+fn record_forwarded_from_a_generic_caller_binds_the_inner_param() {
+    // `b` is `outer`'s record param; its type in the type map is whichever
+    // combination typecheck checked last, so the inner call must read it
+    // from the record's own bindings.
+    let src = "in s: string\nin i: int\nvar n: string = \"\"\nvar k: int = 0\n\
+               mod inner<B: string | int>(b: { v: B, w: int }) -> B {\n\
+                 var t: B = b.v\n\
+                 return t\n\
+               }\n\
+               mod outer<A: string | int>(b: { v: A, w: int }) -> A {\n\
+                 return inner(b)\n\
+               }\n\
+               in go: exec\n\
+               on go {\n  n = outer({ v: s, w: 1 })\n  k = outer({ v: i, w: 1 })\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert!(!any_param_port(&r.module));
+    assert_eq!(sorted_var_types(&r.module), vec![Type::Int, Type::Int, Type::String, Type::String]);
+}
+
+#[test]
+fn element_forwarded_from_a_generic_caller_binds_the_inner_param() {
+    let src = "var srows: string[][]\nvar irows: int[][]\nvar n: string = \"\"\nvar k: int = 0\n\
+               mod inner<B: string | int>(xs: B[]) -> B {\n\
+                 var t: B = xs[0]\n\
+                 return t\n\
+               }\n\
+               mod outer<A: string | int>(rs: A[][]) -> A {\n\
+                 return inner(rs[0])\n\
+               }\n\
+               in go: exec\n\
+               on go {\n  n = outer(srows)\n  k = outer(irows)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert!(!any_param_port(&r.module));
+    assert_eq!(sorted_var_types(&r.module), vec![Type::Int, Type::Int, Type::String, Type::String]);
+}
+
+#[test]
+fn type_params_inferred_from_a_map_arg_bind() {
+    let src = "var m: Map<string, int>\nvar ms: Map<string, int>[]\nvar k: int = 0\nvar j: int = 0\n\
+               mod f<K: string | int, V: int | string>(mm: Map<K, V>, key: K) -> V {\n\
+                 var t: V = mm.get(key).Value\n\
+                 return t\n\
+               }\n\
+               mod outer<K: string | int, V: int | string>(rows: Map<K, V>[], key: K) -> V {\n\
+                 return f(rows[0], key)\n\
+               }\n\
+               in go: exec\n\
+               on go {\n  k = f(m, \"a\")\n  j = outer(ms, \"a\")\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert!(!any_param_port(&r.module));
+    assert_eq!(sorted_var_types(&r.module), vec![Type::Int; 4]);
+}
+
+#[test]
+fn capped_generic_at_an_unchecked_combination_types_its_element_reads() {
+    // Seven `Scalar` params exceed the body-check cap, so typecheck checks the
+    // all-`int` combination and each single-param variation only. Both calls
+    // pick an unchecked combination, and `r[0]`'s receiver is a `let`, so the
+    // element type must come from the instantiation, not from the last
+    // combination checked.
+    assert_capped_element_reads("let r = rows[0]\n return r[0]");
+}
+
+#[test]
+fn capped_generic_at_an_unchecked_combination_types_a_nested_element_read() {
+    // `rows[0][0]`: the receiver `rows[0]` has no binding of its own.
+    assert_capped_element_reads("return rows[0][0]");
+}
+
+/// Lowers `body` as a seven-`Scalar`-param generic at two unchecked
+/// combinations, one with `A = float` and one with `A = int`, and checks
+/// every element read is typed for its own `A`.
+fn assert_capped_element_reads(body: &str) {
+    let src = format!(
+        "mod f<A: Scalar, B: Scalar, C: Scalar, D: Scalar, E: Scalar, F: Scalar, G: Scalar>(\
+           rows: A[][], b: B, c: C, d: D, e: E, f: F, g: G) -> A {{\n {body}\n}}\n\
+         var fr: float[][]\nvar ir: int[][]\nin fl: float\nin n: int\n\
+         var x: float = 0.0\nvar y: int = 0\n\
+         in go: exec\n\
+         on go {{\n  x = f(fr, fl, n, n, n, n, n)\n  y = f(ir, fl, fl, n, n, n, n)\n}}\n"
+    );
+    let r = compile(&src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert!(!any_param_port(&r.module));
+    let mut gets: Vec<Type> = gate_output_types(&r.module, "ArrayVar_Get")
+        .into_iter()
+        .filter(|t| *t != Type::Bool && *t != Type::Exec)
+        .collect();
+    gets.sort_by_key(|t| format!("{t:?}"));
+    assert_eq!(
+        gets,
+        vec![
+            Type::Array(Box::new(Type::Float)),
+            Type::Array(Box::new(Type::Int)),
+            Type::Float,
+            Type::Int,
+        ],
+        "each instantiation's reads must carry its own element type"
+    );
+}
+
+/// `outer<A>` called at `string` and at `int`, with `body` in its body and
+/// `inner<B>` declared as `inner_decl`. Every `var t: B` must follow `A`.
+fn assert_forwarded_to_inner(inner_decl: &str, body: &str) {
+    let src = format!(
+        "var ss: string[]\nin s: string\nin i: int\nvar n: string = \"\"\nvar k: int = 0\n\
+         {inner_decl}\n\
+         mod outer<A: string | int>(x: A) -> A {{\n{body}\n}}\n\
+         in go: exec\n\
+         on go {{\n  n = outer(s)\n  k = outer(i)\n}}\n"
+    );
+    let r = compile(&src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert!(!any_param_port(&r.module), "`B` must be bound at every call");
+    assert_eq!(sorted_var_types(&r.module), vec![Type::Int, Type::Int, Type::String, Type::String]);
+}
+
+#[test]
+fn multi_output_result_in_a_record_forwarded_from_a_generic_caller_binds() {
+    // `r.v` holds `ss.pop()`, bound by its first output port. The field's
+    // record type must survive: `B` comes from its `Value` output, not from
+    // that port's type.
+    let src = "var ss: string[]\nin s: string\nin i: int\nvar n: string = \"\"\nvar k: int = 0\n\
+               mod inner<B: string | int>(b: { v: { IsEmpty: bool, Value: B }, w: int }) -> B {\n\
+                 var t: B = b.v.Value\n\
+                 return t\n\
+               }\n\
+               mod outer<A: string | int>(x: A) -> A {\n\
+                 let r = { v: ss.pop(), w: 1 }\n\
+                 let q = inner(r)\n\
+                 return x\n\
+               }\n\
+               in go: exec\n\
+               on go {\n  n = outer(s)\n  k = outer(i)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert!(!any_param_port(&r.module), "`B` must be bound from the pop's `Value`");
+    assert_eq!(sorted_var_types(&r.module), vec![Type::Int, Type::String, Type::String, Type::String]);
+}
+
+#[test]
+fn multi_output_result_field_forwarded_from_a_generic_caller_binds() {
+    let src = "var ss: string[]\nin s: string\nin i: int\nvar n: string = \"\"\nvar k: int = 0\n\
+               mod inner<B: string | int>(v: { IsEmpty: bool, Value: B }) -> B {\n\
+                 var t: B = v.Value\n\
+                 return t\n\
+               }\n\
+               mod outer<A: string | int>(x: A) -> A {\n\
+                 let r = { v: ss.pop(), w: 1 }\n\
+                 let q = inner(r.v)\n\
+                 return x\n\
+               }\n\
+               in go: exec\n\
+               on go {\n  n = outer(s)\n  k = outer(i)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert!(!any_param_port(&r.module), "`B` must be bound from the pop's `Value`");
+    assert_eq!(sorted_var_types(&r.module), vec![Type::Int, Type::String, Type::String, Type::String]);
+}
+
+#[test]
+fn record_literal_forwarded_from_a_generic_caller_binds() {
+    assert_forwarded_to_inner(
+        "mod inner<B: string | int>(b: { v: B, w: int }) -> B {\n var t: B = b.v\n return t\n}",
+        "return inner({ v: x, w: 1 })",
+    );
+}
+
+#[test]
+fn tuple_pick_forwarded_from_a_generic_caller_binds() {
+    assert_forwarded_to_inner(
+        "mod inner<B: string | int>(b: B) -> B {\n var t: B = b\n return t\n}",
+        "let tp = (x, 1)\n return inner(tp.0)",
+    );
+}
+
+#[test]
+fn nested_call_with_explicit_type_args_types_the_forwarded_result() {
+    // `zero<A>()` has no argument to infer `X` from: its type argument alone
+    // fixes it, so `inner`'s `B` is `A`.
+    let src = "in s: string\nin i: int\nvar n: string = \"\"\nvar k: int = 0\n\
+               mod zero<X: string | int>() -> X {\n var z: X\n return z\n}\n\
+               mod inner<B: string | int>(b: B) -> B {\n var t: B = b\n return t\n}\n\
+               mod outer<A: string | int>(x: A) -> A {\n return inner(zero<A>())\n}\n\
+               in go: exec\n\
+               on go {\n  n = outer(s)\n  k = outer(i)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert!(!any_param_port(&r.module), "`B` must be bound at every call");
+    assert_eq!(
+        sorted_var_types(&r.module),
+        vec![Type::Int, Type::Int, Type::Int, Type::String, Type::String, Type::String]
+    );
+}
+
+#[test]
+fn a_generic_calls_arguments_resolve_type_args_under_the_callers_frame() {
+    // `id<T>(v)` is `outer`'s expression: its `T` is `outer`'s (string), not
+    // `inner`'s own `T`, which is bound to `u`'s type (int).
+    let src = "mod id<X: int | string>(v: X) -> X {\n var t: X = v\n return t\n}\n\
+               mod inner<T: int | string, S: int | string>(a: T, b: S) -> S {\n var u: S = b\n return u\n}\n\
+               mod outer<T: int | string, U: int | string>(v: T, u: U) -> T {\n return inner(u, id<T>(v))\n}\n\
+               in s: string\nin i: int\nvar o1: string = \"\"\nin go: exec\n\
+               on go {\n  o1 = outer(s, i)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert_eq!(sorted_var_types(&r.module), vec![Type::String; 3], "`id`'s `X` must be `outer`'s `T`");
+}
+
+#[test]
+fn a_generic_calls_exec_argument_lowers_under_the_callers_frame() {
+    // `exec = fire<T>(..)` is `outer`'s expression too: `fire`'s `X` is
+    // `outer`'s `T` (string), while `inner`'s own `T` is `u`'s type (int).
+    let src = "in s: string\nin i: int\nin go: exec\nvar o1: int = 0\n\
+               mod fire<X: int | string>(v: X) -> (done: exec) {\n var t: X = v\n emit done\n}\n\
+               mod inner<T: int | string>(a: T) -> T {\n var u: T = a\n return u\n}\n\
+               mod outer<T: int | string, U: int | string>(v: T, u: U) -> U {\n\
+                 return inner(u, exec = fire<T>(v, exec = go))\n\
+               }\n\
+               on go { o1 = outer(s, i) }\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed");
+    assert_eq!(
+        sorted_var_types(&r.module),
+        vec![Type::Int, Type::Int, Type::String],
+        "`fire`'s `X` must be `outer`'s `T`, `inner`'s `u` its own `T`"
+    );
+}
+
+const HUE_GENERIC: &str = "enum Hue { Red, Green, Blue }\nenum S { A(int), B }\n\
+var c: Hue = Hue.Red\nvar d: Hue = Hue.Green\nvar n: int = 0\nvar k: int = 3\nvar hs: Hue[]\n\
+var ks: int[]\nvar s: S = S.B\nvar s2: S = S.B\nin go: exec\n";
+
+/// The class of the gate driving the `Value` of every `Var_Set` into the var
+/// declared by the line starting `decl`, which must all agree; `_Literal` for
+/// an inlined constant. A value driven from an exec pin fails.
+fn stored_from(r: &LowerResult, src: &str, decl: &str) -> &'static str {
+    let at = src.find(decl).expect("declaration");
+    let var = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == gc::VAR && n.source_range.start.offset == at)
+        .expect("the var")
+        .id;
+    let classes: Vec<&'static str> = stored_values(r, var).into_iter().map(|(class, _)| class).collect();
+    assert!(!classes.is_empty(), "a store into `{decl}`");
+    assert!(classes.iter().all(|c| *c == classes[0]), "`{decl}` is stored from {classes:?}");
+    classes[0]
+}
+
+/// For every `Var_Set` into `var`: the class of the gate driving its `Value`
+/// and that gate's node, or `_Literal` and `None` for an inlined constant.
+/// A value driven from an exec pin (a stored exec chain) fails.
+pub(super) fn stored_values(r: &LowerResult, var: NodeId) -> Vec<(&'static str, Option<NodeId>)> {
+    let driver = |node, port| r.module.wires.iter().find(|w| w.target.node_id == node && w.target.port == port);
+    r.module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == gc::VAR_SET && driver(n.id, WirePort::VarRef).map(|w| w.source.node_id) == Some(var))
+        .map(|set| match driver(set.id, WirePort::Value) {
+            Some(w) => {
+                let from = &r.module.nodes[&w.source.node_id];
+                let ty = from.ports.find_output(w.source.port.sym()).map(|p| p.ty.clone());
+                assert_ne!(ty, Some(Type::Exec), "a value stored from the exec pin {:?} of {}", w.source.port, from.gate_class);
+                (from.gate_class, Some(from.id))
+            }
+            None => {
+                assert!(set.properties.contains_key(&*sym::VALUE), "the stored value is wired or inlined");
+                ("_Literal", None)
+            }
+        })
+        .collect()
+}
+
+/// The label of the var `get` reads, when `get` is a `Var_Get`; a
+/// payload-free enum's tag slot by the enum's own name.
+pub(super) fn read_label(r: &LowerResult, get: NodeId) -> Option<String> {
+    let var = r.module.wires.iter().find(|w| w.target.node_id == get && w.target.port == WirePort::VarRef)?;
+    match r.module.nodes[&var.source.node_id].properties.get(&*sym::NAME_LABEL) {
+        Some(crate::ir::Literal::String(s)) => Some(s.strip_suffix(".__disc").unwrap_or(s).to_string()),
+        _ => None,
+    }
+}
+
+/// The var labelled `label`, or a payload-free enum's tag slot.
+pub(super) fn var_labelled(r: &LowerResult, label: &str) -> NodeId {
+    let tag = format!("{label}.__disc");
+    r.module
+        .nodes
+        .values()
+        .find(|n| {
+            n.gate_class == gc::VAR
+                && matches!(n.properties.get(&*sym::NAME_LABEL), Some(crate::ir::Literal::String(s)) if *s == label || *s == tag)
+        })
+        .unwrap_or_else(|| panic!("a var labelled `{label}`"))
+        .id
+}
+
+/// What every store into the var labelled `target` reads: the label of the
+/// var each `Var_Get` driving it reads.
+pub(super) fn stored_reads(r: &LowerResult, target: &str) -> Vec<Option<String>> {
+    let values = stored_values(r, var_labelled(r, target));
+    assert!(!values.is_empty(), "a store into `{target}`");
+    values
+        .into_iter()
+        .map(|(class, node)| {
+            assert_eq!(class, gc::VAR_GET, "`{target}` is stored from a var read");
+            read_label(r, node.expect("a wired value"))
+        })
+        .collect()
+}
+
+#[test]
+fn a_generic_over_a_payload_free_enum_keeps_the_value() {
+    for (body, decls, feed) in [
+        ("mod f<T: Hue | int>(x: T) -> T { return x }\non go { d = f(c) }", &["var d"][..], gc::VAR_GET),
+        ("mod f<T: Hue | int>(x: T) -> T { var t: T = x\n return t }\non go { d = f(c)\n n = f(k) }", &["var d", "var n"], gc::VAR_GET),
+        ("mod f<T: Hue | int>(x: T) -> T { return x }\non go { d = f<Hue>(c)\n n = f<int>(k) }", &["var d", "var n"], gc::VAR_GET),
+        ("mod first<T: Hue | int>(xs: T[]) -> T { return xs[0] }\non go { d = first(hs) }", &["var d"], gc::ARRAY_GET),
+        ("mod first<T: Hue | int>(xs: T[]) -> T { return xs[0] }\non go { d = first(hs)\n n = first(ks) }", &["var d", "var n"], gc::ARRAY_GET),
+        ("mod first(xs: Hue[]) -> Hue { return xs[k] }\non go { d = first(hs) }", &["var d"], gc::ARRAY_GET),
+        ("mod f<T: S | int>(x: T) -> T { return x }\non go { s2 = f(s) }", &["var s2"], gc::VAR_GET),
+    ] {
+        let src = format!("{HUE_GENERIC}{body}\n");
+        let r = compile(&src);
+        assert_no_errors(&r);
+        assert!(!has_gate(&r, "_Unsupported"), "{body}: {:?}", r.diagnostics);
+        emit_ok(&r).expect("emit must succeed");
+        for decl in decls {
+            assert_eq!(stored_from(&r, &src, decl), feed, "{body}: {decl}");
+        }
+    }
+}
+
+#[test]
+fn a_record_element_returned_from_a_mod_is_the_element() {
+    let src = "type P = { x: int, y: int }\nvar ps: P[]\nvar n: int = 0\nin go: exec\n\
+               mod first(xs: P[]) -> P { return xs[n] }\non go { let p = first(ps)\n n = p.y }\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "{:?}", r.diagnostics);
+    assert_eq!(stored_from(&r, src, "var n"), gc::ARRAY_GET);
+}
+
+#[test]
+fn a_generic_body_that_needs_an_enum_is_rejected_for_its_other_members() {
+    for (body, code) in [
+        ("mod m<T: Hue | int>(a: T) -> int { return match a { Red => 1, _ => 2 } }\non go { n = m(c) }", "WS066"),
+        ("mod m<T: Hue | int>(a: T) -> bool { return a is Hue.Red }\non go { let q = m(c) }", "WS066"),
+        ("mod m<T: Hue | int>(a: T) -> int { return a.Discriminant }\non go { n = m(c) }", "WS066"),
+        ("mod m<T: Hue | int>(a: T, b: T) -> bool { return a == b }\non go { let q = m(c, d) }", "WS004"),
+        ("mod m<T>(a: T) -> T { return a }\non go { d = m(c) }", "WS033"),
+    ] {
+        let src = format!("{HUE_GENERIC}{body}\n");
+        let codes = errs(&src);
+        assert!(codes.iter().any(|c| c == code), "{body}: {codes:?}");
+    }
+}
+
+#[test]
+fn a_payload_free_enum_is_one_value_in_a_generic_body_whatever_the_bound_order() {
+    for bound in ["Hue | int", "int | Hue"] {
+        let src = format!(
+            "{HUE_GENERIC}mod pick<T: {bound}>(b: bool, x: T, y: T) -> T {{ return if b then x else y }}\n\
+             mod send<T: {bound}>(x: T) {{ SendCustomEvent(\"k\", x) }}\n\
+             on go {{ d = pick(n > 0, c, d)\n n = pick(true, k, n)\n send(c)\n send(k) }}\n"
+        );
+        let r = compile(&src);
+        assert_no_errors(&r);
+        assert!(!has_gate(&r, "_Unsupported"), "{bound}: {:?}", r.diagnostics);
+        emit_ok(&r).expect("emit must succeed");
+        assert_eq!(stored_from(&r, &src, "var d"), "BrickComponentType_Expr_Select", "{bound}");
+        assert_eq!(stored_from(&r, &src, "var n"), "BrickComponentType_Expr_Select", "{bound}");
+    }
+}
+
+#[test]
+fn an_enum_or_record_a_mod_returns_reaches_the_caller() {
+    for (body, decls, feed) in [
+        ("mod f() -> Hue { return Hue.Blue }\non go { d = f() }", &["var d"][..], "_Literal"),
+        ("mod f(x: Hue) -> Hue { return match x { Red => Hue.Blue, _ => x } }\non go { d = f(c) }", &["var d"][..], "BrickComponentType_Expr_Select"),
+        ("mod f(b: bool, x: Hue, y: Hue) -> Hue { return if b then x else y }\non go { d = f(n > 0, c, d) }", &["var d"][..], "BrickComponentType_Expr_Select"),
+        ("mod f<T: Hue | int>(b: bool, x: T, y: T) -> T { return if b then x else y }\non go { d = f(n > 0, c, d) }", &["var d"][..], "BrickComponentType_Expr_Select"),
+        ("mod f() -> S { return S.A(k) }\non go { s2 = f() }", &["var s2"][..], "_Literal"),
+        ("mod f(x: Hue) -> (r: Hue) { emit r = x }\non go { d = f(c) }", &["var d"][..], gc::VAR_GET),
+        ("mod f(x: Hue) -> (r: Hue) { out r = x }\non go { d = f(c) }", &["var d"][..], gc::VAR_GET),
+        ("mod f<T: Hue | int>(x: T) -> (r: T) { emit r = x }\non go { d = f(c)\n n = f(k) }", &["var d", "var n"][..], gc::VAR_GET),
+        ("mod f(x: Hue) -> (r: Hue, e: exec) { emit r = x\n emit e }\non go { let q = f(c)\n d = q.r }", &["var d"][..], gc::VAR_GET),
+        ("mod f(x: Hue) -> { v: Hue } { return { v: x } }\non go { d = f(c).v }", &["var d"][..], gc::VAR_GET),
+        ("type P = { x: int, y: int }\nvar p: P = { x: 1, y: 2 }\nvar q: P = { x: 3, y: 4 }\n\
+          mod f<T: P | int>(x: T) -> (r: T) { emit r = x }\non go { q = f(p)\n n = f(k) }", &["var q", "var n"][..], gc::VAR_GET),
+        ("mod f<T: Hue | int>(x: T) -> { v: T } { return { v: x } }\non go { let r = f(c)\n d = r.v }", &["var d"][..], gc::VAR_GET),
+        ("type P = { x: int, y: int }\nvar p: P = { x: 1, y: 2 }\n\
+          mod f(a: P) -> { inner: P } { return { inner: a } }\non go { n = f(p).inner.y }", &["var n"][..], gc::VAR_GET),
+        ("type P = { x: int, y: int }\nvar p: P = { x: 1, y: 2 }\n\
+          mod f(a: P) -> { inner: P } { return { inner: a } }\non go { let r = f(p)\n n = r.inner.y }", &["var n"][..], gc::VAR_GET),
+        ("type P = { x: int, y: int }\nvar p: P = { x: 1, y: 2 }\nmod f(a: P) -> { inner: P } { return { inner: a } }\n\
+          mod g(q: { inner: P }) -> int { return q.inner.y }\non go { n = g(f(p)) }", &["var n"][..], gc::VAR_GET),
+        ("type P = { x: int, y: int }\nvar p: P = { x: 1, y: 2 }\nvar q: P = { x: 3, y: 4 }\n\
+          mod f(b: bool, a: P, c: P) -> P { return if b then a else c }\non go { q = f(n > 0, p, q) }", &["var q"][..], "BrickComponentType_Expr_Select"),
+    ] {
+        let src = format!("{HUE_GENERIC}{body}\n");
+        let r = compile(&src);
+        assert_no_errors(&r);
+        assert!(!has_gate(&r, "_Unsupported"), "{body}: {:?}", r.diagnostics);
+        emit_ok(&r).expect("emit must succeed");
+        for decl in decls {
+            assert_eq!(stored_from(&r, &src, decl), feed, "{body}: {decl}");
+        }
+    }
+    let src = format!("{HUE_GENERIC}mod f() -> Hue {{ return Hue.Blue }}
+on go {{ d = f() }}
+");
+    let r = compile(&src);
+    let set = r.module.nodes.values().find(|n| n.gate_class == gc::VAR_SET).expect("the store");
+    assert_eq!(set.properties.get(&*sym::VALUE), Some(&crate::ir::Literal::Int(2)), "Blue's tag is stored");
+}
+
+#[test]
+fn a_generic_over_an_enum_with_payloads_keeps_every_slot() {
+    for (body, feed) in [
+        ("mod f<T: S | int>(x: T) -> T { var t: T = x\n return t }\non go { s2 = f(s)\n n = f(k) }", gc::VAR_GET),
+        ("var ss: S[]\nmod first<T: S | int>(xs: T[]) -> T { return xs[0] }\non go { s2 = first(ss) }", gc::ARRAY_GET),
+        ("mod f<T: S | int>(b: bool, x: T, y: T) -> T { return if b then x else y }\non go { s2 = f(n > 0, s, s2) }", "BrickComponentType_Expr_Select"),
+    ] {
+        let src = format!("{HUE_GENERIC}{body}\n");
+        let r = compile(&src);
+        assert_no_errors(&r);
+        assert!(!has_gate(&r, "_Unsupported"), "{body}: {:?}", r.diagnostics);
+        emit_ok(&r).expect("emit must succeed");
+        if body.contains("n = f(k)") {
+            assert_eq!(stored_from(&r, &src, "var n"), gc::VAR_GET, "{body}");
+        }
+        let at = src.find("var s2").unwrap();
+        let slots: Vec<NodeId> = r
+            .module
+            .nodes
+            .values()
+            .filter(|n| n.gate_class == gc::VAR && n.source_range.start.offset == at)
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(slots.len(), 2, "s2 is a tag and one payload slot");
+        for slot in slots {
+            let set = r
+                .module
+                .wires
+                .iter()
+                .find(|w| w.source.node_id == slot && w.target.port == WirePort::VarRef
+                    && r.module.nodes[&w.target.node_id].gate_class == gc::VAR_SET)
+                .map(|w| w.target.node_id)
+                .unwrap_or_else(|| panic!("{body}: every slot of s2 is stored"));
+            let value = r.module.wires.iter().find(|w| w.target.node_id == set && w.target.port == WirePort::Value);
+            let class = value.map(|w| r.module.nodes[&w.source.node_id].gate_class);
+            assert_eq!(class, Some(feed), "{body}");
+        }
+    }
+}
+
+/// `src` compiled with folding off and with the production default.
+pub(super) fn both_folds(src: &str) -> [(&'static str, LowerResult); 2] {
+    [("fold off", compile(src)), ("fold auto", compile_auto(src))]
+}
+
+pub(super) fn assert_clean(r: &LowerResult, what: &str) {
+    assert!(r.diagnostics.is_empty(), "{what}: {:?}", r.diagnostics);
+    assert!(!has_gate(r, "_Unsupported"), "{what}");
+    emit_ok(r).unwrap_or_else(|e| panic!("{what}: {e}"));
+}
+
+/// A generic called with no type arguments from inside another generic's
+/// body takes the outer instantiation's type: under `g<int>` it is `f<int>`,
+/// so the caller stores the int it passed, never the exec pin an enum value
+/// stashed as a record would leave behind.
+#[test]
+fn a_generic_called_from_another_generic_keeps_each_instances_type() {
+    let forms = [
+        ("return", "mod f<T: $B>(x: T) -> T { return x }\nmod g<U: $B>(y: U) -> U { return $F(y) }"),
+        ("emit", "mod f<T: $B>(x: T) -> (r: T) { emit r = x }\nmod g<U: $B>(y: U) -> (r: U) { emit r = $F(y) }"),
+        ("let", "mod f<T: $B>(x: T) -> T { return x }\nmod g<U: $B>(y: U) -> U { let t = $F(y)\n return t }"),
+        (
+            "if",
+            "mod f<T: $B>(b: bool, x: T, y: T) -> T { return if b then x else y }\n\
+             mod g<U: $B>(y: U) -> U { return $F(k > 0, y, y) }",
+        ),
+    ];
+    for bound in ["int | Hue", "Hue | int"] {
+        for (form, mods) in forms {
+            for calls in ["d = g(c)\n n = g(k)", "n = g(k)", "d = g(c)"] {
+                let program = |f: &str| {
+                    let mods = mods.replace("$B", bound).replace("$F", f);
+                    format!("{HUE_GENERIC}{mods}\non go {{ {calls} }}\n")
+                };
+                let (src, oracle) = (program("f"), program("f<U>"));
+                for ((mode, r), (_, o)) in both_folds(&src).into_iter().zip(both_folds(&oracle)) {
+                    let what = format!("{form}, {bound}, `{calls}`, {mode}");
+                    assert_clean(&r, &what);
+                    for (target, source) in [("n", "k"), ("d", "c")] {
+                        if !calls.contains(&format!("{target} = ")) {
+                            continue;
+                        }
+                        let got = stored_values(&r, var_labelled(&r, target));
+                        let want = stored_values(&o, var_labelled(&o, target));
+                        let classes = |v: &[(&'static str, Option<NodeId>)]| v.iter().map(|(c, _)| *c).collect::<Vec<_>>();
+                        assert_eq!(classes(&got), classes(&want), "{what}: `{target}` as `f<U>` stores it");
+                        if form != "if" {
+                            assert_eq!(stored_reads(&r, target), vec![Some(source.to_string())], "{what}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// An instantiation the capped combinations of a mod's type params leave out
+/// is checked for its call and typed by that check: `b: B` is `int` in
+/// `f<int, int, int>`, never the last combination's `Hue`.
+#[test]
+fn an_instantiation_past_the_combination_cap_keeps_its_types() {
+    let bodies = [
+        "-> (r: B) { emit r = b }",
+        "-> (r: B) { out r = b }",
+        "-> B { return b }",
+        "-> B { let t = b\n return t }",
+    ];
+    let calls = [
+        ("n = f(k, k, k)", "n", "k", vec![Type::Int, Type::Int, Type::Int]),
+        ("n = f(\"x\", \"y\", k)", "n", "k", vec![Type::String, Type::String, Type::Int]),
+        ("d = f(k, k, c)", "d", "c", vec![Type::Int, Type::Int, Type::Enum { name: "Hue".into(), args: vec![] }]),
+    ];
+    for bound in ["int | Hue", "Hue | int"] {
+        for body in bodies {
+            for (call, target, source, instance) in &calls {
+                let src = format!("{HUE_GENERIC}mod f<A, C, B: {bound}>(a: A, cc: C, b: B) {body}\non go {{ {call} }}\n");
+                let parsed = crate::parser::parse(&src, "test");
+                let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
+                assert!(
+                    tc.demanded_instantiations.iter().any(|k| *k.3 == **instance),
+                    "the combinations cover {instance:?}, so `{call}` does not reach the cap"
+                );
+                for (mode, r) in both_folds(&src) {
+                    let what = format!("{bound}, `{body}`, `{call}`, {mode}");
+                    assert_clean(&r, &what);
+                    assert_eq!(stored_reads(&r, target), vec![Some(source.to_string())], "{what}");
+                }
+            }
+        }
+    }
+}
+
+/// `out r = x` in a generic body drives the output with the value of the
+/// instantiation being lowered: the int instance is not an enum.
+#[test]
+fn an_out_in_a_generic_body_takes_each_instances_value() {
+    for bound in ["int | Hue", "Hue | int"] {
+        let src = format!(
+            "{HUE_GENERIC}mod f<T: {bound}>(x: T) -> (r: T) {{ out r = x }}\nout oc: Hue\n\
+             on go {{ emit oc = f(c)\n n = f(k) }}\n"
+        );
+        for (mode, r) in both_folds(&src) {
+            let what = format!("{bound}, {mode}");
+            assert_clean(&r, &what);
+            assert_eq!(stored_reads(&r, "n"), vec![Some("k".to_string())], "{what}");
+            let out = r.module.outputs[0];
+            let driver = r
+                .module
+                .wires
+                .iter()
+                .find(|w| w.target.node_id == out && w.target.port == WirePort::RerInput)
+                .unwrap_or_else(|| panic!("{what}: `oc` is wired"));
+            assert_eq!(read_label(&r, driver.source.node_id), Some("c".to_string()), "{what}");
+        }
+    }
+}
+
+/// A field read straight off a call whose one output is a record (`f(p).y`)
+/// is that record's field, whichever way the mod sets its output, generic or
+/// not, one level deep or through a nested record, and when the field is a
+/// payload-free enum.
+#[test]
+fn a_field_read_off_a_calls_record_output_is_that_field() {
+    let prelude = "enum Hue { Red, Green, Blue }\ntype P = { x: int, y: int }\ntype R = { h: Hue, n: int }\n\
+                   type Q = { inner: P }\nvar p: P = { x: 1, y: 2 }\nvar r1: R = { h: Hue.Blue, n: 7 }\n\
+                   var q2: Q = { inner: { x: 3, y: 4 } }\nvar m: int = 0\nvar k: int = 3\nvar d: Hue = Hue.Red\n\
+                   in go: exec\n";
+    for (decl, stmt, target, source) in [
+        ("mod f<T: P | int>(x: T) -> (r: T) { emit r = x }", "m = f(p).y", "m", "p.y"),
+        ("mod f<T: P | int>(x: T) -> (r: T) { out r = x }", "m = f(p).y", "m", "p.y"),
+        ("mod f<T: P | int>(x: T) -> T { return x }", "m = f(p).y", "m", "p.y"),
+        ("mod f<T: P | int>(x: T) -> (r: T) { emit r = x }", "m = f(p).y\n k = f(k)", "k", "k"),
+        ("mod f<T: P | int>(x: T) -> (r: T) { emit r = x }", "m = f(p).y\n k = f(k)", "m", "p.y"),
+        ("mod f(x: P) -> (r: P) { emit r = x }", "m = f(p).y", "m", "p.y"),
+        ("mod f(x: P) -> (r: P) { out r = x }", "m = f(p).x", "m", "p.x"),
+        ("mod f<T: R | int>(x: T) -> (r: T) { emit r = x }", "m = f(r1).n", "m", "r1.n"),
+        ("mod f<T: R | int>(x: T) -> (r: T) { emit r = x }", "d = f(r1).h", "d", "r1.h"),
+        ("mod f(x: R) -> (r: R) { emit r = x }", "d = f(r1).h\n m = f(r1).n", "d", "r1.h"),
+        ("mod f(x: R) -> (r: R) { emit r = x }", "d = f(r1).h\n m = f(r1).n", "m", "r1.n"),
+        ("mod f<T: Q | int>(x: T) -> (r: T) { emit r = x }", "m = f(q2).inner.y", "m", "q2.inner.y"),
+        ("mod f(x: Q) -> (r: Q) { out r = x }", "m = f(q2).inner.x", "m", "q2.inner.x"),
+    ] {
+        let src = format!("{prelude}{decl}\non go {{ {stmt} }}\n");
+        for (mode, r) in both_folds(&src) {
+            let what = format!("`{decl}`, `{stmt}`, {mode}");
+            assert_clean(&r, &what);
+            assert_eq!(stored_reads(&r, target), vec![Some(source.to_string())], "{what}");
+        }
+    }
+    let src = format!("{prelude}mod f<T: P | int>(x: T) -> (r: T) {{ emit r = x }}\nout o: int = f(p).y\n");
+    for (mode, r) in both_folds(&src) {
+        assert_clean(&r, mode);
+        let out = *r.module.outputs.last().expect("the output");
+        let driver = r
+            .module
+            .wires
+            .iter()
+            .find(|w| w.target.node_id == out && w.target.port == WirePort::RerInput)
+            .unwrap_or_else(|| panic!("{mode}: `o` is wired"));
+        let from = &r.module.nodes[&driver.source.node_id];
+        assert_eq!(
+            from.properties.get(&*sym::NAME_LABEL),
+            Some(&crate::ir::Literal::String("p.y".into())),
+            "{mode}: `o` reads p.y, from {}",
+            from.gate_class
+        );
+    }
+}
+
+/// A body whose combinations were cut short never saw some type params vary,
+/// so typecheck gives no type for their instantiations and no template
+/// either. Each instance still keeps its own value, taken from the mod's
+/// declared output type and from the argument bindings.
+#[test]
+fn a_truncated_generic_body_keeps_each_instances_type() {
+    let params = "a: A, b: B, cc: C, dd: D, e: E, ff: F, g: G, h: H";
+    for body in ["-> (r: H) { emit r = h }", "-> H { return h }", "-> (r: H) { out r = h }"] {
+        let src = format!(
+            "{HUE_GENERIC}mod f<A, B, C, D, E, F, G, H: Hue | int>({params}) {body}\n\
+             on go {{ d = f(k, k, k, k, k, k, k, c)\n n = f(k, k, k, k, k, k, k, k) }}\n"
+        );
+        for (mode, r) in both_folds(&src) {
+            let what = format!("`{body}`, {mode}");
+            assert_clean(&r, &what);
+            assert_eq!(stored_reads(&r, "d"), vec![Some("c".to_string())], "{what}");
+            assert_eq!(stored_reads(&r, "n"), vec![Some("k".to_string())], "{what}");
+        }
+    }
+}
+
+/// A place given for a `*T` field of a generic record binds `T` to the place's
+/// value type, as a var given for a `*T` parameter does: `get({ p: a })` reads
+/// `a` and `put({ p: a }, 7)` writes it.
+#[test]
+fn a_place_for_a_generic_ref_field_binds_the_value_type() {
+    let r = compile(
+        "type Box<T> = { p: *T }\nvar a: int = 0\nvar f: float = 0.0\nvar n: int = 0\nvar m: float = 0.0\n\
+         mod get<T>(q: Box<T>) -> T { return q.p }\n\
+         mod put<T>(q: Box<T>, v: T) { q.p = v }\n\
+         in go: exec\n\
+         on go {\n  n = get({ p: a })\n  m = get({ p: f })\n  put({ p: a }, 7)\n}",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, gc::UNSUPPORTED));
+    assert_eq!(stored_reads(&r, "n"), vec![Some("a".to_string())]);
+    assert_eq!(stored_reads(&r, "m"), vec![Some("f".to_string())]);
+    assert!(written_var_labels(&r).contains(&"a".to_string()), "{:?}", written_var_labels(&r));
+}
+
+/// A generic mod named like a builtin is the one a call names, in typecheck
+/// as in lowering: `clamp(i, 0, 10)` instantiates the program's own
+/// `clamp<int>`, which typecheck checked for that call.
+#[test]
+fn a_generic_mod_named_like_a_builtin_is_the_one_called() {
+    let src = "var i: int = 0\nvar n: int = 0\nin go: exec\n\
+               mod clamp<T: int | float>(v: T, lo: T, hi: T) -> T { if v < lo { return lo }\n if v > hi { return hi }\n return v }\n\
+               on go { n = clamp(i, 0, 10) }\n";
+    let parsed = crate::parser::parse(src, "test");
+    let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
+    let call = src.find("clamp(i, 0, 10)").unwrap();
+    let key = (std::sync::Arc::from("test"), call, call + "clamp(i, 0, 10)".len(), std::sync::Arc::default());
+    assert_eq!(tc.resolutions.call_type_args.get(&key), Some(&vec![Type::Int]));
+    for (mode, r) in both_folds(src) {
+        assert_clean(&r, mode);
+        assert!(!has_gate(&r, gc::MATH_CLAMP), "{mode}: the builtin was called");
+        assert!(has_gate(&r, "BrickComponentType_Expr_CompareLess"), "{mode}: the mod's body was not inlined");
+    }
+    // A plain mod named like a builtin types its call by its own output: the
+    // `var` holding it is a string var, not the builtin's number.
+    let src = "var k: int = -3\nvar so: string = \"\"\nin go: exec\nmod abs(x: int) -> string { return \"neg\" }\n\
+               on go { var t = abs(k)\n so = t }\n";
+    for (mode, r) in both_folds(src) {
+        assert_clean(&r, mode);
+        let numeric_var = r.module.nodes.values().any(|n| {
+            n.gate_class == gc::VAR && n.ports.inputs.iter().chain(&n.ports.outputs).any(|p| p.ty == Type::Float)
+        });
+        assert!(!numeric_var, "{mode}: `t` holds the mod's string");
+    }
+}
+
+/// A type parameter given a record by its instantiation names that record
+/// wherever an annotation of one is read: `var u: A = a` holds `a`'s fields,
+/// and an output `r: D` written from both branches stores each field. Both
+/// were WS071 ("a record, not one value").
+#[test]
+fn a_type_parameter_given_a_record_declares_the_record() {
+    let head = "type P = { x: int, y: int }\nvar p: P = { x: 1, y: 2 }\nvar q: P = { x: 0, y: 0 }\nvar k: int = 1\n\
+                var n: int = 0\nvar flag: bool = true\nvar ps: P[]\nin go: exec\n";
+    let var_src = format!("{head}mod f<A: int | P>(a: A) -> A {{\n  var u: A = a\n  return u\n}}\non go {{\n  q = f(p)\n  n = f(k)\n}}");
+    let out_src = format!(
+        "{head}mod f<D: int | P>(e: D, xs: D[]) -> (r: D) {{\n  if flag {{ emit r = e }} else {{ emit r = xs[0] }}\n}}\non go {{ q = f(p, ps) }}"
+    );
+    for (src, q_line) in [(var_src, 14), (out_src, 12)] {
+        for r in [compile(&src), compile_folded(&src)] {
+            assert_no_errors(&r);
+            let q_stores = r
+                .module
+                .nodes
+                .values()
+                .filter(|n| n.gate_class == crate::ir::gate_class::VAR_SET && n.source_range.start.line == q_line)
+                .count();
+            assert_eq!(q_stores, 2, "one store per field of `q`\n{src}");
+        }
+    }
+}
+
+/// A `...tuple` spread into a generic infers its type parameters from the
+/// tuple's elements, as written-out arguments do; it was WS033 ("cannot infer
+/// type parameter") and an `_Unsupported` call.
+#[test]
+fn a_tuple_spread_into_a_generic_infers_its_parameters() {
+    for (decls, call) in [
+        ("var n: int = 0\nout onn: int = n\n", "let t = (3, 4)\n  n = g(...t)"),
+        ("var f: float = 0.0\nout of: float = f\n", "let t = (1.5, 2.5)\n  f = g(...t)"),
+        ("var n: int = 0\nout onn: int = n\n", "n = g(...(3, 4))"),
+    ] {
+        let src = format!("in go: exec\n{decls}mod g<T: int | float>(a: T, b: T) -> T {{ return a + b }}\non go {{\n  {call}\n}}");
+        let r = compile(&src);
+        assert_no_errors(&r);
+        assert!(!has_gate(&r, "_Unsupported"), "{src}");
+        assert_eq!(gate_count(&r, "BrickComponentType_Expr_MathAdd"), 1, "{src}");
+    }
+}
+
+/// A program spelling a type through an alias of a generic instantiation
+/// (`type IP = Pair<int>`, `type OI = Opt<int>`) compiles to the save its
+/// twin spelling the instantiation does, in every position: a `var`, a
+/// parameter of a `mod` and a `chip`, an annotated output, a record
+/// assignment, an array element, a return type and an alias of the alias. A
+/// record alias was one `any` wire (`Var f64`, its fields read through
+/// `SplitColor`) and an enum alias had no tag.
+#[test]
+fn an_alias_of_a_generic_instantiation_is_its_instantiation() {
+    let record = "type Pair<T> = { a: T, b: T }\ntype IP = Pair<int>\ntype IP2 = IP\nvar n: int = 0\nvar k: int = 3\nin go: exec\n";
+    let enumd = "enum Opt<T> { Some(T), None }\ntype OI = Opt<int>\nvar n: int = 0\nvar k: int = 3\nin go: exec\n";
+    let cases: &[(&str, &str)] = &[
+        (record, "var q: @ = { a: 1, b: 2 }\non go { n = q.a + q.b }"),
+        (record, "mod f(p: @) -> int { return p.a * p.b }\non go { n = f({ a: k, b: 2 }) }"),
+        (record, "chip C(p: @) -> (r: int) { out r = p.a * p.b }\non go { n = C({ a: k, b: 2 }) }"),
+        (record, "out z: @ = { a: k, b: 2 }"),
+        (record, "var q: @ = { a: 1, b: 2 }\non go { q = { a: k, b: q.a }\nn = q.b }"),
+        (record, "var qs: @[]\non go { qs.push({ a: k, b: 2 })\nn = qs[0].b }"),
+        (record, "mod mk(x: int) -> @ { return { a: x, b: 7 } }\non go { let r = mk(k)\nn = r.b }"),
+        (enumd, "var o: @ = Opt.None\non go { o = Opt.Some(k)\nmatch o { Some(v) => { n = v } None => { n = 9 } } }"),
+        (enumd, "mod f(o: @) -> int { return match o { Some(v) => v, None => 9 } }\non go { n = f(Opt.Some(k)) }"),
+    ];
+    let save = |src: &str, fold: bool| {
+        let fold_mode = if fold { crate::FoldMode::ForceOn } else { crate::FoldMode::ForceOff };
+        let input = crate::CompileInput { source: src, file: "main", module_name: None, fold_mode };
+        let loader = crate::resolve::MemLoader { files: Default::default() };
+        let out = crate::compile_with_loader(input, Default::default(), &loader).unwrap_or_else(|e| panic!("{e:?}\n{src}"));
+        super::shadow_differential::save_components(&out.brz)
+    };
+    let errors = |src: &str| {
+        let input = crate::CompileInput { source: src, file: "main", module_name: None, fold_mode: Default::default() };
+        match crate::compile(input) {
+            Err(crate::CompileError::HasErrors(errors)) => {
+                errors.iter().map(|d| format!("{} {}", d.code, d.message)).collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        }
+    };
+    for (head, body) in cases {
+        let (alias, written) = if head.starts_with("enum") { ("OI", "Opt<int>") } else { ("IP", "Pair<int>") };
+        let spellings: &[&str] = if alias == "IP" { &[alias, "IP2"] } else { &[alias] };
+        for spelled in spellings {
+            let src = format!("{head}{}", body.replace('@', spelled));
+            let twin = format!("{head}{}", body.replace('@', written));
+            for fold in [false, true] {
+                assert_eq!(save(&src, fold), save(&twin, fold), "fold {fold}\n{src}\n---\n{twin}");
+            }
+        }
+    }
+    // Written to an output with no type, it is WS105 like its twin, and the
+    // hint names the alias declared first.
+    let src = format!("{record}var q: IP = {{ a: 1, b: 2 }}\non go {{ out z = q }}");
+    let e = errors(&src);
+    assert!(e.iter().any(|m| m.contains("WS105") && m.contains("`out z: IP = ...`")), "{e:?}");
+    let src = "type Zed = { x: int }\ntype Abc = { x: int }\nin go: exec\nvar q: Zed = { x: 1 }\non go { out z = q }";
+    let e = errors(src);
+    assert!(e.iter().any(|m| m.contains("WS105") && m.contains("`out z: Zed = ...`")), "{e:?}");
+}
+
+/// A library's alias of a generic instantiation (`type IP = Pair<int>`) is
+/// that instantiation where the library is imported, by name or as a
+/// namespace, in a constant, a `var`, a parameter and through the generic
+/// itself (`u.Pair<int>`): the importer compiles to the save of its twin
+/// declaring the record itself. An integer for a `float` field of one is that
+/// float. Each import was `WS002 unknown generic type 'Pair'`.
+#[test]
+fn a_library_alias_of_a_generic_instantiation_imports() {
+    let lib = "type Pair<T> = { a: T, b: T }\ntype IP = Pair<int>\ntype FP = Pair<float>\nconst C: IP = { a: 1, b: 2 }\n\
+               const D: FP = { a: 3, b: 4 }\nmod sum(p: IP) -> int { return p.a + p.b }\n";
+    let tail = "var n: int = 0\nvar x: float = 0.0\nin go: exec\nin k: int\n";
+    let ip = "{ a: int, b: int }";
+    let cases: Vec<(String, String)> = vec![
+        (
+            format!("import {{ C }} from \"lib\"\n{tail}on go {{ n = C.a + C.b + k }}"),
+            format!("{tail}const C: {ip} = {{ a: 1, b: 2 }}\non go {{ n = C.a + C.b + k }}"),
+        ),
+        (
+            format!("import {{ D }} from \"lib\"\n{tail}on go {{ x = (D.a + D.b) / 2 }}"),
+            format!("{tail}const D: {{ a: float, b: float }} = {{ a: 3, b: 4 }}\non go {{ x = (D.a + D.b) / 2 }}"),
+        ),
+        (
+            format!("import {{ IP }} from \"lib\"\n{tail}var q: IP = {{ a: 1, b: 2 }}\non go {{ n = q.a + q.b + k }}"),
+            format!("{tail}var q: {ip} = {{ a: 1, b: 2 }}\non go {{ n = q.a + q.b + k }}"),
+        ),
+        (
+            format!("import * as u from \"lib\"\n{tail}var q: u.IP = {{ a: 1, b: 2 }}\non go {{ n = q.a + q.b + k }}"),
+            format!("{tail}var q: {ip} = {{ a: 1, b: 2 }}\non go {{ n = q.a + q.b + k }}"),
+        ),
+        (
+            format!("import * as u from \"lib\"\n{tail}var q: u.Pair<int> = {{ a: 1, b: 2 }}\non go {{ n = q.a + q.b + k }}"),
+            format!("{tail}var q: {ip} = {{ a: 1, b: 2 }}\non go {{ n = q.a + q.b + k }}"),
+        ),
+        (
+            format!("import * as u from \"lib\"\n{tail}on go {{ n = u.sum({{ a: k, b: 2 }}) }}"),
+            format!("{tail}mod sum(p: {ip}) -> int {{ return p.a + p.b }}\non go {{ n = sum({{ a: k, b: 2 }}) }}"),
+        ),
+        (
+            format!("import {{ sum }} from \"lib\"\n{tail}on go {{ n = sum({{ a: k, b: 2 }}) }}"),
+            format!("{tail}mod sum(p: {ip}) -> int {{ return p.a + p.b }}\non go {{ n = sum({{ a: k, b: 2 }}) }}"),
+        ),
+    ];
+    let save = |src: &str, fold: bool| {
+        let fold_mode = if fold { crate::FoldMode::ForceOn } else { crate::FoldMode::ForceOff };
+        let input = crate::CompileInput { source: src, file: "main", module_name: None, fold_mode };
+        let loader = crate::resolve::MemLoader { files: [("lib.ws".to_string(), lib.to_string())].into_iter().collect() };
+        let out = crate::compile_with_loader(input, Default::default(), &loader).unwrap_or_else(|e| panic!("{e:?}\n{src}"));
+        super::shadow_differential::save_components(&out.brz)
+    };
+    for (src, twin) in &cases {
+        for fold in [false, true] {
+            assert_eq!(save(src, fold), save(twin, fold), "fold {fold}\n{src}\n---\n{twin}");
+        }
+    }
 }

@@ -21,57 +21,63 @@ pub(super) enum RefArg {
     /// The argument names the caller's own storage (`x`, `&x`, `arr`, a record
     /// field): the parameter aliases it at compile time.
     Static(VarRecord),
-    /// An `in` port carrying an array or ref.
+    /// An `in` port carrying an array. A scalar `*T` port carries a ref
+    /// value and classifies as [`RefArg::Value`].
     Input(NodeRecord),
     /// A name already bound to a runtime ref: forward the same wire.
     Forward(DynRefRecord),
     /// A ref VALUE (a ref-holding var, an array element, event data): its
     /// lowered value is the wire that carries the ref.
     Value,
-    /// An array or map literal, which names no storage: the parameter binds
-    /// nothing, so a container use in the body reports WS044.
+    /// An array or map literal, which names no storage. A constant one binds
+    /// its immutable container gate (`materialize_literal_container`); any
+    /// other is WS044 at the call.
     Unbound,
 }
 
-pub(super) fn classify_ref_arg(ctx: &LowerCtx, param_typ: &TypeExpr, arg: &Expr) -> RefArg {
+pub(super) fn classify_ref_arg(ctx: &LowerCtx, param_storage: Option<VarStorage>, arg: &Expr) -> RefArg {
     // `&x` always names x's own storage.
     if let Expr::RefOf { operand, .. } = arg {
-        return classify_named(ctx, param_typ, operand).unwrap_or_else(|| ref_value(arg));
+        return classify_named(ctx, param_storage, operand).unwrap_or_else(|| ref_value(ctx, arg));
     }
-    // A `*T` value binds the ref it carries, whatever holds it: a ref-holding
-    // var passed by name binds the var it POINTS AT, not itself.
-    if matches!(ctx.type_of(arg), Type::Ref(_)) {
-        return RefArg::Value;
+    // The argument's binding decides: storage binds the parameter to itself,
+    // and a ref value (a ref-holding var passed by name, a field or pin that
+    // carries a ref) binds it to the var the ref points at. A `*T` `in` port
+    // carries a ref value.
+    match classify_named(ctx, param_storage, arg) {
+        Some(RefArg::Input(_)) if matches!(ctx.type_of(arg), Type::Ref(_)) => RefArg::Value,
+        Some(bound) => bound,
+        None => ref_value(ctx, arg),
     }
-    classify_named(ctx, param_typ, arg).unwrap_or_else(|| ref_value(arg))
 }
 
-/// `Unbound` for an array or map literal, which has no storage behind it;
-/// `Value` otherwise. Only an argument typecheck accepted reaches here: a ref
+/// `Unbound` for an array or map literal (`{}` for a map included), which has
+/// no storage behind it; `Value` otherwise. Only an argument typecheck accepted reaches here: a ref
 /// value (recorded as `Ref`) was bound above, and a scalar with neither a ref
 /// type nor storage behind it (`rr.n`, `m.get(k).Value` on a value map) is
 /// already WS008, so what is left carries a ref on its wire.
-fn ref_value(arg: &Expr) -> RefArg {
-    if matches!(deref_arg(arg), Expr::Array { .. } | Expr::MapLit { .. }) {
+fn ref_value(ctx: &LowerCtx, arg: &Expr) -> RefArg {
+    if matches!(
+        ctx.with_map_literals(deref_arg(arg)).as_ref(),
+        Expr::Array { .. } | Expr::MapLit { .. }
+    ) {
         RefArg::Unbound
     } else {
         RefArg::Value
     }
 }
 
-fn classify_named(ctx: &LowerCtx, param_typ: &TypeExpr, arg: &Expr) -> Option<RefArg> {
-    let wants_container = matches!(
-        crate::lower::context::container_storage(param_typ),
-        Some(VarStorage::Array | VarStorage::Map)
-    );
+fn classify_named(ctx: &LowerCtx, param_storage: Option<VarStorage>, arg: &Expr) -> Option<RefArg> {
+    let wants_container = matches!(param_storage, Some(VarStorage::Array | VarStorage::Map));
     let binding = match arg {
         Expr::Ident { name, .. } => ctx.scope.get(name).cloned(),
         _ => resolve_field_chain(ctx, arg).cloned(),
     }?;
     match binding {
-        // A var HOLDING a container ref (`cur: *int[]`) is not the container;
-        // its value is the ref.
+        // A var HOLDING a container ref (`cur: *int[]`) is not the container,
+        // nor is a var holding a scalar ref its target: their value is the ref.
         Binding::Var(v) if wants_container && v.storage == VarStorage::Var => None,
+        Binding::Var(v) if v.storage == VarStorage::Var && matches!(v.inner_type, Type::Ref(_)) => None,
         Binding::Var(v) => Some(RefArg::Static(v)),
         Binding::Input(inp) => Some(RefArg::Input(inp)),
         Binding::DynRef(d) => Some(RefArg::Forward(d)),
@@ -102,18 +108,33 @@ pub(super) fn resolve_caller_captures(
                 resolve_field_chain(ctx, deref_arg(arg_expr)).cloned()
             {
                 for field in fields {
-                    if !matches!(&field.typ, TypeExpr::Array { .. } | TypeExpr::Ref { .. }) {
+                    if !ctx.ref_or_array(Some(chip_decl), &field.typ) {
                         continue;
                     }
                     let field_sym = crate::intern::intern(&field.name);
-                    if let Some(Binding::Var(var_rec)) = rec_fields.get(&field_sym) {
+                    // A var holding a ref is a ref value: it crosses on the pin.
+                    if let Some(b @ Binding::Var(var_rec)) = rec_fields.get(&field_sym)
+                        && (var_rec.storage != VarStorage::Var || crate::lower::ref_fields::binds_place(b))
+                    {
                         let port_name = format!("{}_{}", param.name, field.name);
                         captures.insert(port_name, var_rec.clone());
                     }
                 }
             }
-        } else if matches!(&param.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }) {
-            if let RefArg::Static(var_rec) = classify_ref_arg(ctx, &param.typ, arg_expr) {
+        } else if ctx.ref_or_array(Some(chip_decl), &param.typ) {
+            // A constant array argument (a `const` table, a `let` of one, or an
+            // array literal) is captured as its immutable container gate, the
+            // way the inline-mod binder takes it, for a `*T[]` param too.
+            let arg = deref_arg(arg_expr);
+            materialize_const_container(ctx, arg);
+            if matches!(ctx.declared_shape(Some(chip_decl), &param.typ), TypeExpr::Array { .. }) {
+                if let Some(rec) = materialize_literal_container(ctx, arg, &param.name) {
+                    captures.insert(param.name.clone(), rec);
+                    continue;
+                }
+            }
+            let storage = ctx.ref_storage(Some(chip_decl), &param.typ);
+            if let RefArg::Static(var_rec) = classify_ref_arg(ctx, storage, arg_expr) {
                 captures.insert(param.name.clone(), var_rec);
             }
         }

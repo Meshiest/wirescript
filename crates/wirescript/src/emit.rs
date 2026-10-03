@@ -72,6 +72,7 @@ mod components;
 use components::*;
 #[cfg(test)]
 pub(crate) use components::roundtrip_adv_inventory_component;
+pub(crate) use components::check_native_settings;
 mod labels;
 use labels::*;
 mod rerouters;

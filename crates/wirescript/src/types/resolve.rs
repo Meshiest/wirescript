@@ -84,6 +84,10 @@ pub struct ResolveCtx<'a> {
     /// doesn't need generic-alias resolution — typecheck's
     /// `resolve_type_expr` is the one caller that fills it.
     pub generic_aliases: &'a HashMap<String, GenericAlias>,
+    /// The aliases a generic alias's body reads its own names against: those
+    /// of the top level it is declared at, where none of the use site's type
+    /// parameters exist. `None` reads them against `type_aliases`.
+    pub declaring_aliases: Option<&'a HashMap<String, Type>>,
 }
 
 /// Substitute type-parameter names (`T`) with concrete `TypeExpr`s throughout
@@ -183,9 +187,9 @@ pub fn resolve_type(te: &TypeExpr, cx: &ResolveCtx, diags: &mut Vec<Diagnostic>)
 /// nothing, while the per-field form is exactly what a chip/mod boundary
 /// already carries writably. Nested records recurse; a field that is already a
 /// ref stays as it is rather than becoming `**T`.
-fn distribute_ref(t: Type) -> Type {
+pub(crate) fn distribute_ref(t: Type) -> Type {
     match t {
-        Type::Record(fields) => Type::Record(
+        Type::Record(fields) | Type::Outputs(fields) => Type::Record(
             fields
                 .into_iter()
                 .map(|(n, ft)| (n, distribute_ref(ft)))
@@ -320,20 +324,19 @@ fn resolve_type_at_depth(
                 // (params are filtered out of the child's `params` list so they
                 // can't win the `Type::Param` fast-path ahead of the
                 // substitution).
-                let mut child_aliases = cx.type_aliases.clone();
+                let mut child_aliases = cx.declaring_aliases.unwrap_or(cx.type_aliases).clone();
                 for (p, resolved_arg) in alias.params.iter().zip(resolved_args.iter()) {
                     child_aliases.insert(p.clone(), resolved_arg.clone());
                 }
-                let filtered_params: Vec<String> = cx
-                    .params
-                    .iter()
-                    .filter(|p| !alias.params.contains(p))
-                    .cloned()
-                    .collect();
+                let filtered_params: Vec<String> = match cx.declaring_aliases {
+                    Some(_) => Vec::new(),
+                    None => cx.params.iter().filter(|p| !alias.params.contains(p)).cloned().collect(),
+                };
                 let child_cx = ResolveCtx {
                     params: &filtered_params,
                     type_aliases: &child_aliases,
                     generic_aliases: cx.generic_aliases,
+                    declaring_aliases: cx.declaring_aliases,
                 };
                 in_progress.push((name.clone(), resolved_args));
                 let result =

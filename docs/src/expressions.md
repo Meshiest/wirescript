@@ -1,11 +1,12 @@
 # Expressions
 
-Expressions compute values. In Wirescript, expressions map to wire graph gates -- each operator or function call becomes one or more gates with their ports wired together.
+Expressions compute values. In Wirescript, expressions map to wire graph gates: each operator or function call becomes one or more gates with their ports wired together.
 
 <!-- toc -->
 ## Contents
 
 - [Operator Precedence](#operator-precedence)
+- [Evaluation Order](#evaluation-order)
 - [Arithmetic Operators](#arithmetic-operators)
 - [Comparison Operators](#comparison-operators)
 - [Logical Operators](#logical-operators)
@@ -60,6 +61,36 @@ let y = 1 + 2 * 3     // = 1 + (2 * 3) = 7
 let s = "x=" .. x + 1  // = "x=" .. (x + 1) -- careful!
 ```
 
+## Evaluation Order
+
+Wherever an expression has several parts, they are evaluated in source order,
+and each part keeps the value it had when it was evaluated. That covers an
+operator's operands, a call's arguments (named ones too), a container method's
+arguments, an index or ref and the value written through it (`xs[i] = v`,
+`*r = v`), the slots of an interpolated string, an if-expression's condition and
+branches, and the fields of a record, tuple or enum payload. So a part that reads storage (a var, a `let`
+computed from one, an `out`) is read before a later part runs code that writes
+that storage:
+
+```wirescript
+var q: int = 0
+var o: int = 0
+let l = q * 3
+mod bump() -> int {
+  q = q + 1
+  return 1
+}
+in go: exec
+on go {
+  o = l + bump()     // `l` from before bump()
+  o = bump() + l     // `l` from after it
+}
+```
+
+`q = q + bump()` likewise reads `q` before `bump()` runs. An array or map is a
+reference, read where it is used, except where a whole-record assignment copies it
+(see [Records as storage](types.md#records-as-storage)).
+
 ## Arithmetic Operators
 
 | Operator | Operation | Operand Types | Result Type |
@@ -86,9 +117,9 @@ Mixed `int`/`float` arithmetic promotes the result to `float`. `bool` values are
 the same math gates (whose inputs accept the vector, `f64` and `i64` wire
 variants). Mixing a vector with a scalar broadcasts the scalar across the
 components (`v * 2.0`, `10.0 * v`, `v / 4`); the result is a vector. The
-`Scale` helper still works for explicit vector–scalar scaling.
+`Scale` helper still works for explicit vector-scalar scaling.
 
-Colors work the same way — the math gate's variant set also covers `color`
+Colors work the same way: the math gate's variant set also covers `color`
 (`LinearColor`), so `+ - * / %` operate **RGBA channel-wise** on two `color`
 operands, and mixing a color with a **number** broadcasts that number across the
 channels: add one to lighten (`c + 0.1`), multiply to scale (`tint * 0.5` dims
@@ -97,14 +128,14 @@ is a color.
 
 The same gates also accept the rotation family (`quat` / `rotator`), so `q1 * q2`
 composes two rotations. Same-type operands keep their type; a `quat`/`rotator`
-mix yields a `quat` (freely coercible back to a `rotator` — see
+mix yields a `quat` (freely coercible back to a `rotator`; see
 [types](types.md)).
 
-An **object** operand (a `controller`/`character`/`entity` —
+An **object** operand (a `controller`/`character`/`entity`,
 e.g. a player) no longer coerces directly to an `int` on a math gate, so it is
 routed through `(obj || false)` first: `1 + player` lowers to
 `add(1, or(player, false))`. The `||` gate coerces the object to a value the math
-gate accepts. This is automatic — just write the arithmetic.
+gate accepts. This is automatic, so just write the arithmetic.
 
 ```wirescript
 let a = 10 + 3       // 13: int
@@ -153,7 +184,7 @@ let sameTeam = teamA == teamB
 | `^^` | Logical XOR | any wire variant pair | `bool` |
 | `!` | Logical NOT (unary) | any wire variant | `bool` |
 
-Wire variant types are: `bool`, `int`, `float`, `exec`, `string`, `entity`, `controller`, `character`. The engine coerces all of these to bool on bool ports (truthy/falsy). This means `exec` values (true for one frame) work directly in logical expressions:
+Wire variant types are: `bool`, `int`, `float`, `exec`, `string`, `entity`, `controller`, `character`. The engine coerces all of these to bool on bool ports (truthy/falsy). An `exec` value is true for the tick it fires, and works directly as an operand of the logical operators (`&&`, `||`, `^^`, `!`), as an `if` or `if ... then ... else` condition and as an `on` trigger, read directly or through a `let`. It is no `bool` value otherwise: storing it (in a `bool` variable, array, map, record field or output), passing it to a `bool` parameter or returning it from a `-> bool` mod is `WS003`, and comparing it with `==` is `WS004`. An exec carried through an output pin of no type (`out o: any`) reads as true where a `bool` is read or written; read as any other type (a number, text, a color) it carries no value, which is `WS094`:
 
 ```wirescript
 in reset: bool
@@ -235,8 +266,19 @@ let price = "Cost: \$${amount}"
 > picks which value is used, it does not skip work. Two consequences: an
 > expensive expression in the untaken arm still costs its gates every tick, and
 > an arm that would fail on bad input (an out-of-range slice, a divide by zero)
-> still runs -- gates yield a default rather than faulting, which is why this is
+> still runs. Gates yield a default rather than faulting, which is why this is
 > safe, but it means an arm cannot be used to guard another.
+>
+> The exception is an arm that does more than give its value. On an exec chain
+> (a handler or a `mod` it calls), an arm that writes a variable or an output,
+> sends, mutates a container, runs an action builtin, or `return`s (directly,
+> through a `match` block arm, or inside a `mod` it calls) runs only when it
+> is taken: the `if` then compiles like an `if` statement whose branches store
+> the value, and reads it after they rejoin. An `if` whose value is a record,
+> tuple or enum can't do this (`WS097`); write an `if` statement instead. A
+> `match` used as a value treats its arms the same way. This covers what the
+> arm itself runs, not an `on` handler inside a `mod` or `chip` it calls: that
+> handler runs whenever its own trigger fires, taken or not (`WS102`).
 
 ## Conditional Expressions (if-then-else)
 
@@ -272,7 +314,7 @@ let result = if x > 0 then {
 }
 ```
 
-`let` bindings inside a block expression are scoped to that block — they are not accessible outside. The block's value is its last expression.
+`let` bindings inside a block expression are scoped to that block and are not accessible outside. The block's value is its last expression.
 
 Block expressions stay pure (Select gate) as long as they only contain `let` bindings. They can be used anywhere an expression is expected:
 
@@ -280,7 +322,7 @@ Block expressions stay pure (Select gate) as long as they only contain `let` bin
 let norm = { let len = sqrt(x*x + y*y); len }
 ```
 
-The result type is the **widening join** of both branches -- the same rule
+The result type is the **widening join** of both branches, the same rule
 that infers a [generic](types.md#generics) type parameter from its call-site
 arguments: numeric branches widen to a common numeric type (`int` widens to
 `float`), and object branches widen toward `entity`. The branches are not
@@ -309,7 +351,7 @@ chip let emptyCount = (if c0 == 0 then 1 else 0) + (if c1 == 0 then 1 else 0)
 
 ## Atom Literals
 
-An atom literal `:name` is a compile-time `int` constant -- the deterministic
+An atom literal `:name` is a compile-time `int` constant: the deterministic
 xxHash64 (seed 0) hash of `name`. It's a readable stand-in for a hand-picked
 magic number: a key for an `int`-keyed map, or an enum-like tag.
 
@@ -319,13 +361,13 @@ if team == :red { ... }
 ```
 
 The name may contain letters, digits, `_`, and `-` (the first character must
-be a letter or `_` -- a leading digit or `-` doesn't lex as an atom start).
-`:my-text` is a single atom, not `:my` followed by a subtraction -- write
+be a letter or `_`, since a leading digit or `-` doesn't lex as an atom start).
+`:my-text` is a single atom, not `:my` followed by a subtraction. Write
 `:a - b`, with spaces, when you mean `:a` minus `b`. Atoms only lex where a value is expected
 (after `=`, an operator, `(`, `,`, `[`, `=>`, ...); a `:` immediately after
-something that already reads as a value -- a type annotation (`x: int`), a
+something that already reads as a value stays a plain colon instead: a type annotation (`x: int`), a
 record field (`{ x: 1 }`), or a map's string/atom key separator (`"red": 1`,
-`:red: 1`) -- stays a plain colon instead.
+`:red: 1`).
 
 There's no runtime string-to-hash gate: an atom's value is always resolved
 at compile time, so `:name` can only appear as a literal, never built from a
@@ -357,7 +399,7 @@ let b: Point = { ...a, y: 99 }  // b.x == 1, b.y == 99
 
 Later fields override spread fields. Multiple spreads are allowed.
 
-A record *value* is a compile-time abstraction -- it produces no wire graph gates, and each field resolves directly to the underlying binding of its value expression. A record used as storage (a `var`, array, or map) is the exception: it decomposes into one gate per field. See [Records as storage](types.md#records-as-storage).
+A record *value* is a compile-time abstraction: it produces no wire graph gates, and each field resolves directly to the underlying binding of its value expression. A record used as storage (a `var`, array, or map) is the exception: it decomposes into one gate per field. See [Records as storage](types.md#records-as-storage).
 
 ## Tuple Literals
 
@@ -392,7 +434,7 @@ Every component-typed value can be read one component at a time:
 | `quat` | `.x` `.y` `.z` `.w` |
 
 The names are also accepted upper-case. They work on any expression of that
-type — a `Vec(...)` literal, an input, a stored variable, or a `let` binding —
+type (a `Vec(...)` literal, an input, a stored variable, or a `let` binding)
 and lower to the matching Split gate (SplitVector, SplitColor, SplitRotation,
 SplitQuaternion), which outputs the single `float` component:
 
@@ -448,7 +490,7 @@ let jmp = input.Jump       // bool
 ### Exec Field (`.exec`)
 
 `.exec` names the **exec output** of an exec-returning call. Use it whenever you
-need to reference that completion signal — to sequence on it (`await`), handle it
+need to reference that completion signal: to sequence on it (`await`), handle it
 (`on`), or wire it into another gate's `exec =`.
 
 Four cases resolve through `.exec`:
@@ -563,8 +605,10 @@ DisplayText(ctrl, "Hello",
 
 Named arguments use `name = value` syntax. They can be mixed with positional arguments, but positional arguments must come first (matching the parameter order).
 
-**Running an exec gate with `exec = <trigger>`.** Any exec-gate call — a builtin
-like `Random`, an array/map method, or a user-defined exec chip/mod — accepts a
+Arguments are evaluated in source order, named ones included, and each keeps the value it had when it was evaluated (see [Evaluation Order](#evaluation-order)). A record argument naming a var's storage is bound to that storage, as a `*T` parameter is.
+
+**Running an exec gate with `exec = <trigger>`.** Any exec-gate call (a builtin
+like `Random`, an array/map method, or a user-defined exec chip/mod) accepts a
 reserved `exec = <trigger>` named argument that drives its exec input. This lets
 an exec gate run **outside** a handler: it fires each time the trigger's value
 changes rather than riding the surrounding exec chain, so the call becomes a leaf
@@ -591,7 +635,7 @@ DisplayText(target = ctrl, text = msg, fontSize = 30)
 
 ## Ref and Deref
 
-`ref` (or `&`) makes a ref value: `let r = ref someVar` and `let r = &someVar` are the same. The `*` prefix operator reads or writes through a ref, in an exec context -- see [Reference values](types.md#reference-values) for the full rules.
+`ref` (or `&`) makes a ref value: `let r = ref someVar` and `let r = &someVar` are the same. The `*` prefix operator reads or writes through a ref, in an exec context. See [Reference values](types.md#reference-values) for the full rules.
 
 ```wirescript
 in go: exec
@@ -619,9 +663,9 @@ on tick {
 }
 ```
 
-### `*var` — Explicit Deref in Exec Context
+### `*var`: Explicit Deref in Exec Context
 
-Inside exec context, prefixing a variable with `*` explicitly reads its current-tick value via a `Var_Get` gate. This is identical to the implicit auto-deref that happens with a bare variable name in exec context — it exists for clarity or to disambiguate:
+Inside exec context, prefixing a variable with `*` explicitly reads its current-tick value via a `Var_Get` gate. This is identical to the implicit auto-deref that happens with a bare variable name in exec context. It exists for clarity or to disambiguate:
 
 ```wirescript
 var x: int = 0
@@ -631,7 +675,7 @@ on tick {
 }
 ```
 
-`*var` is **not allowed in pure context** — it produces error **WS006** ("use `.Value` for pure reads"). In pure context, use `x.Value` instead.
+`*var` is **not allowed in pure context**. It produces error **WS006** ("use `.Value` for pure reads"). In pure context, use `x.Value` instead.
 
 ### Variable Read Modes Summary
 
@@ -639,7 +683,7 @@ on tick {
 |------------|---------|------|---------|
 | `x` (bare) | Exec | `Var_Get` | Current tick's value |
 | `*x` | Exec | `Var_Get` | Current tick's value (explicit) |
-| `*x` | Pure | — | **Error WS006** — use `.Value` |
+| `*x` | Pure | none | **Error WS006**: use `.Value` |
 | `x.Value` | Pure or Exec | `.Value` port | Previous tick's value (delayed) |
 | `x.prev` | Pure or Exec | `.Value` port | Previous tick's value (same as `.Value`) |
 | `x` (bare) | Pure | `.Value` port | The same read as `x.Value`; an unannotated `out` of it is `WS017` |
@@ -670,12 +714,12 @@ let bad = x >> 31 & 1 != 0      // wrong — compares 1 != 0 first
 Chip internal `var`/`array` are not accessible from outside. Only declared `->` outputs are visible. For shared mutable state, use top-level declarations and `mod` macros.
 
 The reverse works, though: a chip body can reference top-level `var`s,
-`array`s, and buffers freely — wire refs cross chip boundaries.
+`array`s, and buffers freely, because wire refs cross chip boundaries.
 
 ## Asset References
 
-`$AssetType/AssetName` references an external asset the world embeds by name —
-weapons, pickups, projectiles, and audio/font descriptors:
+`$AssetType/AssetName` references an external asset the world embeds by name
+(weapons, pickups, projectiles, and audio/font descriptors):
 
 ```wirescript
 let weapon = $BRItemBase/Weapon_Pistol
@@ -690,11 +734,11 @@ inventory or audio gate).
 ## Prefab References
 
 A `$` reference whose path begins with `.` or `/` is a **prefab file
-reference** — it points at a `.brz` prefab archive rather than a named catalog
+reference**: it points at a `.brz` prefab archive rather than a named catalog
 asset:
 
-- `$./file.brz` — relative to the current source file's directory.
-- `$/abs/path/file.brz` — a filesystem-absolute path.
+- `$./file.brz`: relative to the current source file's directory.
+- `$/abs/path/file.brz`: a filesystem-absolute path.
 
 A reference ending in `.ws` is a **source prefab**: the file is compiled at
 reference time and the result embedded, so a prefab can be kept as readable
@@ -712,7 +756,7 @@ on spawn {
 
 A prefab can also be written **inline**, as a `$` followed by a triple-backtick
 block of Wirescript compiled as a nested prefab. The spawned chip's source sits
-at the spawn site, and it closes over nothing — it communicates by targeted
+at the spawn site, and it closes over nothing. It communicates by targeted
 custom events like any other prefab. Inline blocks may nest 8 deep.
 
 ```wirescript
@@ -737,7 +781,7 @@ on CharacterSpawned() -> (who) {
 > chip sweeping N entities every tick costs N ticks per pass. Spawning one chip
 > per entity moves that work into parallel gate instances, and the per-tick cost
 > stops depending on N. Note that the nested `on ServerUptime()` above is **not**
-> registered by the init handler — the wire graph is static, so its trigger is
+> registered by the init handler. The wire graph is static, so its trigger is
 > live from the moment the prefab spawns, before `init` lands, which is why real
 > code guards it on an init-set value. See
 > [per-entity fan-out](best-practices.md#10-per-entity-fan-out-one-chip-each-not-one-loop-over-all)
@@ -745,7 +789,7 @@ on CharacterSpawned() -> (who) {
 
 At compile the referenced `.brz` is read and **embedded into the output
 bundle** (content-addressed at `Prefabs/Uploads/<hash>.brz`), and the gate's
-`Prefab` property is set to that embedded path — so the compiled program is
+`Prefab` property is set to that embedded path, so the compiled program is
 self-contained. Typing `$./` completes available `.brz` files (the editor scans
 the project directory; the web playground has a Prefabs panel where you upload
 or drag in `.brz` files).

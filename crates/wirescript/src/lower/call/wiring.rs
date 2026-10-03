@@ -13,7 +13,11 @@ pub(super) fn wire_chip_args_and_outputs(
 ) -> PortRef {
     let positional_args = positional_args(args);
     let mut input_idx: usize = 0;
+    // Each argument is fixed at its value before a later argument runs code
+    // that may change what it reads; a pin already wired from it is rewired.
+    let mut args_in_order = crate::lower::ordered::ArgOrder::default();
     for (i, param) in chip_decl.inputs.iter().enumerate() {
+        args_in_order.next(ctx);
         // A `const` parameter has no `MicrochipInput` pin: its value is baked
         // into the body's constant environment by `build_chip_module`, which
         // skips it on this identical `is_const` predicate. So it consumes no
@@ -30,7 +34,7 @@ pub(super) fn wire_chip_args_and_outputs(
         // for a param that binds storage. Every resolution below needs it: the
         // ref/array pin, the record fields, and the general value path a map
         // param takes. Value params keep the argument as written.
-        let arg_expr: &Expr = if crate::lower::context::container_storage(&param.typ).is_some()
+        let arg_expr: &Expr = if ctx.ref_storage(Some(chip_decl), &param.typ).is_some()
             || ctx.record_or_tuple_fields(&param.typ).is_some()
         {
             deref_arg(raw_arg)
@@ -41,7 +45,7 @@ pub(super) fn wire_chip_args_and_outputs(
         // A `*Record` is NOT a scalar ref: `record_or_tuple_fields` reports its
         // per-field shape, so let it fall through to the record branch below,
         // which allocates one pin per leaf.
-        if matches!(&param.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. })
+        if ctx.ref_or_array(Some(chip_decl), &param.typ)
             && ctx.record_or_tuple_fields(&param.typ).is_none()
         {
             if caller_captures.contains_key(&param.name) {
@@ -50,13 +54,23 @@ pub(super) fn wire_chip_args_and_outputs(
             // Non-captured ref/array: has a MicrochipInput in the child
             let mc_input = child_inputs[input_idx];
             input_idx += 1;
-            let is_array = matches!(&param.typ, TypeExpr::Array { .. });
+            let is_array = matches!(ctx.declared_shape(Some(chip_decl), &param.typ), TypeExpr::Array { .. });
+            // An array of enums is a column per slot with no one ref for the
+            // pin; typecheck reports the parameter (WS049), once.
+            if is_array
+                && matches!(
+                    resolve_field_chain(ctx, deref_arg(raw_arg)),
+                    Some(Binding::Record(r)) if r.contains_key(&crate::intern::intern("__disc"))
+                )
+            {
+                continue;
+            }
             let ref_port_id = if is_array {
                 WirePort::ArrayVarRef
             } else {
                 WirePort::VarRef
             };
-            let src = match classify_ref_arg(ctx, &param.typ, raw_arg) {
+            let src = match classify_ref_arg(ctx, ctx.ref_storage(Some(chip_decl), &param.typ), raw_arg) {
                 RefArg::Static(var_rec) => var_rec.node_id.port(ref_port_id),
                 // An `in X: T[]` / ref input passed by reference: its ref lives
                 // at RER_Output, not an ArrayVarRef/VarRef port.
@@ -67,9 +81,10 @@ pub(super) fn wire_chip_args_and_outputs(
                     ctx.error(
                         "WS044",
                         format!(
-                            "argument `{}` is an array/map literal, which names no storage \
-                             for the chip's container parameter to use, so its operations \
-                             on it would be silently dropped. Pass an array or map `var`",
+                            "argument `{}` is an array/map literal with non-constant elements, \
+                             which names no storage for the chip's container parameter to use, \
+                             so operations on it would be silently dropped. Pass an array or \
+                             map `var`",
                             param.name
                         ),
                         raw_arg.range(),
@@ -90,7 +105,8 @@ pub(super) fn wire_chip_args_and_outputs(
             // explode), so `input_idx` advances one per leaf in lockstep with pin
             // creation and later pins stay index-aligned.
             let rec_fields = value_record_fields(ctx, arg_expr);
-            wire_record_param_pins(
+            let wires = ctx.builder.module.wires.len();
+            let wired = wire_record_param_pins(
                 ctx,
                 &param.name,
                 fields,
@@ -98,7 +114,9 @@ pub(super) fn wire_chip_args_and_outputs(
                 child_inputs,
                 &mut input_idx,
                 caller_captures,
+                raw_arg.range(),
             );
+            args_in_order.bind(Binding::Record(wired), &param.name, raw_arg.range(), Some(wires));
             continue;
         }
 
@@ -109,8 +127,7 @@ pub(super) fn wire_chip_args_and_outputs(
         // a real gate in every instance. Record it instead and clone it into the
         // chip'''s own module below, where `inline_orphan_literals` folds it onto its
         // consumer — the same gates the equivalent `mod` emits.
-        if let Some(value) = const_arg_literal(arg_expr) {
-            let ty = type_of_type_expr(&param.typ);
+        if let Some((ty, value)) = const_arg_literal(ctx, arg_expr) {
             const_folds.push(ConstFold {
                 pin: mc_input,
                 index: input_idx - 1,
@@ -120,8 +137,11 @@ pub(super) fn wire_chip_args_and_outputs(
             continue;
         }
         let val_port = lower_expr(ctx, arg_expr);
+        let wires = ctx.builder.module.wires.len();
+        args_in_order.bind(Binding::Local(LocalRecord { port: val_port }), &param.name, raw_arg.range(), Some(wires));
         ctx.connect(val_port, mc_input.port(WirePort::RerInput));
     }
+    args_in_order.finish(ctx);
 
     // The chip body may have written to caller-visible vars — through a ref/
     // array param, a dissolved record field, OR a top-level var it references
@@ -142,7 +162,7 @@ pub(super) fn wire_chip_args_and_outputs(
     // `value_record_fields`. Without it the call returned pin 0 alone and every
     // other leaf was silently unwired.
     if chip_decl.outputs.len() == 1
-        && ctx.record_fields_of(&chip_decl.outputs[0].typ).is_some()
+        && ctx.record_or_tuple_fields(&chip_decl.outputs[0].typ).is_some()
     {
         let mut idx = 0usize;
         let rec = child_output_record(ctx, &chip_decl.outputs[0].typ, child_outputs, &mut idx);
@@ -168,10 +188,10 @@ fn child_output_record(
     child_outputs: &[NodeId],
     idx: &mut usize,
 ) -> HashMap<crate::intern::Sym, Binding> {
-    let fields = ctx.record_fields_of(te).unwrap_or_default();
+    let fields = ctx.record_or_tuple_fields(te).unwrap_or_default();
     let mut out = HashMap::default();
     for field in &fields {
-        if ctx.record_fields_of(&field.typ).is_some() {
+        if ctx.record_or_tuple_fields(&field.typ).is_some() {
             let inner = child_output_record(ctx, &field.typ, child_outputs, idx);
             out.insert(crate::intern::intern(&field.name), Binding::Record(inner));
             continue;
@@ -204,10 +224,12 @@ fn wire_record_param_pins(
     child_inputs: &[NodeId],
     input_idx: &mut usize,
     caller_captures: &HashMap<String, VarRecord>,
-) {
+    arg_range: &SourceRange,
+) -> HashMap<crate::intern::Sym, Binding> {
+    let mut wired = HashMap::default();
     for field in fields {
         let port_name = format!("{prefix}_{}", field.name);
-        let is_container = crate::lower::context::container_storage(&field.typ).is_some();
+        let is_container = ctx.ref_storage(None, &field.typ).is_some();
         if !is_container
             && let Some(sub) = ctx.record_or_tuple_fields(&field.typ)
         {
@@ -217,7 +239,7 @@ fn wire_record_param_pins(
                     Binding::Record(m) => Some(m.clone()),
                     _ => None,
                 });
-            wire_record_param_pins(
+            let sub_wired = wire_record_param_pins(
                 ctx,
                 &port_name,
                 &sub,
@@ -225,7 +247,9 @@ fn wire_record_param_pins(
                 child_inputs,
                 input_idx,
                 caller_captures,
+                arg_range,
             );
+            wired.insert(crate::intern::intern(&field.name), Binding::Record(sub_wired));
             continue;
         }
         if caller_captures.contains_key(&port_name) {
@@ -236,10 +260,18 @@ fn wire_record_param_pins(
         let binding = value_fields
             .and_then(|vf| vf.get(&crate::intern::intern(&field.name)))
             .cloned();
+        // A `*T` field's pin carries a ref: a place's own, or the one a value holds.
+        let scalar_ref = ctx.ref_storage(None, &field.typ) == Some(VarStorage::Var);
         if let Some(binding) = binding
-            && let Some(src) = binding_to_port(ctx, &binding, &field.range)
+            && let Some(src) = if scalar_ref {
+                crate::lower::ref_fields::ref_port_of(ctx, &binding, arg_range)
+            } else {
+                binding_to_port(ctx, &binding, arg_range)
+            }
         {
             ctx.connect(src, mc_input.port(WirePort::RerInput));
+            wired.insert(crate::intern::intern(&field.name), Binding::Local(LocalRecord { port: src }));
         }
     }
+    wired
 }

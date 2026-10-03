@@ -1224,3 +1224,85 @@ fn for_as_run_hovers_as_the_outcome_record() {
         "got: {h}"
     );
 }
+
+/// A `const` computed through a builtin that an import may replace with a
+/// user `const mod` shows no value: hover has the file before its imports
+/// are merged, so it would show the builtin's answer, not the program's. With
+/// no such import, the value shows.
+#[test]
+fn a_const_through_a_builtin_an_import_may_replace_shows_no_value() {
+    use crate::resolve::MemLoader;
+    let hover_k = |src: &str| {
+        let lib = "const mod Vec(a: float, b: float, c: float) -> float { return 9.0 }";
+        let other = "mod twice(v: float) -> float { return v * 2.0 }
+const Z = 4";
+        let loader = MemLoader {
+            files: [("lib.ws".to_string(), lib.to_string()), ("other.ws".to_string(), other.to_string())]
+                .into_iter()
+                .collect(),
+        };
+        let resolved = resolve(src, "main", &loader);
+        let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
+        let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("main"));
+        let (line, text) = src.lines().enumerate().find(|(_, l)| l.starts_with("const K")).unwrap();
+        hover_at(
+            src,
+            "main",
+            &crate::parser::parse(src, "main").ast,
+            &symbols,
+            &tc.type_of_expr,
+            &resolved.doc_comments,
+            &tc.if_contexts,
+            &tc.var_read_contexts,
+            &tc.dropped_ranges,
+            &Default::default(),
+            line,
+            text.find('K').unwrap() + 1,
+        )
+        .expect("hover on K")
+    };
+    let h = hover_k("const K = Vec(1.0, 2.0, 3.0)
+out o = K");
+    assert!(h.contains(" = "), "{h}");
+    for src in [
+        "import { Vec } from \"lib\"
+const K = Vec(1.0, 2.0, 3.0)
+out o = K",
+        "import { Vec } from \"lib\"
+const A = Vec(1.0, 2.0, 3.0)
+const K = A + 1.0
+out o = K",
+        "import \"lib\"
+const K = Vec(1.0, 2.0, 3.0)
+out o = K",
+    ] {
+        let h = hover_k(src);
+        assert!(h.contains("const K") && !h.contains(" = "), "{src}: {h}");
+    }
+    // A whole-module import that declares no mod of that name replaces nothing.
+    let h = hover_k("import \"other\"
+const K = Vec(1.0, 2.0, 3.0)
+out o = K");
+    assert!(h.contains(" = "), "{h}");
+}
+
+/// A `const` in a body shows no value when the name it reads is a parameter,
+/// `var` or non-constant `let` hiding the outer constant: compiling reports
+/// it as no constant (`WS046`), so the outer value would be a wrong one.
+#[test]
+fn a_const_reading_a_name_that_hides_a_constant_shows_no_value() {
+    let at_q = |src: &str| {
+        let (line, text) = src.lines().enumerate().find(|(_, l)| l.contains("const q")).unwrap();
+        hover_for(src, line, text.find('q').unwrap() + 1).expect("hover on q")
+    };
+    for body in [
+        "mod g(K: int) -> int {\n  const q = K + 1\n  return q\n}",
+        "mod g(a: int) -> int {\n  var K: int = a\n  const q = K + 1\n  return q\n}",
+        "mod g(a: int) -> int {\n  let K = a\n  const q = K + 1\n  return q\n}",
+    ] {
+        let h = at_q(&format!("const K = 4\n{body}\n"));
+        assert!(h.contains("const q") && !h.contains(" = "), "{body}: {h}");
+    }
+    let h = at_q("const K = 4\nmod g(a: int) -> int {\n  const q = K + 1\n  return q + a\n}\n");
+    assert!(h.contains("= 5"), "the constant itself: {h}");
+}

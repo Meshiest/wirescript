@@ -80,6 +80,40 @@ fn genuine_self_recursion_still_flagged() {
     );
 }
 
+/// Recursion is a cycle of calls through bodies: a call in an argument of a
+/// call to the same mod (`inc(inc(k))`), or in the body of a mod called in
+/// such an argument (`f(h(k))` with `h` calling `f`), is lowered at the call
+/// site, not in the body, so it is not recursion; a body that reaches its own
+/// mod, directly or through others, still is.
+#[test]
+fn a_nested_call_of_the_same_mod_is_not_recursion() {
+    let head = "in go: exec\nvar k: int = 3\nvar n: int = 0\n";
+    for (decls, body, recursive) in [
+        ("mod inc(x: int) -> int { return x + 1 }", "n = inc(inc(k))", false),
+        ("chip C(x: int) -> (r: int) { return x + 1 }", "n = C(C(k))", false),
+        ("mod inc(x: int) -> int { return inc(inc(x)) + 1 }", "n = inc(k)", true),
+        ("mod f(x: int) -> int { return x + 1 }\nmod h(x: int) -> int { return f(x) }", "n = f(h(k))", false),
+        ("mod f(x: int) -> int { return x + 1 }\nchip H(x: int) -> (r: int) { return f(x) }", "n = f(H(k))", false),
+        ("chip F(x: int) -> (r: int) { return x + 1 }\nmod h(x: int) -> int { return F(x) }", "n = F(h(k))", false),
+        ("mod f(x: int) -> int { return x + 1 }\nmod g(x: int) -> int { return f(x) }\nmod h(x: int) -> int { return g(x) }", "n = f(h(k))", false),
+        ("mod a1(x: int) -> int { return b1(x) + 1 }\nmod b1(x: int) -> int { return a1(x) }", "n = a1(k)", true),
+        ("mod g(x: int) -> int { return x * 2 }\nmod f(x: int) -> int { return g(f(x)) + 1 }", "n = f(k)", true),
+        ("chip C(x: int) -> (r: int) { return C(x) + 1 }", "n = C(k)", true),
+        ("mod f(x: int) -> int { if x > 0 { return f(x - 1) + 1 }\nreturn 1 }", "n = f(f(k))", true),
+    ] {
+        let src = format!("{head}{decls}\non go {{ {body} }}");
+        let src = src.as_str();
+        let r = compile(src);
+        let ws020 = r.diagnostics.iter().filter(|d| d.code == "WS020").count();
+        assert_eq!(ws020 > 0, recursive, "{src}\n{:?}", r.diagnostics);
+        if !recursive {
+            assert_no_errors(&r);
+            let adds = r.module.nodes.values().chain(r.module.chips.values().flat_map(|c| c.nodes.values()));
+            assert_eq!(adds.filter(|n| n.gate_class.contains("MathAdd")).count(), 2, "{src}");
+        }
+    }
+}
+
 /// Regression: a local mod calling a SAME-NAMED mod imported from another
 /// module (`mod drawCard` calling `card.drawCard`) is not recursion — they're
 /// distinct decls. The name-based guard falsely flagged this; keying on the
@@ -1476,6 +1510,27 @@ fn use_before_declaration_is_ws021() {
 }
 
 #[test]
+fn a_body_reading_a_let_declared_after_its_call_is_ws021() {
+    // A chip body reads the top-level `let`s where it is called, and `A`/`B`
+    // are declared below the call, so nothing is bound for them yet. Both
+    // lowered to `_Unsupported` gates reading 0 with only a WSP001 warning.
+    let src = "in n: int\nin m: int\n\
+        chip show(s: int) -> int {\n  return s + A + B\n}\n\
+        out b = show(n)\n\
+        let A = n * 2\nlet B = m * 2\nout a = A\n";
+    let r = compile(src);
+    let ws021 = r.diagnostics.iter().filter(|d| d.code == "WS021").count();
+    assert_eq!(ws021, 2, "each of `A` and `B` must be WS021; got {:?}", r.diagnostics);
+
+    // Declared above the call, the same body compiles.
+    let ok = "in n: int\nin m: int\n\
+        chip show(s: int) -> int {\n  return s + A + B\n}\n\
+        let A = n * 2\nlet B = m * 2\n\
+        out b = show(n)\nout a = A\n";
+    assert_no_errors(&compile(ok));
+}
+
+#[test]
 fn declaration_before_use_is_not_ws021() {
     // Same program, `target` declared before its caller: resolves normally.
     let src = "in z: exec\n\
@@ -2139,6 +2194,146 @@ fn gate_count_deep(module: &crate::ir::Module, needle: &str) -> usize {
             .sum::<usize>()
 }
 
+/// An anonymous `chip { }` body shares the top level, and its statements name
+/// its own storage whatever the top level declares of the name, before the
+/// chip or after it: each program saves what its twin with the top-level name
+/// renamed saves, in both fold modes. A `const` before the chip built a second,
+/// unused gate for the chip's `var`, and a write to it was `WS007`.
+#[test]
+fn a_top_level_name_beside_anon_chip_storage_hides_nothing_from_the_chip() {
+    // A gate is labelled with the name it stores or binds.
+    let outcome = |src: &str, fold: bool| {
+        let mut o = super::shadow_differential::outcome(src, &[], fold);
+        let named = |t: &&str| t.starts_with("_bindname=") || t.starts_with("_label=");
+        for s in &mut o.shape {
+            *s = s.split(' ').filter(|t| !t.is_empty() && !named(t)).collect::<Vec<_>>().join(" ");
+        }
+        o.shape.sort();
+        o.comps.retain(|c| !c.starts_with("BrickComponentData_TextDisplay"));
+        o
+    };
+    let head = "in go: exec\nin a: int\nvar n: int = 0\nout on1: int = n\n";
+    for body in [
+        "const @ = 4\nchip { var x: int = 9\n on go { n = x } }",
+        "const @ = 4\nchip { var x: int = 9\n on go { x = x + 1\n n = x } }",
+        "let @ = a + 1\nchip { var x: int = 9\n on go { x += 1\n n = x } }",
+        "const @ = 4\nchip { buffer x: int = 3\n on go { n = x } }",
+        "chip { var x: int = 9\n on go { x += 1\n n = x } }\nconst @ = 4",
+        "chip { var x: int[] = []\n on go { x.push(1)\n n = x.length() } }\nconst @ = 4",
+        "chip { var x: Map<string, int> = {}\n on go { x.set(\"k\", 1)\n n = x.length() } }\nconst @ = 4",
+        "chip { static var x: int = 9\n on go { x += 1\n n = x } }\nconst @ = 4",
+        "chip { buffer x = a\n on go { n = x } }\nconst @ = 4",
+        "chip { chip { var x: int = 9\n on go { n = x } } }\nconst @ = 4",
+        "chip { var x: int = 9\n on go { n = x } }\nlet (@, y) = (1, 2)",
+        "chip { var x: int = 9\n on go { n = x } }\nlet { x: @, y } = { x: 1, y: 2 }",
+        "chip { var x: int = 9\n on go { x += 1\n n = x } }\nlet @: exec",
+        // A chip in a handler names its storage from the chip on.
+        "var x: int = 7\non go { let q = x\n chip { var @: int = 5\n @ += 1 }\n n = q }",
+    ] {
+        for fold in [false, true] {
+            let got = outcome(&format!("{head}{}", body.replace('@', "x")), fold);
+            let want = outcome(&format!("{head}{}", body.replace('@', "zq")), fold);
+            assert!(got.compiled, "{body}: {:?}", got.codes);
+            assert_eq!(got, want, "{body}, fold {fold}");
+        }
+    }
+    // A top-level `let` beside top-level storage of its name hides it from
+    // its position on (`WS108`).
+    let twice = format!("{head}buffer x: int = x + 1\nlet x = ServerUptime()\non x {{ n = 1 }}");
+    let renamed = format!("{head}buffer x0: int = x0 + 1\nlet x = ServerUptime()\non x {{ n = 1 }}");
+    for fold in [false, true] {
+        let (got, want) = (outcome(&twice, fold), outcome(&renamed, fold));
+        assert!(got.compiled && got.codes.contains(&"WS108".to_string()), "{:?}", got.codes);
+        assert_eq!((got.shape, got.comps), (want.shape, want.comps), "fold {fold}");
+    }
+}
+
+/// One name has one binding at each place, for every reader. A top-level
+/// declaration an anonymous chip's storage shares a name with is what the
+/// name means outside the chip, before it and after it, a constant-only slot
+/// and the body of a `mod` or `chip` written outside and called inside
+/// included; inside the chip its storage is. Each row is compared with its
+/// twin where one of the two declarations is renamed (`@`), both folds: the
+/// chip's storage, or for a chip in a handler, which names its storage from
+/// the chip on, the top-level one.
+#[test]
+fn a_name_beside_anon_chip_storage_binds_one_declaration_at_each_place() {
+    let outcome = |src: &str, fold: bool| {
+        let mut o = super::shadow_differential::outcome(src, &[], fold);
+        let named = |t: &&str| t.starts_with("_bindname=") || t.starts_with("_label=");
+        for s in &mut o.shape {
+            *s = s.split(' ').filter(|t| !t.is_empty() && !named(t)).collect::<Vec<_>>().join(" ");
+        }
+        o.shape.sort();
+        o.comps.retain(|c| !c.starts_with("BrickComponentData_TextDisplay"));
+        o
+    };
+    let head = "in go: exec\nin go2: exec\nin a: int\nvar n: int = 0\nout on1: int = n\nvar s: string = \"\"\nout os: string = s\n";
+    let rows: [(&str, &str); 20] = [
+        (
+            "ch",
+            "const ch = \"evt\"\nchip { var @: string = \"chipvar\"\n on go { @ = \"y\" } }\n\
+             on go2 { s = ch\n SendCustomEvent(ch, 1) }\non CustomEvent(\"evt\") -> (p: int) { n = p }",
+        ),
+        ("x", "let x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1\n n = @ } }\non go2 { s = x }"),
+        ("x", "chip { var @: int = 9\n on go { @ += 1\n n = @ } }\nconst x = \"zz\"\non go2 { s = x }"),
+        (
+            "ch",
+            "const ch = \"evt\"\non go2 { s = ch\n SendCustomEvent(ch, 1) }\nchip { var @: string = \"x\"\n on go { @ = \"y\" } }\n\
+             on CustomEvent(\"evt\") -> (p: int) { n = p }",
+        ),
+        ("x", "let x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1 } }\nmod rd() -> string { return x }\non go2 { s = rd() }"),
+        ("x", "mod rd() -> string { return x }\nlet x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1 } }\non go2 { s = rd() }"),
+        ("x", "let x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1 } }\nlet z = x\non go2 { s = z }"),
+        ("x", "let x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1 } }\nout ox: string = x"),
+        ("K", "const K = 3\nchip { var @: int = 9\n on go { @ += 1 } }\non go2 { n = K * 2 }"),
+        ("K", "const K = 3\nchip { var @: int = 9\n on go { n = @ * 2 } }"),
+        ("xs", "const xs = 4\nchip { var @: int[] = [1, 2]\n on go { @.push(a)\n n = @.length() } }\non go2 { n = xs }"),
+        (
+            "mm",
+            "let mm = a * 2\nchip { var @: Map<string, int> = {}\n on go { @.set(\"k\", a)\n n = @.get(\"k\").Value } }\n\
+             on go2 { n = mm }",
+        ),
+        ("x", "const x = 4\nchip { buffer @: int = 3\n on go { n = @ } }\non go2 { n = x }"),
+        ("x", "const x = 4\nchip { static var @: int = 9\n on go { @ += 1\n n = @ } }\non go2 { n = x * 2 }"),
+        ("K", "const @ = 3\non go { chip { var K: int = 9\n K += 1 }\n n = K * 2 }\non go2 { n = @ }"),
+        // A declaration written outside the chip reads the top level, called
+        // from inside it; one written inside reads the chip's storage.
+        ("K", "const K = 3\nmod rd() -> int { return K * 2 }\nchip { var @: int = 9\n on go { n = rd() } }"),
+        ("x", "let x = \"top\"\nmod rd() -> string { return x }\nchip { var @: string = \"chip\"\n on go { s = rd() } }"),
+        ("x", "let x = \"top\"\nchip CX() -> (o: string) { out o = x }\nchip { var @: string = \"chip\"\n on go { s = CX() } }"),
+        ("K", "const @ = 3\nchip { var K: int = 9\n chip CK() -> (o: int) { out o = K * 2 }\n on go { n = CK() } }"),
+        ("K", "const @ = 3\nchip { var K: int = 9\n mod mk() -> int { return K * 2 }\n on go { n = mk() } }"),
+    ];
+    for (name, body) in rows {
+        for fold in [false, true] {
+            let got = outcome(&format!("{head}{}", body.replace('@', name)), fold);
+            let want = outcome(&format!("{head}{}", body.replace('@', "cz")), fold);
+            assert!(got.compiled, "{body}: {:?}", got.codes);
+            assert_eq!(got, want, "{body}, fold {fold}");
+        }
+    }
+    // Inside the chip its storage is no constant, for a constant-only slot
+    // too.
+    let inside = format!("{head}const ch = \"evt\"\nchip {{ var ch: string = \"x\"\n on go {{ SendCustomEvent(ch, 1) }} }}");
+    assert!(errs(&inside).contains(&"WS028".to_string()), "{:?}", errs(&inside));
+    // The program without the chip reads the `const` where the chip-wrapped
+    // one does.
+    let sends = |o: &super::shadow_differential::Outcome| {
+        o.comps.iter().any(|c| c.contains("Exec_Var_Set") && c.contains("\"evt\""))
+            && o.comps.iter().any(|c| c.contains("SendCustomEvent") && c.contains("\"evt\""))
+    };
+    let reads = "\non go2 { s = ch\n SendCustomEvent(ch, 1) }\non CustomEvent(\"evt\") -> (p: int) { n = p }";
+    let o = outcome(&format!("{head}const ch = \"evt\"\nchip {{ var ch: string = \"chipvar\" }}{reads}"), false);
+    assert!(o.compiled && sends(&o), "{:?} {:?}", o.codes, o.comps);
+    // Without the chip, the `var` hides the `const` from its position on
+    // (`WS108`), so the send names storage, as it does with the `const`
+    // renamed.
+    let twice = errs(&format!("{head}const ch = \"evt\"\nvar ch: string = \"chipvar\"{reads}"));
+    let renamed = errs(&format!("{head}const ch0 = \"evt\"\nvar ch: string = \"chipvar\"{reads}"));
+    assert!(!twice.contains(&"WS013".to_string()) && twice == renamed, "{twice:?} / {renamed:?}");
+}
+
 /// An anonymous `chip { }` writes its body wherever it is placed. The one
 /// placement that used to drop it on the floor is directly inside a NAMED
 /// chip's body: `build_chip_module`'s pre-declare loop never created the
@@ -2271,4 +2466,1444 @@ fn an_anon_chip_in_a_named_chip_body_drives_the_declared_output() {
         outer.nodes.get(&driver).map(|n| &n.kind),
         "the declared output must not be fed straight from the chip's input rerouter"
     );
+}
+
+/// `depth` anonymous chips nested one inside the next, each bumping its own
+/// var, wrapped by `wrap` (which receives the nested block).
+fn nested_anon_chips(depth: usize, wrap: impl Fn(&str, &str) -> String) -> String {
+    let vars: String = (1..=depth).map(|i| format!("var v{i}: int = 0\n")).collect();
+    let mut body = String::new();
+    for i in 1..=depth {
+        body.push_str(&format!("chip {{\nv{i} = v{i} + {i}\n"));
+    }
+    for _ in 1..=depth {
+        body.push_str("}\n");
+    }
+    wrap(&vars, &body)
+}
+
+/// Every `Chip` node in the tree has a child module, and no node still carries
+/// the anon-chip tag the partition consumes.
+fn assert_chip_tree_complete(m: &crate::ir::Module, what: &str) {
+    for (id, n) in &m.nodes {
+        if n.kind == NodeKind::Chip {
+            assert!(
+                m.chips.contains_key(id),
+                "{what}: chip node {id} in module {:?} has no child module",
+                crate::intern::resolve(m.name)
+            );
+        }
+        assert!(n.chip_id.is_none(), "{what}: node {id} kept its chip_id tag");
+    }
+    for c in m.chips.values() {
+        assert_chip_tree_complete(c, what);
+    }
+}
+
+fn assert_nested_anon_chips_lower(src: &str, depth: usize, what: &str) {
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert_chip_tree_complete(&r.module, what);
+    assert_eq!(
+        gate_count_deep(&r.module, "Exec_Var_Increment"),
+        depth,
+        "{what}: every nesting level's increment must survive:\n{src}"
+    );
+    let lr = crate::layout::layout(&r.module);
+    assert_emits(&r.module, &lr);
+}
+
+/// The partition built every anon chip's module flat and then re-nested them
+/// in hash order, dropping a grandchild's module whenever its parent moved
+/// first, so three or more levels failed at emit with a wire to an unknown node.
+#[test]
+fn deeply_nested_anon_chips_in_a_handler_all_get_modules() {
+    for depth in 3..=5 {
+        let src = nested_anon_chips(depth, |vars, body| {
+            format!("in go: exec\n{vars}on go {{\n{body}v1 = 9\n}}\nout o: int = v1 + v2\n")
+        });
+        assert_nested_anon_chips_lower(&src, depth, &format!("handler depth {depth}"));
+    }
+}
+
+#[test]
+fn deeply_nested_anon_chips_in_a_named_chip_all_get_modules() {
+    for depth in 3..=5 {
+        let src = nested_anon_chips(depth, |vars, body| {
+            format!(
+                "in go: exec\nchip Outer(t: exec) -> (r: int) {{\n{vars}on t {{\n{body}}}\n\
+                 out r = v1 + v2\n}}\nlet w = Outer(go)\nout o: int = w\n"
+            )
+        });
+        assert_nested_anon_chips_lower(&src, depth, &format!("named chip depth {depth}"));
+    }
+}
+
+#[test]
+fn deeply_nested_anon_chips_in_a_mod_all_get_modules() {
+    for depth in 3..=5 {
+        let src = nested_anon_chips(depth, |vars, body| {
+            format!(
+                "in go: exec\n{vars}mod bump() {{\n{body}}}\non go {{ bump() }}\n\
+                 out o: int = v1 + v2\n"
+            )
+        });
+        assert_nested_anon_chips_lower(&src, depth, &format!("mod depth {depth}"));
+    }
+}
+
+/// A plain `emit` ending a handler's anon chip forks the chain; it does not end
+/// it, so the statement after the chip still runs (the same body in `if true`
+/// always kept it).
+#[test]
+fn plain_emit_ending_an_anon_chip_keeps_the_chain() {
+    let r = compile(
+        "in go: exec\nvar a: int = 0\nvar b: int = 0\nlet sig: exec\n\
+         on go {\n  chip {\n    a = 1\n    emit sig\n  }\n  b = 2\n}\n\
+         on sig { a = a + 10 }\nout o: int = a + b\n",
+    );
+    assert_no_errors(&r);
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS058"),
+        "`b = 2` must stay on the chain: {:?}",
+        r.diagnostics
+    );
+    assert_eq!(
+        triggered_var_sets(&r.module),
+        2,
+        "both `a = 1` and `b = 2` must have an exec trigger"
+    );
+    let lr = crate::layout::layout(&r.module);
+    assert_emits(&r.module, &lr);
+}
+
+/// `Exec_Var_Set` gates, tree-wide, whose `Exec` input is wired.
+fn triggered_var_sets(m: &crate::ir::Module) -> usize {
+    m.nodes
+        .iter()
+        .filter(|(id, n)| {
+            n.gate_class == "BrickComponentType_Exec_Var_Set"
+                && m
+                    .wires
+                    .iter()
+                    .any(|w| w.target.node_id == **id && w.target.port == WirePort::Exec)
+        })
+        .count()
+        + m.chips.values().map(triggered_var_sets).sum::<usize>()
+}
+
+/// A BUFFERED `emit` ending the chip does close the chain; the statement after
+/// it is reported as cut off by that emit, not as sitting in a pure position.
+#[test]
+fn buffered_emit_ending_an_anon_chip_names_the_emit() {
+    let r = compile(
+        "in go: exec\nvar a: int = 0\nvar b: int = 0\nlet sig: exec\n\
+         on go {\n  chip {\n    a = 1\n    buffer emit sig\n  }\n  b = 2\n}\n\
+         on sig { a = a + 10 }\nout o: int = a + b\n",
+    );
+    assert_no_errors(&r);
+    let ws058: Vec<_> = r.diagnostics.iter().filter(|d| d.code == "WS058").collect();
+    assert_eq!(ws058.len(), 1, "{:?}", r.diagnostics);
+    assert!(
+        ws058[0].message.contains("buffer emit") && !ws058[0].message.contains("pure position"),
+        "WS058 must blame the buffered emit: {}",
+        ws058[0].message
+    );
+}
+
+/// The node feeding the `Value` of the root-level `Exec_Var_Set` that writes
+/// the var labelled `label`.
+fn var_set_value_source(r: &LowerResult, label: &str) -> Option<crate::ir::NodeId> {
+    let m = &r.module;
+    let var = m.nodes.iter().find(|(_, n)| {
+        n.gate_class == "BrickComponentType_Var"
+            && matches!(
+                n.properties.get(&crate::intern::sym::NAME_LABEL),
+                Some(crate::ir::Literal::String(s)) if s == label
+            )
+    })?;
+    let set = m.wires.iter().find(|w| {
+        w.source.node_id == *var.0
+            && w.target.port == WirePort::VarRef
+            && m.nodes
+                .get(&w.target.node_id)
+                .is_some_and(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
+    })?;
+    m.wires
+        .iter()
+        .find(|w| w.target.node_id == set.target.node_id && w.target.port == WirePort::Value)
+        .map(|w| w.source.node_id)
+}
+
+/// Every output pin of `m` has exactly one driver inside `m`.
+fn assert_outputs_driven_once(m: &crate::ir::Module, what: &str) {
+    for out in &m.outputs {
+        let drivers = m
+            .wires
+            .iter()
+            .filter(|w| w.target.node_id == *out && w.target.port != WirePort::Layout)
+            .count();
+        assert_eq!(drivers, 1, "{what}: output pin {out} has {drivers} drivers");
+    }
+}
+
+/// Early returns in a multi-output chip each drove every output pin directly,
+/// a fan-in the emitter rejects; each return now stores the outputs, and the
+/// storage drives each pin once.
+#[test]
+fn multi_output_chip_with_early_returns_drives_each_output_once() {
+    let r = compile(
+        "in go: exec\nin ia: int\nin ib: int\nin bd: bool\nvar oa: int = 0\nvar ob: int = 0\n\
+         chip C(a0: int, b0: int, d0: bool) -> (zeta: int, alpha: int) {\n\
+           if d0 { return (a0 + 1, b0 + 2) }\n\
+           return (a0 + 3, b0 + 4)\n\
+         }\n\
+         on go {\n  let (u, v) = C(ia, ib, bd)\n  oa = u\n  ob = v\n}\n",
+    );
+    assert_no_errors(&r);
+    let c = only_chip(&r, "the C instance module");
+    assert_outputs_driven_once(c, "C");
+    assert_eq!(
+        c.nodes.values().filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set").count(),
+        4,
+        "each of the two returns stores both outputs"
+    );
+    let lr = crate::layout::layout(&r.module);
+    assert_emits(&r.module, &lr);
+}
+
+/// A record output among several has one pin per field. The return wired only
+/// the first output, and the caller read the record's pins as if each output
+/// had one, so `v.x` split a vector off the `p.x` pin and `w` read `p.y`.
+#[test]
+fn multi_output_chip_with_a_record_output_wires_every_pin() {
+    let r = compile(
+        "type P = { x: int, y: int }\nin ia: int\nin ib: int\n\
+         var oa: int = 0\nvar ob: int = 0\nvar ox: int = 0\n\
+         chip D(a0: int, b0: int) -> (a: int, p: P, b: int) {\n\
+           return (a0, { x: b0, y: a0 }, b0)\n\
+         }\n\
+         in go2: exec\n\
+         on go2 {\n  let (u, v, w) = D(ia, ib)\n  oa = u\n  ox = v.x\n  ob = w\n}\n",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "BrickComponentType_Expr_SplitVector"), "`v.x` is a record field, not a swizzle");
+    let d = only_chip(&r, "the D instance module");
+    assert_outputs_driven_once(d, "D");
+    // Pins in declaration order: a, p.x, p.y, b.
+    assert_eq!(var_set_value_source(&r, "oa"), Some(d.outputs[0]));
+    assert_eq!(var_set_value_source(&r, "ox"), Some(d.outputs[1]));
+    assert_eq!(var_set_value_source(&r, "ob"), Some(d.outputs[3]));
+    let lr = crate::layout::layout(&r.module);
+    assert_emits(&r.module, &lr);
+}
+
+/// Both at once: a record output among several, written by two returns.
+#[test]
+fn multi_output_chip_with_a_record_output_and_early_returns() {
+    let r = compile(
+        "type P = { x: int, y: int }\nin go: exec\nin ia: int\nin ib: int\nin bd: bool\n\
+         var oa: int = 0\nvar ob: int = 0\nvar ox: int = 0\nvar oy: int = 0\n\
+         chip D(a0: int, b0: int, d0: bool) -> (a: int, p: P, b: int) {\n\
+           if d0 { return (a0, { x: b0, y: a0 }, b0) }\n\
+           return (b0, { x: a0, y: b0 }, a0)\n\
+         }\n\
+         on go {\n  let (u, v, w) = D(ia, ib, bd)\n  oa = u\n  ox = v.x\n  oy = v.y\n  ob = w\n}\n",
+    );
+    assert_no_errors(&r);
+    let d = only_chip(&r, "the D instance module");
+    assert_outputs_driven_once(d, "D");
+    assert_eq!(
+        d.nodes.values().filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set").count(),
+        8,
+        "each of the two returns stores all four leaves"
+    );
+    assert_eq!(var_set_value_source(&r, "ox"), Some(d.outputs[1]));
+    assert_eq!(var_set_value_source(&r, "oy"), Some(d.outputs[2]));
+    assert_eq!(var_set_value_source(&r, "ob"), Some(d.outputs[3]));
+    let lr = crate::layout::layout(&r.module);
+    assert_emits(&r.module, &lr);
+}
+
+/// A tuple return with one element per VALUE output skips an exec output in
+/// the middle of the signature. Filled by raw position, `b`'s value went to
+/// the `done` exec pin (chip) or nowhere (mod), and `b` read 0.
+#[test]
+fn tuple_return_skips_an_exec_output_between_values() {
+    for kw in ["chip", "mod"] {
+        for body in [
+            "return (a0 + 1, a0 + 2)",
+            "if d0 { return (a0 + 1, a0 + 2) }\nreturn (a0 + 3, a0 + 4)",
+        ] {
+            let src = format!(
+                "in go: exec\nin ia: int\nin bd: bool\nvar oa: int = 0\nvar ob: int = 0\n\
+                 {kw} M(a0: int, d0: bool) -> (a: int, done: exec, b: int) {{\n{body}\n}}\n\
+                 on go {{\n  let r = M(ia, bd)\n  oa = r.a\n  ob = r.b\n}}\n"
+            );
+            let r = compile(&src);
+            assert_no_errors(&r);
+            let what = format!("{kw}: {body}");
+            // Every `a0 + k` the body computes reaches a write or an output pin.
+            fn adds_used(m: &crate::ir::Module) -> (usize, usize) {
+                let adds: Vec<_> = m
+                    .nodes
+                    .iter()
+                    .filter(|(_, n)| n.gate_class == "BrickComponentType_Expr_MathAdd")
+                    .map(|(id, _)| *id)
+                    .collect();
+                let used = adds
+                    .iter()
+                    .filter(|id| m.wires.iter().any(|w| w.source.node_id == **id))
+                    .count();
+                let (a, u) = m.chips.values().map(adds_used).fold((0, 0), |x, y| (x.0 + y.0, x.1 + y.1));
+                (adds.len() + a, used + u)
+            }
+            let (adds, used) = adds_used(&r.module);
+            assert_eq!(adds, body.matches("a0 +").count(), "{what}: every returned value is lowered");
+            assert_eq!(adds, used, "{what}: {used} of {adds} values reach anything");
+            if kw == "chip" {
+                let m = only_chip(&r, "the M instance module");
+                let done = m.outputs[1];
+                assert!(
+                    !m.wires.iter().any(|w| w.target.node_id == done),
+                    "{what}: no value may drive the `done` exec pin"
+                );
+                assert_eq!(var_set_value_source(&r, "ob"), Some(m.outputs[2]), "{what}");
+            }
+            let lr = crate::layout::layout(&r.module);
+            assert_emits(&r.module, &lr);
+        }
+    }
+}
+
+/// With no exec chain in the body a branch holding a `return` is never
+/// lowered, so the call always gave the last return's value. A chip of any
+/// output count, and a mod with several outputs, now say so (the one-output
+/// mod already did).
+#[test]
+fn branch_returns_without_an_exec_chain_are_reported() {
+    for (kw, sig, ret1, ret2, read) in [
+        ("chip", "-> int", "a0 + 1", "a0 + 3", "C(ia, bd)"),
+        ("chip", "-> (p: int, q: int)", "(a0 + 1, a0)", "(a0 + 3, a0)", "C(ia, bd).p"),
+        ("mod", "-> (p: int, q: int)", "(a0 + 1, a0)", "(a0 + 3, a0)", "C(ia, bd).p"),
+    ] {
+        let src = format!(
+            "in ia: int\nin bd: bool\n\
+             {kw} C(a0: int, d0: bool) {sig} {{\n  if d0 {{ return {ret1} }}\n  return {ret2}\n}}\n\
+             out o: int = {read}\n"
+        );
+        let r = compile(&src);
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS007" && d.message.contains("returns from inside a branch")),
+            "{kw} {sig}: expected WS007, got {:?}",
+            r.diagnostics
+        );
+    }
+}
+
+/// A chip whose one output is a record: `return rec` drives the field pins,
+/// once, from the return that ran. Every return used to be dropped, leaving
+/// the pins unwired, and two returns stored into a scalar var no pin read.
+#[test]
+fn record_output_chip_returns_drive_the_field_pins() {
+    for (sig, body, sets) in [
+        ("-> P", "return { x: a0, y: 1 }", 0),
+        ("-> P", "if d0 { return { x: a0, y: 1 } }\nreturn { x: 2, y: a0 }", 4),
+        ("-> (r: P)", "if d0 { emit r = { x: a0, y: 1 } }\nreturn { x: 2, y: a0 }", 4),
+    ] {
+        let src = format!(
+            "type P = {{ x: int, y: int }}\nin go: exec\nin ia: int\nin bd: bool\n\
+             var ox: int = 0\nvar oy: int = 0\n\
+             chip D(a0: int, d0: bool) {sig} {{\n{body}\n}}\n\
+             on go {{\n  let p = D(ia, bd)\n  ox = p.x\n  oy = p.y\n}}\n"
+        );
+        let r = compile(&src);
+        assert_no_errors(&r);
+        let d = only_chip(&r, "the D instance module");
+        assert_outputs_driven_once(d, body);
+        assert_eq!(
+            d.nodes.values().filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set").count(),
+            sets,
+            "{body}: every write stores both fields"
+        );
+        assert_eq!(var_set_value_source(&r, "ox"), Some(d.outputs[0]), "{body}");
+        assert_eq!(var_set_value_source(&r, "oy"), Some(d.outputs[1]), "{body}");
+        let lr = crate::layout::layout(&r.module);
+        assert_emits(&r.module, &lr);
+    }
+}
+
+/// No input port anywhere in the tree has two drivers.
+fn assert_no_fan_in(m: &crate::ir::Module, what: &str) {
+    let mut seen: crate::collections::HashSet<(crate::ir::NodeId, WirePort)> = Default::default();
+    for w in &m.wires {
+        if w.target.port == WirePort::Layout {
+            continue;
+        }
+        assert!(
+            seen.insert((w.target.node_id, w.target.port)),
+            "{what}: {}.{:?} in {:?} has two drivers",
+            w.target.node_id,
+            w.target.port,
+            crate::intern::resolve(m.name)
+        );
+    }
+    for c in m.chips.values() {
+        assert_no_fan_in(c, what);
+    }
+}
+
+fn var_set_count_deep(m: &crate::ir::Module) -> usize {
+    m.nodes.values().filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set").count()
+        + m.chips.values().map(var_set_count_deep).sum::<usize>()
+}
+
+/// A branch `return` in a chip called with no exec chain is reported at the
+/// call, once per call, not at the chip's declaration.
+#[test]
+fn chip_branch_return_ws007_is_reported_at_each_pure_call() {
+    let src = "in ia: int\nin bd: bool\n\
+               chip C(a0: int, d0: bool) -> (p: int, q: int) {\n\
+                 if d0 { return (a0 + 1, a0) }\n  return (a0 + 3, a0)\n}\n\
+               in go: exec\nvar x: int = 0\non go { x = C(ia, bd).p }\n\
+               out o: int = C(ia, bd).q\nout o2: int = C(ia, bd).p\n";
+    let r = compile(src);
+    let lines: Vec<u32> = r
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "WS007" && d.message.contains("returns from inside a branch"))
+        .map(|d| d.range.start.line)
+        .collect();
+    assert_eq!(lines, vec![10, 11], "one WS007 per pure call, at the call: {:?}", r.diagnostics);
+}
+
+/// A chip whose first parameter is `exec` has no exec chain of its own, so
+/// "call it from a handler" does not help; the returns belong under `on t`.
+#[test]
+fn chip_with_an_exec_first_param_names_its_trigger_in_ws007() {
+    let r = compile(
+        "in go: exec\nin ia: int\nin bd: bool\nvar oa: int = 0\n\
+         chip C(t: exec, a0: int, d0: bool) -> int {\n\
+           if d0 { return a0 + 1 }\n  return a0 + 3\n}\n\
+         on go {\n  oa = C(go, ia, bd)\n}\n",
+    );
+    let d = r
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "WS007")
+        .unwrap_or_else(|| panic!("expected WS007: {:?}", r.diagnostics));
+    assert!(
+        d.message.contains("on t {") && !d.message.contains("call it from a handler"),
+        "{}",
+        d.message
+    );
+    assert_eq!(d.range.start.line, 10, "reported at the call");
+}
+
+/// Returns inside a nested `on` or an anonymous `chip {}` of a chip or mod body
+/// store into the outputs' storage: the path that ran wins and the output holds
+/// it. They were not counted, so a misleading WS013 fired and the IR carried a
+/// fan-in.
+#[test]
+fn returns_in_a_nested_handler_or_anon_chip_are_stored() {
+    let bodies = [
+        (
+            "t: exec, a0: int",
+            "-> (r: int, s: int)",
+            "on t {\n  if a0 > 0 { return (a0, 2) }\n  return (3, a0)\n}",
+            "let (u, v) = C(go, ia)\n  oa = u\n  ob = v",
+            4,
+        ),
+        (
+            "t: exec, a0: int",
+            "-> int",
+            "on t {\n  if a0 > 0 { return a0 }\n  return 2\n}",
+            "oa = C(go, ia)",
+            2,
+        ),
+        ("t: exec, a0: int", "-> int", "on t {\n  return a0 + 1\n}", "oa = C(go, ia)", 1),
+        (
+            "a0: int, d0: bool",
+            "-> (r: int, s: int)",
+            "chip {\n  if d0 { return (a0 + 1, a0 + 2) }\n  return (a0 + 3, a0 + 4)\n}",
+            "let (u, v) = C(ia, bd)\n  oa = u\n  ob = v",
+            4,
+        ),
+        (
+            "a0: int, d0: bool",
+            "-> int",
+            "chip {\n  if d0 { return a0 + 1 }\n  return a0 + 3\n}",
+            "oa = C(ia, bd)",
+            2,
+        ),
+    ];
+    for kw in ["chip", "mod"] {
+        for (params, sig, body, call, stores) in bodies {
+            let src = format!(
+                "in go: exec\nin ia: int\nin bd: bool\nvar oa: int = 0\nvar ob: int = 0\n\
+                 {kw} C({params}) {sig} {{\n{body}\n}}\non go {{\n  {call}\n}}\n"
+            );
+            let r = compile(&src);
+            assert_no_errors(&r);
+            assert_no_fan_in(&r.module, &src);
+            let caller_sets = if call.contains("ob") { 2 } else { 1 };
+            assert_eq!(
+                var_set_count_deep(&r.module),
+                stores + caller_sets,
+                "every return stores each output:\n{src}"
+            );
+            if kw == "chip" {
+                let c = only_chip(&r, "the C instance module");
+                for pin in c.outputs.iter().filter(|o| c.nodes[o].ports.inputs.iter().all(|p| p.ty != crate::ir::Type::Exec)) {
+                    let driver = c
+                        .wires
+                        .iter()
+                        .find(|w| w.target.node_id == *pin)
+                        .and_then(|w| c.nodes.get(&w.source.node_id))
+                        .map(|n| n.gate_class);
+                    assert!(
+                        matches!(driver, Some("BrickComponentType_Var" | "BrickComponentType_Exec_Var_Get")),
+                        "{src}\nvalue pin {pin} must read the storage, got {driver:?}"
+                    );
+                }
+            }
+            let lr = crate::layout::layout(&r.module);
+            assert_emits(&r.module, &lr);
+        }
+    }
+}
+
+/// A `return` in a nested handler ends that handler's run; it is not a path
+/// out of the chip's own call, so it must not reach the chip's exec output.
+#[test]
+fn a_return_in_a_nested_handler_does_not_fire_the_call_continuation() {
+    let r = compile(
+        "in go: exec\nin go2: exec\nin ia: int\nvar oa: int = 0\nvar ob: int = 0\n\
+         chip C(a0: int, t: exec) -> int {\n  on t {\n    if a0 > 0 { return 1 }\n    return 2\n  }\n}\n\
+         on go {\n  oa = C(ia, go2)\n  ob = 1\n}\n",
+    );
+    assert_no_errors(&r);
+    let c = only_chip(&r, "the C instance module");
+    let exec_in = *c.inputs.last().expect("_exec_in");
+    let exec_out = *c.outputs.last().expect("_exec_out");
+    let drivers: Vec<_> = c.wires.iter().filter(|w| w.target.node_id == exec_out).map(|w| w.source.node_id).collect();
+    assert_eq!(drivers, vec![exec_in], "the call's exec passes straight through");
+}
+
+/// A tuple-typed output among several gets one pin per element, as a record
+/// output gets one per field; it had a single pin and read a placeholder.
+#[test]
+fn tuple_typed_chip_output_gets_a_pin_per_element() {
+    let r = compile(
+        "in go: exec\nin ia: int\nvar oa: int = 0\nvar ob: int = 0\nvar oc: int = 0\n\
+         chip D(a0: int) -> (a: int, t: (int, int), b: int) {\n\
+           return (a0, (a0 + 1, a0 + 2), a0 + 3)\n}\n\
+         on go {\n  let (u, v, w) = D(ia)\n  oa = u\n  ob = v.1\n  oc = w\n}\n",
+    );
+    assert_no_errors(&r);
+    assert!(!r.diagnostics.iter().any(|d| d.code == "WSP001"), "{:?}", r.diagnostics);
+    let d = only_chip(&r, "the D instance module");
+    assert_outputs_driven_once(d, "D");
+    // Pins in declaration order: a, t.0, t.1, b.
+    assert_eq!(var_set_value_source(&r, "oa"), Some(d.outputs[0]));
+    assert_eq!(var_set_value_source(&r, "ob"), Some(d.outputs[2]));
+    assert_eq!(var_set_value_source(&r, "oc"), Some(d.outputs[3]));
+    let lr = crate::layout::layout(&r.module);
+    assert_emits(&r.module, &lr);
+}
+
+/// The same with a tuple inside a record output, and with two returns.
+#[test]
+fn tuple_inside_a_record_chip_output_and_early_returns() {
+    let r = compile(
+        "type P = { x: int, t: (int, int) }\nin go: exec\nin ia: int\nin bd: bool\n\
+         var ob: int = 0\nvar oc: int = 0\n\
+         chip D(a0: int, d0: bool) -> (a: int, p: P, t: (int, int)) {\n\
+           if d0 { return (a0, { x: a0 + 1, t: (a0 + 2, a0 + 4) }, (1, a0)) }\n\
+           return (2, { x: 3, t: (4, a0) }, (a0, 5))\n}\n\
+         on go {\n  let (u, v, w) = D(ia, bd)\n  ob = v.t.1\n  oc = w.0\n}\n",
+    );
+    assert_no_errors(&r);
+    let d = only_chip(&r, "the D instance module");
+    assert_outputs_driven_once(d, "D");
+    // Pins: a, p.x, p.t.0, p.t.1, t.0, t.1.
+    assert_eq!(var_set_value_source(&r, "ob"), Some(d.outputs[3]));
+    assert_eq!(var_set_value_source(&r, "oc"), Some(d.outputs[4]));
+    assert_eq!(var_set_count_deep(d), 12, "two returns store all six leaves");
+    let lr = crate::layout::layout(&r.module);
+    assert_emits(&r.module, &lr);
+}
+
+/// A call before its mod's declaration is one WS021 per call; type checking
+/// and lowering each reported it.
+#[test]
+fn a_call_before_its_declaration_is_reported_once() {
+    let r = compile(
+        "in go: exec\nvar n: int = 0\non go {\n  n = late(1)\n  n = late(2)\n}\nmod late(a: int) -> int { return a }",
+    );
+    let ws021: Vec<_> = r.diagnostics.iter().filter(|d| d.code == "WS021").map(|d| d.range.start.line).collect();
+    assert_eq!(ws021, vec![4, 5], "{:?}", r.diagnostics);
+}
+
+/// A top-level `let` read above its declaration outside every mod and chip
+/// body is the type check's one WS002; WS021 (whose message is about a body
+/// reading the `let` where it is called) is for a body.
+#[test]
+fn a_root_read_above_a_let_is_one_ws002() {
+    for src in [
+        "in n: int\nout a = A\nlet A = n * 2",
+        "in n: int\nin go: exec\nvar v: int = 0\non go { v = A }\nlet A = n * 2",
+    ] {
+        let r = compile(src);
+        let codes: Vec<&str> = r.diagnostics.iter().map(|d| d.code.as_ref()).collect();
+        assert_eq!(codes, ["WS002"], "{src}: {:?}", r.diagnostics);
+    }
+    let r = compile("in n: int\nin go: exec\nvar v: int = 0\nmod f() -> int { return A }\non go { v = f() }\nlet A = n * 2");
+    assert!(r.diagnostics.iter().any(|d| d.code == "WS021"), "{:?}", r.diagnostics);
+}
+
+/// WS007 for a chip whose output writes need an exec chain names the cause:
+/// several returns, a return beside a nested handler's, or a return beside an
+/// `emit`.
+#[test]
+fn an_unsequenced_chip_return_names_its_cause() {
+    for (body, cause) in [
+        ("  if d0 { return a0 + 1 }\n  return a0 + 3", "returns from inside a branch"),
+        ("  on t { return 5 }\n  return a0 + 1", "returns from its body and from a nested `on` handler"),
+        ("  emit r = a0 + 2\n  return a0 + 1", "returns a value and also writes an output with `emit` or `out`"),
+    ] {
+        let src = format!(
+            "in ia: int\nin bd: bool\nin go: exec\nchip C(a0: int, d0: bool, t: exec) -> (r: int) {{\n{body}\n}}\n\
+             out o: int = C(ia, bd, go)\n"
+        );
+        let r = compile(&src);
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS007" && d.message.contains(&format!("`C` {cause}, so"))),
+            "{body}: {:?}",
+            r.diagnostics
+        );
+    }
+}
+
+/// A `const` with no value is one error asking for the value, whatever its
+/// type: a `const` is a value known while compiling, never a signal.
+#[test]
+fn a_const_with_no_value_is_one_error() {
+    for ty in ["int", "Sig"] {
+        for at in ["top", "handler"] {
+            let decl = format!("const s: {ty}");
+            let src = match at {
+                "top" => format!("type Sig = exec\nin go: exec\nvar n: int = 0\nout o: int = n\n{decl}\non go {{ n = 1 }}"),
+                _ => format!("type Sig = exec\nin go: exec\nvar n: int = 0\nout o: int = n\non go {{ {decl}\nn = 1 }}"),
+            };
+            let r = compile(&src);
+            let errors: Vec<&crate::diagnostic::Diagnostic> =
+                r.diagnostics.iter().filter(|d| d.severity == crate::diagnostic::Severity::Error).collect();
+            assert!(
+                errors.len() == 1
+                    && errors[0].code == "WSP001"
+                    && errors[0].message.contains(&format!("`const s: {ty}` needs a value")),
+                "{at} `{decl}`: {errors:?}"
+            );
+        }
+    }
+}
+
+/// `let s: Sig` with no value, for `type Sig = exec` (directly or through
+/// another alias), declares a signal exactly as `let s: exec` does: at the top
+/// level, in a handler and in a mod body. Any other type still needs its value.
+#[test]
+fn a_signal_declared_through_an_alias_of_exec_is_its_exec_twin() {
+    let head = "type Sig = exec\ntype Sig2 = Sig\nin go: exec\nvar n: int = 0\nout o: int = n\n";
+    for body in [
+        "let s: @\non go { emit s }\non s { n = n + 1 }",
+        "on go {\n  let s: @\n  buffer emit s\n  await s\n  n = n + 1\n}",
+        "mod m() {\n  let s: @\n  buffer emit s\n  await s\n  n = n + 1\n}\non go { m() }",
+    ] {
+        for alias in ["Sig", "Sig2"] {
+            for fold in [false, true] {
+                let build = |ty: &str| {
+                    let src = format!("{head}{}", body.replace('@', ty));
+                    let r = if fold { compile_folded(&src) } else { compile(&src) };
+                    assert_no_errors(&r);
+                    wiring_shape(&r.module)
+                };
+                assert_eq!(build(alias), build("exec"), "{body} {alias} fold {fold}");
+            }
+        }
+    }
+    let e = errs("type Num = int\nin go: exec\nvar n: int = 0\non go {\n  let s: Num\n  n = s\n}");
+    assert!(e.contains(&"WSP001".to_string()), "{e:?}");
+    let e = errs("in go: exec\nvar n: int = 0\non go {\n  let s: int\n  n = s\n}");
+    assert!(e.contains(&"WSP001".to_string()), "{e:?}");
+    // With a value, an alias of `exec` names that signal again, as before.
+    assert!(errs("type Sig = exec\nvar n: int = 0\nin go: exec\nlet s: Sig = go\non s { n = 2 }").is_empty());
+}
+
+/// A `const` parameter named like an outer binding (a module `var`, `let` or
+/// `const`) is the argument it was given, in a `mod` and in a `chip`: the
+/// body read the outer binding.
+#[test]
+fn a_const_parameter_named_like_an_outer_binding_is_its_argument() {
+    use crate::ir::Literal;
+    let head = "in go: exec\nvar x: float = 0.0\nout ox: float = x\nvar k: int = 0\nout ok: int = k\n\
+                mod half(v: float) -> float { return v / 2 }\n";
+    for (outer, decls, body) in [
+        ("var m: int = 77\nout om: int = m", "mod f(m: const int) -> float { return m }", "x = f(3)"),
+        ("const m = 77", "mod f(m: const int) -> float { return half(m) }", "x = f(3)"),
+        ("let m = 77", "mod f(m: const int) -> int { return m + 1 }", "k = f(3)"),
+        ("const m = 77", "chip C(t: exec, m: const int) -> (r: int) { on t { emit r = m + 1 } }", "k = C(go, 3)"),
+    ] {
+        let src = format!("{head}{outer}\n{decls}\non go {{ {body} }}");
+        for fold in [false, true] {
+            let saved = super::float_slots::save_numbers(&src, fold);
+            let three = |l: &Literal| matches!(l, Literal::Int(3 | 4)) || matches!(l, Literal::Float(f) if [3.0, 1.5].contains(f));
+            let outer_value = |l: &Literal| matches!(l, Literal::Int(78)) || matches!(l, Literal::Float(f) if [77.0, 38.5].contains(f));
+            assert!(saved.iter().any(three), "{decls} fold {fold}: the argument is missing\n{saved:?}");
+            assert!(!saved.iter().any(outer_value), "{decls} fold {fold}: read the outer binding\n{saved:?}");
+        }
+    }
+}
+
+/// A `const` record parameter named like an outer binding is the record it
+/// was given, in a `chip` as in a `mod`: the chip's body read the outer one
+/// (and failed to load without folding).
+#[test]
+fn a_const_record_parameter_named_like_an_outer_binding_is_its_argument() {
+    use crate::ir::Literal;
+    let head = "type P = { a: int, b: int }\nin go: exec\nvar k: int = 0\nout ok: int = k\nlet m = { a: 55, b: 66 }\n";
+    for (decls, body) in [
+        ("chip C(m: const P) -> (r: int) { out r = m.b }", "k = C({ a: 3, b: 4 })"),
+        ("mod f(m: const P) -> int { return m.b + 0 }", "k = f({ a: 3, b: 4 })"),
+    ] {
+        let src = format!("{head}{decls}\non go {{ {body} }}");
+        for fold in [false, true] {
+            let r = if fold { compile_folded(&src) } else { compile(&src) };
+            assert_no_errors(&r);
+            let saved = super::float_slots::save_numbers(&src, fold);
+            assert!(saved.contains(&Literal::Int(4)), "{decls} fold {fold}: the argument is missing\n{saved:?}");
+            assert!(!saved.contains(&Literal::Int(66)), "{decls} fold {fold}: read the outer binding\n{saved:?}");
+        }
+    }
+}
+
+/// A chip's `const` record parameter with no outer binding of its name is the
+/// record it was given, as a `mod`'s is: a field, a nested record's field, a
+/// string field and an array field, each reaching the chip's output through its
+/// wires. An integer given for a `float` field is that float. Every chip form
+/// was a placeholder that read zero or `""` (`WSP001`), or `WS044` for the
+/// array, and the integer divided as an integer.
+#[test]
+fn a_chip_const_record_parameter_is_its_argument() {
+    use crate::ir::{Literal, Module};
+    /// Whether a node holding `want` reaches one of `m`'s outputs through
+    /// its wires (or is the output).
+    fn drives_output(m: &Module, want: &Literal) -> bool {
+        let holds = |id: &crate::ir::NodeId| {
+            m.nodes.get(id).is_some_and(|n| {
+                n.properties.values().any(|l| l == want || matches!(l, Literal::Array(xs) if xs.contains(want)))
+            })
+        };
+        let mut seen: Vec<crate::ir::NodeId> = m.outputs.clone();
+        let mut i = 0;
+        while i < seen.len() {
+            let at = seen[i];
+            if holds(&at) {
+                return true;
+            }
+            for w in &m.wires {
+                if w.target.node_id == at && !seen.contains(&w.source.node_id) {
+                    seen.push(w.source.node_id);
+                }
+            }
+            i += 1;
+        }
+        false
+    }
+    let head = "type I = { a: int, s: string }
+type Q = { b: int, f: float, g: float, s: string, i: I, xs: int[], fs: float[] }
+                in go: exec
+var n: int = 0
+var k: int = 0
+var fo: float = 0.0
+var so: string = \"\"
+";
+    let arg = "{ b: 4, f: 2.5, g: 2, s: \"in\", i: { a: 3, s: \"z\" }, xs: [6, 7], fs: [1, 2] }";
+    for (out_ty, read, store, want) in [
+        ("int", "q.b", "n", Literal::Int(4)),
+        ("int", "q.i.a", "n", Literal::Int(3)),
+        ("float", "q.f", "fo", Literal::Float(2.5)),
+        ("float", "q.g", "fo", Literal::Float(2.0)),
+        ("string", "q.s", "so", Literal::String("in".into())),
+        ("string", "q.i.s", "so", Literal::String("z".into())),
+    ] {
+        let src = format!("{head}chip C(q: const Q) -> (r: {out_ty}) {{ out r = {read} }}
+on go {{ {store} = C({arg}) }}");
+        for fold in [false, true] {
+            let r = if fold { compile_folded(&src) } else { compile(&src) };
+            assert_no_errors(&r);
+            assert!(!r.diagnostics.iter().any(|d| d.code == "WSP001"), "{read} fold {fold}: {:?}", r.diagnostics);
+            // Folded, the constant output is the value the caller stores.
+            let stored = r.module.nodes.values().any(|n| {
+                n.gate_class == crate::ir::gate_class::VAR_SET && n.properties.values().any(|l| *l == want)
+            });
+            assert!(
+                stored || drives_output(only_chip(&r, read), &want),
+                "{read} fold {fold}: {want:?} does not drive `r`"
+            );
+            // The array fields it does not read get no container.
+            let tables = only_chip(&r, read).nodes.values().filter(|n| n.gate_class == crate::ir::gate_class::ARRAY_VAR).count();
+            assert_eq!(tables, 0, "{read} fold {fold}");
+        }
+    }
+    // Array fields are the argument's arrays, read at run time: `[1, 2]` for a
+    // `float[]` field is a float table, so `fs[0] / fs[1]` is 0.5.
+    for (read, want) in [
+        ("q.xs[1] + q.xs.length()", Literal::Array(vec![Literal::Int(6), Literal::Int(7)])),
+        ("q.fs[k] / q.fs[k + 1]", Literal::Array(vec![Literal::Float(1.0), Literal::Float(2.0)])),
+    ] {
+        let out_ty = if read.contains("fs") { "float" } else { "int" };
+        let store = if read.contains("fs") { "fo" } else { "n" };
+        let src = format!(
+            "{head}chip C(q: const Q) -> (r: {out_ty}) {{ on go {{ emit r = {read} }} }}
+on go {{ {store} = C({arg}) }}"
+        );
+        for fold in [false, true] {
+            let r = if fold { compile_folded(&src) } else { compile(&src) };
+            assert_no_errors(&r);
+            let chip = only_chip(&r, read);
+            let Literal::Array(items) = &want else { unreachable!() };
+            assert!(drives_output(chip, &items[0]), "{read} fold {fold}: {want:?} does not drive `r`");
+            assert!(
+                chip.nodes.values().any(|n| n.properties.values().any(|l| *l == want)),
+                "{read} fold {fold}: the table is not {want:?}"
+            );
+        }
+    }
+}
+
+/// A nested record of a chip's `const` record parameter read whole (bound to a
+/// `let`, passed to a `mod`, returned, spread, put in a record literal,
+/// destructured, chosen by an `if` or a method's receiver) reads every field
+/// below it, so its array fields are the argument's tables: the `float` table
+/// reaches `r`. Each such read was a `WSP001` placeholder. An array field the
+/// body never reaches gets no table.
+#[test]
+fn a_nested_record_read_whole_keeps_every_field_below_it() {
+    use crate::ir::Literal;
+    let head = "var x: float = 0.0\nin go: exec\nin k: int\ntype I = { fs: float[], is: int[] }\ntype Q = { i: I, a: int }\n";
+    let call = "on go { x = C({ i: { fs: [1.5, 2.5], is: [33] }, a: 1 }) }";
+    let fs = Literal::Array(vec![Literal::Float(1.5), Literal::Float(2.5)]);
+    let is = Literal::Array(vec![Literal::Int(33)]);
+    for (form, decls, body, whole) in [
+        ("let", "", "let inner = q.i\nemit r = inner.fs[k]", true),
+        ("annotated let", "", "let j: I = q.i\nemit r = j.fs[k]", true),
+        ("let of a let", "", "let a = q.i\nlet b = a\nemit r = b.fs[k]", true),
+        ("mod argument", "mod g(i: I, j: int) -> float { return i.fs[j] }\n", "emit r = g(q.i, k)", true),
+        ("returned by a mod", "mod pick(i: I) -> I { return i }\n", "let p = pick(q.i)\nemit r = p.fs[k]", true),
+        ("spread", "", "let j = { ...q.i }\nemit r = j.fs[k]", true),
+        ("record literal field", "", "let w = { v: q.i }\nemit r = w.v.fs[k]", true),
+        ("destructured", "", "let { fs } = q.i\nemit r = fs[k]", true),
+        ("if", "", "emit r = (if k > 0 then q.i else q.i).fs[k]", true),
+        ("method receiver", "mod first(self: I) -> float { return self.fs[1] }\n", "emit r = q.i.first()", true),
+        ("field path", "", "emit r = q.i.fs[k]", false),
+    ] {
+        let src = format!("{head}{decls}chip C(q: const Q) -> (r: float) {{ on go {{ {body} }} }}\n{call}");
+        for fold in [false, true] {
+            let r = if fold { compile_folded(&src) } else { compile(&src) };
+            assert_no_errors(&r);
+            assert!(!r.diagnostics.iter().any(|d| d.code == "WSP001"), "{form} fold {fold}: {:?}", r.diagnostics);
+            let tables: Vec<&Literal> = only_chip(&r, form).nodes.values().flat_map(|n| n.properties.values()).collect();
+            assert!(tables.contains(&&fs), "{form} fold {fold}: no `float` table");
+            assert_eq!(tables.contains(&&is), whole, "{form} fold {fold}: the `int` table");
+            let saved = super::float_slots::save_numbers(&src, fold);
+            assert!(saved.contains(&Literal::Float(2.5)), "{form} fold {fold}: not in the save\n{saved:?}");
+        }
+    }
+}
+
+/// A constant `if` or `match` is decided only by names that are the
+/// constants they name: a parameter, local, loop variable, destructured name
+/// or `const` record parameter named like an outer `const` is that binding,
+/// so each program compiles as its twin with the binding renamed. The outer
+/// constant decided the branch, and the other one was never built.
+#[test]
+fn a_name_shadowing_a_constant_does_not_decide_an_if_or_match() {
+    let head = "type P = { a: int, b: int }\nenum Hue { Red, Green }\nin go: exec\nvar n: int = 0\nvar k: int = 3\n\
+                var pv: P = { a: 3, b: 4 }\nvar hv: Hue = Hue.Green\n";
+    for (outer, prog, renamed) in [
+        ("const m = 5", "mod f(m: int) -> int { if m == 3 { return 30 } return 50 }\non go { n = f(k) }", "q"),
+        ("const m = { a: 5, b: 6 }", "mod f(m: P) -> int { if m.a == 3 { return 30 } return 50 }\non go { n = f(pv) }", "q"),
+        ("const m = 5", "on go { var m: int = k\n if m == 3 { n = 30 } else { n = 50 } }", "q"),
+        ("const m = 5", "on go { for m in 0..k { if m == 5 { n = 1 } } }", "q"),
+        ("const m = 5", "on go { let { a: m } = pv\n if m == 3 { n = 30 } else { n = 50 } }", "q"),
+        ("const m = Hue.Red", "mod f(m: Hue) -> int { return match m { Hue.Red => 30, _ => 50 } }\non go { n = f(hv) }", "q"),
+        (
+            "const m = { a: 5, b: 6 }",
+            "mod f(m: const P) -> int { if m.a == 3 { return 30 } return 50 }\non go { n = f({ a: 3, b: 4 }) }",
+            "",
+        ),
+    ] {
+        let src = format!("{head}{outer}\n{prog}");
+        // The twin renames the binding, or, with no name given, the outer
+        // constant.
+        let twin = if renamed.is_empty() {
+            format!("{head}{}\n{prog}", outer.replacen("const m", "const mm", 1))
+        } else {
+            let p = prog.replace("(m: ", &format!("({renamed}: ")).replace("var m:", &format!("var {renamed}:"));
+            let p = p.replace("for m in", &format!("for {renamed} in")).replace("{ a: m }", &format!("{{ a: {renamed} }}"));
+            let p = p.replace("if m", &format!("if {renamed}")).replace("match m", &format!("match {renamed}"));
+            format!("{head}{outer}\n{p}")
+        };
+        assert_ne!(src, twin);
+        // A local var is labelled with its name.
+        let shape = |r: &LowerResult| {
+            let mut s: Vec<String> =
+                super::generic_differential::shape(r).into_iter().map(|l| l.replace("_label=String(\"q\")", "_label=String(\"m\")")).collect();
+            s.sort();
+            s
+        };
+        for ((mode, a), (_, b)) in super::generics::both_folds(&src).into_iter().zip(super::generics::both_folds(&twin)) {
+            assert_no_errors(&a);
+            assert_eq!(shape(&a), shape(&b), "`{prog}`, {mode}");
+        }
+    }
+}
+
+/// One name, one declaration, at each place (see `scope::top`). A `mod` or
+/// `chip` written inside a top-level anonymous chip reads the chip's
+/// declarations wherever it is called from: inside the chip, after it, above
+/// it, through a `mod` written outside, from a nested chip. A chip's own
+/// `const` or `let` is the chip's inside it and the top level's outside it,
+/// for value reads and constant-only slots alike. Each row equals its twin
+/// with the chip's declaration renamed (`@`), both folds; before, the rows
+/// after the chip read the top-level declaration (a string multiplied,
+/// constants folded from it) beside a false `WS091`, and a chip `const` was
+/// read by the slots outside it. Two declarations of one name in one chip are
+/// `WS013`; two at the top level are read by position (see
+/// `a_name_the_top_level_declares_twice_is_read_by_position`).
+#[test]
+fn a_declaration_written_in_an_anonymous_chip_reads_the_chips_names_wherever_called() {
+    let outcome = |src: &str, fold: bool| {
+        let mut o = super::shadow_differential::outcome(src, &[], fold);
+        let named = |t: &&str| t.starts_with("_bindname=") || t.starts_with("_label=");
+        for s in &mut o.shape {
+            *s = s.split(' ').filter(|t| !t.is_empty() && !named(t)).collect::<Vec<_>>().join(" ");
+        }
+        o.shape.sort();
+        o.comps.retain(|c| !c.starts_with("BrickComponentData_TextDisplay"));
+        // A boundary pin is labelled with the name it carries.
+        for c in &mut o.comps {
+            if let Some(at) = c.find("PortLabel: ") {
+                let end = c[at..].find(',').map_or(c.len(), |e| at + e);
+                c.replace_range(at..end, "PortLabel");
+            }
+        }
+        o.comps.sort();
+        o
+    };
+    let head = "in go: exec\nin go2: exec\nin a: int\nvar n: int = 0\nout on1: int = n\nvar s: string = \"\"\nout os: string = s\n";
+    let rows: [(&str, &str); 12] = [
+        ("x", "let x = \"four\"\nchip { var @: int = 1\n mod rd() -> int { return @ * 10 }\n on go { @ += 1 } }\non go2 { n = rd() }"),
+        ("x", "let x = 4\nchip { var @: int = 1\n mod rd() -> int { return @ * 10 }\n on go { @ += 1 } }\non go2 { n = rd() }"),
+        ("x", "let x = 4\nchip { var @: int = 1\n chip RC() -> (o: int) { out o = @ * 10 }\n on go { @ += 1 } }\non go2 { n = RC() }"),
+        (
+            "K",
+            "const K = 4\nchip { var @: int = 1\n mod rd() -> int { return @ * 10 }\n on go { @ += 1 } }\n\
+             mod outer() -> int { return rd() + 1 }\non go2 { n = outer() }",
+        ),
+        ("x", "let x = \"four\"\nchip { var @: int = 1\n mod rd() -> int { return @ * 10 }\n on go { @ += 1\n n = rd() } }\non go2 { n = rd() }"),
+        (
+            "x",
+            "let x = 4\nchip { var @: int = 1\n chip { mod rd() -> int { return @ * 10 }\n on go { @ += 1 } } }\n\
+             on go2 { n = rd() + x }",
+        ),
+        (
+            "ch",
+            "const ch = \"evt\"\nchip { const @ = \"inner\"\n on go { s = @ } }\non go2 { s = ch\n SendCustomEvent(ch, 1) }\n\
+             on CustomEvent(\"evt\") -> (p: int) { n = p }",
+        ),
+        ("K", "const K = 3\nchip { const @ = 5\n on go { n = @ } }\non go2 { n = K\n await SleepTicks(_, delay = K)\n n = K * 2 }"),
+        (
+            "ch",
+            "const ch = \"evt\"\nchip { const @ = \"inner\"\n on go { SendCustomEvent(@, 1) } }\n\
+             on CustomEvent(\"inner\") -> (p: int) { n = p }\non go2 { SendCustomEvent(ch, 2) }",
+        ),
+        ("x", "let x = 3\nchip { let @ = 5\n on go { n = @ } }\non go2 { n = x * 2 }"),
+        ("K", "const K = 3\nchip { const @ = 5\n mod rd() -> int { return @ * 2 }\n on go { n = rd() } }\non go2 { n = rd() + K }"),
+        ("K", "chip { const @ = 5\n on go { n = @ } }\nconst K = 3\non go2 { await SleepTicks(_, delay = K)\n n = K }"),
+    ];
+    let mut wrong = Vec::new();
+    for (name, body) in rows {
+        for fold in [false, true] {
+            let got = outcome(&format!("{head}{}", body.replace('@', name)), fold);
+            let want = outcome(&format!("{head}{}", body.replace('@', "cz")), fold);
+            if !got.compiled || got != want {
+                let only = |a: &[String], b: &[String]| a.iter().filter(|s| !b.contains(s)).cloned().collect::<Vec<_>>();
+                wrong.push(format!(
+                    "{body}, fold {fold}: {:?} {:?} {:?} / {:?}; {:?} / {:?}",
+                    got.codes,
+                    want.codes,
+                    only(&got.shape, &want.shape),
+                    only(&want.shape, &got.shape),
+                    only(&got.comps, &want.comps),
+                    only(&want.comps, &got.comps)
+                ));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    let codes = |src: &str| outcome(&format!("{head}{src}"), false).codes;
+    let twice = "chip { const k = 1\n const k = 2\n on go { n = k } }";
+    assert!(codes(twice).contains(&"WS013".to_string()), "{twice}: {:?}", codes(twice));
+}
+
+/// A name the top level of a file declares more than once is read by
+/// position (see `scope::top::TopNames::visible_decl`): every read, by every
+/// reader (value reads, constant-only slots, constant initializers, a `mod`,
+/// `chip`, generic or `const mod` body wherever it is called from, folded
+/// `if`s, the editor), names the latest declaration visible where it is
+/// written, and `WS108` warns at each later declaration. Storage is declared
+/// ahead of everything, so a read above every declaration names it; with no
+/// storage, a body above every declaration names the first. A library reads
+/// its own duplicates the same way however it is imported. Each row equals
+/// its twin where the earlier declaration and the reads that see it are
+/// renamed (`@`), both folds.
+/// Before, a top-level redeclaration was `WS013`; before that, value reads
+/// named the latest declaration while constant-only slots and constant
+/// initializers named the first.
+#[test]
+fn a_name_the_top_level_declares_twice_is_read_by_position() {
+    let outcome = |src: &str, fold: bool| {
+        let mut o = super::shadow_differential::outcome(src, &[], fold);
+        let named = |t: &&str| t.starts_with("_bindname=") || t.starts_with("_label=");
+        for s in &mut o.shape {
+            *s = s.split(' ').filter(|t| !t.is_empty() && !named(t)).collect::<Vec<_>>().join(" ");
+        }
+        o.shape.sort();
+        o.comps.retain(|c| !c.starts_with("BrickComponentData_TextDisplay"));
+        o.comps.sort();
+        o
+    };
+    let head = "in go: exec\nin go2: exec\nvar n: int = 0\nout on1: int = n\nvar n2: int = 0\nout on2: int = n2\n\
+                var s: string = \"\"\nout os: string = s\n";
+    let recv = "\non CustomEvent(\"a\") -> (p: int) { n2 = p }\non CustomEvent(\"b\") -> (p: int) { n2 = p + 10 }";
+    let rows = [
+        format!("const @ = \"a\"\nconst k = \"b\"\non go {{ s = k\n SendCustomEvent(k, 1) }}{recv}"),
+        format!("let @ = \"a\"\nlet k = \"b\"\non go {{ s = k\n SendCustomEvent(k, 1) }}{recv}"),
+        format!(
+            "const @ = \"a\"\non go {{ s = @\n SendCustomEvent(@, 1) }}\nconst k = \"b\"\n\
+             on go2 {{ s = k\n SendCustomEvent(k, 2) }}{recv}"
+        ),
+        "const @ = 1\nmod m() -> int { return @ }\nconst k = 2\non go { n = m()\n n2 = k }".into(),
+        "const @ = 1\nmod m() -> int { return @ }\non go { n = m() }\nconst k = 2\non go2 { n2 = m() + k }".into(),
+        "const @ = 1\nconst j = @ + 10\nconst k = 2\non go { n = j\n n2 = k }".into(),
+        "const @ = 1\nconst k = 2\nconst j = k + 10\non go { n = j }".into(),
+        "let @ = 1\nlet k = @ + 1\non go { n = k }".into(),
+        "const @ = 3\non go { await SleepTicks(_, delay = @)\n n = @ }\nconst k = 5\n\
+         on go2 { await SleepTicks(_, delay = k)\n n2 = k }"
+            .into(),
+        "const @ = 1\non go { if @ == 1 { n = 1 } else { n = 2 } }\nconst k = 2\n\
+         on go2 { if k == 1 { n2 = 1 } else { n2 = 2 } }"
+            .into(),
+        "const @ = 1\non go { n = @ }\nconst k = \"s\"\non go2 { s = k }".into(),
+        "const @ = 1\nchip { on go { n = @ } }\nconst k = 2\non go2 { n2 = k }".into(),
+        "buffer @: int = @ + 1\non go { n = @ }\nlet k = ServerUptime()\non go2 { n2 = k }".into(),
+        "const @ = 1\nconst k = 2\nmod m() -> int { return k }\non go { n = m() }".into(),
+        "enum E { A, B }\nconst @ = E.A\non go { match @ { E.A => { n = 1 } E.B => { n = 2 } } }\nconst k = E.B\n\
+         on go2 { match k { E.A => { n2 = 1 } E.B => { n2 = 2 } } }"
+            .into(),
+        "const @ = [1, 2]\non go { n = @[1] }\nconst k = [5, 6]\non go2 { n2 = k[1] }".into(),
+        "const @ = 1\nstatic var w: int = @\nconst k = 2\non go { n = w + k }".into(),
+        "const @ = 1\nvar w: int = @\nconst k = 2\non go { n = w + k }".into(),
+        "let @ = 1\non go { n = @ }\nvar k: int = 5\non go2 { n2 = k\n k = 3 }".into(),
+        "var @: int = 4\non go { n = @ }\nlet k = 9\non go2 { n2 = k }".into(),
+        "const @ = 1\nchip C(a: int) -> int { return a + @ }\nconst k = 2\non go { n = C(1)\n n2 = k }".into(),
+        "const @ = 1\nmod g<T: int | float>(a: T) -> T { return a + @ }\nconst k = 2\non go { n = g(1)\n n2 = k }".into(),
+        "const @ = 1\nconst mod f() -> int { return @ }\nconst k = 2\non go { n = f()\n n2 = k }".into(),
+        format!("const @ = \"a\"\nmod snd() {{ SendCustomEvent(@, 1) }}\nconst k = \"b\"\non go {{ snd() }}{recv}"),
+        "const @ = 1\non go { s = \"v${@}\" }\nconst k = 2\non go2 { s = \"v${k}\" }".into(),
+        "let @ = ServerUptime()\non go { n = @ > 10 }\nlet k = \"x\"\non go2 { s = k }".into(),
+        "let @ = ServerUptime() > 5.0\non @ { n = 1 }\nlet k = ServerUptime() > 9.0\non k { n2 = 1 }".into(),
+        "const @ = 0\nconst a = [10, 20, 30]\non go { n = a[@] }\nconst k = 2\non go2 { n2 = a[k] }".into(),
+        "const @ = 1\nchip {\n mod m() -> int { return @ }\n on go { n = m() }\n}\nconst k = 2\non go2 { n2 = k }".into(),
+        "const @ = 3\non go { await SleepTicks(_, delay = @)\n n = 1 }\nlet k = ServerUptime()\non go2 { n2 = k }".into(),
+        "const @ = 1\nlet k = 2\non go2 { n = k }".into(),
+        "var @: int = 0\nlet k = 1\non go2 { n = k }".into(),
+        // Storage is no constant: a constant-only slot after it fails in both.
+        format!("const @ = \"a\"\nvar k: string = \"chipvar\"\non go2 {{ s = k\n SendCustomEvent(k, 1) }}{recv}"),
+        // A `const mod` reads as a `mod` does where it is declared.
+        "const @ = 2\nconst k = 10\nconst mod f(x: int) -> int { return x * k }\nconst R = f(3)\non go { n = R }".into(),
+        "const @ = 2\nconst mod f(x: int) -> int { return x * @ }\nconst k = 10\nconst R = f(3)\non go { n = R + k }".into(),
+        // A body above every declaration reads the first, called from above,
+        // between or below them.
+        "const mod f(x: int) -> int { return x * @ }\nconst @ = 2\nconst k = 10\nconst R = f(3)\non go { n = R + k }".into(),
+        "mod f() -> int { return @ }\non go { n = f() }\nconst @ = 2\nconst k = 10\non go2 { n2 = k }".into(),
+        "mod f() -> int { return @ }\nconst @ = 2\non go { n = f() }\nconst k = 10\non go2 { n2 = k + f() }".into(),
+        "mod f() -> int { return @ }\nconst @ = 2\nconst k = 10\non go { n = f() + k }".into(),
+        "chip C() { on go { n = @ } }\nlet @ = 2\nlet k = 10\nC()\non go2 { n2 = k }".into(),
+        "mod g<T: int | float>(a: T) -> T { return a + @ }\nconst @ = 1\nconst k = 2\non go { n = g(1)\n n2 = k }".into(),
+        // Storage is declared ahead of everything: above every declaration
+        // it is what a read names, a body's too.
+        "on go { n = k }\nlet @ = 2\non go2 { n2 = @ }\nvar k: int = 1\non go2 { s = \"${k}\" }".into(),
+        "on go { n = @ }\nvar @: int = 4\non go2 { n2 = @ }\nlet k = 9\non go { s = \"${k}\" }".into(),
+        "mod f() -> int { return k }\nlet @ = 2\nvar k: int = 1\non go { n = f() }".into(),
+        "var @: bool = false\non @ { n = 1 }\nlet k = ServerUptime() > 9.0\non k { n2 = 1 }".into(),
+        "on k { n = 1 }\nlet @ = ServerUptime() > 9.0\non @ { n2 = 1 }\nvar k: bool = false".into(),
+        // A constant-only slot in a body.
+        "const @ = 3\nmod w() { await SleepTicks(_, delay = @)\n n = 1 }\nconst k = 5\non go { w() }\n\
+         on go2 { await SleepTicks(_, delay = k)\n n2 = 1 }"
+            .into(),
+        format!(
+            "mod snd() {{ SendCustomEvent(@, 1) }}\nconst @ = \"a\"\nconst k = \"b\"\non go {{ snd() }}\n\
+             on go2 {{ SendCustomEvent(k, 2) }}{recv}"
+        ),
+        format!(
+            "const @ = \"a\"\nchip D() {{ on go {{ SendCustomEvent(@, 1) }} }}\nconst k = \"b\"\nD()\n\
+             on go2 {{ SendCustomEvent(k, 2) }}{recv}"
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for row in &rows {
+        for fold in [false, true] {
+            let got = outcome(&format!("{head}{}", row.replace('@', "k")), fold);
+            let want = outcome(&format!("{head}{}", row.replace('@', "k0")), fold);
+            let without = |codes: &[String]| codes.iter().filter(|c| *c != "WS108").cloned().collect::<Vec<_>>();
+            let warned = !got.compiled || got.codes.iter().any(|c| c == "WS108");
+            if got.compiled != want.compiled
+                || got.shape != want.shape
+                || got.comps != want.comps
+                || without(&got.codes) != want.codes
+                || !warned
+            {
+                wrong.push(format!("{row}, fold {fold}: {:?} / {:?}", got.codes, want.codes));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    let failed = rows.iter().filter(|r| !outcome(&format!("{head}{}", r.replace('@', "k0")), false).compiled).count();
+    assert_eq!(failed, 1, "only the storage row fails");
+
+    // A library declaring a name twice reads it by position however it is
+    // imported (flat, by name, by two paths), and `WS108` warns once at its
+    // later declaration; an importer reads its last declaration.
+    let lib_outcome = |src: &str, deps: &[(&str, &str)], fold: bool| {
+        let mut o = super::shadow_differential::outcome(src, deps, fold);
+        o.comps.retain(|c| !c.starts_with("BrickComponentData_TextDisplay"));
+        o.comps.sort();
+        o
+    };
+    let fab = "const @ = 2\nmod fa() -> int { return @ }\nconst k = 30\nmod fb() -> int { return k }\n";
+    let flat = "import \"lib\"\n";
+    let libs: [(&str, &str, &str); 7] = [
+        (fab, flat, "on go { n = fa() * 1000 + fb() * 10 + k }"),
+        (fab, "import { fa, fb, k } from \"lib\"\n", "on go { n = fa() * 1000 + fb() * 10 + k }"),
+        (fab, "import \"pa\"\nimport \"pb\"\n", "on go { n = ma() * 1000 + mb() * 10 + k }"),
+        ("let @ = 2\nlet k = \"str\"\n", flat, "on go { s = k }"),
+        (
+            "const @ = \"a\"\nmod sa() { SendCustomEvent(@, 1) }\nconst k = \"b\"\nmod sb() { SendCustomEvent(k, 2) }\n",
+            flat,
+            "on go { sa()\n sb() }",
+        ),
+        (
+            "buffer @: int = @ + 1\nmod rb() -> int { return @ }\nlet k = 5\nmod rt() -> int { return k }\n",
+            flat,
+            "on go { n = rt() + rb() }",
+        ),
+        (
+            "mod f0() -> int { return @ }\nconst @ = 2\nconst k = 30\nmod f2() -> int { return k }\n",
+            flat,
+            "on go { n = f0() * 100 + f2() + k }",
+        ),
+    ];
+    let paths = [("pa", "import \"lib\"\nmod ma() -> int { return fa() }\n"), ("pb", "import \"lib\"\nmod mb() -> int { return fb() }\n")];
+    for (lib, imports, body) in libs {
+        let src = format!("{imports}{head}{body}{recv}");
+        for fold in [false, true] {
+            let deps = |name: &str| {
+                let mut d = vec![("lib", lib.replace('@', name))];
+                d.extend(paths.iter().map(|(p, t)| (*p, t.to_string())));
+                d
+            };
+            let (dk, dk0) = (deps("k"), deps("k0"));
+            fn as_refs<'a>(d: &'a [(&'a str, String)]) -> Vec<(&'a str, &'a str)> {
+                d.iter().map(|(n, t)| (*n, t.as_str())).collect()
+            }
+            let got = lib_outcome(&src, &as_refs(&dk), fold);
+            let want = lib_outcome(&src, &as_refs(&dk0), fold);
+            let warned = got.codes.iter().filter(|c| *c == "WS108").count();
+            let without = |codes: &[String]| codes.iter().filter(|c| *c != "WS108").cloned().collect::<Vec<_>>();
+            if !got.compiled || got.comps != want.comps || without(&got.codes) != want.codes || warned != 1 {
+                wrong.push(format!("{lib}{src}, fold {fold}: {:?} / {:?}", got.codes, want.codes));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Compare each `(program, twin)` pair at the save, both folds: the program
+/// declares a name twice at the top level and warns `WS108`; the twin renames
+/// the declarations the program's reads must not name. Each mismatch is
+/// pushed to `wrong`.
+fn same_as_renamed_twin(rows: &[(String, String)], deps: &[(&str, &str)], twin_deps: &[(&str, &str)], wrong: &mut Vec<String>) {
+    let outcome = |src: &str, deps: &[(&str, &str)], fold: bool| {
+        let mut o = super::shadow_differential::outcome(src, deps, fold);
+        let named = |t: &&str| t.starts_with("_bindname=") || t.starts_with("_label=");
+        for s in &mut o.shape {
+            *s = s.split(' ').filter(|t| !t.is_empty() && !named(t)).collect::<Vec<_>>().join(" ");
+        }
+        o.shape.sort();
+        o.comps.retain(|c| !c.starts_with("BrickComponentData_TextDisplay"));
+        o.comps.sort();
+        o
+    };
+    // The imports a row starts with stay above the declarations it reads.
+    let placed = |row: &str| {
+        let at = row.lines().take_while(|l| l.starts_with("import")).map(|l| l.len() + 1).sum::<usize>();
+        format!("{}{DUP_HEAD}{}", &row[..at], &row[at..])
+    };
+    for (row, twin) in rows {
+        for fold in [false, true] {
+            let got = outcome(&placed(row), deps, fold);
+            let want = outcome(&placed(twin), twin_deps, fold);
+            let without = |codes: &[String]| codes.iter().filter(|c| *c != "WS108").cloned().collect::<Vec<_>>();
+            if !got.compiled
+                || !want.compiled
+                || got.shape != want.shape
+                || got.comps != want.comps
+                || without(&got.codes) != without(&want.codes)
+                || !got.codes.iter().any(|c| c == "WS108")
+            {
+                wrong.push(format!("{row}\n  fold {fold}: {:?} / twin {:?}", got.codes, want.codes));
+            }
+        }
+    }
+}
+
+/// What every `same_as_renamed_twin` row reads and writes.
+const DUP_HEAD: &str = "in go: exec\nin go2: exec\nvar n: int = 0\nout on1: int = n\nvar n2: int = 0\nout on2: int = n2\n\
+                        var s: string = \"\"\nout os: string = s\n";
+
+/// Each declaration of a name the top level declares twice holds the value
+/// of its own initializer, evaluated where it is written: a `const mod` it
+/// calls reads the declarations visible where the `const mod` is declared,
+/// and a later declaration never reads as the first. Every row equals its
+/// renamed twin at the save, both folds.
+#[test]
+fn a_duplicate_initialized_by_a_const_mod_holds_its_own_value() {
+    let recv = "\non CustomEvent(\"a\") -> (p: int) { n2 = p }\non CustomEvent(\"ab\") -> (p: int) { n2 = p + 10 }";
+    let f2 = "const mod f() -> int { return A * 2 }";
+    let f2t = "const mod f() -> int { return A0 * 2 }";
+    let pairs: Vec<(String, String)> = vec![
+        (format!("let A = 1\n{f2}\nlet A = f() + 5\non go {{ n = A }}"), format!("let A0 = 1\n{f2t}\nlet A = f() + 5\non go {{ n = A }}")),
+        (format!("const A = 1\n{f2}\nlet A = f() + 5\non go {{ n = A }}"), format!("const A0 = 1\n{f2t}\nlet A = f() + 5\non go {{ n = A }}")),
+        (format!("const A = 1\n{f2}\nconst A = f() + 5\non go {{ n = A }}"), format!("const A0 = 1\n{f2t}\nconst A = f() + 5\non go {{ n = A }}")),
+        (format!("{f2}\nconst A = 1\nconst A = f() + 5\non go {{ n = A }}"), format!("{f2t}\nconst A0 = 1\nconst A = f() + 5\non go {{ n = A }}")),
+        (
+            "const A = 1\nconst mod f() -> int { return 2 }\nconst A = f()\non go { n = A }".into(),
+            "const A0 = 1\nconst mod f() -> int { return 2 }\nconst A = f()\non go { n = A }".into(),
+        ),
+        (
+            "let A = 3\nconst mod f() -> int { return A + 1 }\nconst A = f()\non go { n = A }".into(),
+            "let A0 = 3\nconst mod f() -> int { return A0 + 1 }\nconst A = f()\non go { n = A }".into(),
+        ),
+        (
+            "const mod f() -> int { return B * 2 }\nconst A = 1\nconst A = f()\nconst B = 4\non go { n = A }".into(),
+            "const mod f() -> int { return B * 2 }\nconst A0 = 1\nconst A = f()\nconst B = 4\non go { n = A }".into(),
+        ),
+        (
+            "const A = 1\nconst mod f() -> int { return A + 2 }\nconst A = f()\non go { await SleepTicks(_, delay = A)\n n = 1 }".into(),
+            "const A0 = 1\nconst mod f() -> int { return A0 + 2 }\nconst A = f()\non go { await SleepTicks(_, delay = A)\n n = 1 }".into(),
+        ),
+        (
+            format!("const A = \"a\"\nconst mod f() -> string {{ return \"${{A}}b\" }}\nconst A = f()\non go {{ SendCustomEvent(A, 1) }}{recv}"),
+            format!("const A0 = \"a\"\nconst mod f() -> string {{ return \"${{A0}}b\" }}\nconst A = f()\non go {{ SendCustomEvent(A, 1) }}{recv}"),
+        ),
+        (
+            format!("const A = 1\n{f2}\nconst A = f() + 5\nmod m() -> int {{ return A }}\non go {{ n = m() }}"),
+            format!("const A0 = 1\n{f2t}\nconst A = f() + 5\nmod m() -> int {{ return A }}\non go {{ n = m() }}"),
+        ),
+        (
+            format!("const A = 1\n{f2}\nconst A = f() + 5\nchip C() {{ on go {{ n = A }} }}\nC()"),
+            format!("const A0 = 1\n{f2t}\nconst A = f() + 5\nchip C() {{ on go {{ n = A }} }}\nC()"),
+        ),
+        (
+            format!("const A = 1\n{f2}\nconst A = f() + 5\nmod g<T: int | float>(a: T) -> T {{ return a + A }}\non go {{ n = g(1) }}"),
+            format!("const A0 = 1\n{f2t}\nconst A = f() + 5\nmod g<T: int | float>(a: T) -> T {{ return a + A }}\non go {{ n = g(1) }}"),
+        ),
+        (
+            format!("const A = 1\n{f2}\nmod m() -> int {{ return A }}\nconst A = f() + 5\non go {{ n = m()\n n2 = A }}"),
+            format!("const A0 = 1\n{f2t}\nmod m() -> int {{ return A0 }}\nconst A = f() + 5\non go {{ n = m()\n n2 = A }}"),
+        ),
+        (
+            "let A = [1, 2]\non go { n = A[1] }\nlet A = [3, 4]\non go2 { n2 = A[1] }".into(),
+            "let A0 = [1, 2]\non go { n = A0[1] }\nlet A = [3, 4]\non go2 { n2 = A[1] }".into(),
+        ),
+        // Three declarations in a chain, each read by the next one's `const mod`.
+        (
+            "const A = 1\nconst mod f() -> int { return A * 2 }\nconst A = f() + 5\n\
+             const mod g() -> int { return A * 10 }\nconst A = g() + 1\non go { n = A }"
+                .into(),
+            "const A0 = 1\nconst mod f() -> int { return A0 * 2 }\nconst A1 = f() + 5\n\
+             const mod g() -> int { return A1 * 10 }\nconst A = g() + 1\non go { n = A }"
+                .into(),
+        ),
+        // A `const mod` calling a `const mod`, each reading at its own position.
+        (
+            "const A = 1\nconst mod g() -> int { return A * 3 }\nconst A = 5\n\
+             const mod f() -> int { return g() + A }\nconst A = f()\non go { n = A }"
+                .into(),
+            "const A0 = 1\nconst mod g() -> int { return A0 * 3 }\nconst A1 = 5\n\
+             const mod f() -> int { return g() + A1 }\nconst A = f()\non go { n = A }"
+                .into(),
+        ),
+        // The first declaration is the one a `const mod` gives.
+        (
+            "const mod f() -> int { return 2 }\nconst A = f()\non go { n = A }\nconst A = 3\non go2 { n2 = A }".into(),
+            "const mod f() -> int { return 2 }\nconst A0 = f()\non go { n = A0 }\nconst A = 3\non go2 { n2 = A }".into(),
+        ),
+    ];
+    let mut wrong = Vec::new();
+    same_as_renamed_twin(&pairs, &[], &[], &mut wrong);
+    assert!(wrong.is_empty(), "{} of {} rows:\n{}", wrong.len(), pairs.len() * 2, wrong.join("\n"));
+}
+
+/// A `var` or `static var` initializer reads the declaration visible before
+/// it, as a `let` initializer does, never the storage it initializes; a
+/// `buffer` initializer reads the buffer itself (the previous tick). Every
+/// row equals its renamed twin at the save, both folds.
+#[test]
+fn a_var_initializer_reads_the_declaration_before_it() {
+    let pairs: Vec<(String, String)> = [
+        ("let v = 5\nvar v: int = v\non go { n = v }", "let v0 = 5\nvar v: int = v0\non go { n = v }"),
+        ("let t = 3\nvar t: int = t + 1\non go { n = t }", "let t0 = 3\nvar t: int = t0 + 1\non go { n = t }"),
+        ("let t = 3\nstatic var t: int = t + 1\non go { n = t }", "let t0 = 3\nstatic var t: int = t0 + 1\non go { n = t }"),
+        (
+            "const v = 5\nvar v: int = v * 2\non go { n = v\n v = v + 1 }",
+            "const v0 = 5\nvar v: int = v0 * 2\non go { n = v\n v = v + 1 }",
+        ),
+        (
+            "let v = 2\nmod m() -> int { return v }\nvar v: int = v * 3\non go { n = m() + v }",
+            "let v0 = 2\nmod m() -> int { return v0 }\nvar v: int = v0 * 3\non go { n = m() + v }",
+        ),
+        (
+            "const v = 2\nconst mod f() -> int { return v * 5 }\nvar v: int = f()\non go { n = v }",
+            "const v0 = 2\nconst mod f() -> int { return v0 * 5 }\nvar v: int = f()\non go { n = v }",
+        ),
+        (
+            "let v = \"x\"\nvar v: string = \"${v}y\"\non go { s = v }",
+            "let v0 = \"x\"\nvar v: string = \"${v0}y\"\non go { s = v }",
+        ),
+        (
+            "var v: int = 4\non go { n = v }\nlet v = 9\non go2 { n2 = v }",
+            "var v: int = 4\non go { n = v }\nlet v0 = 9\non go2 { n2 = v0 }",
+        ),
+        ("let t = 3\nbuffer t: int = t + 1\non go { n = t }", "let t0 = 3\nbuffer t: int = t + 1\non go { n = t }"),
+        (
+            "buffer t: int = t + 1\non go { n = t }\nlet t = 3\non go2 { n2 = t }",
+            "buffer t: int = t + 1\non go { n = t }\nlet t0 = 3\non go2 { n2 = t0 }",
+        ),
+    ]
+    .iter()
+    .map(|(a, b)| (a.to_string(), b.to_string()))
+    .collect();
+    let mut wrong = Vec::new();
+    same_as_renamed_twin(&pairs, &[], &[], &mut wrong);
+    let storage = "in go: exec\nvar v: int = 1\nvar v: int = v + 1\non go { v = 2 }";
+    let codes = super::shadow_differential::outcome(storage, &[], true).codes;
+    if !codes.contains(&"WS013".to_string()) {
+        wrong.push(format!("{storage}: {codes:?}"));
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// A library declaring a name twice reads it by position however the
+/// program reaches it (a named import beside a flat one, several named
+/// imports, an alias, three paths), since its declarations keep their order
+/// in their own file; the program reads the library's last declaration, and
+/// `WS108` warns once, at the later declaration, naming the earlier one's
+/// line. A library imported both flat and `import * as` gets one warning.
+#[test]
+fn a_library_reached_by_several_imports_reads_its_duplicates_in_source_order() {
+    let lib = "const K = 2\nmod fa() -> int { return K }\nconst K = 30\nmod fb() -> int { return K }\n";
+    let lib_t = "const K0 = 2\nmod fa() -> int { return K0 }\nconst K = 30\nmod fb() -> int { return K }\n";
+    let above = "mod f0() -> int { return K }\nconst K = 2\nmod fa() -> int { return K }\nconst K = 30\n\
+                 mod fb() -> int { return K }\n";
+    let above_t = "mod f0() -> int { return K0 }\nconst K0 = 2\nmod fa() -> int { return K0 }\nconst K = 30\n\
+                   mod fb() -> int { return K }\n";
+    let all = "on go { n = fa() * 1000 + fb() * 10 + K }";
+    let paths = [
+        ("NK", "import { K } from \"L\"\nmod mk() -> int { return K }\n"),
+        ("PA", "import \"L\"\nmod ma() -> int { return fa() }\n"),
+        ("PB", "import { fb } from \"L\"\nmod mb() -> int { return fb() }\n"),
+    ];
+    let rows: Vec<(&str, &str, String, &str)> = vec![
+        (lib, lib_t, "import { K } from \"L\"\nimport \"L\"\n".into(), all),
+        (lib, lib_t, "import \"L\"\nimport { K } from \"L\"\n".into(), all),
+        (lib, lib_t, "import { fb } from \"L\"\nimport \"L\"\n".into(), all),
+        (lib, lib_t, "import { fa } from \"L\"\nimport \"L\"\n".into(), all),
+        (lib, lib_t, "import { fb } from \"L\"\nimport { fa } from \"L\"\nimport { K } from \"L\"\n".into(), all),
+        (lib, lib_t, "import { K } from \"L\"\nimport { fa } from \"L\"\n".into(), "on go { n = fa() * 1000 + K }"),
+        (lib, lib_t, "import { fa } from \"L\"\nimport { fb } from \"L\"\n".into(), "on go { n = fa() * 1000 + fb() * 10 }"),
+        (
+            lib,
+            lib_t,
+            "import { K as KK } from \"L\"\nimport { fa, fb } from \"L\"\n".into(),
+            "on go { n = fa() * 1000 + fb() * 10 + KK }",
+        ),
+        (
+            lib,
+            lib_t,
+            "import { K as KK } from \"L\"\nimport \"L\"\n".into(),
+            "on go { n = fa() * 1000 + fb() * 10 + KK + K }",
+        ),
+        (lib, lib_t, "import \"NK\"\nimport \"L\"\n".into(), "on go { n = fa() * 1000 + fb() * 10 + mk() }"),
+        (
+            lib,
+            lib_t,
+            "import \"PB\"\nimport { K } from \"L\"\nimport \"PA\"\n".into(),
+            "on go { n = ma() * 1000 + mb() * 10 + K }",
+        ),
+        (above, above_t, "import { K } from \"L\"\nimport \"L\"\n".into(), "on go { n = f0() * 100 + fa() * 10 + fb() + K }"),
+        (above, above_t, "import { fb } from \"L\"\nimport { f0 } from \"L\"\n".into(), "on go { n = f0() * 100 + fb() }"),
+    ];
+    let mut wrong = Vec::new();
+    for (l, l_t, imports, body) in &rows {
+        let deps: Vec<(&str, &str)> = [("L", *l)].into_iter().chain(paths).collect();
+        let twin_deps: Vec<(&str, &str)> = [("L", *l_t)].into_iter().chain(paths).collect();
+        let main = format!("{imports}{body}");
+        same_as_renamed_twin(&[(main.clone(), main.clone())], &deps, &twin_deps, &mut wrong);
+        let line_of = |nth: usize| l.lines().enumerate().filter(|(_, x)| x.starts_with("const K")).nth(nth).map(|(i, _)| i + 1);
+        let (first, last) = (line_of(0).unwrap_or(0), line_of(1).unwrap_or(0));
+        match super::declaring_scope::compile_main(&format!("{imports}{DUP_HEAD}{body}"), &deps, true) {
+            Ok(out) => {
+                let warned: Vec<_> = out.diagnostics.iter().filter(|d| d.code == "WS108").collect();
+                let placed = |d: &&crate::diagnostic::Diagnostic| {
+                    d.range.file.ends_with("L.ws")
+                        && d.range.start.line as usize == last
+                        && d.message.contains(&format!("on line {first}:"))
+                };
+                if warned.len() != 1 || !warned.iter().all(placed) {
+                    let shown: Vec<_> =
+                        warned.iter().map(|d| format!("{}:{} {}", d.range.file, d.range.start.line, d.message)).collect();
+                    wrong.push(format!("{main}: WS108 {shown:#?}"));
+                }
+            }
+            Err(codes) => wrong.push(format!("{main}: {codes:?}")),
+        }
+    }
+    // Flat and `import * as`: one warning, which says what both read.
+    let both = "import \"L\"\nimport * as ns from \"L\"\nin go: exec\nvar n: int = 0\non go { n = fa() * 1000 + ns.fb() * 10 + K }";
+    match super::declaring_scope::compile_main(both, &[("L", lib)], true) {
+        Ok(out) => {
+            let warned: Vec<_> = out.diagnostics.iter().filter(|d| d.code == "WS108").map(|d| d.message.clone()).collect();
+            if warned.len() != 1 || !warned[0].contains("import * as") {
+                wrong.push(format!("flat and namespace: {warned:#?}"));
+            }
+        }
+        Err(codes) => wrong.push(format!("flat and namespace: {codes:?}")),
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }

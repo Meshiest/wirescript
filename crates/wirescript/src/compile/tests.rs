@@ -138,3 +138,145 @@
         let _ = std::fs::remove_file(&main);
         let _ = std::fs::remove_file(&lib);
     }
+
+    /// A failed compile prints where each error is, not only its message.
+    #[test]
+    fn a_compile_error_prints_its_location() {
+        let err = compile(CompileInput {
+            source: "var fo: float = 0.0\nin go: exec\non go { fo = \"s\" }\n",
+            file: "loc",
+            module_name: None,
+            fold_mode: FoldMode::Auto,
+        })
+        .err()
+        .expect("a string into a float var is an error");
+        let text = err.to_string();
+        assert!(text.contains("[WS003]") && text.contains("(loc:3:"), "{text}");
+    }
+
+    /// An imported file's canonical Windows path prints without its verbatim
+    /// prefix.
+    #[test]
+    fn a_location_prints_a_plain_path() {
+        use crate::diagnostic::display_path;
+        assert_eq!(display_path(r"\\?\C:\Users\x\lib.ws"), r"C:\Users\x\lib.ws");
+        assert_eq!(display_path(r"\\?\UNC\host\share\lib.ws"), r"\\host\share\lib.ws");
+        assert_eq!(display_path("lib.ws"), "lib.ws");
+        let err = CompileError::HasErrors(vec![crate::diagnostic::Diagnostic {
+            severity: Severity::Error,
+            code: "WS002".into(),
+            message: "m".into(),
+            range: crate::diagnostic::SourceRange::new(r"\\?\C:\x\lib.ws", Default::default(), Default::default()),
+        }]);
+        assert!(err.to_string().contains(r"(C:\x\lib.ws:0:0)"), "{err}");
+    }
+
+    /// A placeholder (an expression the type check accepted that lowering
+    /// cannot build) in a program nothing else rejects is an error, from
+    /// `compile` and from `diagnostics_only` alike, naming what it stands for.
+    /// Beside another error it stays a warning.
+    #[test]
+    fn a_placeholder_in_a_program_with_no_other_error_is_an_error() {
+        let lib = "mod twice(self: float) -> float { return self * 2.0 }\n\
+                   pub mod pubt(v: float) -> float { return v.twice() }\n";
+        let head = "var k: int = 3\nvar n: int = 0\nvar fl: float = 1.5\nvar fo: float = 0.0\n\
+                    type P = { a: int }\nvar pv: P = { a: 1 }\nin go: exec\n";
+        let cases = [
+            ("a method nothing declares", "", "on go { n = k.nosuch() }", "`.nosuch()`"),
+            ("a record receiver", "", "on go { n = pv.nosuch() }", "`.nosuch()`"),
+            ("a namespace import", "import * as u from \"lt\"\n", "on go { fo = fl.twice() }", "`.twice()`"),
+            ("a renamed import", "import { twice as tw } from \"lt\"\n", "on go { fo = fl.twice() }", "`.twice()`"),
+        ];
+        let loader = crate::resolve::MemLoader { files: [("lt.ws".to_string(), lib.to_string())].into_iter().collect() };
+        for (what, imports, body, named) in cases {
+            let src = format!("{imports}{head}{body}");
+            let input = CompileInput { source: &src, file: "main", module_name: None, fold_mode: FoldMode::Auto };
+            let errors = match compile_with_loader(input, Default::default(), &loader) {
+                Err(CompileError::HasErrors(errors)) => errors,
+                other => panic!("{what}: compiled: {:?}", other.map(|r| r.diagnostics)),
+            };
+            assert!(
+                errors.iter().all(|d| d.code == "WSP001")
+                    && errors.iter().any(|d| d.message.starts_with("this expression is not supported by the compiler yet")
+                        && d.message.contains(named)),
+                "{what}: {errors:?}"
+            );
+        }
+
+        let check = |src: &str| {
+            diagnostics_only(CompileInput { source: src, file: "main", module_name: None, fold_mode: FoldMode::Auto })
+        };
+        let alone = check(&format!("{head}on go {{ n = k.nosuch() }}"));
+        assert!(
+            alone.iter().any(|d| d.code == "WSP001" && matches!(d.severity, Severity::Error)),
+            "diagnostics_only must report it as `compile` does: {alone:?}"
+        );
+        let beside = check(&format!("{head}var bad: int = \"x\"\non go {{ n = k.nosuch() }}"));
+        assert!(
+            beside.iter().any(|d| d.code == "WSP001" && matches!(d.severity, Severity::Warning))
+                && beside.iter().any(|d| d.code != "WSP001" && matches!(d.severity, Severity::Error)),
+            "beside another error the placeholder stays a warning: {beside:?}"
+        );
+    }
+
+    /// Neither `ws-ignore` directive silences a placeholder promoted to an
+    /// error: the promotion comes first, and no directive silences an error.
+    #[test]
+    fn ws_ignore_does_not_silence_a_promoted_placeholder() {
+        let head = "in go: exec\nin k: int\nvar n: int = 0\nout on1: int = n\n";
+        for (what, src) in [
+            ("ignore line", format!("{head}on go {{ n = k.nosuch() // ws-ignore-line:WSP001\n}}\n")),
+            ("ignore file", format!("// ws-ignore-file\n{head}on go {{ n = k.nosuch() }}\n")),
+            ("ignore file code", format!("// ws-ignore-file:WSP001\n{head}on go {{ n = k.nosuch() }}\n")),
+        ] {
+            let input = CompileInput { source: &src, file: "main", module_name: None, fold_mode: FoldMode::Auto };
+            match compile(input) {
+                Err(CompileError::HasErrors(errors)) => {
+                    assert!(errors.iter().any(|d| d.code == "WSP001"), "{what}: {errors:?}")
+                }
+                other => panic!("{what}: compiled: {:?}", other.map(|r| r.diagnostics)),
+            }
+            let diags =
+                diagnostics_only(CompileInput { source: &src, file: "main", module_name: None, fold_mode: FoldMode::Auto });
+            assert!(
+                diags.iter().any(|d| d.code == "WSP001" && matches!(d.severity, Severity::Error)),
+                "{what}: diagnostics_only: {diags:?}"
+            );
+        }
+        // A warning on the line is still silenced.
+        let src = format!("{head}on go {{ static var z: int = k // ws-ignore-line:WSP001\nn = z }}\n");
+        let input = CompileInput { source: &src, file: "main", module_name: None, fold_mode: FoldMode::Auto };
+        let out = compile(input).expect("a silenced warning compiles");
+        assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+    }
+
+    /// A promoted placeholder says which expression it is and how to rewrite
+    /// it, and never suggests a `let` that would not help.
+    #[test]
+    fn a_promoted_placeholder_names_its_expression_and_the_fix() {
+        let head = "in go: exec\nin a: int\nin k: int\nvar n: int = 0\nout on1: int = n\n";
+        for (what, body, names, fix, no_let) in [
+            ("unknown method", "on go { n = k.nosuch() }", "`.nosuch()`", "is not a method the compiler can build", true),
+            ("undocumented method", "on go { var v = a.ToString()\nn = a }", "`.ToString()`", "lists for its type", true),
+            (
+                "tuple element read",
+                "var ts: (int, int)[]\non go { ts.push((1, 2))\nn = ts[0].1 }",
+                "`.1`",
+                "Rewrite it with a form the language reference documents",
+                true,
+            ),
+        ] {
+            let src = format!("{head}{body}\n");
+            let input = CompileInput { source: &src, file: "main", module_name: None, fold_mode: FoldMode::Auto };
+            let errors = match compile(input) {
+                Err(CompileError::HasErrors(errors)) => errors,
+                other => panic!("{what}: compiled: {:?}", other.map(|r| r.diagnostics)),
+            };
+            let m = errors.iter().find(|d| d.code == "WSP001").map(|d| d.message.clone()).unwrap_or_default();
+            assert!(m.contains(names) && m.contains(fix), "{what}: {m}");
+            assert!(!m.contains("this expression, which"), "{what} names the expression: {m}");
+            if no_let {
+                assert!(!m.contains("`let`"), "{what}: a `let` does not help: {m}");
+            }
+        }
+    }

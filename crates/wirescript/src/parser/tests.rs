@@ -2540,3 +2540,72 @@ on go {
             parsed.diagnostics
         );
     }
+
+    /// `>>` closes two nested type-argument lists, as `> >` does, in a type
+    /// annotation, a type-parameter bound and an explicit call type argument,
+    /// while `>>` between two operands stays the shift operator.
+    #[test]
+    fn a_double_angle_closes_nested_type_arguments() {
+        let s = parse_ok(
+            "var m: Map<string, Map<string, int>>\n\
+             var a: Array<Array<int>>\n\
+             mod f<T: Map<int, Array<int>>>(x: T) -> int { return 1 }\n\
+             var s = 8 >> 1\n\
+             var c = a < b >> 2\n\
+             var n = g<Array<int>>(a)",
+        );
+        let typ = |i: usize| match &s.decls[i] {
+            TopDecl::Var(v) => format!("{:?}", v.typ.as_ref().expect("typed")),
+            _ => panic!("expected Var"),
+        };
+        assert!(typ(0).starts_with("Generic { name: \"Map\""), "{}", typ(0));
+        assert!(typ(0).contains("args: [Name { name: \"string\""), "{}", typ(0));
+        assert_eq!(typ(0).matches("Generic { name: \"Map\"").count(), 2, "{}", typ(0));
+        assert!(typ(1).starts_with("Array { inner: Array { inner: Name"), "{}", typ(1));
+        let init = |i: usize| match &s.decls[i] {
+            TopDecl::Var(v) => v.init.clone().expect("init"),
+            _ => panic!("expected Var"),
+        };
+        assert!(matches!(init(3), Expr::BinOp { op, .. } if op == ">>"));
+        match init(4) {
+            Expr::BinOp { op, right, .. } => {
+                assert_eq!(op, "<");
+                assert!(matches!(*right, Expr::BinOp { ref op, .. } if op == ">>"));
+            }
+            other => panic!("expected `a < (b >> 2)`, got {other:?}"),
+        }
+        assert!(matches!(init(5), Expr::Call { ref type_args, .. } if type_args.len() == 1));
+    }
+
+    /// A type-argument list closed right before an initializer's `=` lexes as
+    /// `>=` or `>>=`: the closing `>` splits off, and the rest is the `=`.
+    /// Expression `>=` and `>>=` are untouched.
+    #[test]
+    fn an_angle_before_an_initializer_closes_the_type_arguments() {
+        let s = parse_ok(
+            "var m: Map<string, Map<string, int>>= {}\n\
+             var n: Map<string, int>= {}\n\
+             var a: int[] = []\n\
+             var b = a < c >= d\n\
+             in go: exec\n\
+             on go { x >>= 1 }",
+        );
+        let typ = |i: usize| match &s.decls[i] {
+            TopDecl::Var(v) => format!("{:?}", v.typ.as_ref().expect("typed")),
+            _ => panic!("expected Var"),
+        };
+        assert_eq!(typ(0).matches("Generic { name: \"Map\"").count(), 2, "{}", typ(0));
+        assert_eq!(typ(1).matches("Generic { name: \"Map\"").count(), 1, "{}", typ(1));
+        let init = |i: usize| match &s.decls[i] {
+            TopDecl::Var(v) => v.init.clone().expect("init"),
+            _ => panic!("expected Var"),
+        };
+        assert!(matches!(init(0), Expr::RecordLit { .. }));
+        match init(3) {
+            Expr::BinOp { op, left, .. } => {
+                assert_eq!(op, ">=");
+                assert!(matches!(*left, Expr::BinOp { ref op, .. } if op == "<"));
+            }
+            other => panic!("expected `(a < c) >= d`, got {other:?}"),
+        }
+    }

@@ -28,6 +28,7 @@
             params: &params,
             type_aliases: &aliases,
             generic_aliases: &generic_aliases,
+            declaring_aliases: None,
         };
         let mut d = Vec::new();
         assert_eq!(resolve_type(&name_te("zone"), &cx, &mut d), Type::Zone);
@@ -55,6 +56,7 @@
             params: &params,
             type_aliases: &aliases,
             generic_aliases: &generic_aliases,
+            declaring_aliases: None,
         };
         let mut d = Vec::new();
         assert_eq!(resolve_type(&name_te("Bogus"), &cx, &mut d), Type::Any);
@@ -73,6 +75,7 @@
             params: &params,
             type_aliases: &aliases,
             generic_aliases: &generic_aliases,
+            declaring_aliases: None,
         };
         let mut d = Vec::new();
         assert_eq!(resolve_type(&name_te("Point"), &cx, &mut d), Type::Vector);
@@ -118,6 +121,7 @@
             params: &params,
             type_aliases: &aliases,
             generic_aliases: &generic_aliases,
+            declaring_aliases: None,
         };
         let mut d = Vec::new();
         // Pair<int> -> { a: int, b: int }
@@ -162,6 +166,7 @@
             params: &params,
             type_aliases: &aliases,
             generic_aliases: &generic_aliases,
+            declaring_aliases: None,
         };
         let mut d = Vec::new();
         // Terminates (cut off by the in-progress cycle guard) rather than
@@ -198,6 +203,7 @@
             params: &params,
             type_aliases: &aliases,
             generic_aliases: &generic_aliases,
+            declaring_aliases: None,
         };
         let mut d = Vec::new();
         let _resolved = resolve_type(&generic_te("Tree", vec![name_te("int")]), &cx, &mut d);

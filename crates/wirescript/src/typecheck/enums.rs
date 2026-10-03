@@ -5,6 +5,133 @@
 
 use super::*;
 
+/// The program's enums by name: the prelude's, the game's and every
+/// `TopDecl::Enum`.
+///
+/// A lookup takes a resolved type ([`of`](Self::of)): a type written in the
+/// source names an enum only through the alias-aware resolvers
+/// (`typecheck::resolve::resolve_type_expr`, `const_eval::DeclaredTypes`),
+/// which read an alias, a type parameter or another file's declaration before
+/// they read an enum's name. The lookup by written name is theirs alone
+/// ([`type_named`](Self::type_named)); there is no other, so a place holding a
+/// written name has to resolve it first (`alias_conversion.rs` guards that
+/// no other file calls it).
+#[derive(Clone, Debug, Default)]
+pub struct EnumRegistry {
+    defs: crate::collections::HashMap<String, EnumDef>,
+    /// The enums each `import * as` module declares, by the importing file
+    /// and the namespace's name. Such an enum is registered under its own
+    /// name, which its module writes; the importer writes `ns.Name`.
+    namespaced: crate::collections::HashMap<(std::sync::Arc<str>, String), Vec<String>>,
+}
+
+impl EnumRegistry {
+    /// The enum the resolved type `t` is.
+    pub fn of(&self, t: &Type) -> Option<&EnumDef> {
+        match t {
+            Type::Enum { name, .. } => self.defs.get(name),
+            _ => None,
+        }
+    }
+
+    /// The enum an expression path names (`Dir.N`, `Shape.Circle(r)`,
+    /// `Dir.FromInt(n)`, a bare variant's enum): a path writes the enum's own
+    /// name, since an alias of an enum names no variants (`WS060`). Only the
+    /// expression-path sites call it (`alias_conversion.rs` guards that).
+    pub(crate) fn expression_path(&self, name: &str) -> Option<&EnumDef> {
+        self.defs.get(name)
+    }
+
+    /// The editor's lookup of the enum named by the text it completes or
+    /// hovers, which no type resolution has read. Only the editor's build
+    /// (the `editor` feature, the LSP's) has it, so the compiler cannot call
+    /// it (`alias_conversion.rs` guards that too).
+    #[cfg(feature = "editor")]
+    pub fn editor_lookup(&self, name: &str) -> Option<&EnumDef> {
+        self.defs.get(name)
+    }
+
+    /// Resolution only: the enum declared under the written type name `name`,
+    /// once it is known to be no alias and no type parameter where it is
+    /// written.
+    pub(crate) fn written_name(&self, name: &str) -> Option<&EnumDef> {
+        self.defs.get(name)
+    }
+
+    /// Resolution only: the type the written name `name`, applied to `args`,
+    /// stands for when it names an enum here (see
+    /// [`written_name`](Self::written_name)).
+    pub(crate) fn type_named(&self, name: &str, args: Vec<Type>) -> Option<Type> {
+        self.defs.contains_key(name).then(|| Type::Enum { name: name.to_string(), args })
+    }
+
+    /// Register `def` under its name, replacing an enum of that name.
+    pub fn insert(&mut self, def: EnumDef) {
+        self.defs.insert(def.name.clone(), def);
+    }
+
+    /// The enum `name` of the `import * as ns` namespace that `file` imports:
+    /// the head `ns.Name` of a path or type written there.
+    pub fn namespaced(&self, file: &std::sync::Arc<str>, ns: &str, name: &str) -> Option<&EnumDef> {
+        let declares = self.namespaced.get(&(file.clone(), ns.to_string()))?.iter().any(|n| n == name);
+        declares.then(|| self.defs.get(name)).flatten()
+    }
+
+    /// Note that the `import * as ns` written in `file` declares enum `name`.
+    fn note_namespaced(&mut self, file: &std::sync::Arc<str>, ns: &str, name: &str) {
+        self.namespaced.entry((file.clone(), ns.to_string())).or_default().push(name.to_string());
+    }
+
+    /// The one enum that declares every variant the arms of a `match` cite
+    /// by variant alone; `None` when none does or several do, or no arm
+    /// cites one.
+    pub(crate) fn citing_arms(&self, arms: &[MatchArm]) -> Option<&EnumDef> {
+        let mut cited: Vec<&str> = Vec::new();
+        for arm in arms {
+            if let Pattern::Variant { variant, .. } = &arm.pattern
+                && !cited.contains(&variant.as_str())
+            {
+                cited.push(variant.as_str());
+            }
+        }
+        if cited.is_empty() {
+            return None;
+        }
+        self.declaring_variants(&cited)
+    }
+
+    /// The one enum that declares every variant in `variants` (a bare
+    /// variant's, or a `match` whose arms name variants alone); `None` when
+    /// none does or several do.
+    fn declaring_variants(&self, variants: &[&str]) -> Option<&EnumDef> {
+        let mut found: Option<&EnumDef> = None;
+        for def in self.defs.values() {
+            if variants.iter().all(|name| def.variants.iter().any(|v| v.name == *name)) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(def);
+            }
+        }
+        found
+    }
+
+    /// Every enum's name and every variant's.
+    pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
+        self.defs
+            .values()
+            .flat_map(|d| std::iter::once(d.name.as_str()).chain(d.variants.iter().map(|v| v.name.as_str())))
+    }
+
+    pub fn len(&self) -> usize {
+        self.defs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.defs.is_empty()
+    }
+}
+
 /// A registered `enum` declaration, discriminants already assigned. One per
 /// `TopDecl::Enum`, keyed by name in `ctx.enum_defs`.
 #[derive(Clone, Debug)]
@@ -117,7 +244,7 @@ fn needs_container_storage(t: &Type) -> bool {
 /// it would land in this payload field. Lets the instantiation check reject
 /// `Option<int[]>` (whose `T` IS stored, by `Some(T)`) while leaving a phantom
 /// parameter that no variant stores alone.
-fn type_expr_mentions(te: &TypeExpr, param: &str) -> bool {
+pub(super) fn type_expr_mentions(te: &TypeExpr, param: &str) -> bool {
     match te {
         TypeExpr::Name { name, .. } => name == param,
         TypeExpr::Ref { inner, .. } | TypeExpr::Array { inner, .. } => {
@@ -313,27 +440,41 @@ pub fn game_enum_defs() -> Vec<EnumDef> {
 /// `WS064` through its own `collect_enum_defs` pass, so re-emitting here would
 /// duplicate it. This is the one place lowering reads the tag from, so it can
 /// never diverge from typecheck's.
-pub fn build_registry(decls: &[TopDecl]) -> crate::collections::HashMap<String, EnumDef> {
-    let mut m: crate::collections::HashMap<String, EnumDef> = Default::default();
+pub fn build_registry(decls: &[TopDecl]) -> EnumRegistry {
+    let mut m = EnumRegistry::default();
     for def in prelude_enum_defs() {
-        m.insert(def.name.clone(), def);
+        m.insert(def);
     }
     for def in game_enum_defs() {
-        m.insert(def.name.clone(), def);
+        m.insert(def);
     }
     for d in decls {
         if let TopDecl::Enum(e) = d {
-            m.insert(
-                e.name.clone(),
-                EnumDef {
-                    name: e.name.clone(),
-                    type_params: e.type_params.clone(),
-                    variants: variant_defs(e),
-                },
-            );
+            m.insert(EnumDef { name: e.name.clone(), type_params: e.type_params.clone(), variants: variant_defs(e) });
         }
     }
+    for (ns, e) in namespaced_enums(decls) {
+        m.note_namespaced(&ns.range.file, &ns.name, &e.name);
+        if m.defs.contains_key(&e.name) {
+            continue;
+        }
+        m.insert(EnumDef { name: e.name.clone(), type_params: e.type_params.clone(), variants: variant_defs(e) });
+    }
     m
+}
+
+/// Each enum an `import * as` module of `decls` declares, with its namespace.
+fn namespaced_enums(decls: &[TopDecl]) -> Vec<(&NamespaceDecl, &EnumDecl)> {
+    let mut out = Vec::new();
+    for d in decls {
+        let TopDecl::Namespace(ns) = d else { continue };
+        for nd in &ns.decls {
+            if let TopDecl::Enum(e) = nd {
+                out.push((ns, e));
+            }
+        }
+    }
+    out
 }
 
 /// Resolve a BARE variant name (`Some`/`None`/`Ok`/`Err`, unqualified) to the
@@ -360,23 +501,14 @@ pub fn build_registry(decls: &[TopDecl]) -> crate::collections::HashMap<String, 
 /// than one (two enums sharing a variant name), yields `None` - an ambiguous
 /// bare name never auto-resolves.
 pub fn resolve_bare_variant_enum<'d>(
-    enum_defs: &'d crate::collections::HashMap<String, EnumDef>,
+    enum_defs: &'d EnumRegistry,
     name: &str,
     is_shadowed: impl Fn(&str) -> bool,
-) -> Option<&'d str> {
+) -> Option<&'d EnumDef> {
     if is_shadowed(name) {
         return None;
     }
-    let mut found: Option<&str> = None;
-    for def in enum_defs.values() {
-        if def.variants.iter().any(|v| v.name == name) {
-            if found.is_some() {
-                return None;
-            }
-            found = Some(def.name.as_str());
-        }
-    }
-    found
+    enum_defs.declaring_variants(&[name])
 }
 
 /// Populate `ctx.enum_defs` from every `enum` declaration in `decls`,
@@ -387,15 +519,42 @@ pub fn resolve_bare_variant_enum<'d>(
 pub fn collect_enum_defs(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
     for d in decls {
         if let TopDecl::Enum(e) = d {
+            ctx.enum_decls.entry(e.name.clone()).or_default().push(e.range.clone());
             let variants = assign_discriminants(e, ctx);
-            Arc::make_mut(&mut ctx.enum_defs).insert(
-                e.name.clone(),
-                EnumDef {
+            Arc::make_mut(&mut ctx.enum_defs).insert(EnumDef {
+                name: e.name.clone(),
+                type_params: e.type_params.clone(),
+                variants,
+            });
+        }
+    }
+    // An enum of an `import * as` module is registered under its own name, as
+    // a flat import's is: one enum of a name per program.
+    for (ns, e) in namespaced_enums(decls) {
+        Arc::make_mut(&mut ctx.enum_defs).note_namespaced(&ns.range.file, &ns.name, &e.name);
+        match ctx.enum_decls.get(&e.name).and_then(|ds| ds.iter().find(|r| **r != e.range)) {
+            Some(other) => {
+                let file = other.file.rsplit(['/', '\\']).next().unwrap_or(&other.file).to_string();
+                ctx.emit(
+                    "WS013",
+                    format!(
+                        "duplicate declaration of enum '{}': the module imported as `{}` declares it, and so \
+                         does {file}; a program has one enum of a name. Rename one",
+                        e.name, ns.name
+                    ),
+                    e.range.clone(),
+                );
+            }
+            None if ctx.enum_decls.contains_key(&e.name) => {}
+            None => {
+                ctx.enum_decls.entry(e.name.clone()).or_default().push(e.range.clone());
+                let variants = assign_discriminants(e, ctx);
+                Arc::make_mut(&mut ctx.enum_defs).insert(EnumDef {
                     name: e.name.clone(),
                     type_params: e.type_params.clone(),
                     variants,
-                },
-            );
+                });
+            }
         }
     }
 }
@@ -408,11 +567,9 @@ mod tests {
     /// a prelude variant (`enum Some { A }`) - the exact shape that could make
     /// the three stages disagree on a bare `Some`, if their shadow predicates
     /// ever diverged.
-    fn registry_with_user_enum_named_some() -> crate::collections::HashMap<String, EnumDef> {
+    fn registry_with_user_enum_named_some() -> EnumRegistry {
         let mut m = build_registry(&[]);
-        m.insert(
-            "Some".to_string(),
-            EnumDef {
+        m.insert(EnumDef {
                 name: "Some".to_string(),
                 type_params: vec![],
                 variants: vec![VariantDef {
@@ -428,18 +585,18 @@ mod tests {
     #[test]
     fn bare_variant_resolves_to_prelude_when_unshadowed() {
         let reg = build_registry(&[]);
-        assert_eq!(resolve_bare_variant_enum(&reg, "Some", |_| false), Some("Option"));
-        assert_eq!(resolve_bare_variant_enum(&reg, "None", |_| false), Some("Option"));
-        assert_eq!(resolve_bare_variant_enum(&reg, "Ok", |_| false), Some("Result"));
-        assert_eq!(resolve_bare_variant_enum(&reg, "Err", |_| false), Some("Result"));
-        assert_eq!(resolve_bare_variant_enum(&reg, "Nope", |_| false), None);
+        assert_eq!(resolve_bare_variant_enum(&reg, "Some", |_| false).map(|d| d.name.as_str()), Some("Option"));
+        assert_eq!(resolve_bare_variant_enum(&reg, "None", |_| false).map(|d| d.name.as_str()), Some("Option"));
+        assert_eq!(resolve_bare_variant_enum(&reg, "Ok", |_| false).map(|d| d.name.as_str()), Some("Result"));
+        assert_eq!(resolve_bare_variant_enum(&reg, "Err", |_| false).map(|d| d.name.as_str()), Some("Result"));
+        assert_eq!(resolve_bare_variant_enum(&reg, "Nope", |_| false).map(|d| d.name.as_str()), None);
     }
 
     #[test]
     fn a_shadow_predicate_hit_blocks_resolution() {
         let reg = build_registry(&[]);
         // Whatever a stage's scope reports as a binding of this name wins.
-        assert_eq!(resolve_bare_variant_enum(&reg, "Some", |n| n == "Some"), None);
+        assert_eq!(resolve_bare_variant_enum(&reg, "Some", |n| n == "Some").map(|d| d.name.as_str()), None);
     }
 
     // The alignment guard for the single-sourced helper: lowering's and
@@ -455,7 +612,7 @@ mod tests {
         // The prelude-only (no enum_defs term) predicate would still resolve to
         // the prelude - it only checks value bindings, of which there are none.
         assert_eq!(
-            resolve_bare_variant_enum(&reg, "Some", |_| false),
+            resolve_bare_variant_enum(&reg, "Some", |_| false).map(|d| d.name.as_str()),
             Some("Option"),
             "control: without the registry term, the enum-name collision is invisible"
         );
@@ -463,7 +620,7 @@ mod tests {
         // named `Some` shadows the bare prelude variant - aligning them with
         // typecheck.
         assert_eq!(
-            resolve_bare_variant_enum(&reg, "Some", |n| reg.contains_key(n)),
+            resolve_bare_variant_enum(&reg, "Some", |n| reg.expression_path(n).is_some()).map(|d| d.name.as_str()),
             None,
             "the registry-term predicate must shadow a user enum named after a variant"
         );
@@ -472,7 +629,7 @@ mod tests {
     #[test]
     fn registry_includes_builtin_game_enums() {
         let reg = build_registry(&[]);
-        let easing = reg.get("EasingFunction").expect("EasingFunction is a built-in");
+        let easing = reg.expression_path("EasingFunction").expect("EasingFunction is a built-in");
         // Discriminant is the schema integer, not an auto-numbered index.
         let bounce = easing.variants.iter().find(|v| v.name == "Bounce").expect("Bounce");
         assert_eq!(
@@ -487,9 +644,7 @@ mod tests {
         let mut reg = build_registry(&[]);
         // A user enum that ALSO declares a `Some` variant - now `Some` is a
         // variant of both `Option` and `Dup`, so no unique owner.
-        reg.insert(
-            "Dup".to_string(),
-            EnumDef {
+        reg.insert(EnumDef {
                 name: "Dup".to_string(),
                 type_params: vec![],
                 variants: vec![VariantDef {
@@ -499,6 +654,6 @@ mod tests {
                 }],
             },
         );
-        assert_eq!(resolve_bare_variant_enum(&reg, "Some", |_| false), None);
+        assert_eq!(resolve_bare_variant_enum(&reg, "Some", |_| false).map(|d| d.name.as_str()), None);
     }
 }

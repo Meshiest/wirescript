@@ -29,9 +29,9 @@
 
     #[test]
     fn mask_for_param_classes_and_unbounded() {
-        let aliases = HashMap::default();
+        let resolve = |te: &TypeExpr| crate::const_eval::DeclaredTypes::default().resolve(te);
         assert_eq!(
-            mask_for_param(None, &aliases),
+            mask_for_param(None, &resolve),
             crate::types::classes::variant_mask()
         );
         assert_eq!(
@@ -40,7 +40,7 @@
                     name: "Scalar".into(),
                     range: crate::diagnostic::SourceRange::default(),
                 }),
-                &aliases
+                &resolve
             ),
             vec![Type::Int, Type::Float]
         );

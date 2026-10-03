@@ -21,6 +21,7 @@ use super::*;
 /// `ctx.diagnostics` — preserving both the alias-resolution and diagnostic
 /// behavior of the resolver this replaced.
 pub(super) fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
+    reserve_record_fields(ctx, t);
     // Fast path: a primitive name needs no alias snapshot. Primitives always win
     // over aliases in `resolve_type` (it checks `primitive` before the alias
     // map), so this is behaviour-identical — but it skips building the full
@@ -41,9 +42,11 @@ pub(super) fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
     // NOT a safe substitute for that). A generic enum (`enum Option<T>`)
     // falls through to the ordinary alias/WS002 path here: instantiating
     // it against concrete type args is a later phase, not this fast path.
-    if let TypeExpr::Name { name, .. } = t
-        && let Some(def) = ctx.enum_defs.get(name)
+    if let TypeExpr::Name { name, range } = t
+        && let Some(def) = ctx.enum_defs.written_name(name)
         && def.type_params.is_empty()
+        && !names_a_type_parameter(ctx, name)
+        && enum_visible_in(ctx, name, &range.file)
     {
         return Type::Enum {
             name: name.clone(),
@@ -58,7 +61,8 @@ pub(super) fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
     // in this fast path above. `Array`/`Map`/`Ref` and a generic type alias
     // aren't enums, so they fall through to the canonical resolver unchanged.
     if let TypeExpr::Generic { name, args, range } = t
-        && let Some(arity) = ctx.enum_defs.get(name).map(|d| d.type_params.len())
+        && let Some(arity) = ctx.enum_defs.written_name(name).map(|d| d.type_params.len())
+        && enum_visible_in(ctx, name, &range.file)
     {
         let resolved_args: Vec<Type> = args.iter().map(|a| resolve_type_expr(ctx, a)).collect();
         if resolved_args.len() != arity {
@@ -76,7 +80,7 @@ pub(super) fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
         // slot, which cannot hold one (see `enums::check_payload_storage`).
         // The declaration check can't catch this: there the field is the bare
         // parameter. Reported here, at the instantiation that picks the type.
-        if let Some(def) = ctx.enum_defs.get(name).cloned()
+        if let Some(def) = ctx.enum_defs.written_name(name).cloned()
             && let Some(param) = crate::typecheck::enums::instantiation_stores_container(
                 &def,
                 &resolved_args,
@@ -92,18 +96,37 @@ pub(super) fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
         }
         return Type::Enum { name: name.clone(), args: resolved_args };
     }
-    let aliases = ctx.scope.type_aliases();
-    let mut diags = Vec::new();
+    let file = &t.range().file;
+    let aliases = aliases_for(ctx, file);
+    let generic = generic_aliases_for(ctx, file);
+    let generic = generic.as_deref().unwrap_or(&ctx.generic_type_aliases);
+    let declaring = names_generic_alias(t, generic).then(|| declaring_aliases(ctx, file));
+    let mut diags = unknown_in_own_aliases(ctx, file, t, &aliases);
     let result = {
         let cx = crate::types::resolve::ResolveCtx {
             params: &[],
             type_aliases: &aliases,
-            generic_aliases: &ctx.generic_type_aliases,
+            generic_aliases: generic,
+            declaring_aliases: declaring.as_ref(),
         };
         crate::types::resolve::resolve_type(t, &cx, &mut diags)
     };
-    ctx.diagnostics.extend(diags);
+    // One annotation can be resolved more than once (a mod parameter, for its
+    // signature and again for its body): report each problem in it once.
+    for d in diags {
+        if !ctx.diagnostics.iter().any(|e| e.code == d.code && e.range == d.range && e.message == d.message) {
+            ctx.diagnostics.push(d);
+        }
+    }
     result
+}
+
+/// Whether `name` is, where it is read, a type parameter (or what one is bound
+/// to) rather than the enum of that name, which the parameter hides.
+fn names_a_type_parameter(ctx: &TypeCheckCtx, name: &str) -> bool {
+    ctx.scope
+        .lookup(name)
+        .is_some_and(|s| s.kind == SymbolKind::Type && !matches!(&s.ty, Type::Enum { name: n, .. } if n == name))
 }
 
 /// A type param's mask — the set of concrete types it may be inferred to.
@@ -112,7 +135,303 @@ pub(super) fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
 pub(super) fn type_param_mask(ctx: &TypeCheckCtx, tp: &TypeParam) -> Vec<Type> {
     // The bound → mask resolution lives in the shared `types::mono` module so
     // the lowering-side monomorphizer can rebuild the same masks.
-    crate::types::mono::mask_for_param(tp.bound.as_ref(), &ctx.scope.type_aliases())
+    crate::types::mono::mask_for_param(tp.bound.as_ref(), &quiet_resolver(ctx, &tp.range.file))
+}
+
+/// What a type written in `file` names, every alias read as `file` reads it,
+/// with no diagnostics: for a pass that reads annotations [`resolve_type_expr`]
+/// has already reported on. The aliases are gathered (an O(scope) scan) only
+/// once a name that is not a primitive is resolved.
+pub(super) fn quiet_resolver<'c>(ctx: &'c TypeCheckCtx, file: &Arc<str>) -> impl Fn(&TypeExpr) -> Type + 'c {
+    type Views = (Arc<HashMap<String, Type>>, Option<Arc<HashMap<String, crate::types::resolve::GenericAlias>>>);
+    let file = file.clone();
+    let views: std::cell::OnceCell<Views> = std::cell::OnceCell::new();
+    move |te: &TypeExpr| {
+        if let TypeExpr::Name { name, .. } = te
+            && let Some(prim) = crate::types::resolve::primitive(name)
+        {
+            return prim;
+        }
+        let (aliases, generic) = views.get_or_init(|| (aliases_for(ctx, &file), generic_aliases_for(ctx, &file)));
+        let cx = crate::types::resolve::ResolveCtx {
+            params: &[],
+            type_aliases: aliases,
+            generic_aliases: generic.as_deref().unwrap_or(&ctx.generic_type_aliases),
+            declaring_aliases: None,
+        };
+        crate::types::resolve::resolve_type(te, &cx, &mut Vec::new())
+    }
+}
+
+/// What an imported file can name of the type aliases: the ones it declares
+/// or its own imports bring in, resolved where they are declared, and the
+/// view a type written there was last resolved against.
+#[derive(Default)]
+pub(crate) struct FileAliases {
+    own: Arc<HashMap<String, Type>>,
+    generic: Arc<HashMap<String, crate::types::resolve::GenericAlias>>,
+    /// The `WS002` each of its own aliases' bodies has, by alias: a name the
+    /// file can name as no type (also through another of its aliases).
+    unknown: Arc<HashMap<String, Vec<Diagnostic>>>,
+    view: Option<(u64, Arc<HashMap<String, Type>>)>,
+}
+
+/// The aliases and enums a type written in `file` reads its names against.
+/// The program's own file reads the scope as it stands. An imported file reads
+/// the type parameters in scope there and the aliases it can name itself
+/// (see [`FileAliases`]), never one its importer declares, so a library's
+/// `F` is the library's whatever the program calls `F`, and a name the
+/// library never declared is unknown there.
+pub(super) fn aliases_for(ctx: &TypeCheckCtx, file: &Arc<str>) -> Arc<HashMap<String, Type>> {
+    if !ctx.imports.aliases.contains_key(file) {
+        return ctx.scope.type_aliases();
+    }
+    let generation = ctx.scope.alias_generation();
+    let mut cache = ctx.file_aliases.borrow_mut();
+    let entry = file_entry(ctx, &mut cache, file);
+    if let Some((at, view)) = &entry.view
+        && *at == generation
+    {
+        return view.clone();
+    }
+    let base = ctx.scope.type_aliases();
+    let stack = ctx.scope.stack();
+    let declared = |name: &str| {
+        let sym = crate::intern::intern(name);
+        (0..stack.depth()).rev().find_map(|i| stack.get_in(i, sym).filter(|s| s.kind == SymbolKind::Type))
+    };
+    let mut view: HashMap<String, Type> = HashMap::default();
+    for (name, ty) in base.iter() {
+        // An enum is named as an alias is: where the file declares it or its
+        // imports bring it, and never over one of the file's own aliases.
+        let own = entry.own.contains_key(name) || entry.generic.contains_key(name);
+        let visible = matches!(ty, Type::Param(_))
+            || name.contains('.')
+            || !own
+                && declared(name).is_none_or(|s| {
+                    s.decl_range.file.is_empty() || s.decl_range.file == *file || ctx.imports.sees(file, &s.decl_range)
+                });
+        if visible {
+            view.insert(name.clone(), ty.clone());
+        }
+    }
+    for (name, ty) in entry.own.iter() {
+        view.entry(name.clone()).or_insert_with(|| ty.clone());
+    }
+    let view = Arc::new(view);
+    entry.view = Some((generation, view.clone()));
+    view
+}
+
+/// Whether `name`, written in `file`, names the enum of that name. The
+/// program's own file names every enum. An imported file names the enums it
+/// declares and those its imports bring, as it does aliases, unless one of
+/// its own aliases takes the name.
+pub(super) fn enum_visible_in(ctx: &TypeCheckCtx, name: &str, file: &Arc<str>) -> bool {
+    if !ctx.imports.aliases.contains_key(file) {
+        return true;
+    }
+    {
+        let mut cache = ctx.file_aliases.borrow_mut();
+        let entry = file_entry(ctx, &mut cache, file);
+        if entry.own.contains_key(name) || entry.generic.contains_key(name) {
+            return false;
+        }
+    }
+    let sym = crate::intern::intern(name);
+    let stack = ctx.scope.stack();
+    let declared =
+        (0..stack.depth()).rev().find_map(|i| stack.get_in(i, sym).filter(|s| s.kind == SymbolKind::Type));
+    declared.is_none_or(|s| {
+        s.decl_range.file.is_empty() || s.decl_range.file == *file || ctx.imports.sees(file, &s.decl_range)
+    })
+}
+
+/// The generic aliases a type written in `file` can name, when `file` is an
+/// imported file; `None` for the program's own, which reads them all.
+pub(super) fn generic_aliases_for(
+    ctx: &TypeCheckCtx,
+    file: &Arc<str>,
+) -> Option<Arc<HashMap<String, crate::types::resolve::GenericAlias>>> {
+    if !ctx.imports.aliases.contains_key(file) {
+        return None;
+    }
+    let mut cache = ctx.file_aliases.borrow_mut();
+    Some(file_entry(ctx, &mut cache, file).generic.clone())
+}
+
+fn file_entry<'c>(
+    ctx: &TypeCheckCtx,
+    cache: &'c mut HashMap<Arc<str>, FileAliases>,
+    file: &Arc<str>,
+) -> &'c mut FileAliases {
+    cache.entry(file.clone()).or_insert_with(|| {
+        let decls = ctx.imports.aliases.get(file).map(Vec::as_slice).unwrap_or(&[]);
+        let types = crate::const_eval::DeclaredTypes::for_program(decls, &ctx.enum_defs);
+        FileAliases {
+            own: Arc::new(types.plain_aliases().collect()),
+            generic: Arc::new(types.generic_aliases().collect()),
+            unknown: Arc::new(unknown_alias_names(ctx, decls, &types)),
+            view: None,
+        }
+    })
+}
+
+/// For each alias `decls` declares (an `import * as` module's by its
+/// qualified name), the `WS002` for each name its body writes that is no type
+/// the file can name: not a builtin type, one of its aliases or type
+/// parameters, or an enum. An alias naming such an alias has its errors too.
+fn unknown_alias_names(
+    ctx: &TypeCheckCtx,
+    decls: &[TopDecl],
+    types: &crate::const_eval::DeclaredTypes,
+) -> HashMap<String, Vec<Diagnostic>> {
+    fn walk(
+        t: &TypeExpr,
+        params: &[String],
+        known: &dyn Fn(&str) -> bool,
+        unknown: &HashMap<String, Vec<Diagnostic>>,
+        out: &mut Vec<Diagnostic>,
+    ) {
+        let name_at = |name: &str, range: &SourceRange, out: &mut Vec<Diagnostic>| {
+            if let Some(inner) = unknown.get(name) {
+                out.extend(inner.iter().cloned());
+            } else if !params.iter().any(|p| p == name) && !known(name) {
+                out.push(Diagnostic::error("WS002", format!("unknown type '{name}'"), range.clone()));
+            }
+        };
+        match t {
+            TypeExpr::Name { name, range } => name_at(name, range, out),
+            TypeExpr::Generic { name, args, range } => {
+                if !matches!(name.as_str(), "Map" | "Array" | "Ref") {
+                    name_at(name, range, out);
+                }
+                args.iter().for_each(|a| walk(a, params, known, unknown, out));
+            }
+            TypeExpr::Ref { inner, .. } | TypeExpr::Array { inner, .. } => walk(inner, params, known, unknown, out),
+            TypeExpr::Tuple { fields, .. } => fields.iter().for_each(|f| walk(f, params, known, unknown, out)),
+            TypeExpr::Union { options, .. } => options.iter().for_each(|o| walk(o, params, known, unknown, out)),
+            TypeExpr::Record { fields, .. } => fields.iter().for_each(|f| walk(&f.typ, params, known, unknown, out)),
+        }
+    }
+    let known = |name: &str| {
+        crate::types::resolve::primitive(name).is_some()
+            || types.alias(name).is_some()
+            || ctx.enum_defs.written_name(name).is_some()
+    };
+    let mut unknown: HashMap<String, Vec<Diagnostic>> = HashMap::default();
+    let each = |key: String, t: &crate::ast::TypeAliasDecl, unknown: &mut HashMap<String, Vec<Diagnostic>>| {
+        let params: Vec<String> = t.type_params.iter().map(|p| p.name.clone()).collect();
+        let mut out = Vec::new();
+        walk(&t.typ, &params, &known, unknown, &mut out);
+        if !out.is_empty() {
+            unknown.insert(key, out);
+        }
+    };
+    for d in decls {
+        match d {
+            TopDecl::TypeAlias(t) => each(t.name.clone(), t, &mut unknown),
+            TopDecl::Namespace(ns) => {
+                for m in &ns.decls {
+                    if let TopDecl::TypeAlias(t) = m {
+                        each(format!("{}.{}", ns.name, t.name), t, &mut unknown);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    unknown
+}
+
+/// The errors in the bodies of the aliases of `file` (an imported file) that
+/// `t`, written there, names through `aliases` (see [`unknown_alias_names`]).
+fn unknown_in_own_aliases(
+    ctx: &TypeCheckCtx,
+    file: &Arc<str>,
+    t: &TypeExpr,
+    aliases: &HashMap<String, Type>,
+) -> Vec<Diagnostic> {
+    if !ctx.imports.aliases.contains_key(file) {
+        return Vec::new();
+    }
+    let (own, unknown) = {
+        let mut cache = ctx.file_aliases.borrow_mut();
+        let entry = file_entry(ctx, &mut cache, file);
+        (entry.own.clone(), entry.unknown.clone())
+    };
+    if unknown.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut names = Vec::new();
+    fn names_in<'t>(t: &'t TypeExpr, out: &mut Vec<&'t String>) {
+        match t {
+            TypeExpr::Name { name, .. } => out.push(name),
+            TypeExpr::Generic { name, args, .. } => {
+                out.push(name);
+                args.iter().for_each(|a| names_in(a, out));
+            }
+            TypeExpr::Ref { inner, .. } | TypeExpr::Array { inner, .. } => names_in(inner, out),
+            TypeExpr::Tuple { fields, .. } => fields.iter().for_each(|f| names_in(f, out)),
+            TypeExpr::Union { options, .. } => options.iter().for_each(|o| names_in(o, out)),
+            TypeExpr::Record { fields, .. } => fields.iter().for_each(|f| names_in(&f.typ, out)),
+        }
+    }
+    names_in(t, &mut names);
+    for name in names {
+        if let Some(errors) = unknown.get(name)
+            && own.get(name).is_some_and(|o| aliases.get(name) == Some(o))
+        {
+            out.extend(errors.iter().cloned());
+        }
+    }
+    out
+}
+
+/// Whether `t` applies a generic alias of `generic` anywhere in it.
+fn names_generic_alias(t: &TypeExpr, generic: &HashMap<String, crate::types::resolve::GenericAlias>) -> bool {
+    if generic.is_empty() {
+        return false;
+    }
+    match t {
+        TypeExpr::Name { .. } => false,
+        TypeExpr::Generic { name, args, .. } => {
+            generic.contains_key(name) || args.iter().any(|a| names_generic_alias(a, generic))
+        }
+        TypeExpr::Array { inner, .. } | TypeExpr::Ref { inner, .. } => names_generic_alias(inner, generic),
+        TypeExpr::Tuple { fields, .. } => fields.iter().any(|f| names_generic_alias(f, generic)),
+        TypeExpr::Union { options, .. } => options.iter().any(|o| names_generic_alias(o, generic)),
+        TypeExpr::Record { fields, .. } => fields.iter().any(|f| names_generic_alias(&f.typ, generic)),
+    }
+}
+
+/// The aliases a type written in `file` reads at the top level, where a
+/// generic alias's body is written: none of the type parameters of the body
+/// being checked, which hide a top-level alias of their name only where that
+/// body writes them.
+fn declaring_aliases(ctx: &TypeCheckCtx, file: &Arc<str>) -> HashMap<String, Type> {
+    let mut top: HashMap<String, Type> = ctx
+        .scope
+        .stack()
+        .frame_entries(0)
+        .filter(|(_, s)| s.kind == SymbolKind::Type)
+        .filter(|(_, s)| {
+            !ctx.imports.aliases.contains_key(file)
+                || matches!(&s.ty, Type::Enum { name, .. } if *name == s.name)
+                || s.decl_range.file.is_empty()
+                || s.decl_range.file == *file
+                || ctx.imports.sees(file, &s.decl_range)
+        })
+        .map(|(_, s)| (s.name.clone(), s.ty.clone()))
+        .collect();
+    if ctx.imports.aliases.contains_key(file) {
+        let mut cache = ctx.file_aliases.borrow_mut();
+        for (name, ty) in file_entry(ctx, &mut cache, file).own.iter() {
+            top.entry(name.clone()).or_insert_with(|| ty.clone());
+        }
+    }
+    top
 }
 
 /// Cartesian product of per-type-param masks: each inner
@@ -181,6 +500,12 @@ pub(super) fn var_storable(t: &Type) -> bool {
             | Type::Controller
             | Type::Brick
     ) || matches!(t, Type::Ref(inner) if inner.is_ref_target())
+}
+
+/// Whether a `var` written with no type holds a value of type `t` as that
+/// type: one it stores, or a record or tuple, held field by field.
+pub(super) fn unannotated_var_holds(t: &Type) -> bool {
+    var_storable(t) || matches!(t, Type::Record(_) | Type::Tuple(_))
 }
 
 pub(super) fn type_expr_range(t: &TypeExpr) -> SourceRange {
@@ -274,11 +599,16 @@ pub(super) fn reject_any_storage(ctx: &mut TypeCheckCtx, resolved: &Type, range:
             }
             if matches!(elem.as_ref(), Type::Record(_) | Type::Tuple(_) | Type::Enum { .. }) {
                 let n = crate::analysis::types::type_str(resolved);
+                let (kind, parts) = match elem.as_ref() {
+                    Type::Record(_) => ("records", "one container per field"),
+                    Type::Tuple(_) => ("tuples", "one container per element"),
+                    _ => ("enums", "one container for the tag and one per payload field"),
+                };
                 ctx.emit(
                     "WS025",
                     format!(
-                        "'{n}' cannot be nested: its elements are records, stored as one \
-                         container per field, so there is no single ref to hold"
+                        "'{n}' cannot be nested: its elements are {kind}, stored as {parts}, \
+                         so there is no single ref to hold"
                     ),
                     range,
                 );
@@ -359,10 +689,27 @@ pub(super) fn warn_any_annotation(ctx: &mut TypeCheckCtx, resolved: &Type, range
         ctx.diagnostics.push(Diagnostic {
             severity: Severity::Warning,
             code: "WS032".into(),
-            message: "'any' works, but prefer a generic type parameter here — it lets the type \
+            message: "'any' works, but prefer a generic type parameter here: it lets the type \
                        flow instead of erasing it"
                 .into(),
             range,
         });
+    }
+}
+
+/// Note every record field name in `t` for WS093 (`TypeCheckCtx::reserve_check`).
+fn reserve_record_fields(ctx: &mut TypeCheckCtx, t: &TypeExpr) {
+    match t {
+        TypeExpr::Record { fields, .. } => {
+            for f in fields {
+                ctx.reserve_check(&f.name, &f.range);
+                reserve_record_fields(ctx, &f.typ);
+            }
+        }
+        TypeExpr::Array { inner, .. } | TypeExpr::Ref { inner, .. } => reserve_record_fields(ctx, inner),
+        TypeExpr::Tuple { fields, .. } => fields.iter().for_each(|f| reserve_record_fields(ctx, f)),
+        TypeExpr::Union { options, .. } => options.iter().for_each(|f| reserve_record_fields(ctx, f)),
+        TypeExpr::Generic { args, .. } => args.iter().for_each(|f| reserve_record_fields(ctx, f)),
+        _ => {}
     }
 }

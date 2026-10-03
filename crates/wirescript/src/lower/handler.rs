@@ -1,20 +1,6 @@
 use super::*;
 use crate::typecheck::{CeNamespace, ce_slot_key};
 
-/// Resolve a handler param's type annotation to a wire `Type` (for typing an
-/// event's data-output ports — Custom Event). Delegates to the crate's single
-/// canonical resolver (`types::resolve::resolve_type`); no generic params or
-/// type aliases are in scope here, and any unknown-name diagnostic is
-/// discarded (typecheck has already flagged it with WS002).
-fn type_expr_to_type(te: &crate::ast::TypeExpr) -> Type {
-    let cx = crate::types::resolve::ResolveCtx {
-        params: &[],
-        type_aliases: &crate::collections::HashMap::default(),
-        generic_aliases: &crate::collections::HashMap::default(),
-    };
-    crate::types::resolve::resolve_type(te, &cx, &mut Vec::new())
-}
-
 pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {
     let body = match &d.captured_body {
         Some(b) => b,
@@ -162,6 +148,10 @@ impl HandlerSave {
         body: impl FnOnce(&mut LowerCtx) -> R,
     ) {
         let saved = (ctx.current_exec, ctx.handler_entry_exec);
+        let saved_closed = std::mem::take(&mut ctx.exec_closed_by_buffer_emit);
+        // A `return` in this body ends the handler's own run, not an enclosing
+        // mod or chip call, so its exec does not join that call's continuation.
+        let saved_return_exec = ctx.mod_return_exec.take();
         ctx.current_exec = Some(trig);
         ctx.handler_entry_exec = Some(trig);
         reset_var_get_caches(ctx);
@@ -173,6 +163,8 @@ impl HandlerSave {
         let this_end = ctx.current_exec;
         ctx.current_exec = saved.0;
         ctx.handler_entry_exec = saved.1;
+        ctx.exec_closed_by_buffer_emit = saved_closed;
+        ctx.mod_return_exec = saved_return_exec;
         self.abandon(ctx);
         if let Some(e) = this_end {
             ctx.handler_end_execs.push(e);
@@ -275,16 +267,11 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         // type at a `.field` trigger's key via key overlap.)
         let is_record_binding = matches!(ctx.scope.get(&trigger_name), Some(Binding::Record(_)));
         if is_record_binding || !h.params.is_empty() || h.expr_trigger_has_exec_arg {
-            let key = (
-                trig_range.file.clone(),
-                trig_range.start.offset,
-                trig_range.end.offset,
-            );
             // The call's typechecked result shape + its structural exec field
             // name (typecheck records the record type at the call's own range;
             // reliable here because a record-binding trigger is a plain call
             // expr, not a `.field` access whose key can overlap a nested expr).
-            let shape = match ctx.type_of_expr.get(&key).cloned() {
+            let shape = match ctx.type_at(trig_range) {
                 Some(Type::Record(s)) => Some(s),
                 _ => None,
             };
@@ -507,7 +494,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     for (i, d) in evt.data.iter().enumerate() {
         let ty = match h.params.get(i) {
             Some(p) => match &p.ty {
-                Some(te) => type_expr_to_type(te),
+                Some(te) => ctx.resolve_local_type(te),
                 // Present but unannotated: use the inferred type when this is a
                 // custom-event receiver (the inference pass always fills the
                 // slot — an in-unit sender's type or a float fallback), else the
@@ -569,7 +556,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
 fn event_config_props(
     evt: &crate::catalog::events::EventSpec,
     config: &[HandlerConfigArg],
-    consts: &ConstEnv,
+    consts: &crate::const_scope::ConstNames,
 ) -> HashMap<crate::intern::Sym, Literal> {
     let mut props: HashMap<crate::intern::Sym, Literal> = HashMap::default();
     let mut positional = 0;
@@ -609,7 +596,7 @@ fn lower_block_inner(ctx: &mut LowerCtx, block: &Block) {
     // Pre-declare vars inside stmt-level anon chips.
     for s in &block.stmts {
         if let Stmt::AnonChip(ac) = s {
-            pre_declare_anon_chip(ctx, ac);
+            pre_declare_anon_chip(ctx, ac, false);
         }
     }
     // A `break` ends this block's exec chain: nothing after it in the same
@@ -617,6 +604,9 @@ fn lower_block_inner(ctx: &mut LowerCtx, block: &Block) {
     // its own WS058.
     let mut dead_after_break = false;
     for s in &block.stmts {
+        if ctx.current_exec.is_some() {
+            ctx.exec_closed_by_buffer_emit = false;
+        }
         let is_handler_stmt = matches!(s, Stmt::Handler(_) | Stmt::AnonChip(_));
         // Flushing overwrites `current_exec` with the nested handlers' ends,
         // which is only correct when there is no ambient chain (the top-level
@@ -644,21 +634,26 @@ fn lower_block_inner(ctx: &mut LowerCtx, block: &Block) {
             dead_after_break = true;
         }
     }
-    // A BUFFERED `emit` as the block's final statement terminates this exec
-    // chain: a loop back-edge (`buffer emit loop` last in the then-block) crosses
-    // the buffer barrier, so it must NOT fall through the if-join into the mod's
-    // end exec, or the caller's continuation would fire once per iteration
-    // instead of on `return`. An UNBUFFERED `emit sig` is a FORK, not a
-    // terminator — it fires the signal AND the exec continues. Nulling the cursor
-    // for it strands whatever follows, e.g. a mod whose body ends in `emit`,
-    // inlined mid-chain, would drop the caller's following exec statements to an
-    // `_Unsupported` placeholder.
-    if let Some(Stmt::Emit(e)) = block.stmts.last() {
-        if e.buffer.is_some()
-            && (ctx.signal_key(&e.name).is_some() || ctx.lookup_output(&e.name).is_some())
-        {
-            ctx.current_exec = None;
-        }
+    close_on_trailing_buffered_emit(ctx, block);
+}
+
+/// A BUFFERED `emit` as the block's final statement terminates this exec
+/// chain: a loop back-edge (`buffer emit loop` last in the then-block) crosses
+/// the buffer barrier, so it must NOT fall through the if-join into the mod's
+/// end exec, or the caller's continuation would fire once per iteration
+/// instead of on `return`. An UNBUFFERED `emit sig` is a FORK, not a
+/// terminator: it fires the signal AND the exec continues. Nulling the cursor
+/// for it strands whatever follows, e.g. a mod whose body ends in `emit`,
+/// inlined mid-chain, would drop the caller's following exec statements to an
+/// `_Unsupported` placeholder. Shared by handler/branch blocks and anon chip
+/// bodies.
+pub(super) fn close_on_trailing_buffered_emit(ctx: &mut LowerCtx, block: &Block) {
+    if let Some(Stmt::Emit(e)) = block.stmts.last()
+        && e.buffer.is_some()
+        && (ctx.signal_key(&e.name).is_some() || ctx.lookup_output(&e.name).is_some())
+    {
+        ctx.current_exec = None;
+        ctx.exec_closed_by_buffer_emit = true;
     }
 }
 

@@ -113,6 +113,16 @@ pub struct CallSpec {
 }
 
 impl CallSpec {
+    /// Whether running the call does something beyond producing its value: an
+    /// exec call with no output (a setter, a send, a message), or one of the
+    /// exec calls whose output comes with an action (showing text, spawning a
+    /// prefab, stepping a counter or a toggle). Exec reads (`GetLocation`,
+    /// `Random`, `CharacterOf`) have none.
+    pub fn has_effect(&self) -> bool {
+        self.exec
+            && (self.outputs.is_empty() || matches!(self.name, "DisplayText" | "SpawnPrefab" | "Cycle" | "Toggle"))
+    }
+
     /// For a receiver method whose object binds to a NAMED param instead of the
     /// first positional, that param's name. `entity.SendCustomEvent("x", …)`
     /// binds the entity to `target` (the object-event recipient's grid), not the
@@ -164,13 +174,7 @@ fn vec_expr_record(
     params: Vec<CallParam>,
     fields: Vec<(&'static str, WirePort, Type)>,
 ) -> CallSpec {
-    let record_ty = Type::Record(
-        fields
-            .iter()
-            .map(|(f, _, ty)| (f.to_string(), ty.clone()))
-            .collect(),
-    );
-    let mut outputs: Vec<CallOutput> = fields
+    let outputs: Vec<CallOutput> = fields
         .into_iter()
         .map(|(f, port, ty)| CallOutput {
             field: Some(f),
@@ -178,11 +182,6 @@ fn vec_expr_record(
             ty,
         })
         .collect();
-    // The first output doubles as the call's primary value; it carries the
-    // record type so a bare (non-field) use typechecks as the record.
-    if let Some(first) = outputs.first_mut() {
-        first.ty = record_ty;
-    }
     CallSpec {
         name,
         gate_class,

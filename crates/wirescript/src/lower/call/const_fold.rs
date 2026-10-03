@@ -13,14 +13,21 @@ pub(in crate::lower) struct ConstFold {
 }
 
 /// A literal argument that can live inside the chip instead of crossing its
-/// boundary. Only self-contained scalars qualify — anything that has to be
-/// computed still needs a real wire in.
-pub(super) fn const_arg_literal(e: &Expr) -> Option<Literal> {
+/// boundary, with its type. Only self-contained scalars qualify: anything
+/// that has to be computed still needs a real wire in. A number literal is
+/// the number its parameter's type names: an integer literal for a `float`
+/// parameter is the float it names, a float literal for an `int` parameter
+/// the integer it truncates to (`expr::constant_literal`), a bool literal for
+/// an `int` parameter the integer it names.
+pub(super) fn const_arg_literal(ctx: &LowerCtx, e: &Expr) -> Option<(Type, Literal)> {
     match e {
-        Expr::IntLit { value, .. } => Some(Literal::Int(*value)),
-        Expr::AtomLit { value, .. } => Some(Literal::Int(*value)),
-        Expr::FloatLit { value, .. } => Some(Literal::Float(*value)),
-        Expr::BoolLit { value, .. } => Some(Literal::Bool(*value)),
+        Expr::IntLit { value, .. } => Some(crate::lower::expr::constant_literal(ctx, e, Literal::Int(*value))),
+        Expr::AtomLit { value, .. } => Some((Type::Int, Literal::Int(*value))),
+        Expr::FloatLit { value, .. } => Some(crate::lower::expr::constant_literal(ctx, e, Literal::Float(*value))),
+        Expr::BoolLit { value, .. } if ctx.type_of(e) == Type::Int => {
+            Some((Type::Int, Literal::Int(i64::from(*value))))
+        }
+        Expr::BoolLit { value, .. } => Some((Type::Bool, Literal::Bool(*value))),
         _ => None,
     }
 }

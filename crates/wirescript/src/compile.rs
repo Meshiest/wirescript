@@ -37,7 +37,15 @@ impl std::fmt::Display for CompileError {
         match self {
             CompileError::HasErrors(diags) => {
                 for d in diags {
-                    write!(f, "[{}] {} ", d.code, d.message)?;
+                    write!(
+                        f,
+                        "[{}] {} ({}:{}:{}) ",
+                        d.code,
+                        d.message,
+                        crate::diagnostic::display_path(&d.range.file),
+                        d.range.start.line,
+                        d.range.start.col
+                    )?;
                 }
                 Ok(())
             }
@@ -288,7 +296,10 @@ pub fn diagnostics_only(input: CompileInput<'_>) -> Vec<Diagnostic> {
             .collect();
         // `// ws-ignore-line` / `// ws-ignore-file` cover the stages after
         // resolve too, so they are applied to the whole set rather than to
-        // resolve's own diagnostics alone. Errors survive either way.
+        // resolve's own diagnostics alone. Errors survive either way, a
+        // placeholder promoted to one included, so they are applied last.
+        crate::diagnostic::drop_internal_errors_beside_errors(&mut all);
+        crate::diagnostic::promote_placeholders(&mut all);
         resolved.suppressions.apply(&mut all);
         all
     })
@@ -409,7 +420,10 @@ fn compile_to_world_inner(
         .chain(lowered.diagnostics)
         .chain(cycles.diagnostics)
         .collect();
-    // Same as `diagnostics_only`: the `ws-ignore` directives cover every stage.
+    // Same as `diagnostics_only`: the `ws-ignore` directives cover every
+    // stage, and are applied after the promotion, which they cannot undo.
+    crate::diagnostic::drop_internal_errors_beside_errors(&mut all_diags);
+    crate::diagnostic::promote_placeholders(&mut all_diags);
     resolved.suppressions.apply(&mut all_diags);
 
     let errors: Vec<_> = all_diags

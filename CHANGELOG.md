@@ -7,15 +7,35 @@
 
 ### Fixes
 
-- A `*T` output carries a ref: `out h: *int = &x` drives it with `x`'s ref, and a bare `x` there is `WS003`. Both used to wire `x`'s value.
-- A line that starts with `*` begins a new statement, so a bare deref whose value nothing uses now warns (`WSP001`) instead of silently dropping what read as a multiplication.
-- An array or map reached through a record field now resolves for every spelling of one, not just a `var`; reading through a port-bound field emitted a placeholder that read zero, and writing through one emitted nothing.
-- Container methods, index reads and writes, and `for` sources resolve the same way the type checker does, so a generic mod's container keeps its own element type per instantiation instead of the last one checked.
-- An index write through a namespace member or a record-array column (`u.xs[0] = v`, `pts.x[0] = v`) is type-checked against the element type, and an index write whose target resolves to no container is `WS044` instead of being silently dropped.
-- Assigning an array or map literal through a namespace member or record field (`u.xs = [1, 2]`) rebuilds that container instead of emitting a placeholder, and assigning a whole container from a non-literal is `WS027` (use `.copyFrom`).
-- A chip or mod declared inside a generic mod is typed per instantiation of every enclosing generic, instead of reusing the first instantiation's chip or typing the outer parameter as `any`.
-- A record field holding an array or map of records (`{ pts: P[] }`) is stored as per-field columns, so reads, writes and methods on it work; a record stored in an array or map can't hold an array or map, and an array of records can't cross a port (`WS049`).
-- A handler-local record var's initializer runs every time the handler does, a call in a record-literal field runs once, and sorting one array field of a record no longer reorders its siblings.
+- Order of evaluation: expression parts run in source order, each read before a later part changes it, and loop bounds, enum payloads and record-literal calls run once; a whole-record assignment is parallel (`WS087`, `WS089`), and `xs = [...xs, 1]` appends (`WS088`).
+- Name capture: a `mod` or `chip` body resolves names where it is declared, so a caller's `let`, `var`, parameter or nested mod no longer captures them (`WS091`, `WS021`), and a local named like an outer constant, alias or enum variant is its own value in every read (`WS046`).
+- Breaking: a `var` initializer reads the names around the declaration, as a `let`'s does (`var x = x + 1` with no outer `x` is `WS002`).
+- Breaking: a file uses only what it declares or imports; a library naming something only its importer declares, or an importer calling a library's private helper, is `WS002` (`WS036` for `x.f()`).
+- A name declared twice at the top level is read by position, values and constant-only settings alike, and warns `WS108` (storage counts as declared first, a `mod` body above both reads the first, a named import binds a library's last, an `import * as` module reads the last); an anonymous chip's own declarations are what its names mean inside it.
+- Editor: rename, find-references and hover follow the compiler's scope rules.
+- Multi-output reads give their first output wherever one value goes, choices between reads join output by output, and held reads and tuple patterns destructure by output; these were `WS003`, `WS004`, `WS033`, `WS066`, `WS071`, `WS094`, a stored exec wire or a dropped field.
+- Breaking: a read returned whole to outputs named partly like its own is `WS003` (it filled by position), and a record where one value goes (`return q`, `mk(a) + 1`) is `WS003`.
+- An exec pin wired into a non-bool value input, also through an `any` pin, is `WS094` instead of a gate that reads 0; a bool condition or logical operand reads it as true for the tick it fires.
+- Outputs, `emit` and `return`: an output set in several places, under a branch or loop, or beside a `return` takes the value from the path that ran, and one driven from several writes is driven once through stored values instead of failing to load with fan-in.
+- Breaking: a value-returning `mod` or `chip` with a path that ends before its outputs are set is `WS090`.
+- Misused `emit` and `return` that wired the exec into a value or dropped the write are errors (`WS057`, `WS007`, `WS013`, `WS095`).
+- An `if` or `match` expression arm that writes, sends or returns runs only when taken (`WS097`, `WS102`).
+- Arrays and maps behind record fields, namespaces, constants and literals behave as on a plain `var` (methods, indexing, `for`, columns, `{}`); misuse is `WS044`, `WS049` or `WS027`.
+- Lost initializers (enum arrays and fields, containers naming a constant, record `var`s from constants, generic enum payloads) are stored, and a handler-local record, tuple or enum `var` resets every run.
+- Enums are values everywhere (outputs, returns, `for`, `Select`, `.Discriminant`, `is`, array and map reads, ports as their tag, aliases, `ns.Name.Variant`); these were placeholders, `WS066`, `WS071` or `WS094`.
+- References: a `*T` output or record field keeps whether it carries a ref or names a var, and a line starting with `*` begins a statement (`WSP001`). Breaking: `mk().x + 1` on a `*T` field of a call's result is `WS004` (write `*mk().x`).
+- Generics keep each instantiation's types through nested generics, chips and mods, `import * as` calls and spreads; `WS096` caps the instantiations.
+- Type aliases bind as the type they name in every position and are read where declared. Breaking: a `type` or `enum` named like a builtin type, or `Array` or `Ref` with one type parameter, is `WS107`.
+- Integer constants are floats when they go directly into a `float` var, parameter, output, literal or alias, so division matches folded or not (`WS104` beyond 2^53), and `min`, `max`, `abs`, `sign` and the roundings of integers are integers.
+- Float constants in `int` places are truncated with `WS106` wherever they go, a negated written integer constant stays an integer, and a loop stride stays a float (`WS077` when it is not greater than zero). Breaking: ones no `int` holds, and constant gate settings their field cannot hold, are `WS028`.
+- Unannotated values take their joined or first-output type (`WS103`, `WS105`). Breaking: an annotated `buffer`'s initializer is type-checked (`WS003`).
+- Forms that compiled to placeholders are errors: an untyped empty `[]` or `{}` (`WS098`), `return <value>` at top level (`WS099`), a record type as a value (`WS100`), an initializer on `let s: exec` (`WS101`). Breaking: any expression the compiler cannot build is a `WSP001` error, and `ws-ignore` does not silence it.
+- Breaking: a string method on a non-string or on an unbounded type parameter is `WS003` (`vv.Length()` on a vector).
+- Custom events: sends in `for` loops, every receiver of a channel and typed `await CustomEvent` captures are checked (`WS030`).
+- Imports: `self` mods travel with a named import, and `WS014` no longer flags a `self` mod used as `x.f()` or an alias used only on an `out`.
+- Parsing: `>>` and `>=` close nested type arguments without a space, and `let s: Signal` declares a signal.
+- Diagnostics name what they refer to, follow-on errors are not repeated, and `WS028` and `WS106` quote a literal as written.
+- Compile output and time: `n -= d` compiles to one increment, and compile time no longer grows with the number of module constants times shadowing bindings.
 
 ## 1.11.1
 

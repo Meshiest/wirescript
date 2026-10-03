@@ -5,6 +5,8 @@
 
 use crate::diagnostic::SourceRange;
 
+pub mod walk;
+
 #[derive(Clone, Debug, Default)]
 pub struct Script {
     pub decls: Vec<TopDecl>,
@@ -44,6 +46,72 @@ pub struct Script {
     /// expression may forward-reference declarations below it (resolved in a
     /// post-declaration pass), so `@label(x)` above `var x` is valid.
     pub module_label: Option<Expr>,
+    /// Which imported declarations each file named by its own imports. Filled
+    /// by `resolve`; empty for a script that was only parsed.
+    pub imports: std::sync::Arc<ImportScope>,
+}
+
+/// The declarations each file brings into scope by name through its own
+/// `import "m"` and `import { x } from "m"`. Imports merge every module into
+/// one flat program, so a declaration a pulled-in body needs (a module's
+/// private helper, or the members of an `import * as` module) is present
+/// beside the importer's own code without the importer having named it.
+#[derive(Clone, Debug, Default)]
+pub struct ImportScope {
+    /// Importing file -> the `(file, start offset)` of each declaration its
+    /// imports name, transitively through a module's own whole-module imports.
+    pub named: crate::collections::HashMap<std::sync::Arc<str>, crate::collections::HashSet<(std::sync::Arc<str>, usize)>>,
+    /// Importing file -> the files its own `import` declarations name.
+    pub files: crate::collections::HashMap<std::sync::Arc<str>, crate::collections::HashSet<std::sync::Arc<str>>>,
+    /// Imported file -> the type aliases its top level can name: the ones it
+    /// declares and the ones its own imports bring in, with an `import * as`
+    /// module's aliases kept inside their `Namespace`. A type written in that
+    /// file reads its alias names here, whatever the importer declares.
+    pub aliases: crate::collections::HashMap<std::sync::Arc<str>, Vec<TopDecl>>,
+}
+
+impl ImportScope {
+    /// Whether code written in `file` can name the declaration at `decl`:
+    /// it is declared in `file`, or one of `file`'s imports names it.
+    pub fn sees(&self, file: &str, decl: &SourceRange) -> bool {
+        decl.file.as_ref() == file
+            || self
+                .named
+                .get(file)
+                .is_some_and(|s| s.contains(&(decl.file.clone(), decl.start.offset)))
+    }
+
+    /// Whether the user `mod`/`chip` declared at `decl` answers a call written
+    /// in `call_file`, plain `f(x)` and method `x.f()` alike. It does only
+    /// when the calling file can name it: a file calls the mods it declares
+    /// and the ones its imports name. A module's private helper, present
+    /// because an imported body calls it, answers that body's calls and not
+    /// the importer's; the importer's own mods are not visible in the bodies
+    /// it imports. A builtin of the same name answers where the user's does
+    /// not. Typecheck, lowering, constant evaluation and call-site counting
+    /// all decide through this.
+    pub fn user_mod_answers(&self, decl: &SourceRange, call_file: &str) -> bool {
+        decl.file.is_empty() || self.sees(call_file, decl)
+    }
+
+    /// Whether `importer` imports `module`, directly or through the modules
+    /// it imports.
+    pub fn imports_file(&self, importer: &str, module: &str) -> bool {
+        let mut seen: crate::collections::HashSet<&str> = crate::collections::HashSet::default();
+        let mut stack = vec![importer];
+        while let Some(f) = stack.pop() {
+            if !seen.insert(f) {
+                continue;
+            }
+            for next in self.files.get(f).into_iter().flatten() {
+                if next.as_ref() == module {
+                    return true;
+                }
+                stack.push(next);
+            }
+        }
+        false
+    }
 }
 
 /// The engine a `@layout("…")` annotation names, spelled as the source spells
@@ -272,6 +340,31 @@ pub struct VarDecl {
     /// `label_expr` is ever set.
     pub label_expr: Option<Expr>,
     pub range: SourceRange,
+}
+
+/// The end of the name a `var` whose initializer reads its own name is
+/// declared under (see [`VarDecl::declared_apart`]); no source can spell it.
+const DECLARED_APART: &str = "#var";
+
+impl VarDecl {
+    /// A `var` whose initializer reads the name it declares, as the same
+    /// declaration under a name no source can spell, labelled as written: its
+    /// initializer then reads the names around the declaration, never the one
+    /// it declares, as a `let`'s does. The caller binds `name` to it once it
+    /// is declared.
+    pub fn declared_apart(&self) -> Option<VarDecl> {
+        let init = self.init.as_ref()?;
+        if !walk::mentions(walk::Node::Expr(init), &self.name) {
+            return None;
+        }
+        let label = self.label.clone().or_else(|| self.label_expr.is_none().then(|| self.name.clone()));
+        Some(VarDecl { name: format!("{}{DECLARED_APART}", self.name), label, ..self.clone() })
+    }
+
+    /// The name as the source writes it (see [`declared_apart`](Self::declared_apart)).
+    pub fn shown_name(&self) -> &str {
+        self.name.strip_suffix(DECLARED_APART).unwrap_or(&self.name)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -555,6 +648,15 @@ pub struct LetDecl {
     pub range: SourceRange,
 }
 
+impl LetDecl {
+    /// Whether the declaration was written with `= value`. `let s: exec`, or
+    /// `let s: T` for a `type T = exec`, has none: the parser gives it a
+    /// placeholder `0` at the declaration's own start.
+    pub fn has_initializer(&self) -> bool {
+        !matches!(&self.value, Expr::IntLit { range, .. } if range.start.offset == self.range.start.offset)
+    }
+}
+
 /// `let <pattern> = <scrutinee> else { <diverge> }` - a refutable single-
 /// binding pattern (shared with `match`/`if let`) that must destructure or
 /// the `else` block runs. Unlike `LetDecl`, whose `binding` shapes cover only
@@ -719,8 +821,8 @@ pub enum TypeExpr {
     },
     /// A generic application `Name<Arg, ...>` (e.g. `Map<string, int>`).
     /// `Array<V>` / `Ref<V>` are desugared to `Array` / `Ref` at parse time, so
-    /// this carries the remaining generics (currently `Map`) resolved by
-    /// `type_of_type_expr`.
+    /// this carries the remaining generics (`Map`, a generic alias, a generic
+    /// enum).
     Generic {
         name: String,
         args: Vec<TypeExpr>,
@@ -823,37 +925,20 @@ impl Stmt {
 /// scope so a rename reaches its reads. They share this one enumerator so the
 /// set cannot drift apart between them.
 ///
-/// Recurses through `if`, `if let`, `let else` and a nested handler, so a
+/// Reaches every branch, `match` arm, loop body and nested handler, so a
 /// conditional site still declares its port. Stops at a chip/mod or anon chip
 /// body: those `out`s belong to that chip, not to the module boundary.
 pub fn handler_port_sites(block: &Block) -> Vec<&OutBinding> {
     let mut sites = Vec::new();
-    collect_handler_port_sites(block, &mut sites);
-    sites
-}
-
-fn collect_handler_port_sites<'a>(block: &'a Block, sites: &mut Vec<&'a OutBinding>) {
-    for s in &block.stmts {
-        match s {
-            Stmt::OutBinding(o) => sites.push(o),
-            Stmt::If(i) => {
-                collect_handler_port_sites(&i.then_block, sites);
-                if let Some(eb) = &i.else_block {
-                    collect_handler_port_sites(eb, sites);
-                }
-            }
-            Stmt::IfLet(i) => {
-                collect_handler_port_sites(&i.then_block, sites);
-                if let Some(eb) = &i.else_block {
-                    collect_handler_port_sites(eb, sites);
-                }
-            }
-            Stmt::LetElse(l) => collect_handler_port_sites(&l.else_block, sites),
-            Stmt::Handler(h) => collect_handler_port_sites(&h.body, sites),
-            Stmt::For(f) => collect_handler_port_sites(&f.body, sites),
-            _ => {}
+    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, _| match n {
+        walk::Node::Stmt(Stmt::OutBinding(o)) => {
+            sites.push(o);
+            true
         }
-    }
+        walk::Node::Stmt(Stmt::AnonChip(_) | Stmt::ChipDecl(_)) => false,
+        _ => true,
+    });
+    sites
 }
 
 /// Every `out` an anon chip body declares as a module-boundary port. An anon

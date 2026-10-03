@@ -52,7 +52,7 @@ fn format_estimate(est: &ResourceEstimate, kind: EstimateKind) -> String {
     // ordinary inlined mod and does emit gates) lives in the docs rather than
     // in every hover, which a reader sees hundreds of times.
     if est.is_const_eval {
-        return "*const — 0 gates*".to_string();
+        return "*const: 0 gates*".to_string();
     }
     let chips = match kind {
         EstimateKind::Chip => est.total_microchips + 1,
@@ -155,13 +155,87 @@ fn literal_display_inner(lit: &Literal) -> String {
 /// call site in hand. A body const that reads a parameter therefore simply
 /// fails to evaluate (an unresolved name), and this returns `None` — never
 /// the placeholder, which would be a wrong value dressed up as a real one.
-fn const_hover_value(ast: &Script, target_off: usize) -> Option<Literal> {
+///
+/// `symbols` is the merged program's symbol table, which says which `mod`s an
+/// import brings (see [`import_shadowable`]).
+fn const_hover_value(ast: &Script, symbols: &[SymbolDef], target_off: usize) -> Option<Literal> {
     let script = ast;
     let enum_defs = std::sync::Arc::new(crate::typecheck::enums::build_registry(&script.decls));
-    let module_env = crate::lower::build_const_env(&script.decls, &enum_defs);
+    let types = std::sync::Arc::new(crate::const_eval::DeclaredTypes::for_program_in(&script.decls, &enum_defs, &script.imports));
+    let mut module_env = crate::lower::build_const_env_in(&script.decls, &enum_defs, &script.imports, &types);
     let mods = const_mod_table(&script.decls);
-    let lookup_mod = |name: &str| mods.get(name).cloned();
+    let lookup = |name: &str| mods.get(name).cloned();
+    let lookup_mod = ModScope {
+        lookup: &lookup,
+        imports: script.imports.clone(),
+        types,
+        import_shadowable: import_shadowable(&script.decls, symbols),
+    };
+    // A constant computed through a builtin an import may replace has the
+    // value the builtin gives here, which is not the one the program gets.
+    let mut unknown: crate::collections::HashSet<String> = Default::default();
+    loop {
+        let before = unknown.len();
+        for d in &script.decls {
+            if let TopDecl::Let(l) = d
+                && let LetBinding::Ident { name, .. } = &l.binding
+                && (lookup_mod.calls_shadowable(&l.value) || reads_any(&l.value, &unknown))
+            {
+                unknown.insert(name.clone());
+            }
+        }
+        if unknown.len() == before {
+            break;
+        }
+    }
+    for name in &unknown {
+        module_env.remove(name);
+    }
     eval_const_at(&script.decls, target_off, &module_env, &module_env, &enum_defs, &lookup_mod)
+}
+
+/// The builtin names an import may replace with a user `mod` the file's own
+/// declarations don't show (hover has the file before its imports are
+/// merged): the names a named import brings, and for a whole-module import
+/// the `mod`s, `chip`s and `fn`s the merged program (`symbols`) declares in
+/// other files. `None` stands for every name, when the file imports a whole
+/// module and nothing says what it declares.
+fn import_shadowable(decls: &[TopDecl], symbols: &[SymbolDef]) -> Option<crate::collections::HashSet<String>> {
+    let mut names = crate::collections::HashSet::default();
+    let mut whole = false;
+    for d in decls {
+        match d {
+            TopDecl::Import(i) => match &i.kind {
+                crate::ast::ImportKind::All => whole = true,
+                crate::ast::ImportKind::Named(bindings) => {
+                    names.extend(bindings.iter().map(|b| b.alias.clone().unwrap_or_else(|| b.name.clone())));
+                }
+                crate::ast::ImportKind::Namespace(_) => {}
+            },
+            _ => {}
+        }
+    }
+    if whole {
+        let own = decls.iter().find(|d| !matches!(d, TopDecl::Import(_))).map(|d| d.range().file.clone())?;
+        let foreign: Vec<&SymbolDef> = symbols.iter().filter(|s| s.range.file != own).collect();
+        if foreign.is_empty() {
+            return None;
+        }
+        names.extend(
+            foreign.into_iter().filter(|s| matches!(s.kind, "mod" | "chip" | "fn")).map(|s| s.name.clone()),
+        );
+    }
+    Some(names)
+}
+
+/// Whether `e` reads one of `names`.
+fn reads_any(e: &Expr, names: &crate::collections::HashSet<String>) -> bool {
+    use crate::ast::walk::{Node, any_below};
+    if names.is_empty() {
+        return false;
+    }
+    let mut read = |n: Node| matches!(n, Node::Expr(Expr::Ident { name, .. }) if names.contains(name));
+    read(Node::Expr(e)) || any_below(Node::Expr(e), |_| true, &mut read)
 }
 
 /// Every top-level `const mod`, by name — mirrors the table
@@ -179,6 +253,31 @@ fn const_mod_table(decls: &[TopDecl]) -> HashMap<String, std::sync::Arc<ChipDecl
 
 type LookupMod<'a> = dyn Fn(&str) -> Option<std::sync::Arc<ChipDecl>> + 'a;
 
+/// The `const mod`s a hovered constant can call, and which of them each file
+/// names (a builtin-named one replaces the builtin only where named, as it
+/// does when compiling).
+struct ModScope<'a> {
+    lookup: &'a LookupMod<'a>,
+    imports: std::sync::Arc<crate::ast::ImportScope>,
+    types: std::sync::Arc<crate::const_eval::DeclaredTypes>,
+    /// See [`import_shadowable`].
+    import_shadowable: Option<crate::collections::HashSet<String>>,
+}
+
+impl ModScope<'_> {
+    /// Whether `e` calls a builtin an import may replace.
+    fn calls_shadowable(&self, e: &Expr) -> bool {
+        use crate::ast::walk::{Node, any_below};
+        let mut hit = |n: Node| match n {
+            Node::Expr(Expr::Call { callee, .. }) => matches!(callee.as_ref(), Expr::Ident { name, .. }
+                if crate::catalog::calls::find_call(name).is_some()
+                    && self.import_shadowable.as_ref().is_none_or(|s| s.contains(name))),
+            _ => false,
+        };
+        hit(Node::Expr(e)) || any_below(Node::Expr(e), |_| true, &mut hit)
+    }
+}
+
 /// Evaluate one expression against `env`/`module_env`, discarding any error —
 /// hover has no diagnostic to attach a reason to, so "couldn't evaluate" and
 /// "evaluated to something surprising" are both just `None`.
@@ -186,19 +285,25 @@ fn eval_one(
     expr: &Expr,
     env: &ConstEnv,
     module_env: &ConstEnv,
-    enum_defs: &HashMap<String, crate::typecheck::enums::EnumDef>,
-    lookup_mod: &LookupMod,
+    enum_defs: &crate::typecheck::enums::EnumRegistry,
+    lookup_mod: &ModScope,
 ) -> Option<Literal> {
+    if lookup_mod.calls_shadowable(expr) {
+        return None;
+    }
     // `enum_defs` here is a borrowed `&HashMap` (this function's own
     // parameter), not an `Arc`, so this hover-only path still pays a deep
     // clone rather than a refcount bump; hover queries are not the hot loop
     // this refactor targets.
-    let cx = crate::const_eval::ConstCtx {
-        consts: std::sync::Arc::new(env.clone()),
-        module_consts: std::sync::Arc::new(module_env.clone()),
-        enum_defs: std::sync::Arc::new(enum_defs.clone()),
-        lookup_mod: Some(lookup_mod),
-    };
+    let cx = crate::const_eval::ConstCtx::new(
+        crate::const_scope::ConstNames::of(std::sync::Arc::new(env.clone())),
+        std::sync::Arc::new(module_env.clone()),
+        std::sync::Arc::default(),
+        std::sync::Arc::new(enum_defs.clone()),
+        lookup_mod.imports.clone(),
+        lookup_mod.types.clone(),
+        Some(lookup_mod.lookup),
+    );
     let mut budget = crate::const_eval::Budget::default();
     crate::const_eval::eval_expr(expr, &cx, &mut budget).ok()
 }
@@ -215,8 +320,8 @@ fn eval_const_at(
     target_off: usize,
     env0: &ConstEnv,
     module_env: &ConstEnv,
-    enum_defs: &HashMap<String, crate::typecheck::enums::EnumDef>,
-    lookup_mod: &LookupMod,
+    enum_defs: &crate::typecheck::enums::EnumRegistry,
+    lookup_mod: &ModScope,
 ) -> Option<Literal> {
     let mut env = env0.clone();
     for d in decls {
@@ -228,16 +333,14 @@ fn eval_const_at(
                         .then(|| eval_one(&l.value, &env, module_env, enum_defs, lookup_mod))
                         .flatten();
                 }
-                if let LetBinding::Ident { name, .. } = &l.binding {
-                    if let Some(v) = eval_one(&l.value, &env, module_env, enum_defs, lookup_mod) {
-                        env.insert(name.clone(), v);
-                    }
-                }
+                bind_let(l, &mut env, module_env, enum_defs, lookup_mod);
             }
             // A named mod/chip body is its OWN scope: reset to the module
-            // env alone (no outer locals, and — deliberately — no params).
+            // env alone, with no outer locals and deliberately no params,
+            // which hide the module constants they are named like.
             TopDecl::Chip(c) if range_contains_offset(&c.range, target_off) => {
-                return eval_const_in_block(&c.body, target_off, module_env, module_env, enum_defs, lookup_mod);
+                let env = body_env(c, module_env);
+                return eval_const_in_block(&c.body, target_off, &env, module_env, enum_defs, lookup_mod);
             }
             // An anonymous chip shares its parent's scope.
             TopDecl::AnonChip(ac) if range_contains_offset(&ac.range, target_off) => {
@@ -252,6 +355,37 @@ fn eval_const_at(
     None
 }
 
+/// Bind what `l` binds in `env`: the value of a `let` of a constant, and for
+/// one that is not constant, nothing, hiding the constants its names shadow,
+/// as compiling does.
+fn bind_let(
+    l: &crate::ast::LetDecl,
+    env: &mut ConstEnv,
+    module_env: &ConstEnv,
+    enum_defs: &crate::typecheck::enums::EnumRegistry,
+    lookup_mod: &ModScope,
+) {
+    let value = eval_one(&l.value, env, module_env, enum_defs, lookup_mod);
+    match value.and_then(|v| crate::const_eval::bind_destructured(&l.binding, v).ok()) {
+        Some(pairs) => env.extend(pairs),
+        None => {
+            for name in crate::const_eval::bound_names(&l.binding) {
+                env.remove(&name);
+            }
+        }
+    }
+}
+
+/// The constants a `mod`/`chip` body starts with: the module's, less the
+/// names its parameters take.
+fn body_env(c: &ChipDecl, module_env: &ConstEnv) -> ConstEnv {
+    let mut env = module_env.clone();
+    for p in &c.inputs {
+        env.remove(&p.name);
+    }
+    env
+}
+
 /// Same walk as [`eval_const_at`], over a statement block (a mod/chip/anon-chip
 /// body, or an `if` arm).
 fn eval_const_in_block(
@@ -259,8 +393,8 @@ fn eval_const_in_block(
     target_off: usize,
     env0: &ConstEnv,
     module_env: &ConstEnv,
-    enum_defs: &HashMap<String, crate::typecheck::enums::EnumDef>,
-    lookup_mod: &LookupMod,
+    enum_defs: &crate::typecheck::enums::EnumRegistry,
+    lookup_mod: &ModScope,
 ) -> Option<Literal> {
     let mut env = env0.clone();
     for s in &block.stmts {
@@ -272,14 +406,15 @@ fn eval_const_in_block(
                         .then(|| eval_one(&l.value, &env, module_env, enum_defs, lookup_mod))
                         .flatten();
                 }
-                if let LetBinding::Ident { name, .. } = &l.binding {
-                    if let Some(v) = eval_one(&l.value, &env, module_env, enum_defs, lookup_mod) {
-                        env.insert(name.clone(), v);
-                    }
-                }
+                bind_let(l, &mut env, module_env, enum_defs, lookup_mod);
+            }
+            // A `var` hides the constant it is named like.
+            Stmt::Var(v) => {
+                env.remove(&v.name);
             }
             Stmt::ChipDecl(c) if range_contains_offset(&c.range, target_off) => {
-                return eval_const_in_block(&c.body, target_off, module_env, module_env, enum_defs, lookup_mod);
+                let env = body_env(c, module_env);
+                return eval_const_in_block(&c.body, target_off, &env, module_env, enum_defs, lookup_mod);
             }
             Stmt::AnonChip(ac) if range_contains_offset(&ac.range, target_off) => {
                 return eval_const_in_block(&ac.body, target_off, &env, module_env, enum_defs, lookup_mod);
@@ -411,7 +546,7 @@ fn hover_type_or_class(word: &str) -> Option<String> {
     if let Some(members) = crate::types::classes::class_mask(word) {
         let names: Vec<String> = members.iter().map(type_str).collect();
         return Some(format!(
-            "```wirescript\n{word}  (generic constraint class)\n```\nA bound for a generic type parameter — `<T: {word}>` restricts `T` to one of: {}.",
+            "```wirescript\n{word}  (generic constraint class)\n```\nA bound for a generic type parameter: `<T: {word}>` restricts `T` to one of: {}.",
             names.join(", ")
         ));
     }
@@ -424,10 +559,10 @@ fn hover_type_or_class(word: &str) -> Option<String> {
 fn hover_atom(source: &str, file: &str, line: usize, col: usize) -> Option<String> {
     let a = super::atoms::atom_at(source, file, line, col)?;
     Some(format!(
-        "**Atom** `:{name}`\n\nA compile-time **64-bit `int`** constant — the xxHash64 of the \
+        "**Atom** `:{name}`\n\nA compile-time **64-bit `int`** constant: the xxHash64 of the \
          name, resolved at compile time (never a runtime string). Every `:{name}` is this value:\n\n\
-         - `{dec}` — the signed `int` it is in code (negative when the hash's top bit is set)\n\
-         - `{hex:#018x}` — the 64-bit hash (16 hex digits)",
+         - `{dec}`: the signed `int` it is in code (negative when the hash's top bit is set)\n\
+         - `{hex:#018x}`: the 64-bit hash (16 hex digits)",
         name = a.name,
         dec = a.value,
         hex = a.value as u64,
@@ -522,7 +657,7 @@ fn hover_dropped_range(
         let start = (range.start.line, range.start.col);
         let end = (range.end.line, range.end.col);
         if start <= pos && pos < end {
-            Some(format!("**Removed at compile time** — {reason}."))
+            Some(format!("**Removed at compile time**: {reason}."))
         } else {
             None
         }
@@ -1296,7 +1431,7 @@ fn hover_config_enum_value(source: &str, word: &str, line: usize, col: usize) ->
     crate::catalog::enum_member_value(et, word)?;
     let members = crate::catalog::enum_member_names(et).join(", ");
     Some(format!(
-        "**{word}** — `{et}` member\n\none of: {members}"
+        "**{word}**: `{et}` member\n\none of: {members}"
     ))
 }
 
@@ -1449,7 +1584,7 @@ fn hover_enum_variant_path(
     }
 
     let registry = crate::typecheck::enums::build_registry(&ast.decls);
-    let def = registry.get(enum_name)?;
+    let def = registry.expression_path(enum_name)?;
     let vdef = def.variants.iter().find(|v| v.name == word)?;
     let is_user = find_top_level_enum_decl(&ast.decls, enum_name).is_some();
 
@@ -1518,7 +1653,7 @@ fn hover_enum_field_construction(source: &str, ast: &Script, word: &str, line: u
     let (enum_name, variant_name) = hit?;
 
     let registry = crate::typecheck::enums::build_registry(&ast.decls);
-    let def = registry.get(&enum_name)?;
+    let def = registry.expression_path(&enum_name)?;
     let vdef = def.variants.iter().find(|v| v.name == variant_name)?;
     let crate::typecheck::enums::Payload::Named(field_defs) = &vdef.payload else {
         return None;
@@ -1565,7 +1700,7 @@ fn hover_enum_discriminant_variant_path(source: &str, ast: &Script, word: &str, 
     }
 
     let registry = crate::typecheck::enums::build_registry(&ast.decls);
-    let def = registry.get(enum_name)?;
+    let def = registry.expression_path(enum_name)?;
     let vdef = def.variants.iter().find(|v| v.name == variant_name)?;
     Some(format!(
         "```wirescript\n{enum_name}.{variant_name}.Discriminant: int = {}\n```\n\n\
@@ -1852,17 +1987,15 @@ fn hover_generic_call(
     }
 
     // Resolve the declared parameter / output types with the decl's own type
-    // params in scope, so a `T` becomes `Type::Param("T")` (aliases aren't
-    // needed: only params that mention a `T` can constrain the inference).
+    // params in scope, so a `T` becomes `Type::Param("T")`, and every alias
+    // read where the declaration's file declares it.
     let param_names: Vec<String> = decl.type_params.iter().map(|tp| tp.name.clone()).collect();
-    let aliases: HashMap<String, Type> = HashMap::default();
-    let generic_aliases: HashMap<String, crate::types::resolve::GenericAlias> = HashMap::default();
-    let rcx = crate::types::resolve::ResolveCtx {
-        params: &param_names,
-        type_aliases: &aliases,
-        generic_aliases: &generic_aliases,
-    };
-    let resolve = |te: &TypeExpr| crate::types::resolve::resolve_type(te, &rcx, &mut Vec::new());
+    let enum_defs = std::sync::Arc::new(crate::typecheck::enums::build_registry(&script.decls));
+    let types = crate::const_eval::DeclaredTypes::for_program_in(&script.decls, &enum_defs, &script.imports);
+    let types = types.in_file(&decl.range.file);
+    let own_param =
+        |name: &str, _: &crate::diagnostic::SourceRange| param_names.iter().any(|p| p == name).then(|| Type::Param(name.to_string()));
+    let resolve = |te: &TypeExpr| types.resolve_scoped(te, &own_param);
     let param_types: Vec<Type> = decl.inputs.iter().map(|p| resolve(&p.typ)).collect();
 
     // Bind each type parameter. Explicit `assert<int>(...)` type arguments pin
@@ -1883,7 +2016,7 @@ fn hover_generic_call(
         let params: Vec<(String, Vec<Type>)> = decl
             .type_params
             .iter()
-            .map(|tp| (tp.name.clone(), crate::types::mono::mask_for_param(tp.bound.as_ref(), &aliases)))
+            .map(|tp| (tp.name.clone(), crate::types::mono::mask_for_param(tp.bound.as_ref(), &|te| types.resolve(te))))
             .collect();
         crate::types::mono::infer_call_subst(&param_types, &arg_types, &params)
     };
@@ -1947,7 +2080,7 @@ fn hover_generic_call(
         exec: sym.exec,
         is_const: sym.is_const,
     };
-    let mut out = render_decl_hover(&synth, doc_comments, resource_estimates, Some((source, ast)));
+    let mut out = render_decl_hover(&synth, doc_comments, resource_estimates, Some((symbols, ast)));
 
     let bindings: Vec<String> = decl
         .type_params
@@ -1956,7 +2089,7 @@ fn hover_generic_call(
         .collect();
     if !bindings.is_empty() {
         out += &format!(
-            "\n\n*Generic call — {} for this call.*",
+            "\n\n*Generic call: {} for this call.*",
             bindings.join(", ")
         );
     }
@@ -2074,7 +2207,7 @@ fn hover_user_symbol(
         return Some(v);
     }
 
-    let mut v = render_decl_hover(sym, doc_comments, resource_estimates, Some((source, ast)));
+    let mut v = render_decl_hover(sym, doc_comments, resource_estimates, Some((symbols, ast)));
 
     // For var reads: show exec/pure context at the hovered location
     if sym.kind == "var" {
@@ -2098,7 +2231,7 @@ fn hover_user_symbol(
 /// its doc comment and, for callables, a resource estimate. Shared by plain
 /// symbol hover and namespace-member hover.
 ///
-/// `value_ctx`, when given, is `(source, file)` of the file the symbol's OWN
+/// `value_ctx`, when given, is `(symbols, file)` of the file the symbol's OWN
 /// declaration lives in — used only to look up a `const` `let`'s computed
 /// VALUE (see [`const_hover_value`]). Namespace-member hover passes `None`:
 /// the member's declaration lives in a DIFFERENT (imported) file, so
@@ -2108,7 +2241,7 @@ fn render_decl_hover(
     sym: &SymbolDef,
     doc_comments: &crate::parser::DocComments,
     resource_estimates: &HashMap<String, ResourceEstimate>,
-    value_ctx: Option<(&str, &Script)>,
+    value_ctx: Option<(&[SymbolDef], &Script)>,
 ) -> String {
     let ty_str = sym.ty.as_deref().unwrap_or("unknown");
     let const_kw = if sym.is_const { "const " } else { "" };
@@ -2140,7 +2273,7 @@ fn render_decl_hover(
                     let members = crate::types::classes::class_mask(b)
                         .map(|m| {
                             let names: Vec<String> = m.iter().map(type_str).collect();
-                            format!(" — one of: {}", names.join(", "))
+                            format!(", one of: {}", names.join(", "))
                         })
                         .unwrap_or_default();
                     (format!(": {b}"), members)
@@ -2148,7 +2281,7 @@ fn render_decl_hover(
                 None => (String::new(), String::new()),
             };
             format!(
-                "```wirescript\n{}{}  (generic type parameter)\n```\nA generic type parameter — resolved to a concrete type per call site{detail}.",
+                "```wirescript\n{}{}  (generic type parameter)\n```\nA generic type parameter, resolved to a concrete type per call site{detail}.",
                 sym.name, bound
             )
         }
@@ -2165,7 +2298,7 @@ fn render_decl_hover(
         // fails to evaluate) is simply omitted rather than guessed at.
         "let" if sym.is_const => {
             let value = value_ctx
-                .and_then(|(_source, ast)| const_hover_value(ast, sym.range.start.offset))
+                .and_then(|(symbols, ast)| const_hover_value(ast, symbols, sym.range.start.offset))
                 .map(|lit| literal_display(&lit));
             match value {
                 Some(val) => format!("```wirescript\nconst {}: {} = {}\n```", sym.name, ty_str, val),
@@ -2264,7 +2397,7 @@ fn resolve_record_lit_field_typed(
     }
     let (start, end) = best?;
     let ty = type_map.get(&(std::sync::Arc::from(file), start, end))?;
-    let Type::Record(fields) = ty else {
+    let (Type::Record(fields) | Type::Outputs(fields)) = ty else {
         return None;
     };
     let (_, field_ty) = fields.iter().find(|(n, _)| n == word)?;
@@ -2601,9 +2734,11 @@ pub fn fill_match_arms_at(
         return None;
     }
 
-    let enum_defs = crate::typecheck::enums::build_registry(&ast.decls);
+    let enum_defs = std::sync::Arc::new(crate::typecheck::enums::build_registry(&ast.decls));
+    let types = crate::const_eval::DeclaredTypes::for_program_in(&ast.decls, &enum_defs, &ast.imports);
     let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
-    let usefulness = crate::typecheck::patterns::analyze(&enum_defs, scrut_ty, &arm_patterns);
+    let enums = crate::typecheck::patterns::Enums { defs: &enum_defs, types: &types };
+    let usefulness = crate::typecheck::patterns::analyze(enums, scrut_ty, &arm_patterns);
     if usefulness.missing.is_empty() {
         return None;
     }
@@ -2757,7 +2892,7 @@ fn resolve_field_hover(source: &str, file: &str, type_map: &TypeMap, symbols: &[
             Type::Ref(inner) => inner.as_ref(),
             other => other,
         };
-        if let Type::Record(fields) = rec {
+        if let Type::Record(fields) | Type::Outputs(fields) = rec {
             let body: String = fields
                 .iter()
                 .map(|(n, t)| format!("\n  {n}: {},", type_str(t)))
@@ -2858,7 +2993,7 @@ fn find_obj_type(type_map: &TypeMap, file: &std::sync::Arc<str>, obj_start: usiz
 
 fn resolve_field_in_type(ty: &Type, field: &str) -> Option<Type> {
     match ty {
-        Type::Record(fields) => {
+        Type::Record(fields) | Type::Outputs(fields) => {
             fields.iter().find(|(k, _)| k == field).map(|(_, t)| t.clone())
         }
         Type::Ref(inner) => {

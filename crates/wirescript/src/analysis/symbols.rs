@@ -625,7 +625,7 @@ fn push_for_pat_symbol(syms: &mut Vec<SymbolDef>, pat: &ForPat, ty: &Type) {
         ForPat::Record { fields, .. } => {
             // An already-erroneous slot (the source type didn't resolve to a
             // record): bind every name with no type rather than guessing one.
-            let rec = if let Type::Record(rec) = ty { Some(rec) } else { None };
+            let rec = if let Type::Record(rec) | Type::Outputs(rec) = ty { Some(rec) } else { None };
             for field in fields {
                 let (name, range, fty) = match field {
                     RecordDestructField::Named { name, alias, range } => (
@@ -700,7 +700,7 @@ fn value_field_type(
     let r = value.range();
     let ty = tmap.get(&(r.file.clone(), r.start.offset, r.end.offset))?;
     match ty {
-        Type::Record(fs) => fs
+        Type::Record(fs) | Type::Outputs(fs) => fs
             .iter()
             .find(|(k, _)| k == field)
             .map(|(_, t)| t)

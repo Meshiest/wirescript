@@ -30,11 +30,11 @@ use context::*;
 mod predeclare;
 use predeclare::*;
 pub use predeclare::{
-    ConstEnv, build_const_declared_names, build_const_env, expr_to_literal, expr_to_literal_in,
+    ConstEnv, build_const_declared_names, build_const_env, build_const_env_in, build_const_uncertified, expr_to_literal,
 };
 pub(crate) use predeclare::{
-    default_literal_for_var_type, eval_const_binop, eval_const_unop, fold_ammo_override,
-    fold_constructor, fold_mesh_colors,
+    DupConsts, build_const_env_at, certified_binop, default_literal_for_var_type, dup_key, eval_const_binop,
+    eval_const_unop, expr_to_literal_in, fold_ammo_override, fold_constructor, fold_mesh_colors,
 };
 
 mod decl;
@@ -51,7 +51,7 @@ use expr::*;
 // `const_eval::expr`'s own `MatchExpr` arm reuses the same capture-path
 // collection as `lower_match_arm`/`lower_match_arm_stmt` (see that
 // function's doc comment).
-pub(crate) use expr::collect_pattern_captures;
+pub(crate) use expr::{collect_pattern_captures, wire_type_of_literal};
 
 mod ops;
 use ops::*;
@@ -60,6 +60,9 @@ mod call;
 use call::*;
 
 mod access;
+mod ordered;
+mod record_assign;
+mod ref_fields;
 use access::*;
 
 pub(crate) mod boundary_pins;
@@ -131,20 +134,6 @@ pub enum FoldMode {
     ForceOff,
 }
 
-/// Count `emit <output> = <expr>` sites per output name. Recurses into `if`
-/// branches AND anonymous `chip { … }` bodies and nested handlers — an anon chip
-/// SHARES its parent's outputs (unlike a NAMED chip, which has its own), so an
-/// `emit r = …` inside one is another site for the parent's `r`. Missing those
-/// sites left the output reached from two drivers with no backing var — a
-/// load-time fan-in on its `RER_Input`. An output reached from more than one
-/// site (or one conditional site) needs a backing store.
-/// Accumulate `emit <output> = …` sites from a block into `counts` — per
-/// output, `(number of value-emit sites, whether ANY site is inside a
-/// conditional)`. Recurses into `if` branches, anonymous `chip { … }` bodies,
-/// and nested handlers (an anon chip SHARES its parent's outputs). A
-/// conditional emit needs a backing var even as the ONLY site, else the
-/// single-site fast path wires the value straight to the rerouter,
-/// UNCONDITIONALLY, leaving the branch's taken-exec dead.
 /// How many times a handler's body is lowered. `on a | b { ... }` lowers it
 /// once per trigger part (see `lower_handler`'s `Trigger::Union` arm), and a
 /// part may itself be a union.
@@ -176,84 +165,304 @@ pub(super) fn count_emits_in_handler(
     }
 }
 
+/// Accumulate the `emit <output> = …` and handler `out <output> = …` sites in
+/// `block` into `counts`: per output, how many sites write a value and whether
+/// any of them runs on only some paths (a branch, a `match` arm, a loop body,
+/// or after a statement that can end the block early). Anonymous chips share
+/// their parent's outputs, nested handlers count once per trigger, and a named
+/// chip owns its own. An output written from more than one site, or from one
+/// conditional site, needs a backing store: the single-site fast path wires the
+/// value straight to the rerouter, unconditionally, leaving the taken exec dead.
 pub(super) fn count_emits_in_block(
     block: &Block,
     in_branch: bool,
     counts: &mut HashMap<String, (usize, bool)>,
 ) {
-    for s in &block.stmts {
-        match s {
-            Stmt::Emit(e) if e.value.is_some() => {
-                let entry = counts.entry(e.name.clone()).or_insert((0, false));
-                entry.0 += 1;
-                entry.1 |= in_branch;
+    count_emits_in(walk::Node::Block(block), in_branch, counts);
+}
+
+fn count_emits_in(node: walk::Node<'_>, in_branch: bool, counts: &mut HashMap<String, (usize, bool)>) {
+    let start = walk::Ctx { branch: in_branch, ..walk::Ctx::default() };
+    walk::walk(node, start, &mut |n, cx| {
+        let name = match n {
+            walk::Node::Stmt(Stmt::Emit(e)) if e.value.is_some() => &e.name,
+            walk::Node::Stmt(Stmt::OutBinding(o)) if o.value.is_some() => &o.name,
+            walk::Node::Stmt(Stmt::Handler(h)) => {
+                count_emits_in_handler(h, cx.branch, &mut *counts);
+                return false;
             }
-            // A handler-body `out name = value` drives the port exactly the way
-            // `emit name = value` does, so it feeds the same backing-var
-            // decision. Two sites left uncounted wire two sources into one
-            // rerouter, which emit rejects as a FanIn.
-            Stmt::OutBinding(o) if o.value.is_some() => {
-                let entry = counts.entry(o.name.clone()).or_insert((0, false));
-                entry.0 += 1;
-                entry.1 |= in_branch;
-            }
-            Stmt::If(i) => {
-                count_emits_in_block(&i.then_block, true, counts);
-                if let Some(eb) = &i.else_block {
-                    count_emits_in_block(eb, true, counts);
-                }
-            }
-            // `if let`/`let else` are conditional emit sites too: an `if let`'s
-            // then/else run on the match/non-match branch, and a `let else`'s
-            // `else` on the non-match branch. Without recursing here an output
-            // emitted from inside one gets no backing var, so two sites fan into
-            // one rerouter (a load-time FanIn at emit).
-            Stmt::IfLet(i) => {
-                count_emits_in_block(&i.then_block, true, counts);
-                if let Some(eb) = &i.else_block {
-                    count_emits_in_block(eb, true, counts);
-                }
-            }
-            Stmt::LetElse(l) => count_emits_in_block(&l.else_block, true, counts),
-            Stmt::AnonChip(ac) => count_emits_in_block(&ac.body, in_branch, counts),
-            // A `for` body shares its parent's scope the way an anon chip's
-            // does for this purpose - an `out` inside one is pre-declared as
-            // a boundary port (`ast::collect_handler_port_sites` recurses
-            // into it), so an emit site inside it has to be counted here too,
-            // or an output driven from both inside and outside a `for` loads
-            // as an uncounted second driver into one rerouter (FanIn).
-            Stmt::For(f) => count_emits_in_block(&f.body, in_branch, counts),
-            Stmt::Handler(h) => count_emits_in_handler(h, in_branch, counts),
-            // A `match` STATEMENT arm is a conditional emit site, exactly like
-            // an `if` branch: recurse into each block-bodied arm with
-            // `in_branch = true`, so an output emitted from an arm gets a
-            // backing var (two arms driving one rerouter is a load-time fan-in,
-            // and even a lone arm emit wired unconditionally strands the taken
-            // branch's exec).
-            Stmt::ExprStmt(es) => {
-                if let Expr::MatchExpr { arms, .. } = &es.expr {
-                    for arm in arms {
-                        if let MatchBody::Block(b) = &arm.body {
-                            count_emits_in_block(b, true, counts);
-                        }
-                    }
-                }
-            }
-            _ => {}
+            walk::Node::Stmt(Stmt::ChipDecl(_)) => return false,
+            _ => return true,
+        };
+        let entry = counts.entry(name.clone()).or_insert((0, false));
+        entry.0 += 1;
+        entry.1 |= cx.branch;
+        true
+    });
+}
+
+/// Every name `block` sets with `emit name = v`, at any depth (branches,
+/// loops, handlers and anonymous chips included; not a named chip's body).
+pub(in crate::lower) fn collect_value_emit_names(block: &Block, names: &mut HashSet<String>) {
+    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, _| match n {
+        walk::Node::Stmt(Stmt::Emit(e)) if e.value.is_some() => {
+            names.insert(e.name.clone());
+            true
         }
+        walk::Node::Stmt(Stmt::ChipDecl(_)) => false,
+        _ => true,
+    });
+}
+
+/// A declaration scope of the program: its own top level (`None`), or an
+/// `import * as` namespace, keyed by the namespace declaration's location.
+pub(in crate::lower) type DeclScope = Option<(Arc<str>, usize)>;
+
+pub(in crate::lower) fn namespace_scope(ns: &NamespaceDecl) -> DeclScope {
+    Some((ns.range.file.clone(), ns.range.start.offset))
+}
+
+/// Per declaration scope, per output name: how many sites write a value and
+/// whether any is conditional. The sites are the scope's handlers, anonymous
+/// chips and captured events, plus each `mod`/`fn` body's writes once per
+/// instantiation of that body (see [`Program::body_instances`]).
+pub(in crate::lower) fn output_write_counts(
+    ast: &Script,
+) -> HashMap<DeclScope, HashMap<String, (usize, bool)>> {
+    let program = Program::new(ast);
+    let instances = program.body_instances();
+    let mut out: HashMap<DeclScope, HashMap<String, (usize, bool)>> = HashMap::default();
+    for (si, scope) in program.scopes.iter().enumerate() {
+        let counts = out.entry(scope.key.clone()).or_default();
+        for d in scope.decls {
+            match d {
+                TopDecl::Handler(h) => count_emits_in_handler(h, false, counts),
+                TopDecl::AnonChip(ac) => count_emits_in_block(&ac.body, false, counts),
+                TopDecl::Event(EventDecl { captured_body: Some(b), .. }) => {
+                    count_emits_in_block(b, false, counts)
+                }
+                _ => {}
+            }
+        }
+        for (bi, body) in program.bodies.iter().enumerate() {
+            if body.scope != si || !body.inline {
+                continue;
+            }
+            let mut own = HashMap::default();
+            count_emits_in(body.node, false, &mut own);
+            let (sites, site_branched) = instances[bi];
+            for (name, (count, branched)) in own {
+                if body.outputs.contains(&name.as_str()) {
+                    continue;
+                }
+                let entry = counts.entry(name).or_insert((0, false));
+                entry.0 += count * sites;
+                entry.1 |= branched || site_branched;
+            }
+        }
+    }
+    out
+}
+
+/// A `mod`/`chip`/`fn` declared at the top level of a scope.
+struct Body<'a> {
+    name: &'a str,
+    range: &'a SourceRange,
+    node: walk::Node<'a>,
+    scope: usize,
+    inline: bool,
+    self_receiver: bool,
+    outputs: Vec<&'a str>,
+}
+
+struct Scope<'a> {
+    key: DeclScope,
+    decls: &'a [TopDecl],
+}
+
+/// The program's declaration scopes and bodies, with the lookups a call
+/// resolves its callee through.
+struct Program<'a> {
+    scopes: Vec<Scope<'a>>,
+    bodies: Vec<Body<'a>>,
+    body_by_name: HashMap<(usize, &'a str), usize>,
+    namespace_by_name: HashMap<(usize, &'a str), usize>,
+    imports: &'a crate::ast::ImportScope,
+}
+
+impl<'a> Program<'a> {
+    fn new(ast: &'a Script) -> Self {
+        let mut p = Program {
+            scopes: Vec::new(),
+            bodies: Vec::new(),
+            body_by_name: HashMap::default(),
+            namespace_by_name: HashMap::default(),
+            imports: &ast.imports,
+        };
+        p.add_scope(None, &ast.decls);
+        p
+    }
+
+    fn add_scope(&mut self, key: DeclScope, decls: &'a [TopDecl]) -> usize {
+        let si = self.scopes.len();
+        self.scopes.push(Scope { key, decls });
+        for d in decls {
+            let body = match d {
+                TopDecl::Chip(c) => Body {
+                    name: c.name.as_str(),
+                    range: &c.range,
+                    node: walk::Node::Block(&c.body),
+                    scope: si,
+                    inline: c.inline,
+                    self_receiver: c.is_self_receiver(),
+                    outputs: c.outputs.iter().map(|o| o.name.as_str()).collect(),
+                },
+                TopDecl::Fn(f) => Body {
+                    name: f.name.as_str(),
+                    range: &f.range,
+                    node: walk::Node::Expr(&f.body),
+                    scope: si,
+                    inline: true,
+                    self_receiver: f.params.first().is_some_and(|p| p.name == "self" && p.pattern.is_none()),
+                    outputs: Vec::new(),
+                },
+                TopDecl::Namespace(ns) => {
+                    let inner = self.add_scope(namespace_scope(ns), &ns.decls);
+                    self.namespace_by_name.insert((si, ns.name.as_str()), inner);
+                    continue;
+                }
+                _ => continue,
+            };
+            self.body_by_name.insert((si, body.name), self.bodies.len());
+            self.bodies.push(body);
+        }
+        si
+    }
+
+    /// A body named `name` as seen from scope `si`: its own, else the
+    /// program's top level.
+    fn body(&self, si: usize, name: &str) -> Option<usize> {
+        self.body_by_name.get(&(si, name)).or_else(|| self.body_by_name.get(&(0, name))).copied()
+    }
+
+    /// The bodies a call in scope `si` may instantiate: a plain call names its
+    /// callee, `ns.f()` a member of a namespace, and a receiver call `x.f()` a
+    /// body whose first parameter is `self`.
+    fn callees(&self, si: usize, call: &Expr) -> Vec<usize> {
+        let Expr::Call { callee, .. } = call else { return Vec::new() };
+        match callee.as_ref() {
+            Expr::Ident { name, range } => self
+                .body(si, name)
+                .filter(|&b| self.imports.user_mod_answers(self.bodies[b].range, &range.file))
+                .into_iter()
+                .collect(),
+            Expr::FieldAccess { obj, field, range } => {
+                let mut found = Vec::new();
+                if let Expr::Ident { name, .. } = obj.as_ref()
+                    && let Some(&ns) = self
+                        .namespace_by_name
+                        .get(&(si, name.as_str()))
+                        .or_else(|| self.namespace_by_name.get(&(0, name.as_str())))
+                    && let Some(&b) = self.body_by_name.get(&(ns, field.as_str()))
+                {
+                    found.push(b);
+                }
+                if let Some(b) = self.body(si, field)
+                    && self.bodies[b].self_receiver
+                    && self.imports.user_mod_answers(self.bodies[b].range, &range.file)
+                    && !found.contains(&b)
+                {
+                    found.push(b);
+                }
+                found
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Per body, how many times it is instantiated and whether any instance
+    /// runs on only some paths: its call sites outside every body, plus each
+    /// call inside another body once per instantiation of that body. A call
+    /// under a branch, `match` arm, `if` expression or loop, after a possible
+    /// early `return`, or inside a body that is itself instantiated so, is
+    /// conditional.
+    fn body_instances(&self) -> Vec<(usize, bool)> {
+        let n = self.bodies.len();
+        // Calls outside every body, by callee: (count, conditional).
+        let mut top: Vec<(usize, bool)> = vec![(0, false); n];
+        // Calls made inside each body, by caller then callee.
+        let mut inside: Vec<HashMap<usize, (usize, bool)>> = vec![HashMap::default(); n];
+        for (si, scope) in self.scopes.iter().enumerate() {
+            for d in scope.decls {
+                let (node, caller) = match d {
+                    TopDecl::Namespace(_) => continue,
+                    TopDecl::Chip(ChipDecl { name, .. }) | TopDecl::Fn(FnDecl { name, .. }) => {
+                        let b = self.body_by_name[&(si, name.as_str())];
+                        (self.bodies[b].node, Some(b))
+                    }
+                    _ => (walk::Node::Decl(d), None),
+                };
+                call_sites(node, walk::Ctx::default(), 1, &mut |call, branched, reps| {
+                    for callee in self.callees(si, call) {
+                        let entry = match caller {
+                            Some(c) => inside[c].entry(callee).or_insert((0, false)),
+                            None => &mut top[callee],
+                        };
+                        entry.0 += reps;
+                        entry.1 |= branched;
+                    }
+                });
+            }
+        }
+        fn instances(
+            b: usize,
+            top: &[(usize, bool)],
+            inside: &[HashMap<usize, (usize, bool)>],
+            memo: &mut [Option<(usize, bool)>],
+            open: &mut HashSet<usize>,
+        ) -> (usize, bool) {
+            if let Some(n) = memo[b] {
+                return n;
+            }
+            if !open.insert(b) {
+                return (0, false);
+            }
+            let (mut n, mut branched) = top[b];
+            for (caller, calls) in inside.iter().enumerate() {
+                if let Some(&(k, site_branched)) = calls.get(&b) {
+                    let (m, caller_branched) = instances(caller, top, inside, memo, open);
+                    n += k * m;
+                    branched |= m > 0 && (site_branched || caller_branched);
+                }
+            }
+            open.remove(&b);
+            memo[b] = Some((n, branched));
+            (n, branched)
+        }
+        let mut memo = vec![None; n];
+        (0..n).map(|b| instances(b, &top, &inside, &mut memo, &mut HashSet::default())).collect()
     }
 }
 
-fn count_output_value_emits(ast: &Script) -> HashMap<String, (usize, bool)> {
-    let mut counts = HashMap::default();
-    for d in &ast.decls {
-        match d {
-            TopDecl::Handler(h) => count_emits_in_handler(h, false, &mut counts),
-            TopDecl::AnonChip(ac) => count_emits_in_block(&ac.body, false, &mut counts),
-            _ => {}
-        }
+/// Every call below `node`, with whether it runs on only some paths and how
+/// many times its enclosing code is lowered (a handler on `a | b` lowers its
+/// body once per trigger).
+fn call_sites<'a>(
+    node: walk::Node<'a>,
+    cx: walk::Ctx,
+    reps: usize,
+    on: &mut dyn FnMut(&'a Expr, bool, usize),
+) {
+    if let walk::Node::Expr(e @ Expr::Call { .. }) = node {
+        on(e, cx.branch, reps);
     }
-    counts
+    let reps = match node {
+        walk::Node::Stmt(Stmt::Handler(h)) | walk::Node::Decl(TopDecl::Handler(h)) => {
+            reps * trigger_multiplicity(&h.trigger)
+        }
+        _ => reps,
+    };
+    walk::children(node, &mut |child, flow| call_sites(child, cx.enter(flow), reps, &mut *on));
 }
 
 /// Give output `name` a backing PseudoVar (idempotent). An output value-driven
@@ -266,7 +475,7 @@ pub(in crate::lower) fn create_output_backing_var(ctx: &mut LowerCtx, name: &str
     if ctx.output_backing_vars.contains_key(name) {
         return;
     }
-    let Some(out) = ctx.lookup_output(name).cloned() else {
+    let Some(out) = ctx.lookup_output(name).or_else(|| ctx.output_tag(name)).cloned() else {
         return;
     };
     let inner = out.ty.clone();
@@ -304,9 +513,11 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // mod/chip inlining) is a refcount bump rather than a deep copy.
     let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&input.ast.decls));
 
+    let generic_type_aliases = collect_generic_type_aliases(&input.ast.decls);
+    let top_names = Arc::new(crate::scope::top::TopNames::of(&input.ast.decls));
     let mut ctx = LowerCtx {
         file: input.file.to_string(),
-        type_aliases: {
+        type_aliases: expand_alias_bodies({
             let mut m = HashMap::default();
             for d in &input.ast.decls {
                 match d {
@@ -330,8 +541,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
                 }
             }
             m
-        },
-        generic_type_aliases: collect_generic_type_aliases(&input.ast.decls),
+        }, &generic_type_aliases),
         // The enum registry is built by the SHARED `enums::build_registry`
         // (which numbers via `enums::variant_defs`) so lowering reads the exact
         // discriminant typecheck assigned - one source of truth for the tag,
@@ -339,8 +549,15 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         enum_defs: enum_defs.clone(),
         template_cache: input.template_cache.clone(),
         known_fn_names: Arc::new(collect_fn_names(input.ast)),
-        const_env: Arc::new(predeclare::build_const_env(&input.ast.decls, &enum_defs)),
-        const_declared: Arc::new(predeclare::build_const_declared_names(&input.ast.decls)),
+        imports: input.ast.imports.clone(),
+        known_let_names: Arc::new(collect_let_names(input.ast)),
+        consts: crate::const_scope::ConstScope::for_program(
+            &input.ast.decls,
+            &enum_defs,
+            &input.ast.imports,
+            &top_names,
+        ),
+        top_names,
         is_root_module: true,
         // Module-level `@nofold` (top of file + blank line) marks everything.
         nofold_depth: input.ast.no_fold as u32,
@@ -354,9 +571,17 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         )
     };
 
-    // Pass 1: register I/O + vars + buffers.
+    // Pass 1: register I/O + vars + buffers. A name the top level declares
+    // more than once is read by position (see `LowerCtx::top_view`).
     for d in &input.ast.decls {
+        // A `var` initializer reads the declaration before the `var`.
+        let above = match d {
+            TopDecl::Var(v) => ctx.top_names.initializer_read(&v.name, &v.range),
+            _ => None,
+        };
+        ctx.consts.set_cursor(Some(above.unwrap_or_else(|| crate::scope::top::ReadAt::code(d.range()))));
         pre_declare_decl(&mut ctx, d);
+        ctx.keep_top_dup_bindings(d);
     }
     // Pass 1a: a top-level `on` handler may DECLARE a boundary output
     // (`on Clock { @top out flash: bool = Toggle() }`). Run after the loop
@@ -403,12 +628,50 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             _ => None,
         })
         .collect();
-    for (name, (count, in_branch)) in count_output_value_emits(input.ast) {
+    for d in &input.ast.decls {
+        match d {
+            TopDecl::Handler(h) => collect_value_emit_names(&h.body, &mut ctx.emitted_outputs),
+            TopDecl::AnonChip(ac) => collect_value_emit_names(&ac.body, &mut ctx.emitted_outputs),
+            _ => {}
+        }
+    }
+    let mut write_counts = output_write_counts(input.ast);
+    let root_writes = write_counts.remove(&None).unwrap_or_default();
+    ctx.namespace_output_writes = Arc::new(write_counts);
+    ctx.output_write_sites = root_writes
+        .iter()
+        .map(|(name, (count, _))| (name.clone(), count + usize::from(defaulted_outputs.contains(name))))
+        .collect();
+    for (name, (count, in_branch)) in root_writes {
         let has_default = defaulted_outputs.contains(&name);
         if count < 2 && !in_branch && !has_default {
             continue;
         }
-        create_output_backing_var(&mut ctx, &name);
+        // A record output's backing is a var per field, driving its pins once.
+        let record = input
+            .ast
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                TopDecl::Out(o) if o.name == name => o.typ.as_ref().map(|t| (t.clone(), o.range.clone())),
+                _ => None,
+            })
+            .and_then(|(t, range)| ctx.record_or_tuple_fields(&t).map(|f| (f, range)));
+        match record {
+            Some((fields, range)) => {
+                let backing = crate::lower::predeclare::build_record_fields(
+                    &mut ctx,
+                    VarStorage::Var,
+                    &fields,
+                    &name,
+                    None,
+                    None,
+                    &range,
+                );
+                ctx.output_record_backing.insert(name, backing);
+            }
+            None => create_output_backing_var(&mut ctx, &name),
+        }
     }
     // Pass 2: lower bodies.
     for d in &input.ast.decls {
@@ -424,6 +687,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         // reactive declaration (let / out / var / buffer) must NOT inherit it —
         // its reads are pure signal flow, not steps on the handler's spine — so
         // lower it with a cleared exec, then restore for any following statement.
+        ctx.top_view(crate::scope::top::ReadAt::code(d.range()));
         if is_pure_top_decl(d) {
             let saved_exec = ctx.current_exec;
             ctx.current_exec = None;
@@ -432,6 +696,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         } else {
             lower_decl(&mut ctx, d);
         }
+        ctx.keep_top_dup_bindings(d);
     }
 
     // Pass 2b: resolve runtime `@label(expr)` on top-level vars into dynamic
@@ -450,23 +715,33 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     for (name, backing) in backings {
-        if let Some(out) = ctx.lookup_output(&name).cloned() {
+        if let Some(out) = ctx.lookup_output(&name).or_else(|| ctx.output_tag(&name)).cloned() {
             ctx.connect(
                 backing.node_id.port(WirePort::Value),
                 out.node_id.port(WirePort::RerInput),
             );
         }
     }
+    let mut records: Vec<(String, HashMap<crate::intern::Sym, Binding>)> =
+        ctx.output_record_backing.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    records.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, backing) in records {
+        if let Some(Binding::Record(pins)) = ctx.scope.get(&context::output_scope_key(&name)).cloned() {
+            call::wire_record_backing(&mut ctx, &backing, &pins);
+        }
+    }
 
     flush_pending_emits(&mut ctx);
 
     let mut module = ctx.builder.module;
+    let whole_file = SourceRange::new(input.file, Default::default(), Default::default());
     prune_dead_exec_unions(&mut module);
     // Before literal-inlining/materialization: a real computation still has its
     // operand WIRES here, so only genuinely wireless orphans (e.g. a top-level
     // constant duplicated by a namespace + named import of the same module) are
     // pruned — not a user's connected-but-unused `let y = x * 2`.
     prune_dead_pure_gates(&mut module, false);
+    prune_unread_gate_read_choices(&mut module);
     // Certified constant folding — table-gated. `FoldMode::Auto` (the
     // production default) folds unless the entry file opts out with a
     // module-level `@nofold`; `ForceOff` (CLI `--no-fold`) disables it
@@ -485,25 +760,33 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // EXPRESSION is untouched here and still materializes a carrier below
     // (matching the unfolded compute gate), so the fold invariant holds.
     inline_bare_scalar_literals(&mut module);
+    check_wires_resolve(&module, "inline_bare_scalar_literals", false, &whole_file, &mut ctx.diagnostics);
     if run_fold {
         fold::fold_certified_constants(&mut module);
+        localize_foreign_literals(&mut module);
+        check_wires_resolve(&module, "fold_certified_constants", false, &whole_file, &mut ctx.diagnostics);
     }
     materialize_unfoldable_constants(&mut module);
+    check_wires_resolve(&module, "materialize_unfoldable_constants", false, &whole_file, &mut ctx.diagnostics);
     inline_orphan_literals(&mut module);
+    check_wires_resolve(&module, "inline_orphan_literals", false, &whole_file, &mut ctx.diagnostics);
     // Folding an operand into its consumer can leave a bare `_Literal` wired to
     // nothing; sweep those literal orphans too (always safe — a literal has no
     // inputs, so it can never be a user computation whose operands were inlined).
     prune_dead_pure_gates(&mut module, true);
+    check_wires_resolve(&module, "prune_dead_pure_gates", false, &whole_file, &mut ctx.diagnostics);
     // Merge the constant gates that survived inlining (a `"PREFIX: " ..` concat
     // wrapper repeated per use, a multi-consumer literal) so an identical
     // constant is emitted once and fans out, per chip.
     dedup_constant_gates(&mut module);
+    check_wires_resolve(&module, "dedup_constant_gates", false, &whole_file, &mut ctx.diagnostics);
     // Common-subexpression elimination: the same generalized merge, extended to
     // pure `Expr_*` gates WITH wired inputs — a repeated `x + 1`, a duplicated
     // inline-`mod` body — collapse to one gate that fans out. Runs after all the
     // literal-inlining/fold passes so properties are final, and before
     // partition so keepers stay in their consumers' chip.
     cse_pure_gates(&mut module);
+    check_wires_resolve(&module, "cse_pure_gates", false, &whole_file, &mut ctx.diagnostics);
     // `@flat` inlines every chip body onto one grid. It stands in for the
     // anon-chip partition rather than following it — that pass moves nodes
     // INTO child modules, which is what flattening undoes (see
@@ -511,15 +794,285 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // `synthesize_boundary_pins` finds no cross-module wire and adds no pins.
     if input.ast.flat {
         flatten::flatten_chips(&mut module, &mut ctx.diagnostics);
+        check_wires_resolve(&module, "flatten_chips", false, &whole_file, &mut ctx.diagnostics);
     } else {
         crate::emit::partition_anon_chips(&mut module);
+        check_wires_resolve(&module, "partition_anon_chips", false, &whole_file, &mut ctx.diagnostics);
     }
     boundary_pins::synthesize_boundary_pins(&mut module);
+    check_wires_resolve(&module, "synthesize_boundary_pins", true, &whole_file, &mut ctx.diagnostics);
+    check_no_exec_into_value(&module, &whole_file, &mut ctx.diagnostics);
+    crate::emit::check_native_settings(&module, &mut ctx.diagnostics);
     LowerResult {
         module,
         diagnostics: ctx.diagnostics,
         dropped_ranges: ctx.dropped_ranges,
     }
+}
+
+/// Internal consistency check run after every post-lowering pass: every wire
+/// names two nodes that still exist somewhere in the module tree. A pass that
+/// deletes a node must delete the node's wires in every module, not only its
+/// own. A violation is a compiler bug, reported as `WS094` naming the pass
+/// just run, so the compile fails where the wire was stranded instead of at
+/// emit, or, for a literal, instead of shipping a gate that reads 0.
+///
+/// The final, `pinned` check runs in every build and catches anything the
+/// earlier ones would; the per-pass ones run in debug builds, where they name
+/// the pass that left the wire.
+///
+/// `pinned` checks the shape `synthesize_boundary_pins` leaves: each endpoint
+/// of a data wire is in the wire's own module or is a boundary pin of one of
+/// that module's chips. That includes a wire from another module's `_Literal`:
+/// emit inlines a literal only into its own module's consumers and a boundary
+/// pin never carries one, so such a wire reaches the save as nothing. `Layout`
+/// edges carry no value and are only checked for existence.
+///
+/// `NodeId(0)` is the never-allocated id a void call result stands for
+/// (`lower/call/wiring.rs`): a wire to it is expected only in a program that
+/// already has an error, and emit rejects it. The check stops at the first
+/// violation, and does nothing once one has been reported.
+fn check_wires_resolve(
+    root: &Module,
+    after: &str,
+    pinned: bool,
+    fallback: &SourceRange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if (!pinned && !cfg!(debug_assertions)) || diagnostics.iter().any(|d| d.code == "WS094") {
+        return;
+    }
+    let zero_expected = diagnostics
+        .iter()
+        .any(|d| d.severity == crate::diagnostic::Severity::Error);
+    fn index<'m>(m: &'m Module, owner: &mut HashMap<NodeId, &'m Module>) {
+        for id in m.nodes.keys() {
+            owner.insert(*id, m);
+        }
+        for c in m.chips.values() {
+            index(c, owner);
+        }
+    }
+    type Owners<'m> = std::cell::OnceCell<HashMap<NodeId, &'m Module>>;
+    // Almost every wire has both endpoints in its own module, so the tree-wide
+    // owner index is built only when some endpoint is not, and the message
+    // only when a wire fails.
+    fn check<'m>(
+        m: &'m Module,
+        root: &'m Module,
+        owners: &Owners<'m>,
+        pinned: bool,
+        zero_expected: bool,
+    ) -> Option<(String, Option<SourceRange>)> {
+        let owner_of = |id: &NodeId| -> Option<&'m Module> {
+            owners
+                .get_or_init(|| {
+                    let mut owner = HashMap::default();
+                    index(root, &mut owner);
+                    owner
+                })
+                .get(id)
+                .copied()
+        };
+        let range_of = |id: &NodeId| owner_of(id).and_then(|o| o.nodes.get(id)).map(|n| n.source_range.clone());
+        for w in &m.wires {
+            let (src, dst) = (w.source.node_id, w.target.node_id);
+            let wire = || {
+                format!(
+                    "wire {src}.{} -> {dst}.{} in module '{}'",
+                    w.source.port.as_str(),
+                    w.target.port.as_str(),
+                    crate::intern::resolve(m.name)
+                )
+            };
+            let carries_value = w.source.port != WirePort::Layout && w.target.port != WirePort::Layout;
+            for (end, other) in [(src, dst), (dst, src)] {
+                if m.nodes.contains_key(&end) || (zero_expected && end == NodeId(0)) {
+                    continue;
+                }
+                let Some(end_owner) = owner_of(&end) else {
+                    return Some((format!("{} references {end}, which no module holds", wire()), range_of(&other)));
+                };
+                let is_pin = || m.chips.values().any(|c| c.inputs.contains(&end) || c.outputs.contains(&end));
+                if !pinned || !carries_value || is_pin() {
+                    continue;
+                }
+                let what = if end_owner.nodes.get(&end).is_some_and(|n| n.gate_class == gc::LITERAL) {
+                    "reads another module's literal"
+                } else {
+                    "reaches a node in another module without a boundary pin"
+                };
+                return Some((format!("{} {what} ({end})", wire()), range_of(&other)));
+            }
+        }
+        m.chips
+            .values()
+            .find_map(|c| check(c, root, owners, pinned, zero_expected))
+    }
+    let owners = Owners::new();
+    if let Some((problem, range)) = check(root, root, &owners, pinned, zero_expected) {
+        diagnostics.push(Diagnostic::error(
+            "WS094",
+            format!("internal compiler error after `{after}`: {problem}. This is a compiler bug; please report it."),
+            range.unwrap_or_else(|| fallback.clone()),
+        ));
+    }
+}
+
+/// Whether an exec may drive the input `port` of type `ty` of `dst`: an exec
+/// input, or a `bool` one (a branch or select condition, a `bool` `Var_Set`,
+/// the value written to a `bool` map or array, a logical gate's input), which
+/// reads the exec as true for the tick it fires, as `expressions.md`
+/// documents. The data pin of a custom-event send takes it too: type checking
+/// reports the untyped data (`WS045`).
+pub(crate) fn exec_may_drive(dst: &crate::ir::Node, port: WirePort, ty: &Type) -> bool {
+    matches!(ty, Type::Exec | Type::Bool)
+        || dst.gate_class.starts_with("BrickComponentType_Expr_Logical")
+        || (matches!(ty, Type::Any | Type::Opaque)
+            && [gc::SEND_CUSTOM_EVENT, gc::SEND_CUSTOM_EVENT_GLOBAL].contains(&dst.gate_class)
+            && port.as_str().starts_with("DataIn"))
+}
+
+/// The wiring invariant every lowered program must hold: no exec (an
+/// `ExecOut`, the rerouter of an `exec` input or pin, any port typed `exec`)
+/// drives an input that takes a value other than a `bool` (see
+/// [`exec_may_drive`]). An exec pin carries no value, so such a wire reads 0
+/// in game while the source says otherwise. A rerouter pin of no type (`out r:
+/// any`) passes an exec on, and the invariant follows it to the input it ends
+/// at. Each violation is `WS094` naming both ends and the source line of the
+/// gate that reads it: a compiler bug where the exec is wired directly, and a
+/// program reading an exec as a value where it passes an untyped pin. Runs
+/// once, after the last post-lowering pass, over every wire of the module
+/// tree. A debug build (every test) also panics on a direct one, in
+/// [`crate::diagnostic::drop_internal_errors_beside_errors`], when the program
+/// reports no other error.
+pub(crate) fn check_no_exec_into_value(root: &Module, fallback: &SourceRange, diagnostics: &mut Vec<Diagnostic>) {
+    if diagnostics.iter().any(|d| d.code == crate::diagnostic::INTERNAL_ERROR) {
+        return;
+    }
+    fn index<'m>(m: &'m Module, nodes: &mut HashMap<NodeId, &'m crate::ir::Node>, wires: &mut Vec<crate::ir::Wire>) {
+        nodes.extend(m.nodes.iter().map(|(id, n)| (*id, n)));
+        let laid_out = |w: &&crate::ir::Wire| w.source.port == WirePort::Layout || w.target.port == WirePort::Layout;
+        wires.extend(m.wires.iter().filter(|w| !laid_out(w)).copied());
+        for c in m.chips.values() {
+            index(c, nodes, wires);
+        }
+    }
+    let mut nodes = HashMap::default();
+    let mut wires = Vec::new();
+    index(root, &mut nodes, &mut wires);
+    let ends = |w: &crate::ir::Wire| {
+        let (src, dst) = (nodes.get(&w.source.node_id)?, nodes.get(&w.target.node_id)?);
+        let from = src.ports.find_output(w.source.port.sym()).map(|p| &p.ty);
+        Some((*src, from, *dst, dst.ports.find_input(w.target.port.sym()).map(|p| &p.ty)?))
+    };
+    // The rerouters an exec reaches through a pin of no type: their output
+    // carries it on.
+    let mut carriers: HashSet<NodeId> = HashSet::default();
+    let carries = |carriers: &HashSet<NodeId>, w: &crate::ir::Wire, from: Option<&Type>| {
+        from == Some(&Type::Exec) || (w.source.port == WirePort::RerOutput && carriers.contains(&w.source.node_id))
+    };
+    let untyped_pin = |w: &crate::ir::Wire, into: &Type| {
+        w.target.port == WirePort::RerInput && matches!(into, Type::Any | Type::Opaque)
+    };
+    loop {
+        let mut grew = false;
+        for w in &wires {
+            if let Some((_, from, _, into)) = ends(w)
+                && carries(&carriers, w, from)
+                && untyped_pin(w, into)
+            {
+                grew |= carriers.insert(w.target.node_id);
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    // An array write takes its value untyped; a `bool` array's is a `bool`
+    // place, as a `bool` map's value is.
+    let feeds: HashMap<(NodeId, WirePort), crate::ir::PortRef> =
+        wires.iter().map(|w| ((w.target.node_id, w.target.port), w.source)).collect();
+    let array_writes = [gc::ARRAY_PUSH, gc::ARRAY_SET_AT_INDEX, gc::ARRAY_INSERT, gc::ARRAY_FILL, gc::ARRAY_RESIZE];
+    let stored_bool = |w: &crate::ir::Wire, dst: &crate::ir::Node| {
+        if w.target.port != WirePort::Value || !array_writes.contains(&dst.gate_class) {
+            return false;
+        }
+        let mut at = feeds.get(&(w.target.node_id, WirePort::ArrayVarRef));
+        for _ in 0..nodes.len() {
+            let Some(src) = at else { return false };
+            let Some(node) = nodes.get(&src.node_id) else { return false };
+            match node.ports.find_output(src.port.sym()).map(|p| &p.ty) {
+                Some(Type::Ref(t)) if matches!(t.as_ref(), Type::Array(e) if **e == Type::Bool) => return true,
+                Some(Type::Array(e)) if **e == Type::Bool => return true,
+                Some(Type::Any | Type::Opaque) if src.port == WirePort::RerOutput => {
+                    at = feeds.get(&(src.node_id, WirePort::RerInput));
+                }
+                _ => return false,
+            }
+        }
+        false
+    };
+    let mut reported: HashSet<(NodeId, WirePort)> = HashSet::default();
+    let mut found = Vec::new();
+    for w in &wires {
+        let Some((src, from, dst, into)) = ends(w) else { continue };
+        let into = if stored_bool(w, dst) { &Type::Bool } else { into };
+        if !carries(&carriers, w, from) || untyped_pin(w, into) || exec_may_drive(dst, w.target.port, into) {
+            continue;
+        }
+        if !reported.insert((w.target.node_id, w.target.port)) {
+            continue;
+        }
+        let range = [&dst.source_range, &src.source_range]
+            .into_iter()
+            .find(|r| r.start.line != 0)
+            .cloned()
+            .unwrap_or_else(|| fallback.clone());
+        let message = if from == Some(&Type::Exec) {
+            format!(
+                "internal compiler error: the exec output `{}.{}` ({}) drives the value input `{}.{}` ({}) of the \
+                 gate built for line {}: {}, so the gate would read 0. This is a compiler bug; please report it.",
+                w.source.node_id,
+                w.source.port.as_str(),
+                src.gate_class,
+                w.target.node_id,
+                w.target.port.as_str(),
+                dst.gate_class,
+                range.start.line,
+                crate::diagnostic::EXEC_INTO_VALUE,
+            )
+        } else {
+            format!(
+                "an exec reaches the value input `{}.{}` ({}) of the gate built for line {} through the pin of no \
+                 type `{}.{}` ({}): an exec carries no value, only a `bool` reads it (as true for the tick it \
+                 fires), so the gate would read 0. Give the pin a type, or test the exec with `if`",
+                w.target.node_id,
+                w.target.port.as_str(),
+                dst.gate_class,
+                range.start.line,
+                w.source.node_id,
+                w.source.port.as_str(),
+                src.gate_class,
+            )
+        };
+        found.push(Diagnostic::error(crate::diagnostic::INTERNAL_ERROR, message, range));
+    }
+    let at = |d: &Diagnostic| (d.range.file.clone(), d.range.start.line, d.range.start.col, d.message.clone());
+    found.sort_by_key(at);
+    diagnostics.extend(found);
+}
+
+/// Every name a top-level `let` of the (import-merged) program binds.
+fn collect_let_names(ast: &Script) -> HashSet<String> {
+    ast.decls
+        .iter()
+        .filter_map(|d| match d {
+            TopDecl::Let(l) => Some(crate::const_eval::bound_names(&l.binding)),
+            _ => None,
+        })
+        .flatten()
+        .collect()
 }
 
 /// Collect every chip/mod name declared anywhere in the (import-merged) program
@@ -562,6 +1115,47 @@ fn collect_fn_names(ast: &Script) -> HashSet<String> {
         }
     }
     names
+}
+
+/// How many aliases deep [`expand_alias_bodies`] follows a body.
+const MAX_ALIAS_CHAIN: u32 = 32;
+
+/// `aliases` with each non-generic alias whose body names another alias or
+/// instantiates a generic one (`type IP = Pair<int>`) holding the type that
+/// body stands for, so an alias of a record reads as its fields wherever
+/// lowering expands one, as the record written out does. A namespaced alias
+/// (`Ns.IP`) reads the names in its body in its own module first.
+fn expand_alias_bodies(
+    aliases: HashMap<String, crate::ast::TypeExpr>,
+    generic: &HashMap<String, crate::types::resolve::GenericAlias>,
+) -> HashMap<String, crate::ast::TypeExpr> {
+    use crate::ast::TypeExpr;
+    let mut out = aliases.clone();
+    for (key, body) in out.iter_mut() {
+        if generic.contains_key(key) {
+            continue;
+        }
+        let prefix = key.rsplit_once('.').map(|(ns, _)| format!("{ns}."));
+        let own = |name: &str| prefix.as_ref().map(|p| format!("{p}{name}"));
+        for _ in 0..MAX_ALIAS_CHAIN {
+            let next = match &*body {
+                TypeExpr::Name { name, .. } => own(name)
+                    .and_then(|n| aliases.get(&n))
+                    .or_else(|| aliases.get(name))
+                    .filter(|_| !generic.contains_key(name) && name != key)
+                    .cloned(),
+                TypeExpr::Generic { name, args, .. } => own(name)
+                    .and_then(|n| crate::types::resolve::instantiate_generic_alias(&n, args, generic))
+                    .or_else(|| crate::types::resolve::instantiate_generic_alias(name, args, generic)),
+                _ => None,
+            };
+            match next {
+                Some(next) => *body = next,
+                None => break,
+            }
+        }
+    }
+    out
 }
 
 /// Collect every generic type alias (`type Pair<T> = { … }`, top-level and
@@ -622,7 +1216,144 @@ fn collect_generic_type_aliases(
 /// `materialize_unfoldable_constants` (matching the unfolded compute gate).
 /// Type-mismatched constants and data-only ports are left to that pass too.
 /// Recurses into chip sub-modules.
-fn inline_bare_scalar_literals(module: &mut Module) {
+fn inline_bare_scalar_literals(root: &mut Module) {
+    let external = ExternalWires::of(root);
+    inline_bare_scalar_literals_in(root, &external);
+}
+
+/// Nodes wired by a wire stored outside their own module. A wire between two
+/// modules is stored in either endpoint's module, so a node's own module can
+/// hold only some of its wires: a top-level constant read by a named chip has
+/// its root consumers in the root's list and the chip's reads in the chip's.
+/// A per-module pass that judges a node by its own module's wires alone must
+/// leave these nodes in place.
+struct ExternalWires {
+    /// Sources of a wire stored in another module.
+    sources: HashSet<NodeId>,
+    /// Targets of a wire stored in another module.
+    targets: HashSet<NodeId>,
+}
+
+impl ExternalWires {
+    fn of(root: &Module) -> Self {
+        fn walk(module: &Module, out: &mut ExternalWires) {
+            for w in &module.wires {
+                if !module.nodes.contains_key(&w.source.node_id) {
+                    out.sources.insert(w.source.node_id);
+                }
+                if !module.nodes.contains_key(&w.target.node_id) {
+                    out.targets.insert(w.target.node_id);
+                }
+            }
+            for child in module.chips.values() {
+                walk(child, out);
+            }
+        }
+        let mut out = ExternalWires {
+            sources: HashSet::default(),
+            targets: HashSet::default(),
+        };
+        walk(root, &mut out);
+        out
+    }
+
+    fn touches(&self, id: &NodeId) -> bool {
+        self.sources.contains(id) || self.targets.contains(id)
+    }
+}
+
+/// Give every module its own copy of each `_Literal` it reads from another
+/// module, and move the reading wire into that module. Emit inlines a literal
+/// only into consumers in its own module and a boundary pin never carries one,
+/// so a wire from another module's literal reaches the save as nothing: the
+/// consumer reads its port default. Lowering never wires one
+/// (`LowerCtx::local_literals`), but folding does: a top-level constant
+/// expression (`let K = 3 + 4`) read by a named chip becomes a literal in
+/// place, in the root. One copy per consuming module and anonymous chip; the
+/// original keeps only its own module's reads, and is pruned once it has none.
+fn localize_foreign_literals(root: &mut Module) {
+    fn index(
+        m: &Module,
+        path: &mut Vec<NodeId>,
+        paths: &mut Vec<Vec<NodeId>>,
+        owner: &mut HashMap<NodeId, usize>,
+        literals: &mut HashMap<NodeId, crate::ir::Node>,
+    ) {
+        let here = paths.len();
+        paths.push(path.clone());
+        for (id, n) in &m.nodes {
+            owner.insert(*id, here);
+            if n.gate_class == gc::LITERAL {
+                literals.insert(*id, n.clone());
+            }
+        }
+        let mut chips: Vec<NodeId> = m.chips.keys().copied().collect();
+        chips.sort_unstable();
+        for c in chips {
+            path.push(c);
+            index(&m.chips[&c], path, paths, owner, literals);
+            path.pop();
+        }
+    }
+    fn extract(
+        m: &mut Module,
+        owner: &HashMap<NodeId, usize>,
+        literals: &HashMap<NodeId, crate::ir::Node>,
+        moved: &mut Vec<(usize, crate::ir::Wire)>,
+    ) {
+        let before = m.wires.len();
+        m.wires.retain(|w| {
+            let foreign = literals.contains_key(&w.source.node_id)
+                && owner
+                    .get(&w.target.node_id)
+                    .is_some_and(|t| owner.get(&w.source.node_id) != Some(t));
+            if foreign {
+                moved.push((owner[&w.target.node_id], *w));
+            }
+            !foreign
+        });
+        if m.wires.len() != before {
+            m.template_key = None;
+        }
+        for child in m.chips.values_mut() {
+            extract(child, owner, literals, moved);
+        }
+    }
+    fn module_at<'m>(root: &'m mut Module, path: &[NodeId]) -> &'m mut Module {
+        path.iter().fold(root, |m, c| m.chips.get_mut(c).expect("indexed chip module"))
+    }
+
+    let mut paths = Vec::new();
+    let mut owner = HashMap::default();
+    let mut literals = HashMap::default();
+    index(root, &mut Vec::new(), &mut paths, &mut owner, &mut literals);
+    if literals.is_empty() {
+        return;
+    }
+    let mut moved: Vec<(usize, crate::ir::Wire)> = Vec::new();
+    extract(root, &owner, &literals, &mut moved);
+    moved.sort_by_key(|(_, w)| (w.target.node_id, w.source.node_id));
+
+    let mut copies: HashMap<(usize, Option<NodeId>, NodeId), NodeId> = HashMap::default();
+    for (at, mut w) in moved {
+        let m = module_at(root, &paths[at]);
+        let chip_id = m.nodes.get(&w.target.node_id).and_then(|n| n.chip_id);
+        let lit = w.source.node_id;
+        let copy = *copies.entry((at, chip_id, lit)).or_insert_with(|| {
+            let id = NodeId::fresh();
+            let mut node = literals[&lit].clone();
+            node.id = id;
+            node.chip_id = chip_id;
+            m.nodes.insert(id, node);
+            id
+        });
+        w.source.node_id = copy;
+        m.wires.push(w);
+        m.template_key = None;
+    }
+}
+
+fn inline_bare_scalar_literals_in(module: &mut Module, external: &ExternalWires) {
     let value_sym = *sym::VALUE;
     // A string literal has no `_Literal` form: `lower_literal` gives it a
     // `String_Concatenate` carrying the text in `InputA` with the other fields
@@ -659,6 +1390,7 @@ fn inline_bare_scalar_literals(module: &mut Module) {
             }
         } else if src.gate_class == gc::STRING_CONCATENATE
             && !wired_targets.contains(&w.source.node_id)
+            && !external.targets.contains(&w.source.node_id)
             && is_empty_str(src, input_b_sym)
             && is_empty_str(src, separator_sym)
         {
@@ -713,13 +1445,13 @@ fn inline_bare_scalar_literals(module: &mut Module) {
     if !inlined_sources.is_empty() {
         let live_sources: crate::collections::HashSet<crate::ir::NodeId> =
             module.wires.iter().map(|w| w.source.node_id).collect();
-        inlined_sources.retain(|id| !live_sources.contains(id));
+        inlined_sources.retain(|id| !live_sources.contains(id) && !external.sources.contains(id));
     }
     if !inlined_sources.is_empty() {
         module.nodes.retain(|id, _| !inlined_sources.contains(id));
     }
     for child in module.chips.values_mut() {
-        inline_bare_scalar_literals(child);
+        inline_bare_scalar_literals_in(child, external);
     }
 }
 
@@ -1040,7 +1772,12 @@ fn find_node_in_chips<'m>(
 /// property on the consumer gate, then delete the literal. Avoids having
 /// rows of constant-value bricks cluttering the chip for things like
 /// `n + 1`, `n > 10`, etc. Recurses into chip sub-modules.
-fn inline_orphan_literals(module: &mut Module) {
+fn inline_orphan_literals(root: &mut Module) {
+    let external = ExternalWires::of(root);
+    inline_orphan_literals_in(root, &external);
+}
+
+fn inline_orphan_literals_in(module: &mut Module, external: &ExternalWires) {
     let value_sym = *sym::VALUE;
     // Per-source (count, first target): the single-consumer check only ever
     // needs the one target wire, so no per-node target Vecs. Buffers are
@@ -1060,13 +1797,15 @@ fn inline_orphan_literals(module: &mut Module) {
         e.0 += 1;
         *incoming_count.entry(w.target.node_id).or_default() += 1;
     }
+    // A node with a wire in another module is not single-use however many
+    // wires this module holds for it; inlining it would strand those wires.
     loop {
         lit_ids.clear();
         lit_ids.extend(
             module
                 .nodes
                 .iter()
-                .filter(|(_, n)| n.gate_class == gc::LITERAL)
+                .filter(|(id, n)| n.gate_class == gc::LITERAL && !external.touches(id))
                 .map(|(id, _)| *id),
         );
         let mut changed = false;
@@ -1138,7 +1877,9 @@ fn inline_orphan_literals(module: &mut Module) {
             module
                 .nodes
                 .iter()
-                .filter(|(id, n)| n.gate_class == gc::STRING_CONCATENATE && !removed.contains(id))
+                .filter(|(id, n)| {
+                    n.gate_class == gc::STRING_CONCATENATE && !removed.contains(id) && !external.touches(id)
+                })
                 .map(|(id, _)| *id),
         );
         for &cid in &concat_ids {
@@ -1203,7 +1944,7 @@ fn inline_orphan_literals(module: &mut Module) {
             .retain(|w| !removed.contains(&w.source.node_id));
     }
     for child_module in module.chips.values_mut() {
-        inline_orphan_literals(child_module);
+        inline_orphan_literals_in(child_module, external);
     }
 }
 
@@ -1240,7 +1981,7 @@ fn dedup_constant_gates(root: &mut Module) {
     // consumer keeps its own `source.port` and only the node id changes).
     let mut redirect: HashMap<NodeId, NodeId> = HashMap::default();
 
-    fn collect(module: &mut Module, redirect: &mut HashMap<NodeId, NodeId>) {
+    fn collect(module: &mut Module, external: &ExternalWires, redirect: &mut HashMap<NodeId, NodeId>) {
         let has_incoming: HashSet<NodeId> = module
             .wires
             .iter()
@@ -1261,7 +2002,8 @@ fn dedup_constant_gates(root: &mut Module) {
             let is_pure = n.gate_class == gc::LITERAL
                 || n.gate_class
                     .starts_with("BrickComponentType_Expr_");
-            if n.kind == NodeKind::Gate && is_pure && !has_incoming.contains(id) {
+            let fed = has_incoming.contains(id) || external.targets.contains(id);
+            if n.kind == NodeKind::Gate && is_pure && !fed {
                 groups
                     .entry((n.chip_id, const_key(n)))
                     .or_default()
@@ -1280,11 +2022,12 @@ fn dedup_constant_gates(root: &mut Module) {
             }
         }
         for child in module.chips.values_mut() {
-            collect(child, redirect);
+            collect(child, external, redirect);
         }
     }
 
-    collect(root, &mut redirect);
+    let external = ExternalWires::of(root);
+    collect(root, &external, &mut redirect);
     if redirect.is_empty() {
         return;
     }
@@ -1376,7 +2119,7 @@ fn cse_pure_gates(root: &mut Module) {
         (n.gate_class, props, ins)
     }
 
-    fn cse_module(module: &mut Module, redirect: &mut HashMap<NodeId, NodeId>) {
+    fn cse_module(module: &mut Module, external: &ExternalWires, redirect: &mut HashMap<NodeId, NodeId>) {
         // Per-node incoming data wires (skip Layout edges — they're not inputs).
         let mut incoming: HashMap<NodeId, Vec<(WirePort, NodeId, WirePort)>> = HashMap::default();
         for w in &module.wires {
@@ -1394,7 +2137,7 @@ fn cse_pure_gates(root: &mut Module) {
         let eligible_ids: HashSet<NodeId> = module
             .nodes
             .iter()
-            .filter(|(_, n)| eligible(n))
+            .filter(|(id, n)| eligible(n) && !external.targets.contains(id))
             .map(|(id, _)| *id)
             .collect();
         let mut indeg: HashMap<NodeId, usize> = HashMap::default();
@@ -1463,12 +2206,13 @@ fn cse_pure_gates(root: &mut Module) {
         }
 
         for child in module.chips.values_mut() {
-            cse_module(child, redirect);
+            cse_module(child, external, redirect);
         }
     }
 
     let mut redirect: HashMap<NodeId, NodeId> = HashMap::default();
-    cse_module(root, &mut redirect);
+    let external = ExternalWires::of(root);
+    cse_module(root, &external, &mut redirect);
     if !redirect.is_empty() {
         apply_gate_redirect(root, &redirect);
     }
@@ -1555,6 +2299,44 @@ fn prune_dead_pure_gates(module: &mut Module, literals_only: bool) {
     }
 }
 
+/// Drop each `Select` a choice between two gate reads built for an output no
+/// place reads (`f = t` after `let t = if c then fs.max() else fs.min()`
+/// reads `Value`, never `IsEmpty`). Connectivity spans the whole module tree,
+/// as in [`prune_dead_pure_gates`].
+fn prune_unread_gate_read_choices(module: &mut Module) {
+    fn read(module: &Module, out: &mut HashSet<NodeId>) {
+        out.extend(module.wires.iter().filter(|w| w.source.port != WirePort::Layout).map(|w| w.source.node_id));
+        for child in module.chips.values() {
+            read(child, out);
+        }
+    }
+    fn unread(module: &Module, read: &HashSet<NodeId>, out: &mut HashSet<NodeId>) {
+        for (id, n) in &module.nodes {
+            if n.note == Some(stmt::GATE_READ_CHOICE) && !read.contains(id) {
+                out.insert(*id);
+            }
+        }
+        for child in module.chips.values() {
+            unread(child, read, out);
+        }
+    }
+    fn remove(module: &mut Module, dead: &HashSet<NodeId>) {
+        module.nodes.retain(|id, _| !dead.contains(id));
+        module.wires.retain(|w| !dead.contains(&w.source.node_id) && !dead.contains(&w.target.node_id));
+        module.scope_captures.retain(|id| !dead.contains(id));
+        for child in module.chips.values_mut() {
+            remove(child, dead);
+        }
+    }
+    let mut was_read = HashSet::default();
+    read(module, &mut was_read);
+    let mut dead = HashSet::default();
+    unread(module, &was_read, &mut dead);
+    if !dead.is_empty() {
+        remove(module, &dead);
+    }
+}
+
 /// Clean up degenerate `Exec_Union` nodes, repeating to a fixpoint (each
 /// removal can degrade another union). Recurses into chip sub-modules.
 ///
@@ -1575,47 +2357,11 @@ fn prune_dead_pure_gates(module: &mut Module, literals_only: bool) {
 /// is left alone; at worst a degenerate Union gate survives, which is what the
 /// unfolded lowering would have emitted anyway.
 pub(super) fn prune_dead_exec_unions(module: &mut Module) {
-    let mut cross_module = HashSet::default();
-    collect_cross_module_refs(module, &mut cross_module);
-    prune_dead_exec_unions_in(module, &cross_module);
+    let external = ExternalWires::of(module);
+    prune_dead_exec_unions_in(module, &external);
 }
 
-/// Node ids that some module's wire names while the node itself lives in a
-/// DIFFERENT module of the tree (either direction: a parent wiring into a
-/// chip's interior, or a chip capturing an outer node).
-fn collect_cross_module_refs(root: &Module, acc: &mut HashSet<NodeId>) {
-    fn index(m: &Module, tag: usize, next: &mut usize, owner: &mut HashMap<NodeId, usize>) {
-        for id in m.nodes.keys() {
-            owner.insert(*id, tag);
-        }
-        for child in m.chips.values() {
-            *next += 1;
-            let child_tag = *next;
-            index(child, child_tag, next, owner);
-        }
-    }
-    fn scan(m: &Module, tag: usize, next: &mut usize, owner: &HashMap<NodeId, usize>, acc: &mut HashSet<NodeId>) {
-        for w in &m.wires {
-            for id in [w.source.node_id, w.target.node_id] {
-                if owner.get(&id).is_some_and(|o| *o != tag) {
-                    acc.insert(id);
-                }
-            }
-        }
-        for child in m.chips.values() {
-            *next += 1;
-            let child_tag = *next;
-            scan(child, child_tag, next, owner, acc);
-        }
-    }
-    let mut owner = HashMap::default();
-    let mut next = 0usize;
-    index(root, 0, &mut next, &mut owner);
-    let mut next = 0usize;
-    scan(root, 0, &mut next, &owner, acc);
-}
-
-fn prune_dead_exec_unions_in(module: &mut Module, cross_module: &HashSet<NodeId>) {
+fn prune_dead_exec_unions_in(module: &mut Module, external: &ExternalWires) {
     /// Chase a source through spliced unions to the node actually carrying
     /// its wires now. Returns `None` for a pure splice cycle (unions feeding
     /// only each other — dead code whose wires all drop).
@@ -1645,11 +2391,11 @@ fn prune_dead_exec_unions_in(module: &mut Module, cross_module: &HashSet<NodeId>
         .map(|(id, _)| *id)
         // Referenced from another module — its real degree is not visible in
         // this wire list, so neither removal nor splicing is sound here.
-        .filter(|id| !cross_module.contains(id))
+        .filter(|id| !external.touches(id))
         .collect();
     if queue.is_empty() {
         for child_module in module.chips.values_mut() {
-            prune_dead_exec_unions_in(child_module, cross_module);
+            prune_dead_exec_unions_in(child_module, external);
         }
         return;
     }
@@ -1779,7 +2525,7 @@ fn prune_dead_exec_unions_in(module: &mut Module, cross_module: &HashSet<NodeId>
     }
 
     for child_module in module.chips.values_mut() {
-        prune_dead_exec_unions_in(child_module, cross_module);
+        prune_dead_exec_unions_in(child_module, external);
     }
 }
 
@@ -1824,9 +2570,10 @@ pub fn compile_chip_template(
         chip_call_stack: if chip_decl.name.is_empty() {
             Vec::new()
         } else {
-            vec![chip_decl.range.clone()]
+            vec![(chip_decl.range.clone(), true)]
         },
         template_build: true,
+        imports: tc.imports.clone(),
         // Standalone template path (resource estimation / cache) resolves
         // record aliases from inline literals only, and has no whole-program
         // `decls` slice to re-run `typecheck::enums::build_registry` against,
@@ -1849,9 +2596,10 @@ pub fn compile_chip_template(
             let mut record_fields = HashMap::default();
             for field in fields {
                 let port_name = format!("{}_{}", inp.name, field.name);
-                let ft = type_of_type_expr(&field.typ);
-                let is_array = matches!(&field.typ, TypeExpr::Array { .. });
-                let is_ref = matches!(&field.typ, TypeExpr::Ref { .. });
+                let ft = ctx.resolve_local_type(&field.typ);
+                let shape = ctx.declared_shape(None, &field.typ);
+                let is_array = matches!(shape, TypeExpr::Array { .. });
+                let is_ref = matches!(shape, TypeExpr::Ref { .. });
                 let node_id = ctx.add_input(&port_name, ft.clone(), chip_decl.range.clone());
                 let binding = if is_array {
                     let inner = match &ft {
@@ -1888,9 +2636,9 @@ pub fn compile_chip_template(
                 record_fields.insert(crate::intern::intern(&field.name), binding);
             }
             ctx.scope.insert(&inp.name, Binding::Record(record_fields));
-        } else if matches!(&inp.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }) {
-            let t = type_of_type_expr(&inp.typ);
-            let is_array = matches!(&inp.typ, TypeExpr::Array { .. });
+        } else if ctx.ref_or_array(Some(chip_decl), &inp.typ) {
+            let t = ctx.resolve_local_type(&inp.typ);
+            let is_array = matches!(ctx.declared_shape(Some(chip_decl), &inp.typ), TypeExpr::Array { .. });
             let inner = match &t {
                 Type::Ref(inner) => inner.as_ref().clone(),
                 Type::Array(inner) => inner.as_ref().clone(),
@@ -1911,7 +2659,7 @@ pub fn compile_chip_template(
                 }),
             );
         } else {
-            let t = type_of_type_expr(&inp.typ);
+            let t = ctx.resolve_local_type(&inp.typ);
             let node_id = ctx.add_input(&inp.name, t.clone(), chip_decl.range.clone());
             ctx.scope
                 .insert(&inp.name, Binding::Input(NodeRecord { node_id, ty: t }));
@@ -1919,7 +2667,7 @@ pub fn compile_chip_template(
     }
 
     for out in &chip_decl.outputs {
-        let t = type_of_type_expr(&out.typ);
+        let t = ctx.resolve_local_type(&out.typ);
         let node_id = ctx.add_output(&out.name, t.clone(), chip_decl.range.clone());
         ctx.scope.insert(
             &crate::lower::context::output_scope_key(&out.name),

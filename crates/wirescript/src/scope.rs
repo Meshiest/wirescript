@@ -4,6 +4,8 @@ use bitflags::bitflags;
 
 use crate::intern::Sym;
 
+pub(crate) mod top;
+
 bitflags! {
     /// Tags for scope frames. Combine with `|` for `iter_within` boundaries.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,7 +18,15 @@ bitflags! {
 
 struct Frame<V> {
     tag: ScopeTag,
+    /// Distinct for every frame ever pushed, and kept by a copy of it
+    /// ([`Scope::push_as`], [`Scope::from_frames`]).
+    id: u64,
     entries: HashMap<Sym, V>,
+}
+
+fn next_frame_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Lexical scope stack. Each frame has a tag and its own symbol table.
@@ -35,6 +45,33 @@ pub struct Scope<V> {
     /// Only the by-name lookups honor it — the `iter*` sweeps (type aliases,
     /// chip closure capture) deliberately still see every frame. See N1.
     floor: usize,
+    /// Changes whenever what a name resolves to may have changed (a frame
+    /// pushed, popped or swapped, a binding inserted, the floor moved). Drawn
+    /// from one counter shared by every stack, so two states of any two stacks
+    /// never share a value.
+    rev: u64,
+}
+
+fn next_rev() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// One frame as [`Scope::from_frames`] takes it: its tag, its id and its
+/// entries.
+pub type FrameCopy<V> = (ScopeTag, u64, Vec<(Sym, V)>);
+
+/// Frames taken off a [`Scope`] by [`Scope::detach_above`], held until
+/// [`Scope::reattach`] puts them back.
+pub struct Detached<V> {
+    frames: Vec<Frame<V>>,
+}
+
+impl<V> Detached<V> {
+    /// Each detached frame, outermost first: its tag, its id and its entries.
+    pub fn frames(&self) -> impl Iterator<Item = (ScopeTag, u64, &HashMap<Sym, V>)> {
+        self.frames.iter().map(|f| (f.tag, f.id, &f.entries))
+    }
 }
 
 impl<V> Default for Scope<V> {
@@ -46,13 +83,15 @@ impl<V> Default for Scope<V> {
 impl<V> Scope<V> {
     pub fn new() -> Self {
         Self {
-            frames: vec![Frame { tag: ScopeTag::ROOT, entries: HashMap::default() }],
+            frames: vec![Frame { tag: ScopeTag::ROOT, id: next_frame_id(), entries: HashMap::default() }],
             floor: 0,
+            rev: next_rev(),
         }
     }
 
     pub fn push(&mut self, tag: ScopeTag) {
-        self.frames.push(Frame { tag, entries: HashMap::default() });
+        self.frames.push(Frame { tag, id: next_frame_id(), entries: HashMap::default() });
+        self.rev = next_rev();
     }
 
     pub fn pop(&mut self) {
@@ -64,6 +103,28 @@ impl<V> Scope<V> {
         // otherwise leave `floor` past the top of the stack; clamp so lookups
         // stay well-defined.
         self.floor = self.floor.min(self.frames.len());
+        self.rev = next_rev();
+    }
+
+    /// See the `rev` field.
+    pub fn rev(&self) -> u64 {
+        self.rev
+    }
+
+    /// Each frame by-name resolution can see, innermost first: its index and
+    /// its id.
+    pub fn visible_frame_ids(&self) -> impl Iterator<Item = (usize, u64)> + '_ {
+        (self.floor..self.frames.len()).rev().map(|i| (i, self.frames[i].id))
+    }
+
+    /// The id of the innermost frame.
+    pub fn current_id(&self) -> u64 {
+        self.frames.last().map_or(0, |f| f.id)
+    }
+
+    /// Whether a frame with this id is open.
+    pub fn has_frame(&self, id: u64) -> bool {
+        self.frames.iter().any(|f| f.id == id)
     }
 
     /// Number of frames on the stack (always >= 1). The top frame's index is
@@ -78,7 +139,13 @@ impl<V> Scope<V> {
     pub fn set_floor(&mut self, floor: usize) -> usize {
         let prev = self.floor;
         self.floor = floor.min(self.frames.len());
+        self.rev = next_rev();
         prev
+    }
+
+    /// The current seal (see [`set_floor`](Self::set_floor)).
+    pub fn floor(&self) -> usize {
+        self.floor
     }
 
     pub fn get(&self, key: &str) -> Option<&V> {
@@ -93,6 +160,25 @@ impl<V> Scope<V> {
             }
         }
         None
+    }
+
+    /// Index of the frame [`get`](Self::get) finds `key` in: the innermost
+    /// frame at or above the floor that binds it.
+    pub fn visible_frame(&self, key: &str) -> Option<usize> {
+        let sym = crate::intern::intern(key);
+        (self.floor..self.frames.len()).rev().find(|&i| self.frames[i].entries.contains_key(&sym))
+    }
+
+    /// Every binding of `key` by-name resolution can see, innermost first,
+    /// with the index of its frame.
+    pub fn visible_bindings(&self, key: &str) -> impl Iterator<Item = (usize, &V)> {
+        let sym = crate::intern::intern(key);
+        (self.floor..self.frames.len()).rev().filter_map(move |i| self.frames[i].entries.get(&sym).map(|v| (i, v)))
+    }
+
+    /// The binding of `key` in the frame at `index`, that frame alone.
+    pub fn get_in(&self, index: usize, key: Sym) -> Option<&V> {
+        self.frames.get(index).and_then(|f| f.entries.get(&key))
     }
 
     /// Look up `key` in ONLY the innermost (current) frame, never ancestors.
@@ -111,6 +197,7 @@ impl<V> Scope<V> {
     }
 
     pub fn get_mut_sym(&mut self, key: Sym) -> Option<&mut V> {
+        self.rev = next_rev();
         for frame in self.frames[self.floor..].iter_mut().rev() {
             if let Some(v) = frame.entries.get_mut(&key) {
                 return Some(v);
@@ -125,14 +212,31 @@ impl<V> Scope<V> {
     /// binding.
     pub fn insert(&mut self, key: &str, value: V) -> Option<V> {
         let sym = crate::intern::intern(key);
+        self.rev = next_rev();
         self.frames.last_mut().unwrap().entries.insert(sym, value)
     }
 
-    pub fn insert_sym(&mut self, key: Sym, value: V) -> Option<V> {
-        self.frames.last_mut().unwrap().entries.insert(key, value)
+    /// Bind `key` in the outermost frame to `value`, or unbind it there for
+    /// `None`, returning what it bound there.
+    pub fn set_root(&mut self, key: &str, value: Option<V>) -> Option<V> {
+        let sym = crate::intern::intern(key);
+        self.rev = next_rev();
+        let root = &mut self.frames[0].entries;
+        match value {
+            Some(v) => root.insert(sym, v),
+            None => root.remove(&sym),
+        }
+    }
+
+    /// Unbind `key` in the current frame, returning what it bound there.
+    pub fn remove(&mut self, key: &str) -> Option<V> {
+        let sym = crate::intern::intern(key);
+        self.rev = next_rev();
+        self.frames.last_mut().unwrap().entries.remove(&sym)
     }
 
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
+        self.rev = next_rev();
         self.frames.iter_mut().flat_map(|f| f.entries.values_mut())
     }
 
@@ -155,6 +259,80 @@ impl<V> Scope<V> {
             .iter()
             .rev()
             .flat_map(|f| f.entries.iter().map(|(k, v)| (crate::intern::resolve(*k), v)))
+    }
+
+    /// Index of the innermost frame binding `key` to a value `pred` accepts.
+    /// A frame whose `key` fails `pred` is passed over, so a same-named
+    /// binding shadowing the wanted one does not hide it.
+    pub fn frame_of(&self, key: Sym, pred: impl Fn(&V) -> bool) -> Option<usize> {
+        self.frames
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, f)| f.entries.get(&key).is_some_and(&pred))
+            .map(|(i, _)| i)
+    }
+
+    /// Index of the innermost frame holding any entry `pred` accepts.
+    pub fn frame_where(&self, pred: impl Fn(&V) -> bool) -> Option<usize> {
+        self.frames
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, f)| f.entries.values().any(&pred))
+            .map(|(i, _)| i)
+    }
+
+    /// Take every frame above index `keep` off the stack, for
+    /// [`reattach`](Self::reattach) to put back. Lookups meanwhile see only
+    /// the frames up to `keep`.
+    pub fn detach_above(&mut self, keep: usize) -> Detached<V> {
+        let at = (keep + 1).clamp(1, self.frames.len());
+        let frames = self.frames.split_off(at);
+        self.floor = self.floor.min(self.frames.len());
+        self.rev = next_rev();
+        Detached { frames }
+    }
+
+    /// Put back frames taken by [`detach_above`](Self::detach_above), above
+    /// whatever the stack holds now.
+    pub fn reattach(&mut self, detached: Detached<V>) {
+        self.frames.extend(detached.frames);
+        self.rev = next_rev();
+    }
+
+    /// Push a frame holding `entries` that stands for frame `id`: a copy of
+    /// it, which a later [`frames`](Self::frames) reports under the same id.
+    pub fn push_as(&mut self, tag: ScopeTag, id: u64, entries: impl IntoIterator<Item = (Sym, V)>) {
+        self.frames.push(Frame { tag, id, entries: entries.into_iter().collect() });
+        self.rev = next_rev();
+    }
+
+    /// The bindings of the frame at `index`.
+    pub fn frame_entries(&self, index: usize) -> impl Iterator<Item = (Sym, &V)> {
+        self.frames.get(index).into_iter().flat_map(|f| f.entries.iter().map(|(k, v)| (*k, v)))
+    }
+
+    /// Every frame, outermost first: its tag, its id and its entries.
+    pub fn frames(&self) -> impl Iterator<Item = (ScopeTag, u64, impl Iterator<Item = (Sym, &V)>)> {
+        self.frames
+            .iter()
+            .map(|f| (f.tag, f.id, f.entries.iter().map(|(k, v)| (*k, v))))
+    }
+
+    /// A stack of the given frames, outermost first, each keeping its id.
+    /// The first becomes the root whatever its tag; an empty list gives
+    /// [`Scope::new`].
+    pub fn from_frames(frames: Vec<FrameCopy<V>>) -> Self {
+        let mut scope = Self { frames: Vec::new(), floor: 0, rev: next_rev() };
+        for (tag, id, entries) in frames {
+            scope.frames.push(Frame { tag, id, entries: entries.into_iter().collect() });
+        }
+        match scope.frames.first_mut() {
+            Some(root) => root.tag = ScopeTag::ROOT,
+            None => return Self::new(),
+        }
+        scope
     }
 
     /// Iterate entries from the top frame downward, stopping when a frame

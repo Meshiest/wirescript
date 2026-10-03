@@ -1,4 +1,5 @@
 use super::*;
+use crate::ast::walk;
 
 // ---------- expressions ----------
 
@@ -34,10 +35,22 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     if let Some(port) = try_lower_integer_to_enum(ctx, e) {
         return port;
     }
+    if let Some(lit) = int_constant_expr_as_float(ctx, e) {
+        return literal_node(ctx, e, Type::Float, lit);
+    }
+    if let Some(lit) = float_constant_expr_as_int(ctx, e) {
+        return literal_node(ctx, e, Type::Int, lit);
+    }
     match e {
-        Expr::IntLit { value, .. } => literal_node(ctx, e, Type::Int, Literal::Int(*value)),
+        Expr::IntLit { value, .. } => {
+            let (ty, lit) = constant_literal(ctx, e, Literal::Int(*value));
+            literal_node(ctx, e, ty, lit)
+        }
         Expr::AtomLit { value, .. } => literal_node(ctx, e, Type::Int, Literal::Int(*value)),
         Expr::FloatLit { value, .. } => literal_node(ctx, e, Type::Float, Literal::Float(*value)),
+        Expr::BoolLit { value, .. } if ctx.type_of(e) == Type::Int => {
+            literal_node(ctx, e, Type::Int, Literal::Int(i64::from(*value)))
+        }
         Expr::BoolLit { value, .. } => literal_node(ctx, e, Type::Bool, Literal::Bool(*value)),
         // `null` lowers to its resolved type's zero/default (typecheck recorded
         // the type via `check_null`): an unset object, `0`, `false`, `""`, …
@@ -91,7 +104,8 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                     return port;
                 }
             }
-            lower_ident(ctx, name, range)
+            let port = lower_ident(ctx, name, range);
+            retype_int_constant(ctx, e, port)
         }
         Expr::BinOp { .. } => lower_binop(ctx, e),
         Expr::UnOp { .. } => lower_unop(ctx, e),
@@ -121,7 +135,7 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 }
                 ctx.warn(
                     format!(
-                        "'*{}' deref requires exec context — use .Value for pure reads",
+                        "'*{}' deref requires exec context; use .Value for pure reads",
                         name
                     ),
                     range,
@@ -133,6 +147,14 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         Expr::RefOf { operand, range } => lower_ref_of(ctx, operand, range),
         Expr::TuplePick { range, .. } => {
             if let Some(binding) = resolve_field_chain(ctx, e).cloned()
+                // A gate read held as its outputs is its first output here.
+                && let binding = match &binding {
+                    Binding::Record(rec) => {
+                        crate::lower::context::held_output(ctx, rec, range, crate::lower::context::OutputPick::First)
+                            .unwrap_or(binding)
+                    }
+                    _ => binding,
+                }
                 && let Some(port) = binding_to_port(ctx, &binding, range)
             {
                 return port;
@@ -146,7 +168,7 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 .and_then(|b| crate::lower::access::binding_to_port(ctx, &b, range))
             {
                 Some(port) => port,
-                None => synthesise_unsupported_range(ctx, range),
+                None => synthesise_unsupported_range(ctx, "an `unsafe` read", range),
             }
         }
         Expr::Is { value, path, range } => {
@@ -160,18 +182,38 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             then_branch,
             else_branch,
             range,
-        } => lower_if_expr(ctx, cond, then_branch, else_branch, range),
+        } => {
+            if ctx.current_exec.is_some() {
+                warn_handlers_ungated_by_arm(ctx, walk::Node::Expr(then_branch));
+                warn_handlers_ungated_by_arm(ctx, walk::Node::Expr(else_branch));
+            }
+            if ctx.current_exec.is_some() && (has_effects(ctx, then_branch) || has_effects(ctx, else_branch)) {
+                return crate::lower::stmt::lower_if_value(ctx, cond, then_branch, else_branch, range, e);
+            }
+            lower_if_expr(ctx, cond, then_branch, else_branch, range)
+        }
         Expr::MatchExpr { scrutinee, arms, range } => {
-            // In statement position (a live exec chain) a match whose arms are
-            // blocks threads exec through a Branch/Union tree - the statement
-            // form; a block arm carries no value, so the pure Select tree cannot
-            // express it. Every other match (value position, or expression-bodied
-            // arms) stays the pure Select form. The caller (`Stmt::ExprStmt`)
-            // discards the returned port; the exec continues via `current_exec`.
+            // A value `match` with a block arm (one that leaves through a
+            // `return`, typecheck's WS095), or an arm that does more than give
+            // its value, threads exec through the statement form's Branch/Union
+            // tree, so each arm runs only when it matches; its value arms store
+            // into a scratch var. A `match` statement reaches `lower_match_stmt`
+            // from `Stmt::ExprStmt`.
+            if ctx.current_exec.is_some() {
+                for arm in arms {
+                    match &arm.body {
+                        MatchBody::Expr(x) => warn_handlers_ungated_by_arm(ctx, walk::Node::Expr(x)),
+                        MatchBody::Block(b) => warn_handlers_ungated_by_arm(ctx, walk::Node::Block(b)),
+                    }
+                }
+            }
             if ctx.current_exec.is_some()
-                && arms.iter().any(|a| matches!(a.body, MatchBody::Block(_)))
+                && arms.iter().any(|a| match &a.body {
+                    MatchBody::Block(_) => true,
+                    MatchBody::Expr(x) => has_effects(ctx, x),
+                })
             {
-                return lower_match_stmt(ctx, scrutinee, arms, range);
+                return crate::lower::stmt::lower_match_value(ctx, scrutinee, arms, range, e);
             }
             lower_match_expr(ctx, scrutinee, arms, range, e)
         }
@@ -204,12 +246,28 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         }
         Expr::RecordLit { range, .. } => {
             // Record literals are handled in lower_let_decl, not as standalone expressions.
-            synthesise_unsupported_range(ctx, range)
+            synthesise_unsupported_range(ctx, crate::diagnostic::LITERAL_AS_ONE_VALUE, range)
         }
         // A map literal reaching the generic expression lowerer is in an
         // unsupported position (not a map-var initializer). Lowering intercepts
         // `MapLit` in the assignment/initializer path before it reaches here.
-        Expr::MapLit { range, .. } => synthesise_unsupported_range(ctx, range),
+        Expr::MapLit { range, .. } => synthesise_unsupported_range(ctx, "a map literal where one value goes", range),
+        // An array literal read as a value: a constant one is an immutable
+        // container, like a `const` table; one with a runtime element has no
+        // storage to hand out.
+        Expr::Array { range, .. } => {
+            if let Some(rec) = super::predeclare::materialize_literal_container(ctx, e, "literal") {
+                return rec.node_id.port(WirePort::ArrayVarRef);
+            }
+            ctx.error(
+                "WS044",
+                "this array literal has a non-constant element, so it names no storage \
+                 for its value to come from. Build it in a `var` (`var xs: int[]` and \
+                 `xs.push(..)`) and use that",
+                range,
+            );
+            synthesise_unsupported_no_warn(ctx, range)
+        }
         // A well-formed `Expr::VariantCtor` (named enum-payload construction,
         // `Enum.Variant { f: v, ... }`) is always intercepted by
         // `try_lower_enum_ctor` above, before this match runs. Reaching this
@@ -218,7 +276,7 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         // `lower` before checking for errors: a shadowed/unknown enum name, a
         // non-`FieldAccess` path, ...). Placeholder, not a panic, so such a
         // program still returns its diagnostics instead of crashing.
-        Expr::VariantCtor { range, .. } => synthesise_unsupported_range(ctx, range),
+        Expr::VariantCtor { range, .. } => synthesise_unsupported_range(ctx, "an enum construction", range),
         _ => synthesise_unsupported(ctx, e),
     }
 }
@@ -244,14 +302,17 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
 /// backing store or the scope-population order later changes. The other
 /// type-only shadows typecheck has (a `type Some = ..` alias, a namespace) are
 /// unreachable here - using such a name in value/call position is itself a
-/// typecheck error, so no clean program reaches this with one.
+/// typecheck error, so no clean program reaches this with one. A `const`
+/// parameter is bound by its constant alone (no scope binding), so a constant
+/// of the name shadows too.
 fn resolve_bare_variant_enum(ctx: &LowerCtx, name: &str) -> Option<String> {
     crate::typecheck::enums::resolve_bare_variant_enum(&ctx.enum_defs, name, |n| {
         ctx.scope.get(n).is_some()
-            || ctx.enum_defs.contains_key(n)
+            || ctx.constant(n, crate::const_scope::Admit::All).is_some()
+            || ctx.enum_defs.expression_path(n).is_some()
             || ctx.resolve_mod(n).is_some()
     })
-    .map(str::to_string)
+    .map(|def| def.name.clone())
 }
 
 /// Recognize `e` as an enum CONSTRUCTION - unit `Enum.Variant`/bare `Variant`,
@@ -275,13 +336,8 @@ fn try_lower_enum_ctor(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
     // `Enum.Variant`/`Enum.Variant(args)`/`Enum.Variant { .. }` forms below
     // aren't a construction at all.
     let qualified = |obj: &Expr, field: &str| -> Option<(String, String)> {
-        let Expr::Ident { name, .. } = obj else {
-            return None;
-        };
-        if ctx.scope.get(name).is_some() {
-            return None;
-        }
-        Some((name.clone(), field.to_string()))
+        let name = ctx.enum_head(obj)?;
+        Some((name.to_string(), field.to_string()))
     };
     let (enum_name, variant) = match e {
         Expr::FieldAccess { obj, field, .. } => qualified(obj, field)?,
@@ -310,12 +366,19 @@ fn try_lower_enum_ctor(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
     // value layout (`__disc` + per-variant payload slots) is the same, its type
     // arguments having been erased once typecheck inferred them. Only an unknown
     // variant falls through to ordinary field/call lowering.
-    let def = ctx.enum_defs.get(&enum_name)?;
+    let def = ctx.enum_defs.expression_path(&enum_name)?;
     if !def.variants.iter().any(|v| v.name == variant) {
         return None;
     }
 
-    let payload: Vec<(String, Binding)> = match e {
+    // Each payload value is fixed at its value before a later one runs code
+    // that may change what it reads.
+    let mut ord = crate::lower::ordered::Ordered::default();
+    let mut payload_value = |ctx: &mut LowerCtx, name: String, v: &Expr| {
+        let slot = ord.source(ctx, &name, None, v.range(), |ctx| Some(lower_payload_value(ctx, v)));
+        (name, slot)
+    };
+    let payload: Vec<(String, Option<usize>)> = match e {
         // Key each positional arg by its index AMONG POSITIONAL ARGS (not its
         // index among all args), matching `static_enum_ctor` in predeclare.rs
         // exactly so the two producers of the `__{V}_{i}` slot key can never
@@ -327,8 +390,7 @@ fn try_lower_enum_ctor(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
             let mut i = 0usize;
             for a in args {
                 if let CallArg::Positional(v) = a {
-                    let binding = lower_payload_value(ctx, v);
-                    out.push((i.to_string(), binding));
+                    out.push(payload_value(ctx, i.to_string(), v));
                     i += 1;
                 }
             }
@@ -337,21 +399,23 @@ fn try_lower_enum_ctor(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
         Expr::VariantCtor { fields, .. } => fields
             .iter()
             .filter_map(|f| match f {
-                RecordLitField::Named { name, value, .. } => {
-                    Some((name.clone(), lower_payload_value(ctx, value)))
-                }
+                RecordLitField::Named { name, value, .. } => Some(payload_value(ctx, name.clone(), value)),
                 RecordLitField::Shorthand { name, range } => {
                     let ident = Expr::Ident {
                         name: name.clone(),
                         range: range.clone(),
                     };
-                    Some((name.clone(), lower_payload_value(ctx, &ident)))
+                    Some(payload_value(ctx, name.clone(), &ident))
                 }
                 RecordLitField::Spread { .. } => None,
             })
             .collect(),
         _ => Vec::new(),
     };
+    let payload: Vec<(String, Binding)> = payload
+        .into_iter()
+        .filter_map(|(name, slot)| Some((name, ord.value(ctx, slot?)?)))
+        .collect();
 
     // The concrete type arguments (for a generic enum) come from the use-site
     // type typecheck pinned, so `build_enum_fields` lays each payload slot out at
@@ -391,9 +455,18 @@ fn try_lower_enum_ctor(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
 /// `pending_inline_record`), so a record and a nested enum both land here by the
 /// same path the ordinary record-assignment lowering uses. Scalars have no field
 /// map, so they fall back to the one-port form unchanged.
+///
+/// Only a value typecheck did not type as a scalar is probed, and a call the
+/// probe lowered is kept, so a payload runs once (`S.B(a.pop().Value)` pops
+/// once), as a record-literal field does.
 fn lower_payload_value(ctx: &mut LowerCtx, value: &Expr) -> Binding {
-    if let Some(fields) = crate::lower::stmt::value_record_fields(ctx, value) {
-        return Binding::Record(fields);
+    if crate::lower::decl::record_valued(ctx, value) {
+        if let Some(fields) = crate::lower::stmt::value_record_fields(ctx, value) {
+            return Binding::Record(fields);
+        }
+        if let Some(port) = crate::lower::stmt::take_value_record_port(ctx, value) {
+            return Binding::Local(LocalRecord { port });
+        }
     }
     Binding::Local(LocalRecord {
         port: lower_expr(ctx, value),
@@ -424,14 +497,9 @@ fn try_lower_enum_from_int(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
     if field != "FromInt" {
         return None;
     }
-    let Expr::Ident { name: enum_name, .. } = obj.as_ref() else {
-        return None;
-    };
     // A value symbol shadowing the enum's name means this is not a construction.
-    if ctx.scope.get(enum_name).is_some() {
-        return None;
-    }
-    let def = ctx.enum_defs.get(enum_name).cloned()?;
+    let enum_name = ctx.enum_head(obj)?;
+    let def = ctx.enum_defs.expression_path(enum_name).cloned()?;
     if def.variants.iter().any(|v| v.name == "FromInt") {
         return None;
     }
@@ -499,7 +567,7 @@ fn try_lower_enum_to_integer(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
     let Expr::Call { callee, args, .. } = e else {
         return None;
     };
-    let Expr::Ident { name, .. } = callee.as_ref() else {
+    let Expr::Ident { name, range: name_range } = callee.as_ref() else {
         return None;
     };
     if name != "EnumToInt" {
@@ -507,7 +575,7 @@ fn try_lower_enum_to_integer(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
     }
     // A user chip/mod of the same name shadows the builtin (matches the
     // `lookup_chip`-first dispatch in `lower::call::dispatch::lower_call`).
-    if ctx.lookup_chip(name).is_some() {
+    if ctx.call_target_chip(name, &name_range.file).is_some() {
         return None;
     }
     let Some(CallArg::Positional(value)) = args.first() else {
@@ -561,21 +629,22 @@ fn try_lower_integer_to_enum(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
     let Expr::Call { callee, args, .. } = e else {
         return None;
     };
-    let Expr::Ident { name, .. } = callee.as_ref() else {
+    let Expr::Ident { name, range: name_range } = callee.as_ref() else {
         return None;
     };
     if name != "IntToEnum" {
         return None;
     }
-    if ctx.lookup_chip(name).is_some() {
+    if ctx.call_target_chip(name, &name_range.file).is_some() {
         return None;
     }
     // The concrete enum type is pinned by the use site (typecheck recorded it).
-    let (enum_name, enum_args) = match ctx.type_of(e) {
-        Type::Enum { name, args } => (name, args),
+    let enum_ty = ctx.type_of(e);
+    let (enum_name, enum_args) = match &enum_ty {
+        Type::Enum { name, args } => (name.clone(), args.clone()),
         _ => return None,
     };
-    let def = ctx.enum_defs.get(&enum_name).cloned()?;
+    let def = ctx.enum_defs.of(&enum_ty).cloned()?;
     // The first positional arg is the integer; a later `wrap` may be positional
     // or named.
     let value = args.iter().find_map(|a| match a {
@@ -670,7 +739,7 @@ pub(super) fn lower_enum_ctor(
     payload: Vec<(String, Binding)>,
     range: &SourceRange,
 ) -> Binding {
-    let Some(def) = ctx.enum_defs.get(enum_name).cloned() else {
+    let Some(def) = ctx.enum_defs.expression_path(enum_name).cloned() else {
         let mut fields = HashMap::default();
         let disc_port = literal_node_range(ctx, range, Type::Int, Literal::Int(0));
         fields.insert(
@@ -729,6 +798,122 @@ fn asset_reference_gate(asset_type: &str) -> &'static str {
     }
 }
 
+/// A number constant `e` as the literal it lowers to under the type typecheck
+/// recorded for it (`const_eval::coerce_const_to_type`): an integer is the
+/// float it names in a `float` slot, a float the integer it truncates to in
+/// an `int` slot, and each is itself anywhere else.
+pub(in crate::lower) fn constant_literal(ctx: &LowerCtx, e: &Expr, lit: Literal) -> (Type, Literal) {
+    let ty = ctx.type_of(e);
+    if let (Type::Bool, Literal::Int(n)) = (&ty, &lit) {
+        return (Type::Bool, Literal::Bool(*n != 0));
+    }
+    match crate::const_eval::coerce_const_to_type(lit, &ty, ctx.consts.types()) {
+        Literal::Float(f) => (Type::Float, Literal::Float(f)),
+        lit => (Type::Int, lit),
+    }
+}
+
+/// An integer constant expression (a name bound to one, or an operator, call,
+/// index or field read of constants) that typecheck typed `float` because it
+/// flows into a `float` slot: the float it names. Each read is typed on its
+/// own, so the same constant read into an `int` slot stays an integer.
+///
+/// Every name `e` reads resolves through the scope (`certified_const_ctx`),
+/// so a parameter or local named like an outer constant keeps its own wire.
+/// An integer operation the certified fold table has no result for, in `e`,
+/// in a `const mod` it calls or behind a name it reads, leaves the value to
+/// the gate.
+fn int_constant_expr_as_float(ctx: &LowerCtx, e: &Expr) -> Option<Literal> {
+    if !matches!(
+        e,
+        Expr::Ident { .. }
+            | Expr::BinOp { .. }
+            | Expr::UnOp { .. }
+            | Expr::Call { .. }
+            | Expr::IndexAccess { .. }
+            | Expr::FieldAccess { .. }
+            | Expr::TuplePick { .. }
+    ) || !matches!(ctx.type_of(e), Type::Float)
+    {
+        return None;
+    }
+    let lookup = |n: &str| ctx.resolve_mod(n);
+    let mut budget = crate::const_eval::Budget::default();
+    match crate::const_eval::eval_expr(e, &ctx.certified_const_ctx(Some(&lookup)), &mut budget) {
+        Ok(lit @ Literal::Int(_)) if !budget.uncertified => {
+            Some(crate::const_eval::coerce_const_to_type(lit, &Type::Float, ctx.consts.types()))
+        }
+        _ => None,
+    }
+}
+
+/// A float constant expression (a literal, a name bound to one, or an operator,
+/// call, index or field read of constants) that typecheck typed `int` because
+/// it flows into an `int` slot: the integer it truncates to, as
+/// `const_eval::coerce_const_to_type` holds it.
+fn float_constant_expr_as_int(ctx: &LowerCtx, e: &Expr) -> Option<Literal> {
+    if !matches!(
+        e,
+        Expr::FloatLit { .. }
+            | Expr::Ident { .. }
+            | Expr::BinOp { .. }
+            | Expr::UnOp { .. }
+            | Expr::Call { .. }
+            | Expr::IndexAccess { .. }
+            | Expr::FieldAccess { .. }
+            | Expr::TuplePick { .. }
+    ) || !matches!(ctx.type_of(e), Type::Int)
+    {
+        return None;
+    }
+    let lookup = |n: &str| ctx.resolve_mod(n);
+    let mut budget = crate::const_eval::Budget::default();
+    match crate::const_eval::eval_expr(e, &ctx.certified_const_ctx(Some(&lookup)), &mut budget) {
+        Ok(lit @ Literal::Float(_)) if !budget.uncertified => {
+            Some(crate::const_eval::coerce_const_to_type(lit, &Type::Int, ctx.consts.types()))
+                .filter(|l| matches!(l, Literal::Int(_)))
+        }
+        _ => None,
+    }
+}
+
+/// A name bound to an integer constant, read where typecheck typed it
+/// `float` (an integer constant passed to a `float` parameter): the float
+/// literal it names, beside the shared integer gate.
+fn retype_int_constant(ctx: &mut LowerCtx, e: &Expr, port: PortRef) -> PortRef {
+    match int_constant_as_float(ctx, e, port) {
+        Some(lit) => literal_node(ctx, e, Type::Float, lit),
+        None => port,
+    }
+}
+
+/// The float literal a read `e` of the integer constant at `port` names,
+/// when typecheck typed the read `float`.
+fn int_constant_as_float(ctx: &LowerCtx, e: &Expr, port: PortRef) -> Option<Literal> {
+    let n = ctx.builder.module.nodes.get(&port.node_id).filter(|n| n.gate_class == gc::LITERAL)?;
+    let lit @ Literal::Int(_) = n.properties.get(&*sym::VALUE)?.clone() else {
+        return None;
+    };
+    match constant_literal(ctx, e, lit) {
+        (Type::Float, lit) => Some(lit),
+        _ => None,
+    }
+}
+
+/// Whether `e` names a number constant typecheck typed as the other number
+/// type (an integer typed `float`, a float typed `int`), whose read is a
+/// literal of that type rather than the binding's shared gate.
+pub(in crate::lower) fn reads_constant_as_other_number(ctx: &LowerCtx, e: &Expr) -> bool {
+    if int_constant_expr_as_float(ctx, e).is_some() || float_constant_expr_as_int(ctx, e).is_some() {
+        return true;
+    }
+    let Expr::Ident { name, .. } = e else { return false };
+    match ctx.scope.get(name) {
+        Some(Binding::Local(l)) => int_constant_as_float(ctx, e, l.port).is_some(),
+        _ => false,
+    }
+}
+
 pub(super) fn literal_node(ctx: &mut LowerCtx, e: &Expr, ty: Type, lit: Literal) -> PortRef {
     literal_node_range(ctx, e.range(), ty, lit)
 }
@@ -744,9 +929,9 @@ pub(super) fn literal_node(ctx: &mut LowerCtx, e: &Expr, ty: Type, lit: Literal)
 /// `Type::Any`, the same discipline every other exhaustive match over
 /// `Literal` already applies. Reaching this function at all means a `const`
 /// value is being read bare: a top-level `const`/`let`, OR a `const`
-/// mod/chip parameter — `lower_chip_call_inline`'s `is_const` branch stashes
-/// whatever `const_eval::eval_expr` returns for the call argument into
-/// `scoped_consts` with NO filter on the literal's kind, unlike a top-level
+/// mod/chip parameter: `lower_chip_call_inline`'s `is_const` branch records
+/// whatever `const_eval::eval_expr` returns for the call argument in the
+/// body frame's constants with NO filter on the literal's kind, unlike a top-level
 /// `let` (which special-cases record/array/map/prefab initializers into
 /// their own bindings, mostly bypassing this fallback — see `lower_let_decl`).
 /// So a `const` PARAMETER of any of these "no wire form" types, read bare
@@ -760,7 +945,7 @@ pub(super) fn literal_node(ctx: &mut LowerCtx, e: &Expr, ty: Type, lit: Literal)
 /// has nowhere honest to go (`emit::variants::literal_to_wire_variant`
 /// returns `None` for these same kinds too — there is no wire-variant form
 /// to inline into).
-pub(super) fn wire_type_of_literal(lit: &Literal) -> Option<Type> {
+pub(crate) fn wire_type_of_literal(lit: &Literal) -> Option<Type> {
     match lit {
         Literal::Bool(_) => Some(Type::Bool),
         Literal::Int(_) => Some(Type::Int),
@@ -845,7 +1030,7 @@ pub(super) fn literal_node_range(
 fn lower_ref_of(ctx: &mut LowerCtx, operand: &Expr, range: &SourceRange) -> PortRef {
     let binding = match operand {
         Expr::Ident { name, .. } => ctx.scope.get(name).cloned(),
-        Expr::FieldAccess { .. } => resolve_field_chain(ctx, operand).cloned(),
+        Expr::FieldAccess { .. } | Expr::TuplePick { .. } => resolve_field_chain(ctx, operand).cloned(),
         _ => None,
     };
     match binding {
@@ -888,6 +1073,12 @@ pub(super) fn read_dyn_ref(ctx: &mut LowerCtx, d: &DynRefRecord, range: &SourceR
     }
 }
 
+/// The type typecheck gave the identifier `name` read at `range`, in the
+/// instantiation being lowered.
+fn ident_type(ctx: &LowerCtx, name: &str, range: &SourceRange) -> Type {
+    ctx.type_of(&Expr::Ident { name: name.to_string(), range: range.clone() })
+}
+
 pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -> PortRef {
     let binding = ctx.scope.get(name).cloned();
     match binding {
@@ -919,6 +1110,11 @@ pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -
         Some(Binding::EventParam(p)) => p,
         Some(Binding::Local(local)) => local.port,
         Some(Binding::DynRef(d)) => read_dyn_ref(ctx, &d, range),
+        Some(Binding::Record(ref rec)) if enum_tag(ctx, rec, &ident_type(ctx, name, range)).is_some() => {
+            let tag = enum_tag(ctx, rec, &ident_type(ctx, name, range)).cloned().expect("checked by the guard");
+            crate::lower::access::binding_to_port(ctx, &tag, range)
+                .unwrap_or_else(|| synthesise_unsupported_no_warn(ctx, range))
+        }
         Some(Binding::Record(rec)) => {
             // Records are compile-time bundles of per-field ports; they don't
             // produce a single port. Field access reaches its fields through
@@ -933,30 +1129,48 @@ pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -
             // call written inline, both of which DO lower to a real port and so
             // never reach this arm. Only the binding tells the two apart, so the
             // diagnostic belongs here rather than in typecheck.
-            let mut names: Vec<&str> = rec.keys().map(|k| crate::intern::resolve(*k)).collect();
+            // An enum's slots are internal: name its tag instead.
+            let declared = unwrap_ref(&ident_type(ctx, name, range));
+            let enum_value = matches!(declared, Type::Enum { .. });
+            let mut names: Vec<&str> =
+                rec.keys().map(|k| crate::intern::resolve(*k)).filter(|n| !n.starts_with("__")).collect();
             names.sort_unstable();
-            let hint = match names.first() {
-                Some(f) => format!("read a field (`{name}.{f}`)"),
-                None => "read a field".to_string(),
-            };
-            ctx.error(
-                "WS071",
+            // The first field as the type declares it, when the type names one.
+            if let Some(first) = declared.fields().and_then(|fs| fs.iter().find(|(n, _)| !n.starts_with("__")))
+                && let Some(i) = names.iter().position(|n| *n == first.0)
+            {
+                names.swap(0, i);
+            }
+            let message = if enum_value {
+                format!(
+                    "`{name}` holds an enum value, so it can't be used where a single value is \
+                     expected. Read its tag (`{name}.Discriminant`) or `match` it."
+                )
+            } else {
+                let field = names.first().map_or(String::new(), |f| format!(" (`{name}.{f}`)"));
                 format!(
                     "`{name}` is a record - several wires, not one value - so \
-                     it can't be used where a single value is expected. To \
-                     {hint}; to build a string, concatenate the fields \
-                     individually."
-                ),
-                range,
-            );
+                     it can't be used where a single value is expected. Read \
+                     one of its fields{field}; to build a string, concatenate \
+                     the fields individually."
+                )
+            };
+            // A gate read held as its outputs gives one value its first.
+            if let Some(b) =
+                crate::lower::context::held_output(ctx, &rec, range, crate::lower::context::OutputPick::First)
+                && let Some(port) = crate::lower::access::binding_to_port(ctx, &b, range)
+            {
+                return port;
+            }
+            ctx.error("WS071", message, range);
             synthesise_unsupported_no_warn(ctx, range)
         }
         Some(Binding::Output(_) | Binding::Chip(_) | Binding::Namespace(_)) => {
-            synthesise_unsupported_range(ctx, range)
+            synthesise_unsupported_range(ctx, &format!("a read of `{name}`"), range)
         }
         // Not bound to any wire at all. Before giving up, check whether the
-        // name is a compile-time CONSTANT (`ctx.const_lookup()`: the top-level
-        // `const_env` overlaid by every open `scoped_consts` frame) and, if so,
+        // name is a compile-time CONSTANT (`ctx.const_lookup()`: the module's
+        // constants and those of every open frame, as the scope resolves them) and, if so,
         // materialize it as a literal source gate — the existing
         // literal-inlining pass (`lower/mod.rs`) then folds that gate's value
         // straight into whatever consumes it and prunes the gate, so a constant
@@ -964,7 +1178,7 @@ pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -
         // operand.
         //
         // This is what a `const` PARAMETER needs: `lower_chip_call_inline`
-        // records its value in `scoped_consts` (no wire, so a const-only use
+        // records its value in the body frame's constants (no wire, so a const-only use
         // emits no gates at all), which means the name is deliberately absent
         // from `scope` — without this arm, `mod addk(n: const int, m: int) { out
         // r = n + m }` lowered `n` to `_Unsupported`, a WSP001 warning and a
@@ -991,6 +1205,17 @@ pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -
             {
                 return literal_node_range(ctx, range, ty, lit);
             }
+            // A constant array/map read as a VALUE (an `if` branch, a record
+            // field, a tuple element, a `return`, an `out`, a chip pin): its
+            // runtime form is the container gate, and the value is its ref.
+            let ident = Expr::Ident { name: name.to_string(), range: range.clone() };
+            if let Some(rec) = super::predeclare::materialize_const_container(ctx, &ident) {
+                let port = match rec.storage {
+                    VarStorage::Map => WirePort::MapVarRef,
+                    _ => WirePort::ArrayVarRef,
+                };
+                return rec.node_id.port(port);
+            }
             // Fallback tier: an output port reads as its rerouter's
             // `RER_Output`, the same port a namespaced `L.count` read already
             // resolves to. Keyed under the `out:` prefix, so it is reached only
@@ -1004,7 +1229,26 @@ pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -
             {
                 return out.node_id.port(WirePort::RerOutput);
             }
-            synthesise_unsupported_range(ctx, range)
+            // A mod or chip body reads a top-level `let` where it is called,
+            // so a call above the declaration finds nothing bound yet. Outside
+            // every body, the read itself is above the declaration, which the
+            // type check reports (WS002).
+            if ctx.known_let_names.contains(name) && ctx.chip_call_stack.is_empty() {
+                return synthesise_unsupported_no_warn(ctx, range);
+            }
+            if ctx.known_let_names.contains(name) {
+                ctx.error(
+                    "WS021",
+                    format!(
+                        "`{name}` is read before its declaration: a mod or chip body reads a \
+                         top-level `let` where it is called, so declare `{name}` above the \
+                         first call"
+                    ),
+                    range,
+                );
+                return synthesise_unsupported_no_warn(ctx, range);
+            }
+            synthesise_unsupported_range(ctx, &format!("a read of `{name}`"), range)
         }
     }
 }
@@ -1016,9 +1260,8 @@ pub(super) fn lower_if_expr(
     else_br: &Expr,
     range: &SourceRange,
 ) -> PortRef {
-    let cond_port = lower_expr(ctx, cond);
-    let then_port = lower_expr(ctx, then_br);
-    let else_port = lower_expr(ctx, else_br);
+    let ports = crate::lower::ordered::lower_in_order(ctx, &[cond, then_br, else_br]);
+    let (cond_port, then_port, else_port) = (ports[0], ports[1], ports[2]);
     // Widen to the branches' least upper bound (matches the typecheck result
     // for `Expr::IfExpr`) so the Select gate's ports carry the joined type —
     // e.g. `if c then 1 else 2.0` emits a Float Select, with the int branch's
@@ -1029,12 +1272,15 @@ pub(super) fn lower_if_expr(
     // Inside a generic mod body `type_of` holds the stale last-mask-member type
     // (the per-mask-member body check overwrote it), so read the branches' ACTUAL
     // lowered port types — the concrete monomorph — falling back to `type_of`.
-    // Non-generic lowering keeps the byte-identical `type_of` path.
-    let (then_ty, else_ty) = if ctx.mono_stack.is_empty() {
-        (unwrap_ref(&ctx.type_of(then_br)), unwrap_ref(&ctx.type_of(else_br)))
+    // Non-generic lowering keeps the byte-identical `type_of` path, as does a
+    // non-generic body inlined from a generic caller.
+    // A gate read branch gives its first output.
+    let branch_ty = |ctx: &LowerCtx, e: &Expr| ctx.one_value_type_at(e.range()).unwrap_or(Type::Any);
+    let (then_ty, else_ty) = if ctx.mono_stack.is_empty() || !ctx.in_generic_instance(range) {
+        (unwrap_ref(&branch_ty(ctx, then_br)), unwrap_ref(&branch_ty(ctx, else_br)))
     } else {
-        let then_ty = super::call::arg_port_type(ctx, then_port).unwrap_or_else(|| ctx.type_of(then_br));
-        let else_ty = super::call::arg_port_type(ctx, else_port).unwrap_or_else(|| ctx.type_of(else_br));
+        let then_ty = super::call::arg_port_type(ctx, then_port).unwrap_or_else(|| branch_ty(ctx, then_br));
+        let else_ty = super::call::arg_port_type(ctx, else_port).unwrap_or_else(|| branch_ty(ctx, else_br));
         (unwrap_ref(&then_ty), unwrap_ref(&else_ty))
     };
     let result_ty =
@@ -1073,11 +1319,12 @@ pub(super) fn lower_match_expr(
     match_expr: &Expr,
 ) -> PortRef {
     // The result type is the widening join over the arm bodies - exactly the
-    // type typecheck recorded for the whole match expression.
-    let result_ty = unwrap_ref(&ctx.type_of(match_expr));
-    let scrut_ty = unwrap_ref(&ctx.type_of(scrutinee));
+    // type typecheck recorded for the whole match expression; of a join of
+    // gate reads, its first output, as `lower_if_expr` takes it.
+    let result_ty = unwrap_ref(&ctx.one_value_type_at(match_expr.range()).unwrap_or(Type::Any));
+    let scrut_ty = scrutinee_type(ctx, scrutinee);
     let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
-    let decision = crate::lower::matchtree::build(&ctx.enum_defs, &scrut_ty, &arm_patterns);
+    let decision = crate::lower::matchtree::build(ctx.enums(), &scrut_ty, &arm_patterns);
 
     // An enum value lowers to a `Binding::Record` of `__disc` + payload slots.
     // A NAMED scrutinee (`match s`) resolves to that record through
@@ -1087,7 +1334,7 @@ pub(super) fn lower_match_expr(
     // INPUT port, a typecheck-error program) has no record decomposition - the
     // loud `_Unsupported` placeholder.
     let Some(root) = match_scrutinee_record(ctx, scrutinee) else {
-        return synthesise_unsupported_range(ctx, range);
+        return synthesise_unsupported_range(ctx, "a `match` on a value with no enum tag", range);
     };
 
     // Const-elision fast path: when the scrutinee's `__disc` is a
@@ -1133,9 +1380,16 @@ pub(super) fn lower_match_expr_record(
     if arms.iter().any(|a| matches!(a.body, MatchBody::Block(_))) {
         return None;
     }
-    let scrut_ty = unwrap_ref(&ctx.type_of(scrutinee));
+    // Nor is there a store to confine an arm that acts to its own branch.
+    if ctx.current_exec.is_some()
+        && arms.iter().any(|a| matches!(&a.body, MatchBody::Expr(x) if has_effects(ctx, x)))
+    {
+        crate::lower::stmt::report_effectful_aggregate_choice(ctx, range);
+        return None;
+    }
+    let scrut_ty = scrutinee_type(ctx, scrutinee);
     let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
-    let decision = crate::lower::matchtree::build(&ctx.enum_defs, &scrut_ty, &arm_patterns);
+    let decision = crate::lower::matchtree::build(ctx.enums(), &scrut_ty, &arm_patterns);
     let root = match_scrutinee_record(ctx, scrutinee)?;
     // Const-elision fast path, identical to `lower_match_expr`'s: a
     // compile-time-known `__disc` resolves straight to the taken leaf, so only
@@ -1159,7 +1413,7 @@ fn lower_decision_record(
 ) -> Option<HashMap<crate::intern::Sym, Binding>> {
     use crate::lower::matchtree::Decision;
     match decision {
-        Decision::Leaf(i) => lower_match_arm_record(ctx, &arms[*i], root),
+        Decision::Leaf(i) => lower_match_arm_record(ctx, &arms[*i], root, range),
         // No arm matched. Unlike the scalar path there is no zero LITERAL to
         // fall back on - a record is several wires - and this node is only
         // reachable for a non-exhaustive match, already a WS054 error. It
@@ -1173,7 +1427,7 @@ fn lower_decision_record(
             let disc_port = if cases.len() > 1 || default.is_some() {
                 Some(
                     read_disc_at_path(ctx, root, path, range)
-                        .unwrap_or_else(|| synthesise_unsupported_range(ctx, range)),
+                        .unwrap_or_else(|| synthesise_unsupported_range(ctx, "an enum tag read", range)),
                 )
             } else {
                 None
@@ -1214,12 +1468,13 @@ fn lower_match_arm_record(
     ctx: &mut LowerCtx,
     arm: &MatchArm,
     root: &HashMap<crate::intern::Sym, Binding>,
+    range: &SourceRange,
 ) -> Option<HashMap<crate::intern::Sym, Binding>> {
     let MatchBody::Expr(expr) = &arm.body else {
         return None;
     };
     with_arm_captures(ctx, arm, root, |ctx| {
-        crate::lower::stmt::branch_record_fields(ctx, expr)
+        crate::lower::stmt::choice_branch_fields(ctx, expr, range)
     })
 }
 
@@ -1238,6 +1493,10 @@ pub(super) fn match_scrutinee_record(
     ctx: &mut LowerCtx,
     scrutinee: &Expr,
 ) -> Option<HashMap<crate::intern::Sym, Binding>> {
+    // A gate read is its first output, the enum it reads.
+    if enum_gate_read(ctx, scrutinee).is_some() {
+        return gate_read_enum_value(ctx, scrutinee);
+    }
     if let Some(Binding::Record(root)) = resolve_field_chain(ctx, scrutinee).cloned() {
         return Some(root);
     }
@@ -1248,6 +1507,34 @@ pub(super) fn match_scrutinee_record(
     // same read to a name first always worked, so an inline scrutinee reaching
     // the placeholder was a gap in the resolution, not a limit of the layout.
     crate::lower::stmt::value_record_fields(ctx, scrutinee)
+}
+
+/// The enum value `e`, a gate read whose first output is an enum, gives a
+/// place for one value: that output's tag and payload slots.
+pub(super) fn gate_read_enum_value(ctx: &mut LowerCtx, e: &Expr) -> Option<HashMap<crate::intern::Sym, Binding>> {
+    enum_gate_read(ctx, e)?;
+    let read = crate::lower::stmt::value_record_fields(ctx, e)?;
+    match crate::lower::context::held_output(ctx, &read, e.range(), OutputPick::First) {
+        Some(Binding::Record(value)) => Some(value),
+        Some(_) => None,
+        // An enum container's read lowers to the enum value itself.
+        None => crate::lower::context::enum_disc(&read).is_some().then_some(read),
+    }
+}
+
+/// A gate read whose first output is an enum (`hs.pop()`, `m.get(k)`, a
+/// call of a `mod` with several outputs, a name holding one) as a
+/// scrutinee: that enum.
+fn enum_gate_read(ctx: &LowerCtx, scrutinee: &Expr) -> Option<Type> {
+    let (_, first) = ctx.gate_outputs(scrutinee.range())?.first()?;
+    let first = unwrap_ref(first);
+    matches!(first, Type::Enum { .. }).then(|| first.as_record())
+}
+
+/// The enum a `match`, `if let` or `let ... else` scrutinee is: its checked
+/// type, or the enum a gate read reads first.
+pub(super) fn scrutinee_type(ctx: &LowerCtx, scrutinee: &Expr) -> Type {
+    enum_gate_read(ctx, scrutinee).unwrap_or_else(|| unwrap_ref(&ctx.type_of(scrutinee)))
 }
 
 /// Try to resolve `decision` to its taken terminal (`Leaf`/`Fail`) node using
@@ -1288,7 +1575,7 @@ fn lower_decision(
         }
         Decision::Switch { path, cases, default } => {
             let disc_port = read_disc_at_path(ctx, root, path, range)
-                .unwrap_or_else(|| synthesise_unsupported_range(ctx, range));
+                .unwrap_or_else(|| synthesise_unsupported_range(ctx, "an enum tag read", range));
             // Fold RIGHT: the final default (or `Fail` zero) supplies the
             // innermost `Select`'s `InputA`, and each case wraps another
             // `Select(disc == k, sub, acc)` around it.
@@ -1510,9 +1797,8 @@ pub(super) fn bake_string_bool(lit: Literal, ty: &Type) -> Literal {
 /// non-scalar type — passes through untouched.
 pub(super) fn bake_literal_for_type(lit: Literal, ty: &Type) -> Literal {
     match (&lit, ty) {
-        (Literal::Int(n), Type::Float) => Literal::Float(*n as f64),
+        (Literal::Int(_), Type::Float) | (Literal::Float(_), Type::Int) => crate::const_eval::number_in_type(lit, ty),
         (Literal::Bool(b), Type::Float) => Literal::Float(if *b { 1.0 } else { 0.0 }),
-        (Literal::Float(f), Type::Int) => Literal::Int(*f as i64),
         (Literal::Bool(b), Type::Int) => Literal::Int(*b as i64),
         (Literal::Int(n), Type::Bool) => Literal::Bool(*n != 0),
         (Literal::Float(f), Type::Bool) => Literal::Bool(*f != 0.0),
@@ -1563,8 +1849,8 @@ pub(super) fn literal_for_property_port(
     let lit = expr_to_literal(e).or_else(|| {
         // A bare name referencing a scoped-or-top-level `let` constant (e.g.
         // `let pf = $./foo.brz` ... `SpawnPrefab(prefab = pf)`), resolved via
-        // `ctx.const_lookup()` (top-level `const_env` overlaid by every open
-        // `scoped_consts` frame — see `LowerCtx::push_scope`/`pop_scope`).
+        // `ctx.const_lookup()` (the module's constants and those of every open
+        // frame, as the scope resolves them; see `crate::const_scope`).
         // Restricted to a plain `Ident` (never a compound expression — that
         // would reintroduce the operator-folding hazard above) and to
         // non-composite literal kinds: a named Vector/Rotator/Quat/Color
@@ -1583,8 +1869,17 @@ pub(super) fn literal_for_property_port(
         let Expr::Ident { name, .. } = e else {
             return None;
         };
+        // A constant array/map is a container, not a data value: it takes
+        // the wire path, which reaches it through its materialized gate.
         match ctx.const_lookup().get(name).cloned() {
-            Some(Literal::Vector { .. } | Literal::Rotator { .. } | Literal::Quat { .. } | Literal::LinearColor { .. }) => None,
+            Some(
+                Literal::Vector { .. }
+                | Literal::Rotator { .. }
+                | Literal::Quat { .. }
+                | Literal::LinearColor { .. }
+                | Literal::Array(_)
+                | Literal::Map(_),
+            ) => None,
             other => other,
         }
     })
@@ -1601,20 +1896,48 @@ pub(super) fn literal_for_property_port(
         let mut budget = crate::const_eval::Budget::default();
         crate::const_eval::eval_expr(e, &ctx.const_ctx(Some(&lookup)), &mut budget).ok()
     });
+    // A number constant typecheck held in the other number type (event data
+    // a receiver declares) is that number.
+    let lit = lit.map(|lit| match lit {
+        Literal::Int(_) | Literal::Float(_) => constant_literal(ctx, e, lit).1,
+        other => other,
+    });
     lit.map(|lit| bake_string_bool(lit, port_ty))
 }
 
 pub(super) fn synthesise_unsupported(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
-    synthesise_unsupported_range(ctx, e.range())
+    let port = synthesise_unsupported_no_warn(ctx, e.range());
+    ctx.warn(format!("{}: {}", crate::diagnostic::PLACEHOLDER, unsupported_what(e)), e.range());
+    port
 }
 
-pub(super) fn synthesise_unsupported_range(ctx: &mut LowerCtx, range: &SourceRange) -> PortRef {
+pub(super) fn synthesise_unsupported_range(ctx: &mut LowerCtx, what: &str, range: &SourceRange) -> PortRef {
     let port = synthesise_unsupported_no_warn(ctx, range);
-    ctx.warn(
-        "IR lowering not yet supported for this expression — emitted placeholder",
-        range,
-    );
+    ctx.warn(format!("{}: {what}", crate::diagnostic::PLACEHOLDER), range);
     port
+}
+
+/// What a placeholder stands for, as its diagnostic names it.
+fn unsupported_what(e: &Expr) -> String {
+    match e {
+        Expr::Call { callee, .. } => match callee.as_ref() {
+            Expr::FieldAccess { field, .. } => format!("the method call `.{field}()`"),
+            Expr::Ident { name, .. } => format!("the call `{name}(..)`"),
+            _ => "a call".to_string(),
+        },
+        Expr::Ident { name, .. } => format!("a read of `{name}`"),
+        Expr::FieldAccess { field, .. } => format!("the field read `.{field}`"),
+        Expr::TuplePick { index, .. } => format!("the tuple element read `.{index}`"),
+        Expr::IndexAccess { .. } => "an index read".to_string(),
+        Expr::BinOp { op, .. } | Expr::UnOp { op, .. } => format!("the `{op}` operation"),
+        Expr::IfExpr { .. } => "an `if` expression".to_string(),
+        Expr::MatchExpr { .. } => "a `match` expression".to_string(),
+        Expr::InterpLit { .. } => "a string interpolation".to_string(),
+        Expr::RecordLit { .. } => crate::diagnostic::LITERAL_AS_ONE_VALUE.to_string(),
+        Expr::Array { .. } => "an array literal".to_string(),
+        Expr::MapLit { .. } => "a map literal".to_string(),
+        _ => "this expression".to_string(),
+    }
 }
 
 /// The `_Unsupported` placeholder gate WITHOUT the generic WSP001 warning, for
@@ -1632,4 +1955,232 @@ pub(super) fn synthesise_unsupported_no_warn(
         ..Default::default()
     });
     node_id.port(WirePort::Output)
+}
+
+/// Whether lowering `e` on an exec chain does anything beyond producing its
+/// value: runs a statement or a `match` block arm (which leaves through a
+/// `return`), takes the chain point (`emit` as a value), runs an action
+/// builtin (`CallSpec::has_effect`) or a container mutation, or calls a `mod`/`chip` whose body writes outside
+/// itself (an output it does not own, a variable it did not declare, a
+/// `static var`, a container, an `await`).
+pub(super) fn has_effects(ctx: &LowerCtx, e: &Expr) -> bool {
+    effects_below(ctx, walk::Node::Expr(e), None, &mut HashSet::default())
+}
+
+/// What a `mod`/`chip` body may write without an effect outside it: the names
+/// it declares and its own outputs.
+struct BodyScope<'a> {
+    locals: HashSet<&'a str>,
+    outputs: Vec<&'a str>,
+}
+
+fn effects_below<'a>(
+    ctx: &LowerCtx,
+    node: walk::Node<'a>,
+    body: Option<&BodyScope<'a>>,
+    seen: &mut HashSet<usize>,
+) -> bool {
+    if node_has_effect(ctx, node, body, seen) {
+        return true;
+    }
+    let mut found = false;
+    walk::children(node, &mut |child, flow| {
+        // A nested handler or declaration does not run when the call does.
+        if found || matches!(flow, walk::Flow::Handler | walk::Flow::Decl) {
+            return;
+        }
+        found = effects_below(ctx, child, body, seen);
+    });
+    found
+}
+
+fn node_has_effect<'a>(
+    ctx: &LowerCtx,
+    node: walk::Node<'a>,
+    body: Option<&BodyScope<'a>>,
+    seen: &mut HashSet<usize>,
+) -> bool {
+    let local = |name: &str| body.is_some_and(|b| b.locals.contains(name));
+    match (node, body) {
+        // In an expression, any statement runs on the chain: a `match` block
+        // arm, or a block expression's statement other than a `let`.
+        (walk::Node::Block(_), None) => true,
+        (walk::Node::Stmt(s), None) => !matches!(s, Stmt::Let(_)),
+        (walk::Node::Expr(Expr::CurrentExec { .. }), None) => true,
+        (walk::Node::Stmt(s), Some(b)) => match s {
+            Stmt::Emit(Emit { name, .. }) | Stmt::OutBinding(OutBinding { name, .. }) => {
+                !b.outputs.contains(&name.as_str())
+            }
+            Stmt::Assign(a) => match crate::typecheck::infer::flatten_access(&a.target).0 {
+                Expr::Ident { name, .. } => !local(name),
+                _ => true,
+            },
+            Stmt::Var(v) => v.is_static,
+            Stmt::Await(_) => true,
+            _ => false,
+        },
+        (walk::Node::Expr(Expr::Call { callee, .. }), _) => match callee.as_ref() {
+            Expr::Ident { name, range } => match ctx.call_target_chip(name, &range.file) {
+                Some(decl) => body_has_effects(ctx, decl, seen),
+                None => crate::catalog::calls::find_call(name).is_some_and(|c| c.has_effect()),
+            },
+            Expr::FieldAccess { obj, field, range } => {
+                let mutates = crate::catalog::arrays::array_method(field).is_some_and(|m| m.mutates)
+                    || crate::catalog::maps::map_method(field).is_some_and(|m| m.mutates);
+                if mutates {
+                    return !matches!(crate::typecheck::infer::flatten_access(obj).0, Expr::Ident { name, .. } if local(name));
+                }
+                if crate::catalog::calls::find_call(field).is_some_and(|c| c.receiver.is_some() && c.has_effect()) {
+                    return true;
+                }
+                let decl = match obj.as_ref() {
+                    Expr::Ident { name, .. } => ctx.lookup_ns_chip(name, field),
+                    _ => None,
+                }
+                .or_else(|| ctx.self_mod_chip(field, &range.file));
+                decl.is_some_and(|d| body_has_effects(ctx, d, seen))
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn body_has_effects(ctx: &LowerCtx, decl: &ChipDecl, seen: &mut HashSet<usize>) -> bool {
+    if !seen.insert(decl as *const ChipDecl as usize) {
+        return false;
+    }
+    let scope = body_scope(decl, &[]);
+    effects_below(ctx, walk::Node::Block(&decl.body), Some(&scope), seen)
+}
+
+/// A call in an arm of an `if` or `match` expression on an exec chain to a
+/// `mod` or `chip` with an `on` handler of its own that acts (writes outside
+/// the body, sends, mutates a container): that handler runs on its own
+/// trigger whether or not the arm is taken, and the arm cannot gate it.
+/// Warned once per call (`WS102`). A nested `if` or `match` in the arm warns
+/// for its own arms when it is lowered.
+pub(super) fn warn_handlers_ungated_by_arm(ctx: &mut LowerCtx, arm: walk::Node<'_>) {
+    let mut found: Vec<(String, String, SourceRange)> = Vec::new();
+    let mut visit = |n: walk::Node<'_>| {
+        let walk::Node::Expr(Expr::Call { callee, range, .. }) = n else { return };
+        let decl = match callee.as_ref() {
+            Expr::Ident { name, range } => ctx.call_target_chip(name, &range.file),
+            Expr::FieldAccess { obj, field, .. } => match obj.as_ref() {
+                Expr::Ident { name, .. } => ctx.lookup_ns_chip(name, field),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(decl) = decl else { return };
+        if let Some(trigger) = acting_handler(ctx, decl) {
+            found.push((decl.name.clone(), trigger, range.clone()));
+        }
+    };
+    visit(arm);
+    walk::any_below(arm, |f| matches!(f, walk::Flow::Seq | walk::Flow::AnonChip), &mut |n| {
+        visit(n);
+        false
+    });
+    for (name, trigger, range) in found {
+        if ctx.diagnostics.iter().any(|d| d.code == "WS102" && d.range == range) {
+            continue;
+        }
+        ctx.warn_code(
+            "WS102",
+            format!(
+                "`{name}` runs its `on {trigger}` handler whenever `{trigger}` fires, whether or not this \
+                 branch is taken: the condition only chooses which value is read. To run it only on this \
+                 branch, call it from an `if` statement whose branch fires its trigger"
+            ),
+            &range,
+        );
+    }
+}
+
+/// The trigger of an `on` handler in `decl`'s body that acts, if any. Only the
+/// handler's own locals and `decl`'s outputs are its to write: a `var` or
+/// container the body declares outside the handler keeps what the handler
+/// writes for the next trigger, so writing one acts.
+fn acting_handler(ctx: &LowerCtx, decl: &ChipDecl) -> Option<String> {
+    let key = decl as *const ChipDecl as usize;
+    if let Some(known) = ctx.acting_handler_memo.borrow().get(&key) {
+        return known.clone();
+    }
+    let mut trigger = None;
+    walk::any_below(walk::Node::Block(&decl.body), walk::Flow::on_path, &mut |m| {
+        let walk::Node::Stmt(Stmt::Handler(h)) = m else { return false };
+        let mut locals = HashSet::default();
+        collect_locals(&h.body, &mut locals);
+        let scope = BodyScope { locals, outputs: decl.outputs.iter().map(|o| o.name.as_str()).collect() };
+        if effects_below(ctx, walk::Node::Block(&h.body), Some(&scope), &mut HashSet::default()) {
+            trigger = Some(trigger_text(&h.trigger));
+            return true;
+        }
+        false
+    });
+    ctx.acting_handler_memo.borrow_mut().insert(key, trigger.clone());
+    trigger
+}
+
+/// How a handler's trigger is written.
+fn trigger_text(t: &crate::ast::Trigger) -> String {
+    use crate::ast::Trigger;
+    match t {
+        Trigger::Ident { name, .. } => name.clone(),
+        Trigger::Field { obj, field, .. } => format!("{obj}.{field}"),
+        Trigger::Not { inner, .. } => format!("!{}", trigger_text(inner)),
+        Trigger::Union { parts, .. } => parts.iter().map(trigger_text).collect::<Vec<_>>().join(" | "),
+    }
+}
+
+/// What `decl`'s body, and the nested handler bodies in `handlers`, may
+/// write without an effect outside it.
+fn body_scope<'a>(decl: &'a ChipDecl, handlers: &[&'a Block]) -> BodyScope<'a> {
+    let mut locals: HashSet<&str> = HashSet::default();
+    for block in std::iter::once(&decl.body).chain(handlers.iter().copied()) {
+        collect_locals(block, &mut locals);
+    }
+    BodyScope { locals, outputs: decl.outputs.iter().map(|o| o.name.as_str()).collect() }
+}
+
+/// The names `block` declares, outside its nested handlers and declarations.
+fn collect_locals<'a>(block: &'a Block, locals: &mut HashSet<&'a str>) {
+    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, _| {
+        match n {
+            walk::Node::Stmt(Stmt::Var(v)) if !v.is_static => {
+                locals.insert(v.name.as_str());
+            }
+            walk::Node::Stmt(Stmt::Array(a)) => {
+                locals.insert(a.name.as_str());
+            }
+            walk::Node::Stmt(Stmt::Map(m)) => {
+                locals.insert(m.name.as_str());
+            }
+            walk::Node::Stmt(Stmt::Let(l)) => match &l.binding {
+                LetBinding::Ident { name, .. } => {
+                    locals.insert(name.as_str());
+                }
+                LetBinding::Tuple { names, rest, .. } => {
+                    locals.extend(names.iter().map(String::as_str));
+                    locals.extend(rest.as_deref());
+                }
+                LetBinding::Record { names, .. } => locals.extend(names.iter().map(String::as_str)),
+                LetBinding::RecordDestruct { fields, .. } => {
+                    for f in fields {
+                        match f {
+                            RecordDestructField::Named { name, alias, .. } => {
+                                locals.insert(alias.as_deref().unwrap_or(name));
+                            }
+                            RecordDestructField::Rest { name, .. } => {
+                                locals.insert(name.as_str());
+                            }
+                        }
+                    }
+                }
+            },
+            _ => {}
+        }
+        !matches!(n, walk::Node::Stmt(Stmt::Handler(_) | Stmt::ChipDecl(_)))
+    });
 }

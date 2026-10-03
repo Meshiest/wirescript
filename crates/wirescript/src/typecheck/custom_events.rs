@@ -94,33 +94,19 @@ fn wire_class(t: &Type) -> Option<WireClass> {
     })
 }
 
-/// Resolve a Custom Event param annotation to its type without emitting — the
-/// handler-binding pass already reported any bad annotation, so this must not
-/// double-report. Custom-event data is always a wire variant (a primitive), so
-/// anything more exotic resolves to `any` and simply isn't linted. Delegates
-/// to the crate's single canonical resolver (`types::resolve::resolve_type`);
-/// any diagnostic it would emit is discarded per the no-double-report rule
-/// above.
-fn ce_param_type(te: &TypeExpr) -> Type {
-    let cx = crate::types::resolve::ResolveCtx {
-        params: &[],
-        type_aliases: &HashMap::default(),
-        generic_aliases: &HashMap::default(),
-    };
-    crate::types::resolve::resolve_type(te, &cx, &mut Vec::new())
-}
-
 /// `(channel name, per-slot declared type)` for a handler that is a custom-event
 /// receiver of kind `event_name` (`"CustomEvent"` or `"GlobalCustomEvent"`) with
 /// a literal channel name. `None` for any other handler (or a dynamic channel
 /// name — nothing to key receivers by). An unannotated slot falls back to
 /// `ce_slots`' inferred type for this handler (keyed by its source range) when
 /// present — pass 1 has no inference available yet, so it passes an empty map.
+/// `declared` holds each param's annotation as its declaring file reads it.
 fn ce_receiver_of(
     h: &Handler,
     event_name: &str,
     ce_slots: &CeSlotMap,
-) -> Option<(String, Vec<Option<Type>>)> {
+    declared: &[Option<Type>],
+) -> Option<(String, Vec<Option<RecvSlot>>)> {
     if !matches!(&h.trigger, Trigger::Ident { name, .. } if name == event_name) {
         return None;
     }
@@ -134,33 +120,44 @@ fn ce_receiver_of(
         .params
         .iter()
         .enumerate()
-        .map(|(i, p)| match p.ty.as_ref() {
-            Some(te) => Some(ce_param_type(te)),
+        .map(|(i, _)| match declared.get(i).cloned().flatten() {
+            Some(ty) => Some(RecvSlot { ty, declared: true, capture: false }),
             // Fill from inference when available (pass 2); else unresolved.
-            None => inferred.and_then(|v| v.get(i).cloned().flatten()),
+            None => inferred
+                .and_then(|v| v.get(i).cloned().flatten())
+                .map(|ty| RecvSlot { ty, declared: false, capture: false }),
         })
         .collect();
     Some((name, params))
 }
 
-/// Fold a receiver's declared params into the per-channel signature, keeping the
-/// first classifiable type seen at each slot. Multiple receivers for one channel
-/// are allowed; they define the same wire, so the first concrete type wins.
-fn ce_merge_receiver(
-    map: &mut HashMap<String, Vec<Option<Type>>>,
-    name: String,
-    params: Vec<Option<Type>>,
-) {
+/// A receiver's data param type: the one it declares, or the one inferred
+/// from the first send on its channel.
+#[derive(Clone)]
+struct RecvSlot {
+    ty: Type,
+    declared: bool,
+    /// A `let v: T = await CustomEvent("c")` capture rather than an `on`
+    /// handler's parameter.
+    capture: bool,
+}
+
+/// Fold a receiver's params into the per-channel signature: each slot keeps
+/// every classifiable type a receiver of the channel takes there, so a send
+/// is checked against each receiver, not only the first.
+fn ce_merge_receiver(map: &mut HashMap<String, Vec<Vec<RecvSlot>>>, name: String, params: Vec<Option<RecvSlot>>) {
     let slots = map.entry(name).or_default();
     for (i, ty) in params.into_iter().enumerate() {
         if slots.len() <= i {
-            slots.resize(i + 1, None);
+            slots.resize(i + 1, Vec::new());
         }
-        if slots[i].is_none()
-            && let Some(t) = ty
-            && wire_class(&t).is_some()
+        if let Some(t) = ty
+            && let Some(class) = wire_class(&t.ty)
+            && !slots[i]
+                .iter()
+                .any(|s| wire_class(&s.ty) == Some(class) && s.declared == t.declared && s.capture == t.capture)
         {
-            slots[i] = Some(t);
+            slots[i].push(t);
         }
     }
 }
@@ -237,8 +234,8 @@ pub(super) fn check_custom_event_types(
     // `SendGlobalCustomEvent("x")` only reaches `on GlobalCustomEvent("x")`. Gather
     // each namespace's receivers and senders in one AST walk, then type-check the
     // send/receive pairs within each namespace independently.
-    let mut personal_recv: HashMap<String, Vec<Option<Type>>> = HashMap::default();
-    let mut global_recv: HashMap<String, Vec<Option<Type>>> = HashMap::default();
+    let mut personal_recv: HashMap<String, Vec<Vec<RecvSlot>>> = HashMap::default();
+    let mut global_recv: HashMap<String, Vec<Vec<RecvSlot>>> = HashMap::default();
     let mut personal_send: Vec<&Expr> = Vec::new();
     let mut global_send: Vec<&Expr> = Vec::new();
     // A data slot is ONE wire. A record (or an enum, which lowers as a record of
@@ -250,20 +247,25 @@ pub(super) fn check_custom_event_types(
     crate::analysis::visit_program(
         script,
         &mut |h| {
+            let mut declared: Vec<Option<Type>> = Vec::new();
             if matches!(&h.trigger, Trigger::Ident { name, .. }
                 if name == "CustomEvent" || name == "GlobalCustomEvent")
             {
-                for p in &h.params {
-                    let Some(te) = &p.ty else { continue };
-                    let t = crate::typecheck::resolve::resolve_type_expr(ctx, te);
-                    if matches!(unwrap_ref(&t), Type::Record(_) | Type::Enum { .. }) {
+                declared = h
+                    .params
+                    .iter()
+                    .map(|p| p.ty.as_ref().map(|te| crate::typecheck::resolve::resolve_type_expr(ctx, te)))
+                    .collect();
+                for (p, t) in h.params.iter().zip(&declared) {
+                    let Some(t) = t else { continue };
+                    if matches!(unwrap_ref(t), Type::Record(_) | Type::Enum { .. }) {
                         bad_params.push((p.name.clone(), t.to_string(), p.range.clone()));
                     }
                 }
             }
-            if let Some((name, params)) = ce_receiver_of(h, "CustomEvent", ce_slots) {
+            if let Some((name, params)) = ce_receiver_of(h, "CustomEvent", ce_slots, &declared) {
                 ce_merge_receiver(&mut personal_recv, name, params);
-            } else if let Some((name, params)) = ce_receiver_of(h, "GlobalCustomEvent", ce_slots) {
+            } else if let Some((name, params)) = ce_receiver_of(h, "GlobalCustomEvent", ce_slots, &declared) {
                 ce_merge_receiver(&mut global_recv, name, params);
             }
         },
@@ -291,29 +293,70 @@ pub(super) fn check_custom_event_types(
             severity: Severity::Error,
             code: "WS068".into(),
             message: format!(
-                "custom event data param '{pname}' is {tname}, which spans several wires and                  cannot travel through a single event data slot - pass the fields as separate                  params (`-> (a: int, b: int)`), or send a key and read the value from shared                  storage on the other side"
+                "custom event data param '{pname}' is {tname}, which spans several wires and \
+                 cannot travel through a single event data slot. Pass the fields as separate \
+                 params (`-> (a: int, b: int)`), or send a key and read the value from shared \
+                 storage on the other side"
             ),
             range,
         });
     }
+    // A typed `let v: T = await CustomEvent("c")` receives the event's first
+    // data output as `T`, as a handler's first parameter does.
+    let mut awaits: Vec<&AwaitStmt> = Vec::new();
+    crate::ast::walk::script_children(script, &mut |n, _| {
+        if let crate::ast::walk::Node::Stmt(Stmt::Await(a)) = n {
+            awaits.push(a);
+        }
+        crate::ast::walk::walk(n, Default::default(), &mut |m, _| {
+            if let crate::ast::walk::Node::Stmt(Stmt::Await(a)) = m {
+                awaits.push(a);
+            }
+            true
+        });
+    });
+    for a in awaits {
+        let (None, Some(te), Expr::Call { callee, args, .. }) = (&a.value_expr, &a.binding_type, &a.exec_expr) else {
+            continue;
+        };
+        let Expr::Ident { name: event, .. } = callee.as_ref() else { continue };
+        let Some(chan) = args.iter().find_map(|arg| match arg {
+            CallArg::Positional(Expr::StringLit { value, .. }) => Some(value.clone()),
+            _ => None,
+        }) else {
+            continue;
+        };
+        // Reported where the capture is checked already.
+        let mark = ctx.diagnostics.len();
+        let ty = crate::typecheck::resolve::resolve_type_expr(ctx, te);
+        ctx.diagnostics.truncate(mark);
+        let slot = vec![Some(RecvSlot { ty, declared: true, capture: true })];
+        match event.as_str() {
+            "CustomEvent" => ce_merge_receiver(&mut personal_recv, chan, slot),
+            "GlobalCustomEvent" => ce_merge_receiver(&mut global_recv, chan, slot),
+            _ => {}
+        }
+    }
     check_ce_namespace(ctx, &personal_send, &personal_recv, tmap, "SendCustomEvent", "CustomEvent");
-    check_ce_namespace(
-        ctx,
-        &global_send,
-        &global_recv,
-        tmap,
-        "SendGlobalCustomEvent",
-        "GlobalCustomEvent",
-    );
+    check_ce_namespace(ctx, &global_send, &global_recv, tmap, "SendGlobalCustomEvent", "GlobalCustomEvent");
+}
+
+/// The type a custom-event send's data value `e` sends: a gate read sends
+/// its first output.
+fn sent_type(tmap: &HashMap<(Arc<str>, usize, usize), Type>, e: &Expr) -> Option<Type> {
+    let r = e.range();
+    tmap.get(&(r.file.clone(), r.start.offset, r.end.offset)).map(super::infer::first_output)
 }
 
 /// Within ONE custom-event namespace, warn (WS030) when a send's data value type
-/// disagrees with the receiver's declared param type for the same channel — the
-/// game keys the wire variant off the sender, so a mismatch is a real bug.
+/// disagrees with a receiver's param type for the same channel: the game keys
+/// the wire variant off the sender, so a mismatch is a real bug. A constant is
+/// sent as the type it has, so a number constant of the other number type is
+/// a mismatch too. Each receiver of the channel is checked.
 fn check_ce_namespace(
     ctx: &mut TypeCheckCtx,
     senders: &[&Expr],
-    receivers: &HashMap<String, Vec<Option<Type>>>,
+    receivers: &HashMap<String, Vec<Vec<RecvSlot>>>,
     tmap: &HashMap<(Arc<str>, usize, usize), Type>,
     send_name: &str,
     event_name: &str,
@@ -333,16 +376,18 @@ fn check_ce_namespace(
         // blind, and where the mismatch is fatal rather than merely wrong.
         for (slot, expr) in ce_send_data_args(args) {
             let r = expr.range();
-            let Some(t) = tmap.get(&(r.file.clone(), r.start.offset, r.end.offset)) else {
+            let Some(t) = sent_type(tmap, expr) else {
                 continue;
             };
-            let t = t.clone();
             if wire_class(&t).is_none() {
                 ctx.diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
                     code: "WS045".into(),
                     message: format!(
-                        "custom event '{name}' data #{} has no concrete type (it is {t}), so the                          send emits the float variant and will not match a receiver that declares                          int/bool/string/entity/… — give the value a typed binding (e.g. a `var` of                          that type) rather than `any` or `Opaque(...)`, which erases it",
+                        "custom event '{name}' data #{} has no concrete type (it is {t}), so the \
+                         send emits the float variant and will not match a receiver that declares \
+                         int/bool/string/entity/…. Give the value a typed binding (e.g. a `var` of \
+                         that type) rather than `any` or `Opaque(...)`, which erases it",
                         slot + 1,
                     ),
                     range: r.clone(),
@@ -354,36 +399,84 @@ fn check_ce_namespace(
             continue; // no in-unit receiver to compare against
         };
         for (slot, expr) in ce_send_data_args(args) {
-            let Some(recv_ty) = slots.get(slot).and_then(|o| o.as_ref()) else {
-                continue;
-            };
-            let Some(recv_class) = wire_class(recv_ty) else {
+            let Some(recvs) = slots.get(slot) else {
                 continue;
             };
             let r = expr.range();
-            let Some(send_ty) = tmap.get(&(r.file.clone(), r.start.offset, r.end.offset)) else {
+            let Some(send_ty) = sent_type(tmap, expr) else {
                 continue;
             };
-            let send_ty = send_ty.clone();
             let Some(send_class) = wire_class(&send_ty) else {
                 continue;
             };
-            if send_class != recv_class {
-                ctx.diagnostics.push(Diagnostic {
-                    severity: Severity::Warning,
-                    code: "WS030".into(),
-                    message: format!(
-                        "custom event '{name}' data #{} is {}, but the `on {event_name}(\"{name}\", …)` \
-                         receiver declares {} — {send_name} values must match the receiver's param types",
-                        slot + 1,
-                        send_ty,
-                        recv_ty,
-                    ),
-                    range: r.clone(),
-                });
+            for recv in recvs {
+                let recv_ty = &recv.ty;
+                let Some(recv_class) = wire_class(recv_ty) else {
+                    continue;
+                };
+                if send_class != recv_class {
+                    let message = if recv.capture {
+                        format!(
+                            "custom event '{name}' data #{} is {send_ty}, but a `let v: {recv_ty} = await \
+                             {event_name}(\"{name}\")` capture takes {recv_ty}; {send_name} values must match \
+                             the type the receiver takes",
+                            slot + 1,
+                        )
+                    } else if recv.declared {
+                        format!(
+                            "custom event '{name}' data #{} is {send_ty}, but the `on {event_name}(\"{name}\", ...)` \
+                             receiver declares {recv_ty}; {send_name} values must match the receiver's param types",
+                            slot + 1,
+                        )
+                    } else {
+                        let first = first_send_of(senders, &name, slot, recv_class, tmap)
+                            .map(|f| {
+                                if f.file == r.file {
+                                    format!(" (line {})", f.start.line)
+                                } else {
+                                    let file = f.file.rsplit(['/', '\\']).next().unwrap_or(&f.file);
+                                    format!(" ({file} line {})", f.start.line)
+                                }
+                            })
+                            .unwrap_or_default();
+                        format!(
+                            "custom event '{name}' data #{} is {send_ty}, but the `on {event_name}(\"{name}\", ...)` \
+                             receiver takes {recv_ty} from the first send on this channel{first}; every \
+                             {send_name} on one channel must send the same type, or annotate the receiver's param",
+                            slot + 1,
+                        )
+                    };
+                    ctx.diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        code: "WS030".into(),
+                        message,
+                        range: r.clone(),
+                    });
+                }
             }
         }
     }
+}
+
+/// The data argument of the first send on channel `name` whose slot `slot`
+/// has wire class `class`: the send an unannotated receiver took its type
+/// from (`infer_custom_event_slots` keeps the first in the same order).
+fn first_send_of<'a>(
+    senders: &[&'a Expr],
+    name: &str,
+    slot: usize,
+    class: WireClass,
+    tmap: &HashMap<(Arc<str>, usize, usize), Type>,
+) -> Option<&'a crate::diagnostic::SourceRange> {
+    senders.iter().find_map(|call| {
+        let Expr::Call { args, .. } = call else { return None };
+        if ce_send_event_name(args).as_deref() != Some(name) {
+            return None;
+        }
+        let (_, expr) = ce_send_data_args(args).into_iter().find(|(i, _)| *i == slot)?;
+        let t = sent_type(tmap, expr)?;
+        (wire_class(&t)? == class).then_some(expr.range())
+    })
 }
 
 /// Resolve every UNANNOTATED custom-event receiver slot to a concrete type from
@@ -431,13 +524,10 @@ pub(super) fn infer_custom_event_slots(
                 {
                     let slots = bucket.entry(chan).or_default();
                     for (slot, expr) in ce_send_data_args(args) {
-                        let r = expr.range();
-                        if let Some(t) = tmap.get(&(r.file.clone(), r.start.offset, r.end.offset))
+                        if let Some(t) = sent_type(tmap, expr)
+                            && wire_class(&t).is_some()
                         {
-                            let t = t.clone();
-                            if wire_class(&t).is_some() {
-                                slots.entry(slot).or_insert(t); // first sender wins
-                            }
+                            slots.entry(slot).or_insert(t); // first sender wins
                         }
                     }
                 }
@@ -483,7 +573,7 @@ pub(super) fn infer_custom_event_slots(
                             code: "WS042".into(),
                             message: format!(
                                 "custom event '{}' data param '{}' (#{}): no in-unit sender \
-                                 to infer its type from; defaulting to float — annotate \
+                                 to infer its type from, so it defaults to float; annotate \
                                  `{}: <type>` to silence",
                                 chan.as_deref().unwrap_or(""),
                                 p.name,

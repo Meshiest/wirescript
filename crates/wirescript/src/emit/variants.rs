@@ -51,7 +51,7 @@ pub(super) fn var_type_to_wire_value(ty: Option<&crate::ir::Type>) -> WireValue 
     use crate::ir::Type;
     debug_assert!(
         !matches!(ty, Some(Type::Param(_))),
-        "Type::Param reached emit — monomorphization must substitute it first"
+        "Type::Param reached emit: monomorphization must substitute it first"
     );
     match ty {
         Some(Type::Bool) => WireValue::Bool(false),

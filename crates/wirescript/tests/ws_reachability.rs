@@ -16,6 +16,9 @@
 //! - `WS029` — the old "always annotate a custom-event param" lint; replaced
 //!   by inference from an in-unit sender (WS042 when none is inferable), so
 //!   WS029 is retired.
+//! - `WS094` - an internal compiler error that no program should reach; its
+//!   check is exercised directly by
+//!   `lower::tests::regression_bugs::a_stranded_wire_is_an_internal_error`.
 //!
 //! Two codes (`WS012`, `WS014`) are RESOLVE-phase and fire only on
 //! multi-file programs (imports), so they can't go through the
@@ -231,6 +234,12 @@ fn ws027_is_reachable() {
 fn ws028_is_reachable() {
     let src = "in t: float\nlet e = Easing(0.0, 1.0, t, function = Bogus)\n";
     assert!(diags(src).contains(&"WS028".to_string()));
+    // A constant setting its gate's data field cannot hold [lower].
+    let src = "var n: int = 0\nin go: exec\non go { await SleepTicks(_, delay = 1e30)\n n = 1 }\nout o: int = n\n";
+    assert!(diags(src).contains(&"WS028".to_string()));
+    // A float constant no `int` holds, in an `int` place [typecheck].
+    let src = "var n: int = 1e30\nout o: int = n\n";
+    assert!(diags(src).contains(&"WS028".to_string()));
 }
 
 // WS042 - untyped CustomEvent handler param with no in-unit sender to infer its
@@ -247,7 +256,7 @@ fn ws042_is_reachable() {
 // receiver and a mismatched-type sender in the same unit) [typecheck, warning]
 #[test]
 fn ws030_is_reachable() {
-    let src = "in go: exec\nvar last: int = 0\non CustomEvent(\"dmg\") -> (amount: int) {\n  last = amount\n}\non go {\n  SendCustomEvent(\"dmg\", 1.5)\n}\n";
+    let src = "in go: exec\nin fv: float\nvar last: int = 0\non CustomEvent(\"dmg\") -> (amount: int) {\n  last = amount\n}\non go {\n  SendCustomEvent(\"dmg\", fv)\n}\n";
     assert!(diags(src).contains(&"WS030".to_string()));
 }
 
@@ -501,14 +510,14 @@ fn ws063_is_reachable() {
 // WS054 - non-exhaustive match (a scrutinee variant left uncovered) [typecheck]
 #[test]
 fn ws054_is_reachable() {
-    let src = "enum S { A, B, C }\nin s: S\nout x = match s { A => 1, B => 2 }\n";
+    let src = "enum S { A, B, C }\nvar s: S = S.A\nout x = match s { A => 1, B => 2 }\n";
     assert!(diags(src).contains(&"WS054".to_string()));
 }
 
 // WS061 - unreachable match arm (an earlier arm already covers it) [typecheck, warning]
 #[test]
 fn ws061_is_reachable() {
-    let src = "enum S { A, B }\nin s: S\nout x = match s { _ => 0, A => 1 }\n";
+    let src = "enum S { A, B }\nvar s: S = S.A\nout x = match s { _ => 0, A => 1 }\n";
     assert!(diags(src).contains(&"WS061".to_string()));
 }
 
@@ -582,12 +591,113 @@ fn ws070_is_reachable() {
 }
 
 // WS071 - a record value used where a single value is expected (it is several
-// wires, so it cannot drive one port) [lowering]
+// wires, so it cannot drive one port), or a choice between records holding a
+// record array [lowering]
 #[test]
 fn ws071_is_reachable() {
-    let src = "type Pt = { x: int, y: int }
-let p: Pt = { x: 1, y: 2 }
-out s = \"p=\" .. p
+    let src = "type P = { x: int, y: int }
+type H = { pts: P[], n: int }
+var h: H
+var h2: H
+var o: int = 0
+in go: exec
+in c: bool
+on go { let w = if c then h else h2
+o = w.pts[0].y }
 ";
     assert!(diags(src).contains(&"WS071".to_string()));
+}
+
+// WS091 - a local shadows storage that a mod called in its scope uses
+// [typecheck]
+#[test]
+fn ws091_is_reachable() {
+    let src = "var q: int = 0\nmod bump() { q = q + 1 }\nin go: exec\non go {\n  var q: int = 5\n  bump()\n}\n";
+    assert!(diags(src).contains(&"WS091".to_string()));
+}
+
+// WS098 - an unannotated `var` initialized with an empty `[]` or `{}`
+// [typecheck]
+#[test]
+fn ws098_is_reachable() {
+    let src = "var k: int = 0\nin go: exec\non go {\n  var x = []\n  x.push(k)\n}\n";
+    assert!(diags(src).contains(&"WS098".to_string()));
+}
+
+// WS099 - `return <value>` in a top-level handler [typecheck]
+#[test]
+fn ws099_is_reachable() {
+    let src = "out o: int\nin go: exec\non go { return 1 }\n";
+    assert!(diags(src).contains(&"WS099".to_string()));
+}
+
+// WS100 - a record type read as a value [typecheck]
+#[test]
+fn ws100_is_reachable() {
+    let src = "type Box = { v: int }\nvar n: int = 3\nvar r: int = 0\nin go: exec\non go {\n  let c = Box { v: n }\n  r = c.v\n}\n";
+    assert!(diags(src).contains(&"WS100".to_string()));
+}
+
+// WS101 - an initializer on a new `let s: exec` signal [typecheck]
+#[test]
+fn ws101_is_reachable() {
+    let src = "var n: int = 0\nin go: exec\nlet s: exec = go\non s { n = 2 }\n";
+    assert!(diags(src).contains(&"WS101".to_string()));
+}
+
+// WS102 - an `if`-expression arm calls a chip whose own handler acts [lowering]
+#[test]
+fn ws102_is_reachable() {
+    let src = "in go: exec\nin c: bool\nvar n: int = 0\nout onn: int = n\nvar cnt: int = 0\nout ocnt: int = cnt\n\
+               chip Cx(t: exec, v: int) -> (r: int) {\non t {\ncnt = cnt + 1\nemit r = v\n}\n}\n\
+               on go { n = if c then Cx(go, 3) else 0 }\n";
+    assert!(diags(src).contains(&"WS102".to_string()));
+}
+
+// WS103 - an untyped output written with two types [typecheck]
+#[test]
+fn ws103_is_reachable() {
+    let src = "in go: exec\nin c: bool\non go {\n  if c { out z = 5 } else { out z = \"six\" }\n}\n";
+    assert!(diags(src).contains(&"WS103".to_string()));
+}
+
+// WS104 - an integer constant a float cannot hold exactly, in a float place [typecheck]
+#[test]
+fn ws104_is_reachable() {
+    let src = "var x: float = 9007199254740993\nout ox: float = x\n";
+    assert!(diags(src).contains(&"WS104".to_string()));
+}
+
+// WS105 - a record or tuple written to an output with no type [lower]
+#[test]
+fn ws105_is_reachable() {
+    let src = "type P = { a: int, b: float }\nvar pv: P = { a: 1, b: 2.0 }\nin go: exec\non go { out z = pv }\n";
+    assert!(diags(src).contains(&"WS105".to_string()));
+}
+
+// WS106 - a constant stored as another value: a fraction dropped in an `int`
+// place [typecheck], or a gate setting its field holds inexactly [lower]
+#[test]
+fn ws106_is_reachable() {
+    let src = "var n: int = 2.5\nout o: int = n\n";
+    assert!(diags(src).contains(&"WS106".to_string()));
+    let src = "var n: int = 0\nin go: exec\non go { await SleepTicks(_, delay = 0.999)\n n = 1 }\nout o: int = n\n";
+    assert!(diags(src).contains(&"WS106".to_string()));
+}
+
+// WS107 - a `type` or `enum` named like a builtin type [typecheck]
+#[test]
+fn ws107_is_reachable() {
+    let src = "type float = int\nvar x: float = 1.5\nout ox: float = x\n";
+    assert!(diags(src).contains(&"WS107".to_string()));
+    // `Array` or `Ref` with one type parameter.
+    let src = "type Ref<V> = V[]\nvar x: float = 1.5\nout ox: float = x\n";
+    assert!(diags(src).contains(&"WS107".to_string()));
+}
+
+// WS108 - a top-level name declared again, read by position [typecheck, warning]
+#[test]
+fn ws108_is_reachable() {
+    let src = "in go: exec\nvar n: int = 0\nout o1: int = n\nconst k = 1\nconst k = 2\non go { n = k }\n";
+    assert!(diags(src).contains(&"WS108".to_string()));
 }

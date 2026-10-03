@@ -182,7 +182,7 @@ fn emit_cycle_diagnostic(
         severity: Severity::Error,
         code: "WS005".to_string(),
         message: format!(
-            "cycle in the wire graph has no barrier (Buffer/Queue/EdgeDetector required to break it) — \
+            "cycle in the wire graph has no barrier (a Buffer, Queue or EdgeDetector must break it); \
              {} gate(s) in the loop:{trace}{more}",
             loop_path.len(),
         ),

@@ -18,7 +18,7 @@
 
 ## Source Structure
 
-A Wirescript file (`.ws`) is a sequence of top-level declarations. There is no required entry point or wrapper -- declarations appear at the top level of the file.
+A Wirescript file (`.ws`) is a sequence of top-level declarations. There is no required entry point or wrapper. Declarations appear at the top level of the file.
 
 ```wirescript
 in trigger: exec
@@ -44,8 +44,14 @@ import * as utils from "lib"            // namespace import — utils.swap()
 
 Importable: `mod`, `chip`, `fn`, `let`, `const`, `type`, and a module's
 root-level `var`, array, map, `buffer`, `in` and `out` declarations. Imported
-state is **shared, not copied** -- every importer reads and writes the same
+state is **shared, not copied**: every importer reads and writes the same
 storage gate, so a library module can own state that several entry files drive.
+
+An `enum` of a namespace import is the type `ns.Name`, and its variants are
+`ns.Name.Variant` (`var d: ns.Dir = ns.Dir.S`); inside the module it is `Name`.
+A `match` arm names such a variant by the variant alone (`S =>`). A program has
+one enum of a name, whichever way it is imported, so a namespace import of a
+module declaring an enum the program declares too is `WS013`.
 
 **A SELECTIVE import drops the module's handlers.** `import "lib"` and
 `import * as lib from "lib"` both carry a module's top-level `on` handlers;
@@ -71,12 +77,22 @@ import { onPing } from "lib"
 on CustomEvent("ping") -> (v: int) { onPing(v) }
 ```
 
-To confirm the receivers survived, count them in the lowered graph -- this is
+To confirm the receivers survived, count them in the lowered graph. This is
 the only check that sees the problem:
 
 ```
 just ir main.ws | grep -c Event_Custom
 ```
+
+**A file calls only the mods it can name.** Code in a file calls, as `f(x)` or
+as `x.f()`, only the `mod`s and `chip`s that file declares or that its own
+imports name. A module's private helper, present because an imported body
+calls it, is not callable from the importer, and an importer's own mods are not
+callable from the bodies it imports: a library that needs one declares it, or
+imports it from a module both files import, since a module can't import the
+file that imports it. A plain call to a mod the file can't name is `WS002`, a
+method call `WS036`; a builtin of the same name is called instead where there
+is one.
 
 Paths are resolved relative to the importing file. Circular imports are an error.
 
@@ -125,7 +141,7 @@ that warning off for the line or the file. See
 
 ## Statement Terminators
 
-Statements are terminated by **newlines** or **semicolons**. Both are interchangeable -- you can use whichever style you prefer.
+Statements are terminated by **newlines** or **semicolons**. Both are interchangeable, so you can use whichever style you prefer.
 
 ```wirescript
 // Newline-terminated (typical style)
@@ -171,8 +187,8 @@ let area = width *
   height
 ```
 
-Newlines are also allowed inside delimited groups — call arguments `( ... )`,
-array literals `[ ... ]`, and record literals `{ ... }` — after the opener,
+Newlines are also allowed inside delimited groups (call arguments `( ... )`,
+array literals `[ ... ]`, and record literals `{ ... }`) after the opener,
 around commas, and before the closer, with an optional trailing comma:
 
 ```wirescript
@@ -198,7 +214,7 @@ on RoundStart() {
 }
 ```
 
-Newlines inside blocks are consumed freely -- blank lines are fine.
+Newlines inside blocks are consumed freely, so blank lines are fine.
 
 ## Identifiers
 
@@ -265,6 +281,8 @@ Decimal, hexadecimal, binary, and octal integer literals are supported. Undersco
 0B1100_0011
 ```
 
+An integer constant (a literal, a name bound to an integer constant such as `const N = 3`, or an expression the compiler computes from them, such as `N + 2`, `-N`, an element of a constant array, a field of a constant record or a `const mod` call) in a place typed `float` is that float: a `float` var, parameter (of a `mod`, `chip`, namespaced call or enum payload), return value, output, record or tuple field, container element, or an annotated `let`/`const`, which then holds a `float` in constant evaluation too. So with `mod half(v: float) -> float { return v / 2 }`, `half(3)`, `half(N)` and `half(N + 2)` are `1.5`, `1.5` and `2.5`. Each read decides on its own: `N` read into an `int` place beside them stays an integer. A runtime value is not converted: an `int` variable, input or computed value passed to a `float` place keeps its integer wire, so `half(n)` with `n: int` divides as integers. An `if` or `match` whose arms join to `float` makes its integer arms floats (`(if c then 3 else 2.5) / 2` is `1.5` or `1.25`), unless the whole value goes into an `int` place, which keeps them integers. A record, tuple, array or map literal fits a target whose fields or elements are `float` where its own are integers. A builtin math call such as `clamp(n, 0, 8)` takes its literals as written; `min`, `max`, `clamp`, `abs`, `sign`, `floor`, `ceil` and `round` of integers are integers, and `float` once an operand is.
+
 ### Float Literals
 
 Floating-point literals use decimal notation with an optional exponent.
@@ -277,7 +295,7 @@ Floating-point literals use decimal notation with an optional exponent.
 1_000.0
 ```
 
-A float literal requires a digit after the decimal point -- `1.` alone is not a float literal (it would be parsed as integer `1` followed by a dot).
+A float literal requires a digit after the decimal point: `1.` alone is not a float literal (it would be parsed as integer `1` followed by a dot).
 
 ### String Literals
 
@@ -346,23 +364,23 @@ Operators are listed here for reference. See [Expressions](expressions.md) for f
 
 The following forms are valid at the top level of a script:
 
-- `var name: type = expr` -- Mutable variable
-- `let name = expr` -- Immutable binding
-- `buffer name = expr` -- Buffered value
-- `array name: type[]` -- Array
-- `in name: type` -- Input port
-- `out name = expr` -- Output port
-- `chip name(params) -> outputs { body }` -- Named chip
-- `chip { body }` -- Anonymous chip
-- `chip let name = expr` -- Anonymous chip with let bindings
-- `chip on trigger { body }` -- Anonymous chip with handler
-- `mod name(params) { body }` -- Inline chip (macro-like)
-- `on trigger { body }` -- Event handler
-- `let name = on trigger { body }` -- Captured event with handler
-- `import "path"` -- Import all declarations from file
-- `import { names } from "path"` -- Selective import
-- `import * as ns from "path"` -- Namespace import
-- `if cond { body }` -- Conditional (in exec context)
-- `return` -- Early return from handler
-- `target = expr` -- Assignment (in exec context)
-- `expr` -- Expression statement
+- `var name: type = expr`: Mutable variable
+- `let name = expr`: Immutable binding
+- `buffer name = expr`: Buffered value
+- `array name: type[]`: Array
+- `in name: type`: Input port
+- `out name = expr`: Output port
+- `chip name(params) -> outputs { body }`: Named chip
+- `chip { body }`: Anonymous chip
+- `chip let name = expr`: Anonymous chip with let bindings
+- `chip on trigger { body }`: Anonymous chip with handler
+- `mod name(params) { body }`: Inline chip (macro-like)
+- `on trigger { body }`: Event handler
+- `let name = on trigger { body }`: Captured event with handler
+- `import "path"`: Import all declarations from file
+- `import { names } from "path"`: Selective import
+- `import * as ns from "path"`: Namespace import
+- `if cond { body }`: Conditional (in exec context)
+- `return`: Early return from handler
+- `target = expr`: Assignment (in exec context)
+- `expr`: Expression statement

@@ -622,22 +622,26 @@ out hit = o is Option.Some",
         );
     }
 
-    /// Shadowing inside ONE file stays legal: it is the documented `const a`
-    /// then `let a` idiom, and the cross-file check must not catch it.
+    /// A top-level redeclaration (`const a` then `let a`) hides the earlier
+    /// declaration from its position on and warns `WS108`, naming both lines;
+    /// a `let` in a body may still shadow one before it, silently.
     #[test]
-    fn same_file_let_shadowing_is_still_allowed() {
+    fn a_top_level_redeclaration_is_ws108_and_a_body_let_may_shadow() {
         let loader = mem(&[]);
-        let r = resolve("const a = 1\nlet a = 2\n", "main.ws", &loader);
-        let tc = crate::typecheck::typecheck(
-            &r.ast,
-            "main.ws",
-            &crate::typecheck::CeSlotMap::default(),
-        );
-        assert!(
-            !tc.diagnostics.iter().any(|d| d.code == "WS013"),
-            "same-file shadowing is legal: {:?}",
-            tc.diagnostics
-        );
+        let codes = |src: &str| {
+            let r = resolve(src, "main.ws", &loader);
+            let tc = crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+            tc.diagnostics.iter().map(|d| d.code.clone()).collect::<Vec<_>>()
+        };
+        for src in ["const a = 1\nlet a = 2\n", "let a = 1\nlet a = 2\n", "const a = 1\nconst a = 2\n"] {
+            assert_eq!(codes(src), ["WS108"], "{src}");
+            let r = resolve(src, "main.ws", &loader);
+            let tc = crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+            let msg = &tc.diagnostics[0].message;
+            assert!(msg.contains("line 1") && tc.diagnostics[0].range.start.line == 2, "{msg}");
+        }
+        let body = "in go: exec\nvar n: int = 0\non go {\n let a = 1\n let a = a + 1\n n = a\n}\n";
+        assert!(codes(body).is_empty(), "{:?}", codes(body));
     }
 
     /// Doc comments from different files do not overwrite one another.

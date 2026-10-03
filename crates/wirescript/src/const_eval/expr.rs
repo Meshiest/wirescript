@@ -63,23 +63,85 @@ fn constructor_refused(name: &str) -> String {
     format!("`{name}` has no constant form for these arguments")
 }
 
+/// The constants of each module imported `import * as`, by the file
+/// declaring it, as that module's own code reads them by name (see
+/// [`ConstCtx::module_of`]).
+pub(crate) type ModuleConsts = Arc<HashMap<Arc<str>, Arc<ConstEnv>>>;
+
+/// What a `const mod` body reads when a file declares a name more than once
+/// at its top level: `base`, with each such name of the `const mod`'s own file
+/// holding the constant of the declaration a body declared where the `const
+/// mod` is names (see [`crate::scope::top::TopNames::visible_decl`]), and
+/// absent where that is no constant. A name another file declares more than
+/// once is absent.
+pub(crate) struct ModDups {
+    base: Arc<ConstEnv>,
+    top: Arc<crate::scope::top::TopNames>,
+    values: Arc<crate::lower::DupConsts>,
+    at: std::sync::Mutex<ByDecl>,
+}
+
+/// The constants of each `const mod` body by its declaration's file and
+/// start, once built.
+type ByDecl = HashMap<(Arc<str>, usize), Arc<ConstEnv>>;
+
+impl ModDups {
+    pub(crate) fn new(
+        base: Arc<ConstEnv>,
+        top: Arc<crate::scope::top::TopNames>,
+        values: Arc<crate::lower::DupConsts>,
+    ) -> Self {
+        Self { base, top, values, at: Default::default() }
+    }
+
+    /// The constants the body of a `const mod` declared at `decl` reads.
+    fn of(&self, decl: &SourceRange) -> Arc<ConstEnv> {
+        let key = (decl.file.clone(), decl.start.offset);
+        let mut at = self.at.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(env) = at.get(&key) {
+            return env.clone();
+        }
+        let mut out = (*self.base).clone();
+        let read = crate::scope::top::ReadAt::body(decl);
+        for (name, decls) in self.top.dups() {
+            let own = decls[0].range.file == decl.file;
+            let seen = if own { self.top.visible_decl(name, &read).flatten() } else { None };
+            match seen.and_then(|d| self.values.get(&crate::lower::dup_key(d, name))) {
+                Some(lit) => out.insert(name.to_string(), lit.clone()),
+                None => out.remove(name),
+            };
+        }
+        let env = Arc::new(out);
+        at.insert(key, env.clone());
+        env
+    }
+}
+
 /// Everything const evaluation needs to resolve an expression.
 pub struct ConstCtx<'a> {
-    /// Every constant visible AT THE CURRENT POINT: the module-level
-    /// constants overlaid by every currently-open scope frame (built by
-    /// `TypeCheckCtx::const_lookup` / `LowerCtx::const_lookup`). This is what
-    /// an ordinary expression resolves names against.
-    pub consts: std::sync::Arc<ConstEnv>,
-    /// The MODULE-LEVEL constants ONLY — the top-level `const`/`let`
-    /// bindings, with no scope-local frames merged in. Kept separate from
-    /// `consts` because a `const mod` BODY (see `interp::eval_call`) is
-    /// evaluated against the module's constants plus its own parameters, and
-    /// must NOT see the caller's scope-local bindings — a mod body is its own
-    /// scope, so a caller's local `const` is simply not in it. Mirrors how
-    /// `lower::call::inline` lowers an ordinary mod: it pushes a fresh
-    /// `ScopeTag::MODULE` frame holding the parameters ON TOP of the module
-    /// scope rather than inheriting the call site's frames.
-    pub module_consts: std::sync::Arc<ConstEnv>,
+    /// Every constant visible AT THE CURRENT POINT, as the scope answers each
+    /// name there (see [`crate::const_scope::ConstNames`]). This is what an
+    /// ordinary expression resolves names against, and the one place an
+    /// evaluator asks whether a name it would resolve itself (a bare enum
+    /// variant, an enum, a namespace) is bound here to a value instead.
+    pub(super) consts: crate::const_scope::ConstNames,
+    /// The MODULE-LEVEL constants ONLY, with no scope-local frames merged in.
+    /// Kept separate from `consts` because a `const mod` BODY (see
+    /// `interp::eval_call`) is evaluated against its module's constants plus
+    /// its own parameters, and must NOT see the caller's scope-local bindings:
+    /// a mod body is its own scope, so a caller's local `const` is simply not
+    /// in it. Mirrors how `lower::call::inline` lowers an ordinary mod:
+    /// it pushes a fresh `ScopeTag::MODULE` frame holding the parameters ON
+    /// TOP of the module scope rather than inheriting the call site's frames.
+    pub(super) module_consts: Arc<ConstEnv>,
+    /// The constants of each `import * as` module, by its file: what a
+    /// `const mod` declared in that module evaluates against in place of
+    /// `module_consts`, so its body reads its own module's constants, never
+    /// the importer's of the same name.
+    pub(super) module_by_file: ModuleConsts,
+    /// Where a file declares a name more than once at its top level, what
+    /// the body of each `const mod` reads in place of `module_consts`.
+    pub(super) mod_dups: Option<Arc<ModDups>>,
     /// Resolves a call's callee NAME to its declaration, so `eval_expr`'s
     /// `Expr::Call` arm can tell whether it's calling a `const mod` (and if
     /// so, get the `ChipDecl` `interp::eval_call` needs its body/params from).
@@ -105,7 +167,94 @@ pub struct ConstCtx<'a> {
     /// shared via `Arc`, so a clone is a refcount bump, not a deep copy. It is
     /// the same tradeoff `module_consts`/`consts` already make by being full
     /// clones rather than borrows.
-    pub enum_defs: Arc<crate::collections::HashMap<String, crate::typecheck::enums::EnumDef>>,
+    pub enum_defs: Arc<crate::typecheck::enums::EnumRegistry>,
+    /// Which imported declarations each file named: a `const mod` is called
+    /// only where the calling file can name it, as at run time (see [`crate::ast::ImportScope::user_mod_answers`]).
+    pub imports: Arc<crate::ast::ImportScope>,
+    /// The program's type declarations, which a constant with a declared type
+    /// is held in (see [`super::coerce_const_to_type`]).
+    pub(crate) types: Arc<super::DeclaredTypes>,
+    /// What each type parameter of the `const mod` body being evaluated
+    /// stands for (see `interp::eval_call`): a declared type inside the body
+    /// reads a parameter through this, never an alias of the same name.
+    pub(super) type_args: crate::types::infer::Subst,
+}
+
+impl<'a> ConstCtx<'a> {
+    /// An evaluation reading names through `consts`, calling a `const mod`
+    /// against `module_consts` (or, for one declared in an `import * as`
+    /// module, against that module's own constants in `module_by_file`).
+    pub(crate) fn new(
+        consts: crate::const_scope::ConstNames,
+        module_consts: Arc<ConstEnv>,
+        module_by_file: ModuleConsts,
+        enum_defs: Arc<crate::typecheck::enums::EnumRegistry>,
+        imports: Arc<crate::ast::ImportScope>,
+        types: Arc<super::DeclaredTypes>,
+        lookup_mod: Option<&'a dyn Fn(&str) -> Option<Arc<ChipDecl>>>,
+    ) -> Self {
+        Self {
+            consts,
+            module_consts,
+            module_by_file,
+            mod_dups: None,
+            lookup_mod,
+            enum_defs,
+            imports,
+            types,
+            type_args: crate::types::infer::Subst::default(),
+        }
+    }
+
+    /// This evaluation, its `const mod` bodies reading a name declared more
+    /// than once at the top level by position (see [`ModDups`]).
+    pub(crate) fn with_mod_dups(mut self, mod_dups: Option<Arc<ModDups>>) -> Self {
+        self.mod_dups = mod_dups;
+        self
+    }
+
+    /// A copy reading names through `consts` instead.
+    pub(super) fn with_consts(&self, consts: crate::const_scope::ConstNames) -> Self {
+        Self {
+            consts,
+            module_consts: self.module_consts.clone(),
+            module_by_file: self.module_by_file.clone(),
+            mod_dups: self.mod_dups.clone(),
+            lookup_mod: self.lookup_mod,
+            enum_defs: self.enum_defs.clone(),
+            imports: self.imports.clone(),
+            types: self.types.clone(),
+            type_args: self.type_args.clone(),
+        }
+    }
+
+    /// The constants the body of `decl`, a `const mod`, evaluates against:
+    /// its own module's.
+    pub(super) fn module_of(&self, decl: &ChipDecl) -> Arc<ConstEnv> {
+        if let Some(own) = self.module_by_file.get(&decl.range.file) {
+            return own.clone();
+        }
+        match &self.mod_dups {
+            Some(dups) => dups.of(&decl.range),
+            None => self.module_consts.clone(),
+        }
+    }
+}
+
+/// The enum name an expression path's head writes, unless a constant binding
+/// of the name shadows it: `Dir` in `Dir.N`, and for the head `c.Dir` of
+/// `c.Dir.N`, where `c` is an `import * as` namespace whose module declares
+/// enum `Dir`, that enum's own name.
+fn enum_head<'e>(cx: &ConstCtx, head: &'e Expr) -> Option<&'e str> {
+    match head {
+        Expr::Ident { name, .. } => (!cx.consts.binds(name.as_str())).then_some(name.as_str()),
+        Expr::FieldAccess { obj, field, .. } => {
+            let Expr::Ident { name: ns, range } = obj.as_ref() else { return None };
+            (!cx.consts.binds(ns.as_str()) && cx.enum_defs.namespaced(&range.file, ns, field).is_some())
+                .then_some(field.as_str())
+        }
+        _ => None,
+    }
 }
 
 /// `budget` bounds a `const mod` CALL reached from anywhere inside `e` — a
@@ -118,6 +267,9 @@ pub struct ConstCtx<'a> {
 /// fresh [`Budget::default`] per outer `eval_expr` invocation.
 pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal, ConstError> {
     if let Some(lit) = expr_to_literal_in(e, &cx.consts) {
+        if !matches!(e, Expr::Ident { .. }) && !super::folded_ops_certified(e, &cx.consts) {
+            budget.uncertified = true;
+        }
         return Ok(lit);
     }
     // New surface, certified evaluator (see the seam NOTE at the top of this
@@ -140,8 +292,7 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
         // already-tried named-constant lookup and then to `reason_for` below
         // - an ordinary identifier that isn't a variant is unaffected.
         Expr::Ident { name, .. } => {
-            if let Some(enum_name) = resolve_bare_variant_enum(cx, name)
-                && let Some(def) = cx.enum_defs.get(enum_name)
+            if let Some(def) = resolve_bare_variant_enum(cx, name)
                 && let Some(vdef) = def.variants.iter().find(|v| &v.name == name)
             {
                 return Ok(Literal::Record(vec![(
@@ -247,10 +398,11 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
             // `import * as` alias): seeded into the env under `"Other.value"` by
             // `build_const_env`. Resolved before evaluating `obj`, which is a
             // namespace (not a value) and would otherwise fail as NotConstant.
-            // Skipped when a local const of the same name shadows the alias, so
-            // that record's field wins (matching runtime resolution).
+            // Skipped when anything of the same name is bound here (a
+            // constant record, a parameter, a local), so that value's field
+            // wins (matching runtime resolution).
             if let Expr::Ident { name: ns, .. } = obj.as_ref()
-                && !cx.consts.contains_key(ns.as_str())
+                && !cx.consts.binds(ns.as_str())
                 && let Some(v) = cx.consts.get(&format!("{ns}.{field}"))
             {
                 return Ok(v.clone());
@@ -276,9 +428,8 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
             // variant's own payload shape. Shadow-guarded like the
             // namespaced-const check above: a const binding shadowing the
             // enum's name wins.
-            if let Expr::Ident { name: enum_name, .. } = obj.as_ref()
-                && !cx.consts.contains_key(enum_name.as_str())
-                && let Some(def) = cx.enum_defs.get(enum_name)
+            if let Some(enum_name) = enum_head(cx, obj)
+                && let Some(def) = cx.enum_defs.expression_path(enum_name)
                 && let Some(vdef) = def.variants.iter().find(|v| &v.name == field)
             {
                 return Ok(Literal::Record(vec![(
@@ -412,12 +563,13 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
             // match folds; fall back to the arms' own variant citations otherwise.
             if let Literal::Record(_) = &scrut_lit
                 && let Some(edef) = scrutinee_enum_expr(cx, scrutinee)
-                    .or_else(|| scrutinee_enum(&cx.enum_defs, arms))
+                    .or_else(|| cx.enum_defs.citing_arms(arms))
             {
                 let scrut_ty = Type::Enum { name: edef.name.clone(), args: vec![] };
                 let arm_patterns: Vec<crate::ast::Pattern> =
                     arms.iter().map(|a| a.pattern.clone()).collect();
-                let decision = matchtree::build(&cx.enum_defs, &scrut_ty, &arm_patterns);
+                let enums = crate::typecheck::patterns::Enums { defs: &cx.enum_defs, types: &cx.types };
+                let decision = matchtree::build(enums, &scrut_ty, &arm_patterns);
                 return match matchtree::resolve_const_leaf(&decision, &scrut_lit) {
                     Decision::Leaf(i) => eval_match_arm_body(&arms[i], &scrut_lit, cx, budget),
                     Decision::Fail => Err(ConstError {
@@ -453,6 +605,15 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
         } => {
             let l = eval_expr(left, cx, budget)?;
             let r = eval_expr(right, cx, budget)?;
+            if matches!((&l, &r), (Literal::Int(_), Literal::Int(_)))
+                && {
+                    use crate::catalog::operators::op as o;
+                    [o::ADD, o::SUB, o::MUL, o::DIV, o::REM].contains(&op.as_str())
+                }
+                && crate::lower::certified_binop(op, &l, &r).is_none()
+            {
+                budget.uncertified = true;
+            }
             return eval_const_binop(op, l, r).ok_or_else(|| ConstError {
                 reason: ConstReason::Refused(binop_refused(op)),
                 range: range.clone(),
@@ -474,6 +635,9 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
             range,
         } => {
             let v = eval_expr(operand, cx, budget)?;
+            if op == crate::catalog::operators::op::NEG && v == Literal::Int(i64::MIN) {
+                budget.uncertified = true;
+            }
             return eval_const_unop(op, v).ok_or_else(|| ConstError {
                 reason: ConstReason::Refused(unop_refused(op)),
                 range: range.clone(),
@@ -482,8 +646,8 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
         Expr::Call {
             callee,
             args,
+            type_args,
             range,
-            ..
         } => {
             if let Expr::FieldAccess { obj, field, .. } = callee.as_ref() {
                 // `.length()` on a const array/map: not part of the
@@ -522,7 +686,7 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
             // compile-time use (a `const`, or a const `match` scrutinee) folds
             // the same way. Shadow-guarded on a const value of the same name.
             if let Expr::Ident { name, .. } = callee.as_ref()
-                && !cx.consts.contains_key(name.as_str())
+                && !cx.consts.binds(name.as_str())
             {
                 // `EnumToInt(v)` folds to `v`'s discriminant, exactly like
                 // `v.ToInt()` (see `eval_discriminant`). A runtime argument
@@ -590,13 +754,15 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
             // A non-const decl (or no decl at all) falls through to
             // `reason_for` below, which already reports `NotAConstMod` for
             // any non-constructor named call.
-            if let Expr::Ident { name, .. } = callee.as_ref()
+            if let Expr::Ident { name, range: name_range } = callee.as_ref()
                 && let Some(lookup) = cx.lookup_mod
                 && let Some(decl) = lookup(name)
                 && decl.is_const
+                && cx.imports.user_mod_answers(&decl.range, &name_range.file)
             {
                 let arg_lits = super::interp::bind_call_args(&decl.inputs, args, cx, budget)?;
-                return super::interp::eval_call(&decl, &arg_lits, cx, budget);
+                let written = super::interp::written_type_args(type_args, cx);
+                return super::interp::eval_call(&decl, &arg_lits, &written, cx, budget);
             }
         }
         // `Shape.Box { w: 1.0, h: 2.0 }`: named-payload enum-variant
@@ -612,9 +778,8 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
         // `lower::expr::lower_enum_ctor` either way.
         Expr::VariantCtor { path, fields, .. } => {
             if let Expr::FieldAccess { obj, field: variant, .. } = path.as_ref()
-                && let Expr::Ident { name: enum_name, .. } = obj.as_ref()
-                && !cx.consts.contains_key(enum_name.as_str())
-                && let Some(def) = cx.enum_defs.get(enum_name)
+                && let Some(enum_name) = enum_head(cx, obj)
+                && let Some(def) = cx.enum_defs.expression_path(enum_name)
                 && let Some(vdef) = def.variants.iter().find(|v| &v.name == variant)
             {
                 let mut entries = vec![("__disc".to_string(), Literal::Int(vdef.discriminant))];
@@ -663,55 +828,25 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
 /// names the enum directly: `Dir.E` (a qualified variant reference) or a bare
 /// unit-variant `E`. Const-eval has no type inference, so an all-unit match
 /// (`match Dir.E { N => .., E => .. }`) whose arm names parse as `Pattern::Binding`
-/// rather than `Pattern::Variant` would otherwise not fold via [`scrutinee_enum`]
-/// (which reads only variant citations) - yet the scrutinee already names the
-/// enum unambiguously. Shadow-guarded (a `const` of the enum's name is not a type
-/// reference). `None` for any other scrutinee shape; the caller then falls back to
-/// [`scrutinee_enum`]'s arm-citation search.
+/// rather than `Pattern::Variant` would otherwise not fold through the arms
+/// (`EnumRegistry::citing_arms`, which reads only variant citations) - yet the
+/// scrutinee already names the enum unambiguously. Shadow-guarded (a `const` of
+/// the enum's name is not a type reference). `None` for any other scrutinee
+/// shape; the caller then falls back to the arms' citations.
 fn scrutinee_enum_expr<'c>(cx: &'c ConstCtx, scrutinee: &Expr) -> Option<&'c EnumDef> {
     match scrutinee {
         Expr::FieldAccess { obj, .. } => {
             let Expr::Ident { name, .. } = obj.as_ref() else {
                 return None;
             };
-            if cx.consts.contains_key(name.as_str()) {
+            if cx.consts.binds(name.as_str()) {
                 return None;
             }
-            cx.enum_defs.get(name)
+            cx.enum_defs.expression_path(name)
         }
-        Expr::Ident { name, .. } => {
-            let enum_name = resolve_bare_variant_enum(cx, name)?;
-            cx.enum_defs.get(enum_name)
-        }
+        Expr::Ident { name, .. } => resolve_bare_variant_enum(cx, name),
         _ => None,
     }
-}
-
-fn scrutinee_enum<'e>(
-    enum_defs: &'e HashMap<String, EnumDef>,
-    arms: &[MatchArm],
-) -> Option<&'e EnumDef> {
-    let mut cited: Vec<&str> = Vec::new();
-    for arm in arms {
-        if let crate::ast::Pattern::Variant { variant, .. } = &arm.pattern
-            && !cited.contains(&variant.as_str())
-        {
-            cited.push(variant.as_str());
-        }
-    }
-    if cited.is_empty() {
-        return None;
-    }
-    let mut found: Option<&EnumDef> = None;
-    for edef in enum_defs.values() {
-        if cited.iter().all(|name| edef.variants.iter().any(|v| &v.name == name)) {
-            if found.is_some() {
-                return None; // ambiguous across two declared enums -- refuse
-            }
-            found = Some(edef);
-        }
-    }
-    found
 }
 
 /// Evaluate the taken arm's body (`Decision::Leaf`'s const-eval twin of
@@ -745,15 +880,10 @@ fn eval_match_arm_body(
     let mut consts = cx.consts.clone();
     for (name, slot_path) in captures {
         if let Some(lit) = matchtree::navigate_capture_literal(scrut_lit, &slot_path) {
-            std::sync::Arc::make_mut(&mut consts).insert(name, lit);
+            consts.insert(name, lit);
         }
     }
-    let inner_cx = ConstCtx {
-        consts,
-        module_consts: cx.module_consts.clone(),
-        enum_defs: cx.enum_defs.clone(),
-        lookup_mod: cx.lookup_mod,
-    };
+    let inner_cx = cx.with_consts(consts);
     eval_expr(body, &inner_cx, budget)
 }
 
@@ -896,9 +1026,8 @@ fn eval_discriminant(
     // evaluated. Shadow-guarded like the namespaced-const check above: a
     // const binding shadowing the enum's name wins.
     if let Expr::FieldAccess { obj: enum_obj, field: variant, .. } = obj
-        && let Expr::Ident { name: enum_name, .. } = enum_obj.as_ref()
-        && !cx.consts.contains_key(enum_name.as_str())
-        && let Some(def) = cx.enum_defs.get(enum_name)
+        && let Some(enum_name) = enum_head(cx, enum_obj)
+        && let Some(def) = cx.enum_defs.expression_path(enum_name)
         && let Some(vdef) = def.variants.iter().find(|v| &v.name == variant)
     {
         return Some(Ok(Literal::Int(vdef.discriminant)));
@@ -934,11 +1063,8 @@ fn eval_enum_call_ctor(
     cx: &ConstCtx,
     budget: &mut Budget,
 ) -> Option<Result<Literal, ConstError>> {
-    let Expr::Ident { name: enum_name, .. } = obj else { return None };
-    if cx.consts.contains_key(enum_name.as_str()) {
-        return None; // shadowed by a value of the same name
-    }
-    let def = cx.enum_defs.get(enum_name)?;
+    let enum_name = enum_head(cx, obj)?;
+    let def = cx.enum_defs.expression_path(enum_name)?;
     let vdef = def.variants.iter().find(|v| &v.name == variant)?;
 
     let mut fields = vec![("__disc".to_string(), Literal::Int(vdef.discriminant))];
@@ -980,11 +1106,8 @@ fn eval_enum_from_int(
     if field != "FromInt" {
         return None;
     }
-    let Expr::Ident { name: enum_name, .. } = obj else { return None };
-    if cx.consts.contains_key(enum_name.as_str()) {
-        return None; // shadowed by a value of the same name
-    }
-    let def = cx.enum_defs.get(enum_name)?;
+    let enum_name = enum_head(cx, obj)?;
+    let def = cx.enum_defs.expression_path(enum_name)?;
     if def.variants.iter().any(|v| v.name == "FromInt") {
         return None; // a real variant named FromInt is an ordinary construction
     }
@@ -1008,8 +1131,10 @@ fn eval_enum_from_int(
 /// or lowering's (all three call the same helper).
 ///
 /// Const-eval has no `scope`, so it reconstructs typecheck's shadow set from
-/// the three name-sources it DOES carry, all subsets of typecheck's full scope:
-/// - `consts` - `let`/`const` VALUE bindings (a value named after a variant).
+/// the three name-sources it DOES carry:
+/// - `consts.binds` - every VALUE binding of the name visible here, a
+///   constant or not (a parameter, `let`, `var`, loop or pattern binding
+///   named after a variant: see [`crate::const_scope::ConstNames::binds`]).
 /// - `enum_defs` - a user enum whose NAME collides with a variant
 ///   (`enum Some { .. }`); typecheck shadows it via that enum's type symbol.
 /// - `lookup_mod` - a user `mod`/`chip` named after a variant (`mod Some`);
@@ -1020,16 +1145,13 @@ fn eval_enum_from_int(
 ///   `let y = Some(5)` (with a user `mod Some` in scope) to the prelude record
 ///   while typecheck resolved it as an ordinary mod call.
 ///
-/// The one typecheck shadow const-eval cannot see is a runtime `var`/`type`-
-/// alias named after a variant, but using such a name in bare value/call
-/// position is itself a typecheck error, so no CLEAN program reaches this fold
-/// with such a shadow; any construction this declines falls back to runtime
-/// lowering (lower's fuller rule) anyway. Every term above is a SUBSET of
-/// typecheck's shadow set, so this never RESOLVES a bare name typecheck rejected.
-fn resolve_bare_variant_enum<'c>(cx: &'c ConstCtx, name: &str) -> Option<&'c str> {
+/// A type alias named after a variant is not seen here, but using such a
+/// name in bare value/call position is itself a typecheck error, so no CLEAN
+/// program reaches this fold with such a shadow.
+fn resolve_bare_variant_enum<'c>(cx: &'c ConstCtx, name: &str) -> Option<&'c crate::typecheck::enums::EnumDef> {
     crate::typecheck::enums::resolve_bare_variant_enum(&cx.enum_defs, name, |n| {
-        cx.consts.contains_key(n)
-            || cx.enum_defs.contains_key(n)
+        cx.consts.binds(n)
+            || cx.enum_defs.expression_path(n).is_some()
             || cx.lookup_mod.is_some_and(|f| f(n).is_some())
     })
 }
@@ -1048,8 +1170,7 @@ fn eval_bare_variant_ctor(
     cx: &ConstCtx,
     budget: &mut Budget,
 ) -> Option<Result<Literal, ConstError>> {
-    let enum_name = resolve_bare_variant_enum(cx, name)?;
-    let def = cx.enum_defs.get(enum_name)?;
+    let def = resolve_bare_variant_enum(cx, name)?;
     let vdef = def.variants.iter().find(|v| &v.name == name)?;
 
     let mut fields = vec![("__disc".to_string(), Literal::Int(vdef.discriminant))];
@@ -1322,15 +1443,14 @@ fn reason_for(e: &Expr, cx: &ConstCtx) -> (ConstReason, SourceRange) {
                 // own callee is not a `const mod` — so evaluation never
                 // descended to it. This distinction must be checked rather
                 // than assumed.
-                Expr::Ident { name, .. } => {
-                    let is_const_mod = cx
-                        .lookup_mod
-                        .and_then(|lookup| lookup(name))
-                        .is_some_and(|decl| decl.is_const);
-                    let reason = if is_const_mod {
-                        ConstReason::NestedConstModCall(name.clone())
-                    } else {
-                        ConstReason::NotAConstMod(name.clone())
+                Expr::Ident { name, range: name_range } => {
+                    let decl = cx.lookup_mod.and_then(|lookup| lookup(name)).filter(|decl| decl.is_const);
+                    let reason = match decl {
+                        Some(decl) if cx.imports.user_mod_answers(&decl.range, &name_range.file) => {
+                            ConstReason::NestedConstModCall(name.clone())
+                        }
+                        Some(_) => ConstReason::UnnamedConstMod(name.clone()),
+                        None => ConstReason::NotAConstMod(name.clone()),
                     };
                     (reason, e.range().clone())
                 }

@@ -17,7 +17,6 @@
 use crate::ast::TypeExpr;
 use crate::ir::Type;
 use crate::types::infer::{Constraint, Subst, solve};
-use crate::collections::HashMap;
 
 /// Strip a single leading `Ref` layer. A `*T` param resolves to
 /// `Ref(Param(T))`, but a var passed to it infers to its already-auto-derefed
@@ -40,17 +39,23 @@ pub fn unwrap_ref(t: &Type) -> Type {
 /// it.
 pub fn collect(p: &Type, a: &Type, out: &mut Vec<Constraint>) {
     match p {
-        Type::Param(n) => out.push(Constraint::Eq(n.clone(), a.clone())),
+        // A gate read filling a `T` slot is one value: its first output.
+        Type::Param(n) => match a {
+            Type::Outputs(fields) if !fields.is_empty() => out.push(Constraint::Eq(n.clone(), fields[0].1.clone())),
+            _ => out.push(Constraint::Eq(n.clone(), a.clone())),
+        },
         Type::Array(pi) => {
             if let Type::Array(ai) = a {
                 collect(pi, ai, out);
             }
         }
-        Type::Ref(pi) => {
-            if let Type::Ref(ai) = a {
-                collect(pi, ai, out);
-            }
-        }
+        // A place (a var) filling a `*T` slot reads as its value, so it binds
+        // `T` to that value's type; whether it names storage is checked
+        // with the argument (WS008).
+        Type::Ref(pi) => match a {
+            Type::Ref(ai) => collect(pi, ai, out),
+            other => collect(pi, other, out),
+        },
         Type::Map(pk, pv) => {
             if let Type::Map(ak, av) = a {
                 collect(pk, ak, out);
@@ -65,7 +70,7 @@ pub fn collect(p: &Type, a: &Type, out: &mut Vec<Constraint>) {
             }
         }
         Type::Record(pf) => {
-            if let Type::Record(af) = a {
+            if let Type::Record(af) | Type::Outputs(af) = a {
                 for (name, pt) in pf {
                     if let Some((_, at)) = af.iter().find(|(n, _)| n == name) {
                         collect(pt, at, out);
@@ -107,6 +112,7 @@ pub fn substitute(t: &Type, s: &Subst) -> Type {
                 .map(|(n, ft)| (n.clone(), substitute(ft, s)))
                 .collect(),
         ),
+        Type::Outputs(fs) => Type::Outputs(fs.iter().map(|(n, ft)| (n.clone(), substitute(ft, s))).collect()),
         Type::Enum { name, args } => Type::Enum {
             name: name.clone(),
             args: args.iter().map(|a| substitute(a, s)).collect(),
@@ -118,13 +124,13 @@ pub fn substitute(t: &Type, s: &Subst) -> Type {
 /// Resolve a type-param bound (`T: Bound`) to its mask — the set of concrete
 /// types the param may be instantiated to. `None` (unbounded `T`) is the full
 /// `Variant` mask. A bare class name (`Numeric`, `Scalar`, `Variant`) uses the
-/// matching built-in class mask; otherwise the bound is resolved structurally
-/// via the canonical resolver (`aliases` covers `type X = …` names), a `Union`
-/// becoming its options list and a single concrete type a one-element mask.
-/// Anything unresolvable falls back to the unbounded `Variant` mask — v1
-/// bound-checking only needs to recognize class names and unions, not diagnose
-/// a malformed bound (covered elsewhere). Diagnostics are discarded.
-pub fn mask_for_param(bound: Option<&TypeExpr>, aliases: &HashMap<String, Type>) -> Vec<Type> {
+/// matching built-in class mask; otherwise the bound is the type `resolve`
+/// gives it (the caller's alias-aware resolver, reading each alias where the
+/// bound's file declares it), a `Union` becoming its options list and a single
+/// concrete type a one-element mask. Anything unresolvable falls back to the
+/// unbounded `Variant` mask: v1 bound-checking only needs to recognize class
+/// names and unions, not diagnose a malformed bound (covered elsewhere).
+pub fn mask_for_param(bound: Option<&TypeExpr>, resolve: &dyn Fn(&TypeExpr) -> Type) -> Vec<Type> {
     let Some(te) = bound else {
         return crate::types::classes::variant_mask();
     };
@@ -133,13 +139,23 @@ pub fn mask_for_param(bound: Option<&TypeExpr>, aliases: &HashMap<String, Type>)
     {
         return mask;
     }
-    let empty_generic: HashMap<String, crate::types::resolve::GenericAlias> = HashMap::default();
-    let cx = crate::types::resolve::ResolveCtx {
-        params: &[],
-        type_aliases: aliases,
-        generic_aliases: &empty_generic,
-    };
-    match crate::types::resolve::resolve_type(te, &cx, &mut Vec::new()) {
+    // A union naming a class (`R | Scalar`) admits every member of it.
+    if let TypeExpr::Union { options, .. } = te
+        && options
+            .iter()
+            .any(|o| matches!(o, TypeExpr::Name { name, .. } if crate::types::classes::class_mask(name).is_some()))
+    {
+        let mut mask: Vec<Type> = Vec::new();
+        for o in options {
+            for t in mask_for_param(Some(o), resolve) {
+                if !mask.contains(&t) {
+                    mask.push(t);
+                }
+            }
+        }
+        return mask;
+    }
+    match resolve(te) {
         Type::Union(opts) => opts,
         Type::Any => crate::types::classes::variant_mask(),
         other => vec![other],

@@ -55,7 +55,11 @@ fn main() {
                 Severity::Warning => { total_warnings += 1; ("WARN", "\x1b[33m") }
                 _ => { ("INFO", "\x1b[36m") }
             };
-            let origin = if d.range.file.is_empty() { file_arg.as_str() } else { d.range.file.as_ref() };
+            let origin = if d.range.file.is_empty() {
+                file_arg.as_str().into()
+            } else {
+                wirescript::diagnostic::display_path(&d.range.file)
+            };
             eprintln!(
                 "{}{}\x1b[0m [{}] {} ({}:{}:{})",
                 color, label, d.code, d.message, origin, d.range.start.line, d.range.start.col

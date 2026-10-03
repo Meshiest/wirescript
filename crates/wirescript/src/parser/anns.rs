@@ -452,7 +452,7 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.error(
-                        "'@layout' is module-level only — put it at the very top of the file with a blank line before the first declaration (and after any module doc comment)".to_string(),
+                        "'@layout' is module-level only: put it at the very top of the file with a blank line before the first declaration (and after any module doc comment)".to_string(),
                         tok.start,
                         tok.end,
                     );
@@ -472,7 +472,7 @@ impl<'a> Parser<'a> {
                     None => {
                         let msg = if w == "fold" || w == "flat" {
                             format!(
-                                "'@{w}' is module-level only — put it at the very top of the file with a blank line before the first declaration (and after any module doc comment)"
+                                "'@{w}' is module-level only: put it at the very top of the file with a blank line before the first declaration (and after any module doc comment)"
                             )
                         } else {
                             format!(

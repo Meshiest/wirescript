@@ -60,6 +60,12 @@ pub(super) enum FieldKind {
     /// struct name), which the inlined literal is reshaped to fit — see
     /// [`super::variants::reshape_literal_for_struct`].
     NativeStruct(&'static str),
+    /// A native integer field (payload = its schema type, `i8` .. `u64`)
+    Integer(&'static str),
+    /// A native float field (payload = its schema type, `f32` or `f64`)
+    Real(&'static str),
+    /// A native `bool` field
+    Boolean,
     /// Anything else — serialized as a native literal
     Native,
 }
@@ -99,6 +105,11 @@ pub(super) fn gate_field_meta(gate_class: &str) -> Option<&'static [FieldMeta]> 
                             Some(n @ ("Vector" | "Rotator" | "Quat")) => {
                                 FieldKind::NativeStruct(n)
                             }
+                            Some(n @ ("i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64")) => {
+                                FieldKind::Integer(n)
+                            }
+                            Some(n @ ("f32" | "f64")) => FieldKind::Real(n),
+                            Some("bool") => FieldKind::Boolean,
                             _ => FieldKind::Native,
                         },
                         // Array/FlatArray/Map fields have no special emit

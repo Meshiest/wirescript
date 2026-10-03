@@ -541,24 +541,22 @@ fn a_named_chips_own_const_bakes_in_its_own_handler() {
     );
 }
 
-/// The residual of the case above: a chip declared INSIDE another chip is
-/// built against its own fresh const stack, so the ENCLOSING chip's body
-/// constants do not reach it, while typecheck (whose scopes nest) resolves
-/// them fine. Making that work needs declaration-site const scoping for chip
-/// bodies, which is a design change; what must NOT happen meanwhile is the
-/// old behaviour — baking an empty channel name and saying nothing.
+/// The nested form of the case above: a chip declared INSIDE another chip is
+/// built against the constants of the scope its declaration sees, so the
+/// ENCLOSING chip's body constants reach it, as typecheck (whose scopes nest)
+/// resolves them. It once reported WS028 at lowering instead.
 #[test]
-fn a_config_value_that_does_not_resolve_at_lowering_reports_instead_of_baking_a_default() {
-    let codes = lowering_codes(
-        "mod send(name: const string) { SendCustomEvent(name, 1) }\n\
+fn a_chip_inside_a_chip_reads_the_enclosing_chips_constants() {
+    let src = "mod send(name: const string) { SendCustomEvent(name, 1) }\n\
          chip Outer(t: exec) { const ch = \"deep\"\n\
            chip Inner(u: exec) { on u { send(ch) } }\n\
            let q = Inner(t) }\n\
-         in go: exec\nlet r = Outer(go)",
-    );
-    assert!(
-        codes.iter().any(|c| c == "WS028"),
-        "a constant-only config field whose value did not resolve during lowering \
-         must report WS028, not silently ship the type default; got {codes:?}"
+         in go: exec\nlet r = Outer(go)";
+    let codes = lowering_codes(src);
+    assert!(!codes.iter().any(|c| c == "WS028"), "the enclosing chip's constant did not resolve: {codes:?}");
+    assert_eq!(
+        event_name_properties(&lower_ok(src)),
+        vec!["deep".to_string()],
+        "the inner chip must bake the enclosing chip's constant"
     );
 }

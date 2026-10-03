@@ -8,6 +8,7 @@ pub mod events;
 pub mod gate_builtins;
 pub mod maps;
 pub mod operators;
+pub mod storage;
 
 use crate::collections::HashMap;
 

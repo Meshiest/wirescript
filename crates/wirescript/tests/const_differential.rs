@@ -1024,10 +1024,10 @@ fn a_return_that_would_disagree_with_the_wire_graph_is_rejected() {
     );
 }
 
-/// The converse ordering — `return` first, `out` after — genuinely AGREES,
-/// because lowering's first-wins keeps the returned value and const evaluation
-/// returns the same one. Both spellings are compiled here and asserted to bake
-/// the SAME value, which is the differential the header describes.
+/// The converse ordering, `return` first and `out` after, AGREES: an output
+/// written in more than one place goes through the return storage, so the
+/// runtime spelling stores 222 on the path that returns and 111 on the other,
+/// and reads the one that ran; const evaluation of `pick(5)` returns 222.
 ///
 /// This is also what stops the fix above from being over-broad: a rule keyed
 /// on "does this mod contain any `out`" rather than on source order would
@@ -1049,16 +1049,16 @@ fn const_and_runtime_agree_when_the_return_comes_first() {
          in go: exec\non go { x = pick(5) }",
         "return_first_runtime.ws",
     ));
-    for (label, ints) in [("const", &const_ints), ("runtime", &runtime_ints)] {
-        assert!(
-            ints.contains(&222),
-            "{label} spelling must produce 222, got {ints:?}"
-        );
-        assert!(
-            !ints.contains(&111),
-            "{label} spelling must NOT produce the dropped assignment 111, got {ints:?}"
-        );
-    }
+    assert!(const_ints.contains(&222), "const spelling must produce 222, got {const_ints:?}");
+    assert!(
+        !const_ints.contains(&111),
+        "const spelling must NOT produce the assignment after the return, got {const_ints:?}"
+    );
+    // At runtime `n` is not known, so both paths store their value.
+    assert!(
+        runtime_ints.contains(&222) && runtime_ints.contains(&111),
+        "runtime spelling must store the value of each path, got {runtime_ints:?}"
+    );
     // The const side additionally proves it evaluated away rather than
     // emitting gates: the literal control travels with it in the same array.
     assert!(

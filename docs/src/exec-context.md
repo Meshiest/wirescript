@@ -20,7 +20,7 @@ Understanding exec vs pure context is fundamental to writing correct Wirescript.
 
 ### Pure Context
 
-Pure context is the default. Code in pure context defines **continuous signal-flow relationships** -- like wiring gates together. Pure expressions re-evaluate whenever their inputs change.
+Pure context is the default. Code in pure context defines **continuous signal-flow relationships**, like wiring gates together. Pure expressions re-evaluate whenever their inputs change.
 
 What runs in pure context:
 - Top-level `let` bindings
@@ -94,7 +94,7 @@ on RoundStart() {
 
 ### 2. Exec Union After Handlers
 
-After a handler at the same scope level, subsequent statements automatically enter exec context. This is called "exec union" -- the combined exit of all preceding handlers flows into later statements.
+After a handler at the same scope level, subsequent statements automatically enter exec context. This is called "exec union": the combined exit of all preceding handlers flows into later statements.
 
 ```wirescript
 var count: int = 0
@@ -138,7 +138,7 @@ let r = Random(0, 10, exec = myTrigger)
 
 This wires `myTrigger` as the exec input of the Random gate.
 
-The same convention works for **any** exec gate — array and map methods
+The same convention works for **any** exec gate, array and map methods
 included. Because the trigger, not the surrounding chain, drives the gate, the
 call becomes a *leaf* and is legal in a **pure** sink. A per-index,
 always-nonzero trigger like `i + 1` turns an array/map read into a single-gate
@@ -171,9 +171,9 @@ on RoundStart() {
 }
 ```
 
-> **Note:** Even pure expressions like `x * 2` use a `Var_Get` gate (exec) to read `x` when inside an exec context. This ensures the read is sequenced correctly in the exec chain — the `Var_Get` fires at the right point and its value output feeds the pure `*` gate. In pure context, `x` reads directly from the PseudoVar's `Value` port (no exec gate).
+> **Note:** Even pure expressions like `x * 2` use a `Var_Get` gate (exec) to read `x` when inside an exec context. This ensures the read is sequenced correctly in the exec chain: the `Var_Get` fires at the right point and its value output feeds the pure `*` gate. In pure context, `x` reads directly from the PseudoVar's `Value` port (no exec gate).
 
-You can also use `*x` as an **explicit deref** — it compiles to the same `Var_Get` gate and is equivalent to the bare name in exec context:
+You can also use `*x` as an **explicit deref**. It compiles to the same `Var_Get` gate and is equivalent to the bare name in exec context:
 
 ```wirescript
 on tick {
@@ -187,7 +187,7 @@ on tick {
 ### In Pure Context
 
 In pure context, a bare name `x` reads the var's value directly, from the
-PseudoVar's `Value` port -- the same value `.Value` and `.prev` read (see the
+PseudoVar's `Value` port, the same value `.Value` and `.prev` read (see the
 note above). `&x` is `x`'s ref as a value. An unannotated `out` fed a bare
 variable name is flagged (`WS017`): annotate it `T` for the value, or write
 `out h: *T = &x` for the ref. A `*T` output carries a ref, so a bare `x` there
@@ -214,7 +214,7 @@ out h: *int = &count
 |--------|---------|------|---------|
 | `x` (bare) | Exec | `Var_Get` | Current tick's value (auto-deref) |
 | `*x` | Exec | `Var_Get` | Current tick's value (explicit deref, same as bare) |
-| `*x` | Pure | — | **Error WS006** — use `.Value` |
+| `*x` | Pure | none | **Error WS006**: use `.Value` |
 | `x` (bare) | Pure | `.Value` port | The same read as `x.Value`; an unannotated `out` of it is `WS017` |
 | `&x` | Either | `VarRef` port | `x`'s ref, as a value |
 | `x.Value` | Either | `.Value` port | Previous tick's value (delayed read) |
@@ -249,7 +249,7 @@ tick barrier and reports WS005. Route it through a `buffer` or a variable.
 
 ## Handler Exec Chains
 
-Handlers create exec chains -- sequences of exec gates connected by their exec output pins. Each statement in a handler body is a link in the chain:
+Handlers create exec chains: sequences of exec gates connected by their exec output pins. Each statement in a handler body is a link in the chain:
 
 ```wirescript
 on RoundStart() {
@@ -335,7 +335,7 @@ There are two different `if` constructs with different context requirements:
 
 ### `if-then-else` Expression (Pure)
 
-The `if-then-else` expression is pure -- it selects between two values based on a condition and produces a value. No exec context needed.
+The `if-then-else` expression is pure: it selects between two values based on a condition and produces a value. No exec context needed.
 
 ```wirescript
 // Pure -- works anywhere
@@ -362,7 +362,7 @@ on trigger {
 |-----------|---------|-------|
 | `var x = expr` initializer | Pure | Initializer is pure even though var is mutable |
 | `let x = expr` | Pure (at top level) | Inside handlers: shares handler's exec context |
-| `out x = expr` | Pure | Always pure -- outputs are continuous signals |
+| `out x = expr` | Pure | Always pure, because outputs are continuous signals |
 | `buffer x = expr` | Pure | Always pure |
 | `on trigger { ... }` body | Exec | Primary way to enter exec |
 | After `on` at same level | Exec | Exec union from all preceding handlers |
@@ -373,12 +373,12 @@ on trigger {
 | `await expr` | Exec | Rewires exec continuation to expr |
 | `emit name` | Exec | Bare emit requires exec |
 | `emit name = expr` | Either | Value emit works in pure or exec |
-| `buffer(...) emit name` | Exec | Buffered emit — delays delivery a tick+, legalises loops |
+| `buffer(...) emit name` | Exec | Buffered emit that delays delivery a tick+ and legalizes loops |
 | `let name: exec` | Either | Declares local exec signal |
 
 ## Await
 
-`await` suspends the current exec chain and resumes when the awaited expression fires. It rewires `ctx.current_exec` -- no state machine, just exec redirection.
+`await` suspends the current exec chain and resumes when the awaited expression fires. It rewires `ctx.current_exec`: no state machine, just exec redirection.
 
 ```wirescript
 on start {
@@ -407,11 +407,11 @@ on start {
 }
 ```
 
-`||` in the expression creates a Union gate -- first exec wins.
+`||` in the expression creates a Union gate, and the first exec wins.
 
 ### Local Exec Signals
 
-`let name: exec` declares a local synchronization point. `emit name` fires it from any handler. `await name` or `on name` listens for it — the listener runs whenever the signal fires, regardless of source order or which handler emits it.
+`let name: exec` declares a local synchronization point. `emit name` fires it from any handler. `await name` or `on name` listens for it. The listener runs whenever the signal fires, regardless of source order or which handler emits it.
 
 ```wirescript
 let done: exec
@@ -420,7 +420,7 @@ on compute { emit done }
 on start { await done }
 ```
 
-An `on name` handler is the fan-out form — its body runs every time the signal
+An `on name` handler is the fan-out form: its body runs every time the signal
 fires, from any emitter (handy for menu-style actions):
 
 ```wirescript
@@ -433,12 +433,12 @@ on up { ctrl.DisplayText("menu up") }   // runs on every `emit up`
 ### Loops (buffered back-edge)
 
 An `emit` after an `await` of the same signal is a loop back-edge. It must be
-buffered — `buffer emit` (1 tick) or `buffer(N)` / `buffer(0.5s)` — because
+buffered, with `buffer emit` (1 tick) or `buffer(N)` / `buffer(0.5s)`, because
 every wire-graph cycle must cross a tick barrier (**WS005**). Each iteration
 then advances one buffer period. Loop state lives in `var`s (persist across
 iterations, reset per call) or rides the signal as a ferried payload
 (`emit loop = { ... }` / `let { ... } = await loop`). See
-[statements — Loops](statements.md#loops) for the full pattern and its
+[statements: Loops](statements.md#loops) for the full pattern and its
 per-gate cost.
 
 ```wirescript ignore
@@ -477,11 +477,11 @@ on start {
 }
 ```
 
-`_` inside an `await` expression is the armed flag -- a `bool` that becomes `true` when the await is armed. The buffer gate delays this bool, and the await resumes when the delayed output transitions to true.
+`_` inside an `await` expression is the armed flag, a `bool` that becomes `true` when the await is armed. The buffer gate delays this bool, and the await resumes when the delayed output transitions to true.
 
 ### Important Notes
 
-- `await` only works in exec context -- it modifies the exec chain.
+- `await` only works in exec context, because it modifies the exec chain.
 - `await` works inside `if` blocks naturally.
 - Each `await` creates an armed flag (static bool) that guards the continuation. The continuation fires exactly once per arming.
 - `_` inside `await` is typed as `bool` (the armed flag). It is only valid inside `await` expressions.

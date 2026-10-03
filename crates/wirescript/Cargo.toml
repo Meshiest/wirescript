@@ -13,6 +13,8 @@ path = "src/bin/check.rs"
 [features]
 default = ["brdb-full"]
 brdb-full = ["brdb/brdb"]
+# The editor's lookups by the text it completes or hovers (the LSP).
+editor = []
 # Temporary allocation-site profiling (examples/dhat_lower.rs).
 dhat-heap = ["dep:dhat"]
 

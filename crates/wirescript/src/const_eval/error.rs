@@ -27,6 +27,10 @@ pub enum ConstReason {
     /// statement about the user's code — this callee is fine; what encloses
     /// it is what cannot be evaluated.
     NestedConstModCall(String),
+    /// Calls a `const mod` the calling file neither declares nor imports. The
+    /// call itself is the error (`WS002`/`WS036` at the call), so this is
+    /// not reported again.
+    UnnamedConstMod(String),
     /// A syntactic form const evaluation does not handle. The string is a NOUN
     /// PHRASE naming that form (`"a spread"`, `"string interpolation"`) — it is
     /// wrapped in "not a compile-time constant: … cannot be evaluated at
@@ -99,6 +103,12 @@ impl ConstError {
         }
     }
 
+    /// Whether another error already reports why this expression has no
+    /// value (see [`ConstReason::UnnamedConstMod`]).
+    pub fn reported_elsewhere(&self) -> bool {
+        matches!(self.reason, ConstReason::UnnamedConstMod(_))
+    }
+
     pub fn message(&self) -> String {
         match &self.reason {
             ConstReason::NotConstant(name) => format!(
@@ -109,9 +119,12 @@ impl ConstError {
             ),
             ConstReason::NestedConstModCall(name) => format!(
                 "not a compile-time constant: '{name}' is a `const mod`, but it is called \
-                 inside a surrounding expression that has no compile-time form — usually \
-                 an argument to a call whose own callee is not a `const mod` — so \
+                 inside a surrounding expression that has no compile-time form (usually \
+                 an argument to a call whose own callee is not a `const mod`), so \
                  evaluation never reaches it"
+            ),
+            ConstReason::UnnamedConstMod(name) => format!(
+                "not a compile-time constant: '{name}' is a `const mod` this file does not declare or import"
             ),
             ConstReason::Unsupported(what) => format!(
                 "not a compile-time constant: {what} cannot be evaluated at compile time"
@@ -127,10 +140,10 @@ impl ConstError {
             ),
             ConstReason::ArrayIndexOutOfRange { index, len } => format!(
                 "index {index} is out of range for a {len}-element compile-time constant \
-                 array — there is no previous value to fall back on at compile time"
+                 array, and there is no previous value to fall back on at compile time"
             ),
             ConstReason::MapKeyNotFound => {
-                "this compile-time constant map has no entry for that key — there is no \
+                "this compile-time constant map has no entry for that key, and there is no \
                  previous value to fall back on at compile time"
                     .to_string()
             }
@@ -138,7 +151,7 @@ impl ConstError {
                 "this compile-time constant record has no field named '{field}'"
             ),
             ConstReason::BudgetExceeded => {
-                "const evaluation gave up — the call chain is too deep or too large".into()
+                "const evaluation gave up: the call chain is too deep or too large".into()
             }
         }
     }

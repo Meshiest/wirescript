@@ -148,14 +148,28 @@ pub fn diagnostics(source: &str, files_json: &str) -> String {
         ce_slots: &ce_slots,
     });
     let cycles = wirescript::analyze::analyze_cycles(&lowered.module);
-    let diags: Vec<DiagnosticOut> = resolved
-        .diagnostics
-        .iter()
-        .chain(tc.diagnostics.iter())
-        .chain(lowered.diagnostics.iter())
-        .chain(cycles.diagnostics.iter())
+    let all = || {
+        resolved
+            .diagnostics
+            .iter()
+            .chain(tc.diagnostics.iter())
+            .chain(lowered.diagnostics.iter())
+            .chain(cycles.diagnostics.iter())
+    };
+    // An internal error beside another error is dropped, as the compiler does.
+    let program_error = wirescript::diagnostic::has_program_error(all());
+    // A placeholder in a program nothing else rejects is an error, as the
+    // compiler reports it.
+    let any_error = all().any(|d| d.severity == wirescript::diagnostic::Severity::Error);
+    let diags: Vec<DiagnosticOut> = all()
+        .filter(|d| !(program_error && d.code == wirescript::diagnostic::INTERNAL_ERROR))
         .filter(|d| &*d.range.file == "editor" || d.range.file.is_empty())
-        // `// ws-ignore-line` / `// ws-ignore-file` hold in the playground too.
+        .map(|d| match wirescript::diagnostic::placeholder_error(d).filter(|_| !any_error) {
+            Some(e) => std::borrow::Cow::Owned(e),
+            None => std::borrow::Cow::Borrowed(d),
+        })
+        // `// ws-ignore-line` / `// ws-ignore-file` hold in the playground too,
+        // after the promotion, since they silence no error.
         .filter(|d| !resolved.suppressions.suppresses(d))
         .map(|d| DiagnosticOut {
             severity: match d.severity {

@@ -130,7 +130,8 @@ impl<'a> Parser<'a> {
             self.eat_newlines();
             self.expect(TokenKind::FatArrow, None);
             self.eat_newlines();
-            let is_block = self.check(TokenKind::LBrace, None);
+            // A record literal is an arm VALUE; `{}` and `{ name }` stay blocks.
+            let is_block = self.check(TokenKind::LBrace, None) && !self.looks_like_arm_record_lit();
             let body = if is_block {
                 MatchBody::Block(self.parse_block())
             } else {
@@ -523,6 +524,7 @@ impl<'a> Parser<'a> {
             if t.kind == TokenKind::Op && t.text == "<" {
                 let save_pos = self.pos;
                 let save_diag = self.diagnostics.len();
+                let save_splits = self.angle_splits.len();
                 if let Some(type_args) = self.try_parse_type_args()
                     && self.check(TokenKind::LParen, None)
                 {
@@ -548,6 +550,7 @@ impl<'a> Parser<'a> {
                     };
                     continue;
                 }
+                self.unsplit_closing_angles(save_splits);
                 self.pos = save_pos;
                 self.diagnostics.truncate(save_diag);
                 break;
@@ -578,6 +581,7 @@ impl<'a> Parser<'a> {
             }
             break;
         }
+        self.split_closing_angle();
         self.match_tok(TokenKind::Op, Some(">"))?;
         if args.is_empty() {
             return None;
@@ -1137,6 +1141,28 @@ impl<'a> Parser<'a> {
             }
         }
         false
+    }
+
+    /// [`Self::looks_like_record_lit`] for a `match` arm body, where `{}` and
+    /// `{ name }` are blocks: only a named field (`{ x: 1 }`), a shorthand list
+    /// (`{ x, y }`) or a spread opens a record literal.
+    fn looks_like_arm_record_lit(&self) -> bool {
+        if !self.looks_like_record_lit() {
+            return false;
+        }
+        let mut i = self.pos + 1;
+        while self.tokens.get(i).is_some_and(|t| t.kind == TokenKind::Newline) {
+            i += 1;
+        }
+        let mut j = i + 1;
+        while self.tokens.get(j).is_some_and(|t| t.kind == TokenKind::Newline) {
+            j += 1;
+        }
+        match (self.tokens.get(i), self.tokens.get(j)) {
+            (Some(first), _) if first.kind == TokenKind::RBrace => false,
+            (Some(first), Some(next)) if first.kind == TokenKind::Ident => next.kind != TokenKind::RBrace,
+            _ => true,
+        }
     }
 
     /// Parse a record literal: `{ field: expr, shorthand, ...spread }`

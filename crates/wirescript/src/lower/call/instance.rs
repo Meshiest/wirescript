@@ -33,7 +33,7 @@ pub(in crate::lower) fn lower_chip_call_instance(
     let first_param_is_exec = chip_decl
         .inputs
         .first()
-        .map(|p| matches!(&p.typ, TypeExpr::Name { name, .. } if name == "exec"))
+        .map(|p| super::inline::is_exec_type(ctx, &p.typ))
         .unwrap_or(false);
     // Auto-exec boundary pins are created when the call has (or is handed) an
     // exec context and the chip doesn't take exec as its first param. Compute it
@@ -63,6 +63,10 @@ pub(in crate::lower) fn lower_chip_call_instance(
         let mut budget = crate::const_eval::Budget::default();
         let cx = ctx.const_ctx(Some(&lookup));
         if let Ok(lit) = crate::const_eval::eval_expr(arg, &cx, &mut budget) {
+            let lit = match ctx.declared_type(chip_decl, &param.typ, None) {
+                Some(ty) => crate::const_eval::coerce_const_to_type(lit, &ty, ctx.consts.types()),
+                None => lit,
+            };
             const_params.insert(param.name.clone(), lit.clone());
             const_key_parts.push((i, lit));
         }
@@ -71,7 +75,9 @@ pub(in crate::lower) fn lower_chip_call_instance(
     let (mono_frame, base_key) = if chip_decl.type_params.is_empty() {
         (None, chip_decl.name.clone())
     } else {
-        let frame = build_mono_frame(ctx, chip_decl, &positional_args, type_args);
+        let Some(frame) = super::mono::mono_frame(ctx, chip_decl, range, &positional_args, type_args) else {
+            return super::mono::report_unchecked_instantiation(ctx, chip_decl, range);
+        };
         let key = mono_key(chip_decl, &frame);
         (Some(frame), key)
     };
@@ -111,8 +117,33 @@ pub(in crate::lower) fn lower_chip_call_instance(
     // different body even though the chip itself is not generic. Empty for a
     // top-level non-generic chip, which then keys exactly as before.
     let body_subst = ctx.body_resolution_subst(chip_decl, mono_frame.as_ref());
+    if !super::mono::instantiation_checked(ctx, chip_decl, &body_subst) {
+        return super::mono::report_unchecked_instantiation(ctx, chip_decl, range);
+    }
     if !body_subst.is_empty() {
         key.push_str(&format!("\u{1}r{body_subst:?}"));
+    }
+    // A chip declared inside a body captures the names that body bound where
+    // it declared the chip, which are another body's each time the enclosing
+    // mod expands.
+    if ctx.decl_views.contains_key(&(dr.file.clone(), dr.start.offset)) {
+        let captured = ctx.with_decl_scope(chip_decl, |ctx| body_captures(ctx, chip_decl));
+        if !captured.is_empty() {
+            key.push_str(&format!("\u{1}v{captured}"));
+        }
+    }
+    // Container params whose argument is an immutable container: the body
+    // rejects a mutation of them, so a body built for a mutable argument
+    // cannot be shared with this call.
+    let immutable_params = immutable_container_params(ctx, chip_decl, &caller_captures);
+    if !immutable_params.is_empty() {
+        key.push_str(&format!("\u{1}i[{}]", immutable_params.join(",")));
+    }
+    // The constants of the scope the body inherits are baked into it. The
+    // body inherits its declaration's scope, not this call site's.
+    let inherited = ctx.with_decl_scope(chip_decl, |ctx| ctx.consts.snapshot()).describe();
+    if !inherited.is_empty() {
+        key.push_str(&format!("\u{1}s{inherited}"));
     }
 
     let mut child_module = if let Some(template) = ctx.template_cache.get(&key) {
@@ -140,6 +171,7 @@ pub(in crate::lower) fn lower_chip_call_instance(
             exec_arg.is_some(),
             mono_frame,
             &const_params,
+            &immutable_params,
         );
         // Cache the first instance as a template for subsequent calls.
         // Store capture_names so future instantiations can remap by param name.
@@ -154,6 +186,10 @@ pub(in crate::lower) fn lower_chip_call_instance(
     };
     child_module.template_key = Some(intern(&key));
 
+    if !auto_exec && let Some(cause) = unsequenced_chip_returns(chip_decl) {
+        report_unsequenced_chip_returns(ctx, chip_decl, cause, first_param_is_exec, range);
+    }
+
     // All wiring goes directly to child MicrochipInput/Output nodes.
     // The chip node exists only for layout grouping + microchip link.
     // (`first_param_is_exec` / `auto_exec` were computed above for the cache key.)
@@ -162,17 +198,14 @@ pub(in crate::lower) fn lower_chip_call_instance(
         source_range: range.clone(),
         ..Default::default()
     });
+    let consts = ctx.const_lookup();
     if let Some(node) = ctx.builder.module.nodes.get_mut(&chip_node_id) {
         node.kind = NodeKind::Chip;
         let props = std::sync::Arc::make_mut(&mut node.properties);
         if chip_decl.closed {
             props.insert(*sym::CHIP_CLOSED, Literal::Bool(true));
         }
-        if let Some(label) = resolve_label_text(
-            chip_decl.label.as_deref(),
-            chip_decl.label_expr.as_ref(),
-            &ctx.const_env,
-        ) {
+        if let Some(label) = resolve_label_text(chip_decl.label.as_deref(), chip_decl.label_expr.as_ref(), &consts) {
             props.insert(*sym::NAME_LABEL, Literal::String(label));
         }
         if let Some(doc) = ctx.doc_comments.get(&crate::parser::doc_key(&chip_decl.range)) {
@@ -195,6 +228,7 @@ pub(in crate::lower) fn lower_chip_call_instance(
         &child_outputs,
         &mut const_folds,
     );
+    check_constant_pins(ctx, chip_node_id, &child_inputs, range);
 
     // Wire auto-exec AFTER args so the exec chain is:
     //   ... -> Var_Get(a) -> Var_Get(b) -> chip._exec_in -> chip._exec_out -> ...
@@ -237,4 +271,235 @@ pub(in crate::lower) fn lower_chip_call_instance(
     }
 
     result
+}
+
+/// Whether the chip body's own `return`s store into output storage, which
+/// needs the body's exec chain: several returns, or one beside a return in a
+/// nested handler or a value `emit`/`out` of an output. With no chain in the
+/// body none of those stores run. Gives the cause, worded for WS007.
+fn unsequenced_chip_returns(chip_decl: &ChipDecl) -> Option<&'static str> {
+    let returns = count_return_values(&chip_decl.body);
+    if returns > 1 {
+        return Some("returns from inside a branch");
+    }
+    if returns == 0 {
+        return None;
+    }
+    if count_handler_return_values(&chip_decl.body) > 0 {
+        return Some("returns from its body and from a nested `on` handler");
+    }
+    let mut counts = HashMap::default();
+    crate::lower::count_emits_in_block(&chip_decl.body, false, &mut counts);
+    counts
+        .iter()
+        .any(|(name, (count, _))| {
+            let default = chip_decl
+                .body
+                .stmts
+                .iter()
+                .any(|s| matches!(s, Stmt::OutBinding(o) if o.value.is_some() && &o.name == name));
+            *count > usize::from(default)
+        })
+        .then_some("returns a value and also writes an output with `emit` or `out`")
+}
+
+/// WS007 at a call whose chip returns can't run (`unsequenced_chip_returns`).
+/// A chip whose first parameter is `exec` never gets the caller's chain: its
+/// body runs only under `on <param>`.
+fn report_unsequenced_chip_returns(
+    ctx: &mut LowerCtx,
+    chip_decl: &ChipDecl,
+    cause: &str,
+    first_param_is_exec: bool,
+    range: &SourceRange,
+) {
+    let msg = if first_param_is_exec {
+        let trigger = &chip_decl.inputs[0].name;
+        format!(
+            "`{}` {cause}, but its body has no exec chain to choose between its output \
+             writes: its first parameter `{trigger}` is its trigger, so put the returns \
+             inside `on {trigger} {{ ... }}`",
+            chip_decl.name
+        )
+    } else {
+        format!(
+            "`{}` {cause}, so choosing between its output writes needs an exec context: \
+             call it from a handler or a `mod` body, or pass `exec = ...`",
+            chip_decl.name
+        )
+    };
+    ctx.error("WS007", msg, range);
+}
+
+/// The container params CAPTURED as an immutable container (a `const` table,
+/// a `let` of one, or a literal): the body is built knowing it, so a mutation
+/// there is WS044 at the mutation.
+fn immutable_container_params(
+    ctx: &LowerCtx,
+    chip_decl: &ChipDecl,
+    caller_captures: &HashMap<String, VarRecord>,
+) -> Vec<String> {
+    chip_decl
+        .inputs
+        .iter()
+        .filter(|p| {
+            caller_captures
+                .get(&p.name)
+                .is_some_and(|rec| is_immutable_container(ctx, rec.node_id))
+        })
+        .map(|p| p.name.clone())
+        .collect()
+}
+
+/// A pin fed an immutable container, whatever computed the value (an inline
+/// mod's result, an `if`, a buffer), must not be changed inside the instance.
+/// Decided from the node actually wired into each pin, then followed through
+/// the instance's own modules: into nested chip pins, `Select`s and buffers,
+/// up to a gate that changes the container or stores its reference.
+fn check_constant_pins(ctx: &mut LowerCtx, chip_node: NodeId, pins: &[NodeId], range: &SourceRange) {
+    if ctx.immutable_containers.is_empty() {
+        return;
+    }
+    let mut tainted: crate::collections::HashSet<NodeId> = pins
+        .iter()
+        .copied()
+        .filter(|p| {
+            ctx.builder.module.wires.iter().any(|w| {
+                w.target.node_id == *p
+                    && w.target.port == WirePort::RerInput
+                    && is_immutable_container(ctx, w.source.node_id)
+            })
+        })
+        .collect();
+    if tainted.is_empty() {
+        return;
+    }
+    let Some(child) = ctx.builder.module.chips.get(&chip_node) else {
+        return;
+    };
+    let mut classes: HashMap<NodeId, &'static str> = HashMap::default();
+    let mut wires: Vec<crate::ir::Wire> = Vec::new();
+    let mut stack = vec![child];
+    while let Some(m) = stack.pop() {
+        classes.extend(m.nodes.iter().map(|(id, n)| (*id, n.gate_class)));
+        wires.extend(m.wires.iter().copied());
+        stack.extend(m.chips.values());
+    }
+    let changes = |class: &str, port: WirePort| {
+        crate::catalog::storage::access(class, port) == Some(crate::catalog::storage::Access::Write)
+            || (port == WirePort::Value
+                && matches!(
+                    class,
+                    gc::VAR_SET
+                        | gc::ARRAY_PUSH
+                        | gc::ARRAY_SET_AT_INDEX
+                        | gc::ARRAY_INSERT
+                        | gc::ARRAY_FILL
+                        | gc::ARRAY_RESIZE
+                        | gc::MAP_SET
+                ))
+            || (port == WirePort::RerInput && class == gc::MICROCHIP_OUTPUT)
+    };
+    loop {
+        let mut grew = false;
+        for w in &wires {
+            if !tainted.contains(&w.source.node_id) {
+                continue;
+            }
+            let class = classes.get(&w.target.node_id).copied().unwrap_or("");
+            if changes(class, w.target.port) {
+                ctx.error(
+                    "WS044",
+                    "this call passes a constant array/map (a `const`, or a `let` or literal \
+                     holding a constant one) to a chip that would change it or store its \
+                     reference, which would make its runtime contents disagree with its \
+                     compile-time value. Pass a `var` copy instead",
+                    range,
+                );
+                return;
+            }
+            let passes = match class {
+                gc::MICROCHIP_INPUT => w.target.port == WirePort::RerInput,
+                gc::SELECT => matches!(w.target.port, WirePort::InputA | WirePort::InputB),
+                gc::BUFFER_TICKS | gc::BUFFER_SECONDS => w.target.port == WirePort::Input,
+                _ => false,
+            };
+            if passes && tainted.insert(w.target.node_id) {
+                grew = true;
+            }
+        }
+        if !grew {
+            return;
+        }
+    }
+}
+
+/// The names `d`'s body uses that resolve inside an enclosing body rather
+/// than at the top level, each with what it denotes there, in name order.
+/// Empty when the body uses only its own params and top-level names. Read in
+/// `d`'s declaration scope.
+fn body_captures(ctx: &LowerCtx, d: &ChipDecl) -> String {
+    let mut names = crate::collections::HashSet::default();
+    crate::resolve::collect_idents_in_block(&d.body, &mut names);
+    collect_emit_targets(&d.body, &mut names);
+    for p in &d.inputs {
+        names.remove(&p.name);
+    }
+    let mut names: Vec<String> = names.into_iter().collect();
+    names.sort_unstable();
+    let mut out = String::new();
+    for name in names {
+        let sym = intern(&name);
+        let Some(frame) = ctx.scope.frame_of(sym, |_| true) else { continue };
+        if frame == 0 {
+            continue;
+        }
+        let Some(binding) = ctx.scope.get_sym(sym) else { continue };
+        out.push_str(&name);
+        out.push('=');
+        push_binding_identity(ctx, binding, &mut out);
+        out.push(';');
+    }
+    out
+}
+
+/// What `b` denotes, independent of its read cache: its gate or port, a
+/// nested declaration's registration, a record's fields in name order.
+fn push_binding_identity(ctx: &LowerCtx, b: &Binding, out: &mut String) {
+    use std::fmt::Write;
+    let _ = match b {
+        Binding::Var(v) => write!(out, "v{}", v.node_id),
+        Binding::Local(l) => write!(out, "l{:?}", l.port),
+        Binding::Buffer(n) | Binding::Input(n) | Binding::Output(n) => write!(out, "n{}", n.node_id),
+        Binding::EventParam(p) => write!(out, "e{p:?}"),
+        Binding::DynRef(d) => write!(out, "d{:?}", d.port),
+        Binding::Chip(c) => match ctx.decl_views.get(&(c.range.file.clone(), c.range.start.offset)) {
+            Some(view) => write!(out, "c{}", view.serial),
+            None => write!(out, "c{}", c.range.start.offset),
+        },
+        Binding::Namespace(_) => write!(out, "ns"),
+        Binding::Record(fields) => {
+            let mut keys: Vec<_> = fields.keys().copied().collect();
+            keys.sort_by_key(|k| crate::intern::resolve(*k));
+            out.push('{');
+            for k in keys {
+                out.push_str(crate::intern::resolve(k));
+                out.push(':');
+                push_binding_identity(ctx, &fields[&k], out);
+                out.push(',');
+            }
+            out.push('}');
+            Ok(())
+        }
+    };
+}
+
+/// Every name `block` emits, at any depth, nested declarations included.
+fn collect_emit_targets(block: &Block, names: &mut crate::collections::HashSet<String>) {
+    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, _| {
+        if let walk::Node::Stmt(Stmt::Emit(e)) = n {
+            names.insert(e.name.clone());
+        }
+        true
+    });
 }

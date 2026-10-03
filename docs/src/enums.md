@@ -125,6 +125,10 @@ out other = !(s is Shape.Circle)               // negate with `!`
 out go = s is Shape.Rect && ready              // binds like `==`
 ```
 
+An enum has no `==`: comparing two values would have to compare every payload
+slot too, so `s == Shape.Empty` is a [`WS004`](diagnostics.md) error. Test the
+variant with `is`, or compare `.Discriminant`s.
+
 The test compares tags, so a payload variant answers on its tag alone and binds
 nothing; [`match`](#match) and [`if let`](#if-let--let-else) are how a payload
 comes back out. The right side must name a variant of the same enum: `s is v`
@@ -233,6 +237,14 @@ out area = match s {
 
 The arms' result types follow the same
 [widening join](types.md#widening-inference) as an `if`-then-else expression.
+An arm can also be a block that ends in `return` (`A => { return 0 }`), which
+leaves the enclosing `mod` or handler instead of giving the `match` a value; a
+block arm that can end any other way is `WS095`, and so is a block arm of a value
+`match` outside an exec context (a top-level `out` or `let`), where it never runs.
+
+An arm may be a record literal, which chooses a record per field:
+`A => { x: 1, y: 2 }`. An arm written `{}` or `{ name }` is a block, as in the
+statement form.
 
 ### Statement form
 
@@ -292,16 +304,41 @@ out val = match t {
 A named-payload pattern can ignore the fields it doesn't need with `..`:
 `Box { w, .. }` binds only `w` and drops `h`.
 
-### Scrutinee must be a value, not a port
+### Enums at ports
 
-The scrutinee of a `match` (and of `if let` / `let else`, below) has to be a
-`var`, `let`, `static var`, mod/chip parameter, or `const` -- something the
-compiler can see as a compile-time **record** of the tag plus its payload
-slots. A top-level enum-typed `in` **input port** does not decompose that way
-(it lowers to a single scalar wire, not a record), so matching on one directly
-emits an unwired placeholder instead of a real Select/Branch tree. If an enum
-value needs to arrive from outside the unit, copy it into a `var` first and
-match on that:
+An enum value is its tag plus a slot per payload field, and a port pin carries a
+single wire. So only an enum with **no payloads** crosses a port, and only a
+top-level `in` or `out` port: it travels as its tag (the `.Discriminant`), and
+the name on the other side is the enum value again, ready to `match`, compare
+with `is`, or store. A built-in game enum has no payloads, so it crosses the same
+way. An array or map of such an enum crosses a top-level port as one column of
+tags, and each element reads back as the enum. An `out` of one is set like any
+other output: a default, `emit name = value`, or an `out` in a handler.
+
+```wirescript
+enum Mode { Idle, Run }
+
+in mode: Mode
+in ease: EasingFunction
+var last: EasingFunction = EasingFunction.Linear
+var n: int = 0
+in go: exec
+out seen: Mode = Mode.Idle
+
+on go {
+  last = ease
+  n = match mode { Idle => 0, Run => 1 }
+  emit seen = mode
+}
+out current: EasingFunction = last
+```
+
+Everything else is a [`WS049`](diagnostics.md) error: an enum with a payload at
+any port, and any enum inside a record or tuple port, or at a `chip` parameter
+or output. A `mod` parameter is fine (a mod is inlined, so nothing crosses a
+port), and a `chip` parameter written `*E` wires each part. To bring an enum
+with payloads in from outside the unit, pass its parts as plain values and build
+it inside:
 
 ```wirescript
 enum Shape { Empty, Circle(float), Rect(float, float) }
@@ -321,13 +358,12 @@ out area = match s {
 }
 ```
 
-(The same gap applies in the other direction: an enum value can't yet drive a
-top-level `out` port directly either -- expose a derived scalar, such as
-`.Discriminant` or a `match` result, instead.)
+To send an enum with payloads out, expose a derived scalar, such as
+`.Discriminant` or a `match` result.
 
-A `let` that ALIASES an enum in storage decomposes too, so an array element, a
-map value, and a record field all match directly (`match arr[i] { .. }`, or
-`let e = h.shape` first). The one spelling that does not is `m.get(k)`: that
+A `match` scrutinee can be any enum value in storage, and a `let` that aliases
+one: an array element, a map value, and a record field all match directly
+(`match arr[i] { .. }`, or `let e = h.shape` first). The one spelling that does not is `m.get(k)`: that
 method returns a `{Value, Found}` result record rather than the value, which is
 the [`WS066`](diagnostics.md) "requires an enum scrutinee" error naming that
 shape. Subscript it (`m[k]`) or read the member (`m.get(k).Value`).
@@ -391,7 +427,9 @@ value is already the variant you are writing.
 **Destructure and assign the capture.** A `match` arm, an `if let`, or a
 `let ... else` binds each capture directly to the matched value's payload
 slot, so writing the capture writes the payload **in place**. The other
-fields, and the tag, are left alone:
+fields, and the tag, are left alone. Reading a capture reads that slot live
+too, so a call in the arm that writes the matched value is visible through the
+capture:
 
 ```wirescript
 type Track = { origin: vector, direction: vector }

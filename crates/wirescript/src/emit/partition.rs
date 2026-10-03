@@ -224,27 +224,39 @@ fn partition_one(module: &mut Module) {
         }
     }
 
-    // Re-nest orphaned inner chip modules: if a child module contains a
-    // Chip node whose child module is in the root's `chips` map, move it
-    // into the child module's `chips` map so emit can find it.
-    loop {
-        let mut moves: Vec<(NodeId, NodeId)> = Vec::new();
-        for (parent_id, child_mod) in module.chips.iter() {
-            for (nid, n) in &child_mod.nodes {
-                if n.kind == NodeKind::Chip && module.chips.contains_key(nid) {
-                    moves.push((*parent_id, *nid));
-                }
+    // Re-nest inner chip modules: a child module holding a Chip node whose
+    // module sits in this module's `chips` map takes that module into its own
+    // `chips` map so emit can find it. Every module is still at this level
+    // when the parent links are read; moving the deepest first keeps each
+    // parent at this level until its own children have moved into it.
+    let mut parent_of: HashMap<NodeId, NodeId> = HashMap::default();
+    for (parent_id, child_mod) in module.chips.iter() {
+        for (nid, n) in &child_mod.nodes {
+            if n.kind == NodeKind::Chip && module.chips.contains_key(nid) {
+                parent_of.insert(*nid, *parent_id);
             }
         }
-        if moves.is_empty() {
-            break;
+    }
+    let depth = |mut id: NodeId| {
+        let mut d = 0usize;
+        while let Some(&p) = parent_of.get(&id) {
+            d += 1;
+            id = p;
         }
-        for (parent_id, inner_id) in moves {
-            if let Some(inner_child) = module.chips.remove(&inner_id)
-                && let Some(parent_module) = module.chips.get_mut(&parent_id)
-            {
-                parent_module.chips.insert(inner_id, inner_child);
-            }
-        }
+        d
+    };
+    let mut moves: Vec<(usize, NodeId, NodeId)> = parent_of
+        .iter()
+        .map(|(&inner, &parent)| (depth(inner), inner, parent))
+        .collect();
+    moves.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    for (_, inner_id, parent_id) in moves {
+        let inner_child = module.chips.remove(&inner_id).expect("inner chip module");
+        module
+            .chips
+            .get_mut(&parent_id)
+            .expect("parent chip module still at this level")
+            .chips
+            .insert(inner_id, inner_child);
     }
 }

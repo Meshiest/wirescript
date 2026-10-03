@@ -19,112 +19,184 @@ pub(in crate::lower) fn arg_port_type(ctx: &LowerCtx, port: PortRef) -> Option<T
         .map(|p| p.ty.clone())
 }
 
-/// The concrete type an argument will lower to in the CURRENT context, read
-/// from its scope binding / port type — NOT from typecheck's `type_of_expr`
-/// map. This is the crux of nested-generic correctness: inside `outer<T>`'s
-/// body a forwarded value param (`inner(v)`) is bound to the caller's already
-/// concrete arg port (int under `outer<int>`, vector under `outer<vector>`),
-/// so its real lowered type is that concrete type. `type_of_expr`, by contrast,
-/// holds the STALE last-mask-member type the typecheck per-combo body check wrote
-/// there (e.g. `Prefab`), which silently collapsed every nested monomorph to
-/// the wrong variant. Falls back to `type_of` for non-ident args (literals,
-/// compound expressions) — those aren't type-param-forwarded in practice, and
-/// their `type_of_expr` entry is already concrete.
-fn lowered_arg_type(ctx: &LowerCtx, e: &Expr) -> Type {
-    match e {
-        Expr::Ident { name, .. } => match ctx.scope.get(name) {
-            Some(Binding::Local(l)) => {
-                if let Some(t) = arg_port_type(ctx, l.port) {
-                    return t;
-                }
-            }
-            Some(Binding::Var(v)) => return v.inner_type.clone(),
-            Some(Binding::Input(i)) => return i.ty.clone(),
-            Some(Binding::Buffer(b)) => return b.ty.clone(),
-            _ => {}
-        },
-        // A COMPOUND arg forwarded into a NESTED generic call (`Box(a + b)`,
-        // `Box(if c then a else b)`) inside a generic body must report the
-        // CURRENT monomorph's type — recurse structurally, resolving operators
-        // and if-branches from their operands' monomorph types, exactly as the
-        // emit side does (`mono_op_rule` / `lower_if_expr`). Otherwise the
-        // `type_of` fallback below returns the STALE last-mask-member type the
-        // per-combo body check wrote, and the inner call monomorphizes to the
-        // wrong variant (`Numeric` → Color) — a silent miscompile. Gated on a
-        // non-empty `mono_stack` so the non-generic path stays byte-identical.
-        Expr::BinOp { op, left, right, .. } if !ctx.mono_stack.is_empty() => {
-            let l = lowered_arg_type(ctx, left);
-            let r = lowered_arg_type(ctx, right);
-            if let Some(rule) = crate::catalog::operators::resolve_op(op, &[l, r]) {
-                return rule.result.clone();
-            }
-        }
-        Expr::UnOp { op, operand, .. } if !ctx.mono_stack.is_empty() => {
-            let o = lowered_arg_type(ctx, operand);
-            if let Some(rule) = crate::catalog::operators::resolve_op(op, &[o]) {
-                return rule.result.clone();
-            }
-        }
-        Expr::IfExpr {
-            then_branch,
-            else_branch,
-            ..
-        } if !ctx.mono_stack.is_empty() => {
-            let t = unwrap_ref(&lowered_arg_type(ctx, then_branch));
-            let e2 = unwrap_ref(&lowered_arg_type(ctx, else_branch));
-            return crate::types::coerce::widening_join(&t, &e2).unwrap_or(e2);
-        }
-        // A single-output generic-mod call forwarded as an arg (`Box(id(a))`):
-        // its monomorph return type is its declared return with the callee's
-        // OWN subst applied, inferred from the (monomorph) arg types — not the
-        // stale `type_of`. Mirrors what the inner call itself will do when
-        // lowered. Recursion is bounded by expression nesting.
-        Expr::Call { callee, args, .. } if !ctx.mono_stack.is_empty() => {
-            if let Expr::Ident { name, .. } = callee.as_ref()
-                && let Some(Binding::Chip(decl)) = ctx.scope.get(name)
-            {
-                let decl = decl.clone();
-                if !decl.type_params.is_empty() && decl.outputs.len() == 1 {
-                    let pos: Vec<&Expr> = args
-                        .iter()
-                        .filter_map(|a| match a {
-                            CallArg::Positional(e) => Some(e),
-                            _ => None,
-                        })
-                        .collect();
-                    let frame = build_mono_frame(ctx, &decl, &pos, &[]);
-                    let params: Vec<String> =
-                        decl.type_params.iter().map(|tp| tp.name.clone()).collect();
-                    let empty_aliases = crate::collections::HashMap::default();
-                    let empty_generic = crate::collections::HashMap::default();
-                    let cx = crate::types::resolve::ResolveCtx {
-                        params: &params,
-                        type_aliases: &empty_aliases,
-                        generic_aliases: &empty_generic,
-                    };
-                    let ret = crate::types::resolve::resolve_type(
-                        &decl.outputs[0].typ,
-                        &cx,
-                        &mut Vec::new(),
-                    );
-                    return crate::types::mono::substitute(&ret, &frame.subst);
-                }
-            }
-        }
-        _ => {}
-    }
-    ctx.type_of(e)
+/// The type an argument lowers to here: a name's, or a bound record field's,
+/// from its binding (see [`binding_lowered_type`]), anything else its type in
+/// this instantiation. A template build (`compile_chip_template`) lowers a
+/// generic body with no substitution and has no instantiation's types to
+/// read, so its frames and container fallbacks type the bindings it built.
+pub(in crate::lower) fn lowered_arg_type(ctx: &LowerCtx, e: &Expr) -> Type {
+    let recorded = || ctx.type_of(e);
+    let binding = match e {
+        Expr::Ident { name, .. } => ctx.scope.get(name),
+        Expr::FieldAccess { .. } | Expr::TuplePick { .. } if !ctx.mono_stack.is_empty() => resolve_field_chain(ctx, e),
+        _ => None,
+    };
+    binding.and_then(|b| binding_lowered_type(ctx, b, recorded)).unwrap_or_else(recorded)
 }
 
-/// Rebuild a generic mod's call-site type substitution and package it (with the
-/// callee's type-param names) into a [`MonoFrame`]. For each positional param,
-/// resolve its declared type with the type params in scope (so `T` →
-/// `Type::Param(T)`) and pair it with the argument's ACTUAL lowered type (see
-/// [`lowered_arg_type`]); then `types::mono::infer_call_subst` runs the same
-/// `collect` + `solve` inference typecheck used at the call site. Only
-/// positional value args participate; masks come from each param's bound
-/// (`T: Numeric`) so the solver's out-of-mask check matches typecheck's.
-pub(super) fn build_mono_frame(
+/// The type a name's binding lowers to. A container binding records its
+/// element type (an array) or its whole `Map(K, V)`, so an array is rebuilt as
+/// `Array(elem)`: that is what a `T[]` param has to unify against.
+///
+/// The binding's type replaces `recorded` (typecheck's type, which in a
+/// template build is the last combination checked) only when the two have the
+/// same shape. A multi-output result bound by its first port (`ss.pop()`)
+/// has that port's scalar type but a record's type, so a record `recorded`
+/// is refined from the result's output ports instead.
+///
+/// A record binding has no type of its own, so inside a generic body its
+/// fields refine `recorded`. Outside one `recorded` is already the monomorph
+/// and is returned as is.
+fn binding_lowered_type(ctx: &LowerCtx, b: &Binding, recorded: impl Fn() -> Type) -> Option<Type> {
+    let storage_type = |storage: VarStorage, inner: &Type| match storage {
+        VarStorage::Array => Type::Array(Box::new(inner.clone())),
+        VarStorage::Var | VarStorage::Buffer | VarStorage::Map => inner.clone(),
+    };
+    let own = match b {
+        Binding::Local(l) => arg_port_type(ctx, l.port)?,
+        Binding::Var(v) => storage_type(v.storage, &v.inner_type),
+        Binding::DynRef(d) => storage_type(d.storage, &d.inner_type),
+        Binding::Input(i) => i.ty.clone(),
+        Binding::Buffer(b) => b.ty.clone(),
+        Binding::Record(fields) if !ctx.mono_stack.is_empty() => return Some(refine_record(ctx, &recorded(), fields)),
+        _ => return None,
+    };
+    let recorded = recorded();
+    if same_shape(&own, &recorded) {
+        return Some(own);
+    }
+    if let Binding::Local(l) = b {
+        return Some(refine_fields(&recorded, |name, _| {
+            let port = crate::lower::access::resolve_output_field_port(ctx, l.port.node_id, name)?;
+            arg_port_type(ctx, port)
+        }));
+    }
+    Some(recorded)
+}
+
+/// Whether `a` and `b` are the same kind of type: both records, both tuples,
+/// both arrays, both maps, the same enum, or both scalars. A type param,
+/// `any` or a union says nothing about shape and matches anything.
+fn same_shape(a: &Type, b: &Type) -> bool {
+    #[derive(PartialEq)]
+    enum Shape<'t> {
+        Record,
+        Tuple,
+        Array,
+        Map,
+        Enum(&'t str),
+        Scalar,
+    }
+    fn shape(t: &Type) -> Option<Shape<'_>> {
+        Some(match t {
+            Type::Ref(inner) => return shape(inner),
+            Type::Record(_) => Shape::Record,
+            Type::Tuple(_) => Shape::Tuple,
+            Type::Array(_) => Shape::Array,
+            Type::Map(..) => Shape::Map,
+            Type::Enum { name, .. } => Shape::Enum(name),
+            Type::Param(_) | Type::Any | Type::Union(_) => return None,
+            _ => Shape::Scalar,
+        })
+    }
+    match (shape(a), shape(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => true,
+    }
+}
+
+/// `template` with each record field (or tuple element, by index) that
+/// `field` can type replaced by that type. The rest keep their template type.
+fn refine_fields(template: &Type, field: impl Fn(&str, &Type) -> Option<Type>) -> Type {
+    match template {
+        Type::Record(tf) => Type::Record(
+            tf.iter()
+                .map(|(name, ft)| (name.clone(), field(name, ft).unwrap_or_else(|| ft.clone())))
+                .collect(),
+        ),
+        Type::Tuple(ts) => Type::Tuple(
+            ts.iter()
+                .enumerate()
+                .map(|(i, ft)| field(&i.to_string(), ft).unwrap_or_else(|| ft.clone()))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// `template` with each field a record binding holds replaced by the type
+/// that field's binding lowers to. A field the binding cannot type (an enum
+/// payload record, a record array's columns) keeps its template type.
+fn refine_record(
+    ctx: &LowerCtx,
+    template: &Type,
+    fields: &HashMap<crate::intern::Sym, Binding>,
+) -> Type {
+    refine_fields(template, |name, ft| match fields.get(&crate::intern::intern(name))? {
+        Binding::Record(inner) => Some(refine_record(ctx, ft, inner)),
+        other => binding_lowered_type(ctx, other, || ft.clone()),
+    })
+}
+
+/// The [`MonoFrame`] `call` instantiates generic `chip_decl` with: the type
+/// arguments typecheck recorded for it under the caller's substitution, so
+/// the body's key is the one typecheck checked. `None` when it recorded
+/// none, which it does only for a call it rejected. A template build lowers a
+/// generic body with no substitution, so its calls have no record; it infers
+/// them from the arguments' lowered types instead (see [`inferred_frame`]).
+pub(super) fn mono_frame(
+    ctx: &LowerCtx,
+    chip_decl: &ChipDecl,
+    call: &SourceRange,
+    positional_args: &[&Expr],
+    type_args: &[TypeExpr],
+) -> Option<MonoFrame> {
+    let key = (call.file.clone(), call.start.offset, call.end.offset, ctx.resolution_subst.clone());
+    let params: Vec<String> = chip_decl.type_params.iter().map(|tp| tp.name.clone()).collect();
+    match ctx.resolutions.call_type_args.get(&key) {
+        Some(args) => {
+            let subst = params.iter().cloned().zip(args.iter().cloned()).collect();
+            Some(MonoFrame::of(chip_decl, params, subst))
+        }
+        None if ctx.template_build => Some(inferred_frame(ctx, chip_decl, positional_args, type_args)),
+        None => None,
+    }
+}
+
+/// Whether typecheck checked `chip_decl`'s body under `body_subst`. A body
+/// under the empty key is checked once with no instantiation to miss, and a
+/// template build lowers generic bodies typecheck checked under other keys.
+pub(super) fn instantiation_checked(ctx: &LowerCtx, chip_decl: &ChipDecl, body_subst: &Arc<[Type]>) -> bool {
+    let r = &chip_decl.range;
+    body_subst.is_empty()
+        || ctx.template_build
+        || ctx
+            .resolutions
+            .checked_bodies
+            .contains(&(r.file.clone(), r.start.offset, r.end.offset, body_subst.clone()))
+}
+
+/// An internal error at `call` for an instantiation of `chip_decl` typecheck
+/// never checked, whose types lowering has no record of. Typecheck checks
+/// every instantiation a call it accepted demands, so this is a compiler bug.
+pub(super) fn report_unchecked_instantiation(ctx: &mut LowerCtx, chip_decl: &ChipDecl, call: &SourceRange) -> PortRef {
+    ctx.diagnostics.push(Diagnostic::error(
+        crate::diagnostic::INTERNAL_ERROR,
+        format!(
+            "internal compiler error: this call instantiates `{}` with type arguments the type \
+             checker never checked its body with, so the types inside it are unknown",
+            chip_decl.name,
+        ),
+        call.clone(),
+    ));
+    crate::lower::expr::synthesise_unsupported_no_warn(ctx, call)
+}
+
+/// A template build's frame: the call's substitution rebuilt from the
+/// arguments' lowered types (see [`lowered_arg_type`]) by the inference
+/// typecheck runs at a call (`types::mono::infer_call_subst`), or from
+/// explicit type arguments.
+fn inferred_frame(
     ctx: &LowerCtx,
     chip_decl: &ChipDecl,
     positional_args: &[&Expr],
@@ -145,30 +217,18 @@ pub(super) fn build_mono_frame(
         for (tp, te) in chip_decl.type_params.iter().zip(type_args.iter()) {
             subst.insert(tp.name.clone(), ctx.resolve_local_type(te));
         }
-        return MonoFrame {
-            params: param_names,
-            subst,
-        };
+        return MonoFrame::of(chip_decl, param_names, subst);
     }
-    let empty_aliases: crate::collections::HashMap<String, Type> = crate::collections::HashMap::default();
-    let empty_generic_aliases: crate::collections::HashMap<String, crate::types::resolve::GenericAlias> =
-        crate::collections::HashMap::default();
-    let resolve_cx = crate::types::resolve::ResolveCtx {
-        params: &param_names,
-        type_aliases: &empty_aliases,
-        generic_aliases: &empty_generic_aliases,
-    };
+    // Aliases resolve so a `Box<T>` param is the record it names and its `T`
+    // unifies with the argument's field.
+    let own_param = |name: &str, _: &SourceRange| param_names.iter().any(|p| p == name).then(|| Type::Param(name.to_string()));
     let mut param_types = Vec::new();
     let mut arg_types = Vec::new();
     for (i, param) in chip_decl.inputs.iter().enumerate() {
         let Some(arg_expr) = positional_args.get(i) else {
             continue;
         };
-        param_types.push(crate::types::resolve::resolve_type(
-            &param.typ,
-            &resolve_cx,
-            &mut Vec::new(),
-        ));
+        param_types.push(ctx.declared_types_at(param.typ.range()).resolve_scoped(&param.typ, &own_param));
         arg_types.push(lowered_arg_type(ctx, arg_expr));
     }
     let masks: Vec<(String, Vec<Type>)> = chip_decl
@@ -177,16 +237,14 @@ pub(super) fn build_mono_frame(
         .map(|tp| {
             (
                 tp.name.clone(),
-                crate::types::mono::mask_for_param(tp.bound.as_ref(), &empty_aliases),
+                crate::types::mono::mask_for_param(tp.bound.as_ref(), &|te| ctx.declared_types_at(te.range()).resolve(te)),
             )
         })
         .collect();
     let subst = crate::types::mono::infer_call_subst(&param_types, &arg_types, &masks);
-    MonoFrame {
-        params: param_names,
-        subst,
-    }
+    MonoFrame::of(chip_decl, param_names, subst)
 }
+
 
 /// Canonical cache/template key for one generic-chip instantiation: the chip
 /// name plus the concrete type each type param resolves to under this call's

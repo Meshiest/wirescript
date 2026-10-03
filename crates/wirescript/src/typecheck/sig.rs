@@ -159,7 +159,7 @@ pub fn check_args(
                         }
                     }
                     // A multi-output result splats in declaration order.
-                    Type::Record(fields) => {
+                    Type::Record(fields) | Type::Outputs(fields) => {
                         for (_, ft) in fields {
                             slots.push(PosSlot::Elem(ft, t.range().clone()));
                         }
@@ -308,11 +308,11 @@ pub fn check_args(
 fn check_one_arg(ctx: &mut TypeCheckCtx, sig: &CallSignature, param: &Param, arg_expr: &Expr) {
     match param.kind {
         ParamKind::ConfigEnum(enum_type) => {
-            validate_enum_config_arg(ctx, enum_type, arg_expr);
+            validate_enum_config_arg(ctx, enum_type, &format!("`{}` setting `{}`", sig.name, param.name), arg_expr);
         }
         ParamKind::WireEnum(enum_type) => {
             if is_enum_constant_arg(ctx, enum_type, arg_expr) {
-                validate_enum_config_arg(ctx, enum_type, arg_expr);
+                validate_enum_config_arg(ctx, enum_type, &format!("`{}` setting `{}`", sig.name, param.name), arg_expr);
             } else if !wire_arg_is_game_enum(ctx, enum_type, arg_expr) {
                 check_wire_arg(ctx, arg_expr, param);
             }
@@ -345,7 +345,9 @@ fn check_one_arg(ctx: &mut TypeCheckCtx, sig: &CallSignature, param: &Param, arg
             let lookup = |n: &str| ctx.resolve_mod(n);
             let mut budget = crate::const_eval::Budget::default();
             let cx = ctx.const_ctx(Some(&lookup));
-            if let Err(err) = crate::const_eval::eval_expr(arg_expr, &cx, &mut budget) {
+            if let Err(err) = crate::const_eval::eval_expr(arg_expr, &cx, &mut budget)
+                && !err.reported_elsewhere()
+            {
                 ctx.emit(err.code(), err.message(), err.range.clone());
             }
         }
@@ -357,10 +359,12 @@ fn check_one_arg(ctx: &mut TypeCheckCtx, sig: &CallSignature, param: &Param, arg
 /// `param.ty` (WS003 on mismatch).
 
 /// A record LITERAL passed where the parameter has reference fields (the shape
-/// `*T` on a record distributes to): every ref field needs real storage behind
-/// it, so its value faces the same lvalue test a scalar `*T` argument does.
-/// Only literals are checked - a record bound to a name got its fields from
-/// wherever they came from, and re-testing the name says nothing about them.
+/// `*T` on a record distributes to): every ref field needs storage or a ref
+/// behind it, so its value faces the same test a scalar `*T` argument does: a
+/// var names storage, and a ref value (`&a`, `hs[0]`, a ref-holding var) names
+/// the var it points at. Only literals are checked - a record bound to a name
+/// got its fields from wherever they came from, and re-testing the name says
+/// nothing about them.
 fn check_record_lit_ref_fields(ctx: &mut TypeCheckCtx, param: &Param, arg_expr: &Expr) {
     let (Type::Record(pfields), Expr::RecordLit { fields, .. }) = (&param.ty, arg_expr) else {
         return;
@@ -383,15 +387,21 @@ fn check_record_lit_ref_fields(ctx: &mut TypeCheckCtx, param: &Param, arg_expr: 
             Some(Expr::Ident { name, .. }) => Some(name.as_str()),
             _ => None,
         };
-        let writable = match ident {
-            Some(n) => ctx.scope.lookup(n).is_none_or(|sym| {
-                matches!(
-                    sym.kind,
-                    SymbolKind::Var | SymbolKind::Array | SymbolKind::Map
-                ) || (sym.kind == SymbolKind::Param && matches!(&sym.ty, Type::Ref(_)))
-            }),
-            None => matches!(value, Some(Expr::FieldAccess { .. })),
+        let ref_value = match value {
+            Some(Expr::RefOf { .. }) => true,
+            Some(v) => matches!(arg_type(ctx, v), Type::Ref(_)),
+            None => false,
         };
+        let writable = ref_value
+            || match ident {
+                Some(n) => ctx.scope.lookup(n).is_none_or(|sym| {
+                    matches!(
+                        sym.kind,
+                        SymbolKind::Var | SymbolKind::Array | SymbolKind::Map
+                    ) || (sym.kind == SymbolKind::Param && matches!(&sym.ty, Type::Ref(_)))
+                }),
+                None => matches!(value, Some(Expr::FieldAccess { .. })),
+            };
         if !writable {
             ctx.emit(
                 "WS008",
@@ -412,14 +422,7 @@ fn check_record_lit_ref_fields(ctx: &mut TypeCheckCtx, param: &Param, arg_expr: 
 /// enum). Reads the type the Call-arm preamble recorded, like
 /// [`check_wire_arg`].
 fn wire_arg_is_game_enum(ctx: &mut TypeCheckCtx, enum_type: &str, arg_expr: &Expr) -> bool {
-    let key = {
-        let r = arg_expr.range();
-        (r.file.clone(), r.start.offset, r.end.offset)
-    };
-    let ty = match ctx.type_of_expr.get(&key).cloned() {
-        Some(t) => t,
-        None => crate::typecheck::infer::infer(ctx, arg_expr),
-    };
+    let ty = arg_type(ctx, arg_expr);
     matches!(
         unwrap_ref(&ty),
         Type::Enum { name, .. } if crate::catalog::game_enum_schema_type(&name) == Some(enum_type)
@@ -440,16 +443,15 @@ fn arg_type(ctx: &mut TypeCheckCtx, arg_expr: &Expr) -> Type {
 /// Whether a field chain passed to a `*T` parameter names storage the
 /// parameter can alias: a field of a record `var` (each field is its own gate),
 /// a namespaced var, a ref field of a record parameter (a place bound to the
-/// caller's storage), or a field of a record `let` or user mod result that
-/// bundles vars (`projection_is_place`). A chain that arrived on a wire (a
-/// literal's `n: 1`, a map read, an element `pts[i].x`) is a value with
-/// nothing to write back to; one that is a ref VALUE never reaches here (the
-/// ref-value check binds it first).
-fn field_names_storage(ctx: &TypeCheckCtx, arg_expr: &Expr) -> bool {
+/// caller's storage), or a field of a record `let` that bundles vars, directly
+/// or through a namespace (`projection_is_place`). A chain that arrived on a
+/// wire (a literal's `n: 1`, a map read, a call's result, an element
+/// `pts[i].x`) is a value with nothing to write back to; one that is a ref
+/// VALUE never reaches here (the ref-value check binds it first).
+pub(super) fn field_names_storage(ctx: &TypeCheckCtx, arg_expr: &Expr) -> bool {
     let (root, segs) = crate::typecheck::infer::flatten_access(arg_expr);
     let Expr::Ident { name, range } = root else {
-        return matches!(root, Expr::Call { .. })
-            && crate::typecheck::infer::projection_is_place(ctx, arg_expr);
+        return false;
     };
     let Some(sym) = ctx.scope.lookup(name) else {
         return true;
@@ -460,8 +462,10 @@ fn field_names_storage(ctx: &TypeCheckCtx, arg_expr: &Expr) -> bool {
         SymbolKind::Namespace => segs.first().is_some_and(|member| {
             ctx.ns_members(name, &range.file)
                 .and_then(|m| m.get(member.as_str()))
-                .is_some_and(|info| {
-                    matches!(info.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map)
+                .is_some_and(|info| match info.kind {
+                    SymbolKind::Var | SymbolKind::Array | SymbolKind::Map => true,
+                    SymbolKind::LetBinding => crate::typecheck::infer::projection_is_place(ctx, arg_expr),
+                    _ => false,
                 })
         }),
         SymbolKind::Param => {
@@ -554,7 +558,7 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
                 // Undefined ident: reported as WS002 elsewhere, do not pile on.
                 None => true,
             },
-            Expr::FieldAccess { .. } => field_names_storage(ctx, arg_expr),
+            Expr::FieldAccess { .. } | Expr::TuplePick { .. } => field_names_storage(ctx, arg_expr),
             _ => false,
         };
         if !ok {
@@ -575,6 +579,15 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
     // rather than the `any` a bare inference would give it.
     if matches!(arg_expr, Expr::NullLit { .. }) {
         crate::typecheck::infer::check(ctx, arg_expr, &param.ty);
+        return;
+    }
+    // `{}` for a map parameter is an empty map, which the callee gets as a
+    // map of its own, the way a constant array literal argument is passed.
+    if let Expr::RecordLit { fields, range } = arg_expr
+        && fields.is_empty()
+        && let map @ Type::Map(..) = unwrap_ref(&param.ty)
+    {
+        ctx.record_expr_type(range, &map);
         return;
     }
     // The Call-arm preamble already inferred every wire arg into
@@ -617,7 +630,8 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
         ctx.emit(
             "WS003",
             format!(
-                "argument '{}': `*{}` aliases the caller's storage, so it needs a                  `{}` variable - `{}` storage cannot be written through it",
+                "argument '{}': `*{}` aliases the caller's storage, so it needs a \
+                 `{}` variable; `{}` storage cannot be written through it",
                 param.name,
                 crate::analysis::types::type_str(want),
                 crate::analysis::types::type_str(want),
@@ -627,7 +641,46 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
         );
         return;
     }
-    if coerce(&arg_ty, &param_ty) == CoerceRule::Mismatch {
+    if crate::typecheck::infer::record_into_one_value(ctx, arg_expr, &arg_ty, &param_ty) {
+        if matches!(arg_ty, Type::Record(_)) {
+            let r = arg_expr.range();
+            ctx.resolutions.rejected_record_args.insert((r.file.clone(), r.start.offset, r.end.offset));
+        }
+        return;
+    }
+    // A generic enum value built in the argument (`Opt.Some(7)` for an
+    // `Opt<float>` parameter) is built at the parameter's instantiation, as an
+    // annotated `let` or `var` builds it. Kept only when that checks cleanly.
+    if let (Type::Enum { name: pn, args: pa }, Type::Enum { name: an, args: aa }) = (&param_ty, &arg_ty)
+        && pn == an
+        && !pa.is_empty()
+        && pa != aa
+    {
+        let before = ctx.diagnostics.len();
+        crate::typecheck::infer::check(ctx, arg_expr, &param_ty);
+        let (old, new) = ctx.diagnostics.split_at(before);
+        if !new.iter().any(|d| d.severity == crate::diagnostic::Severity::Error) {
+            let repeats: Vec<bool> = new
+                .iter()
+                .map(|d| old.iter().any(|o| o.code == d.code && o.message == d.message && o.range == d.range))
+                .collect();
+            let mut i = 0;
+            ctx.diagnostics.retain(|_| {
+                i += 1;
+                i <= before || !repeats[i - before - 1]
+            });
+            return;
+        }
+        ctx.diagnostics.truncate(before);
+    }
+    crate::typecheck::infer::literal_in_slot(ctx, arg_expr, &arg_ty, &param_ty);
+    if coerce(&arg_ty, &param_ty) == CoerceRule::Mismatch
+        && crate::typecheck::infer::literal_fits(ctx, arg_expr, &param_ty)
+    {
+        crate::typecheck::infer::coerce_value_or_emit(ctx, arg_expr, &arg_ty, &param_ty);
+        return;
+    }
+    if coerce(&arg_ty, &param_ty) == CoerceRule::Mismatch && !ctx.is_error_typed(arg_expr) {
         ctx.emit(
             "WS003",
             format!(

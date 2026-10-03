@@ -59,10 +59,38 @@ pub(crate) use stmt::*;
 mod decl;
 use decl::*;
 mod register;
+mod shadow;
+mod instances;
+mod untyped_arrays;
 use register::*;
 
+/// The most rounds a program with unannotated ports written values of several
+/// types is checked for (see `ctx::finish_untyped_ports`): each round seeds
+/// the types the previous one joined.
+const UNTYPED_PORT_ROUNDS: usize = 4;
+
 pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheckResult {
+    let mut port_seeds = Arc::new(PortSeeds::default());
+    for round in 1.. {
+        let last = round == UNTYPED_PORT_ROUNDS;
+        match typecheck_round(script, file, ce_slots, &port_seeds, last) {
+            Ok(result) => return result,
+            Err(next_ports) => port_seeds = Arc::new(next_ports),
+        }
+    }
+    unreachable!()
+}
+
+fn typecheck_round(
+    script: &Script,
+    file: &str,
+    ce_slots: &CeSlotMap,
+    port_seeds: &Arc<PortSeeds>,
+    last: bool,
+) -> Result<TypeCheckResult, PortSeeds> {
     let mut ctx = TypeCheckCtx::new(file, ce_slots);
+    ctx.untyped_port_seeds = port_seeds.clone();
+    ctx.imports = script.imports.clone();
     // A module-level `@nofold` marks the WHOLE program, exactly as
     // `lower::lower` seeds `LowerCtx::nofold_depth` from this same flag.
     // Under `@nofold` lowering still builds a real `Branch` for a constant
@@ -86,9 +114,13 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
     // alias pre-pass just above).
     enums::collect_enum_defs(&mut ctx, &script.decls);
 
+    ctx.top_names = Arc::new(crate::scope::top::TopNames::of(&script.decls));
+    warn_top_redeclarations(&mut ctx, &script.decls);
+    warn_namespace_redeclarations(&mut ctx, &script.decls);
     // Two-pass: register all top-level decls first so forward refs resolve.
     for d in &script.decls {
         register_decl(&mut ctx, d);
+        ctx.keep_top_dup_symbols(d);
     }
     // After registration, so a payload field naming a record alias resolves:
     // reject any payload field that would need container storage (WS069).
@@ -96,11 +128,9 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
     // Constant `let`s, resolved before any decl is checked so a `var` / `array`
     // initializer may name one. Built from the same function lowering uses, so
     // the two can't disagree about what counts as a compile-time constant.
-    ctx.const_env = std::sync::Arc::new(crate::lower::build_const_env(
-        &script.decls,
-        &ctx.enum_defs,
-    ));
-    ctx.const_declared = crate::lower::build_const_declared_names(&script.decls);
+    ctx.consts =
+        crate::const_scope::ConstScope::for_program(&script.decls, &ctx.enum_defs, &script.imports, &ctx.top_names);
+    untyped_arrays::type_constant_elements(&mut ctx, &script.decls);
     // `@label(expr)` on a port/chip/nested-var must fold to a compile-time
     // constant (the folded text is baked as the label) — a runtime value there
     // has nowhere to host a wire, so it stays a WS040 error. A TOP-LEVEL `var`
@@ -176,6 +206,9 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
             deferred_chips.push((exec_wrap, d));
             continue;
         }
+        // The top level is read by position: a name declared there more than
+        // once means the declaration visible here.
+        ctx.top_view(crate::scope::top::ReadAt::code(d.range()));
         if exec_wrap {
             ctx.exec_stack.push(ExecMode::Exec);
             check_decl(&mut ctx, d);
@@ -183,6 +216,7 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
         } else {
             check_decl(&mut ctx, d);
         }
+        ctx.keep_top_dup_symbols(d);
     }
     for (exec_wrap, d) in deferred_chips {
         if exec_wrap {
@@ -192,6 +226,15 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
         } else {
             check_decl(&mut ctx, d);
         }
+    }
+    // Every body the bound combinations cover is checked by now; check the
+    // instantiations calls use beyond those.
+    instances::check_demanded(&mut ctx);
+    ctx.settle_string_bound_hints();
+    explain_hidden_enum_types(&mut ctx);
+    finish_untyped_ports(&mut ctx, &script.decls, last);
+    if let Some(ports) = ctx.untyped_port_next.take() {
+        return Err(ports);
     }
     ctx.out_ctx.pop();
 
@@ -216,7 +259,20 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
     check_custom_event_types(&mut ctx, script, &type_of_expr, ce_slots);
     ctx.type_of_expr = type_of_expr;
 
-    TypeCheckResult {
+    // Every body is checked by now, so every call's callee has recorded the
+    // storage it uses.
+    shadow::report(&mut ctx);
+    ctx::reserved_names(&mut ctx);
+
+    // A port's stored type and a type argument hold a gate read as the
+    // record of its outputs.
+    let r = &mut ctx.resolutions;
+    for t in r.untyped_port_types.values_mut().chain(r.call_type_args.values_mut().flatten()) {
+        if t.holds_outputs() {
+            *t = t.as_record();
+        }
+    }
+    Ok(TypeCheckResult {
         type_of_expr: ctx.type_of_expr,
         op_resolutions: ctx.op_resolutions,
         if_contexts: ctx.if_contexts,
@@ -224,8 +280,118 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
         diagnostics: ctx.diagnostics,
         dropped_ranges: ctx.dropped_ranges,
         resolutions: ctx.resolutions,
+        imports: ctx.imports,
         #[cfg(test)]
         port_sites: ctx.port_sites,
+        #[cfg(test)]
+        ident_decls: ctx.ident_decls,
+        #[cfg(test)]
+        demanded_instantiations: ctx.instances.demanded(),
+    })
+}
+
+/// `WS108` for each top-level declaration of a name the top level of its
+/// file declared before: the later one hides the earlier from its position
+/// on (see `scope::top`). Two storage declarations of one name are `WS013`
+/// at registration instead. A module imported `import * as` too is warned
+/// about once, by [`warn_namespace_redeclarations`].
+fn warn_top_redeclarations(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
+    let top = ctx.top_names.clone();
+    let namespaced: crate::collections::HashSet<Arc<str>> = decls
+        .iter()
+        .filter_map(|d| match d {
+            TopDecl::Namespace(ns) => Some(ns.decls.iter().map(|nd| nd.range().file.clone())),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let mut found: Vec<(&str, &crate::scope::top::TopDup, &crate::scope::top::TopDup)> = top
+        .dups()
+        .flat_map(|(name, decls)| decls.windows(2).map(move |w| (name, &w[0], &w[1])))
+        .filter(|(_, before, after)| !(before.storage && after.storage))
+        .filter(|(_, _, after)| !namespaced.contains(&after.range.file))
+        .collect();
+    found.sort_by_key(|(_, _, after)| (after.range.file.clone(), after.range.start.offset));
+    for (name, before, after) in found {
+        let line = before.range.start.line;
+        let message = if after.storage {
+            format!(
+                "'{name}' is declared again here, and the top level already declares it on line {line}: from \
+                 this declaration on, '{name}' names this one, and so does a read above line {line}, since \
+                 storage is declared ahead of everything at the top level; a read in between names the one on \
+                 line {line}. Rename one of them to read both"
+            )
+        } else {
+            format!(
+                "'{name}' is declared again here, and the top level already declares it on line {line}: from \
+                 this declaration on, '{name}' names this one and the one on line {line} is hidden, while a read \
+                 above it still names that one. Rename one of them to read both"
+            )
+        };
+        ctx.warn("WS108", message, after.range.clone());
+    }
+}
+
+/// A plain `unknown type` naming an enum a file sees, but which the program
+/// hides behind its own enum of that name, says so (see
+/// `infer::hidden_enum_message`), as the enum's other reads there do.
+fn explain_hidden_enum_types(ctx: &mut TypeCheckCtx) {
+    let mut found = Vec::new();
+    for (i, d) in ctx.diagnostics.iter().enumerate() {
+        let Some(name) = d.message.strip_prefix("unknown type '").and_then(|r| r.strip_suffix('\'')) else { continue };
+        if d.code == "WS002"
+            && let Some(message) = infer::hidden_enum_message(ctx, name, &d.range)
+        {
+            found.push((i, message));
+        }
+    }
+    for (i, message) in found {
+        ctx.diagnostics[i].message = message;
+    }
+}
+
+/// `WS108` for a name a module imported `import * as` declares more than once
+/// at its top level. Its namespace holds one declaration of the name, the
+/// last, which every read in the module and through the namespace names;
+/// once per declaration, however many paths reach the module.
+fn warn_namespace_redeclarations(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
+    let mut found: Vec<(String, crate::diagnostic::SourceRange, u32)> = Vec::new();
+    let mut seen = crate::collections::HashSet::default();
+    for d in decls {
+        let TopDecl::Namespace(ns) = d else { continue };
+        let mut first: crate::collections::HashMap<(Arc<str>, String), u32> = Default::default();
+        for nd in &ns.decls {
+            let r = nd.range();
+            for (name, _) in crate::scope::top::declared_names_of(nd) {
+                match first.get(&(r.file.clone(), name.clone())) {
+                    Some(line) if seen.insert((r.file.clone(), r.start.offset, name.clone())) => {
+                        found.push((name, r.clone(), *line));
+                    }
+                    Some(_) => {}
+                    None => {
+                        first.insert((r.file.clone(), name), r.start.line);
+                    }
+                }
+            }
+        }
+    }
+    for (name, range, line) in found {
+        // Imported flat as well, its flat reads name the last one too.
+        let elsewhere = if ctx.top_names.is_dup(&range.file, &name) {
+            "its flat import here reads it so too; compiled alone"
+        } else {
+            "imported flat or compiled alone"
+        };
+        ctx.warn(
+            "WS108",
+            format!(
+                "'{name}' is declared again here, and the top level already declares it on line {line}: this \
+                 module is imported with `import * as`, whose namespace holds only this last declaration, so \
+                 every read of '{name}' in the module names this one, the reads above it too ({elsewhere}, a \
+                 read above names the one on line {line}). Rename one of them to read both"
+            ),
+            range,
+        );
     }
 }
 

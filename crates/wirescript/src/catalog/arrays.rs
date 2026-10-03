@@ -178,7 +178,7 @@ pub fn array_return_type(method: &str, elem: &Type) -> Option<Type> {
     // is no `IsEmpty`/`OutOfBounds` flag to pair with a record. The record-array
     // lowering fans these out per field. Mirrors the record-valued map `get`.
     if matches!(method, "pop" | "get") && matches!(elem, Type::Record(_)) {
-        return Some(elem.clone());
+        return Some(Type::call_result(vec![("Value".into(), elem.clone())]));
     }
     let m = array_method(method)?;
     let gate = super::default_catalog().find_by_class(m.gate)?;
@@ -188,21 +188,25 @@ pub fn array_return_type(method: &str, elem: &Type) -> Option<Type> {
     // the input wire, so drop it.
     let input_names: std::collections::HashSet<&str> =
         gate.component.inputs.iter().map(|p| p.name.as_str()).collect();
-    let fields: Vec<(String, Type)> = gate
+    let mut fields: Vec<(String, Type)> = gate
         .component
         .outputs
         .iter()
         .filter(|p| p.ty != RawPortType::Exec && !input_names.contains(p.name.as_str()))
         .map(|p| (field_name(&p.name), port_type(&p.ty, elem)))
         .collect();
-    Some(match fields.len() {
-        // No distinct output = a void mutation (`push`, `clear`, `fill`, …).
-        // `Never` (not `Any`) so using its "result" as a value is a type
-        // mismatch instead of being silently accepted.
-        0 => Type::Never,
-        1 => fields.into_iter().next().unwrap().1,
-        _ => Type::Record(fields),
-    })
+    // The output a bare use reads (lowering's default: `find`'s `Index`, the
+    // element `Value` of the others) is the record's first field, the one an
+    // operand or a scalar slot unwraps to; the gate lists `IsEmpty` first.
+    let default = if method == "find" { "Index" } else { "Value" };
+    if let Some(i) = fields.iter().position(|(n, _)| n == default) {
+        let f = fields.remove(i);
+        fields.insert(0, f);
+    }
+    // No distinct output = a void mutation (`push`, `clear`, `fill`, ...):
+    // `Never` (not `Any`), so using its "result" as a value is a type
+    // mismatch instead of being silently accepted.
+    Some(Type::call_result(fields))
 }
 
 #[cfg(test)]

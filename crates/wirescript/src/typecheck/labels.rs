@@ -82,7 +82,7 @@ fn check_label_expr_stmt(ctx: &mut TypeCheckCtx, s: &Stmt) {
 
 fn check_one_label_expr(ctx: &mut TypeCheckCtx, label_expr: &Option<Expr>) {
     let Some(expr) = label_expr else { return };
-    if crate::lower::expr_to_literal_in(expr, &ctx.const_env).is_some() {
+    if crate::lower::expr_to_literal_in(expr, &ctx.const_lookup()).is_some() {
         return;
     }
     ctx.emit(
@@ -105,9 +105,11 @@ pub(super) fn check_dynamic_var_labels(
     for d in &script.decls {
         if let TopDecl::Var(v) = d {
             if let Some(le) = &v.label_expr {
-                if crate::lower::expr_to_literal_in(le, &ctx.const_env).is_none() {
+                let view = ctx.top_view(crate::scope::top::ReadAt::code(&v.range));
+                if crate::lower::expr_to_literal_in(le, &ctx.const_lookup()).is_none() {
                     infer::infer(ctx, le);
                 }
+                ctx.restore_top_view(view);
             }
         }
     }

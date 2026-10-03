@@ -780,6 +780,24 @@ fn let_of_a_ref_binds_the_variable() {
             ),
             "`v = *r` must read through someVar's ref, not a placeholder"
         );
+        // One chain: the Var_Set's value comes from a Var_Get whose ref is a
+        // var other than the one the Var_Set writes.
+        let m = &r.module;
+        let source = |node: crate::ir::NodeId, port: WirePort| {
+            m.wires.iter().find(|w| w.target.node_id == node && w.target.port == port).map(|w| w.source.node_id)
+        };
+        let set = m
+            .nodes
+            .values()
+            .find(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
+            .expect("the write of v")
+            .id;
+        let get = source(set, WirePort::Value).expect("v's value is wired");
+        assert_eq!(m.nodes[&get].gate_class, "BrickComponentType_Exec_Var_Get");
+        let read = source(get, WirePort::VarRef).expect("the read names a var");
+        let written = source(set, WirePort::VarRef).expect("the write names a var");
+        assert_eq!(m.nodes[&read].gate_class, "BrickComponentType_Var");
+        assert_ne!(read, written, "`*r` reads someVar, not v");
     }
 }
 
@@ -834,4 +852,122 @@ fn a_record_valued_let_used_as_a_trigger_is_reported() {
         "`g = 3` must still chain onto RoundStart's exit: {:?}",
         r.diagnostics
     );
+}
+
+/// The post-lowering wire check reports a stranded wire as WS094 in every
+/// build, naming the pass, instead of leaving it to fail at emit or to ship a
+/// gate that reads 0.
+#[test]
+fn a_stranded_wire_is_an_internal_error() {
+    let r = compile("in n: int\nout a = n * 2\n");
+    assert_no_errors(&r);
+    let range = crate::diagnostic::SourceRange::default();
+
+    let mut clean = Vec::new();
+    check_wires_resolve(&r.module, "a pass", true, &range, &mut clean);
+    assert!(clean.is_empty(), "a lowered program passes the check: {clean:?}");
+
+    let mut broken = r.module.clone();
+    let gate = *broken
+        .nodes
+        .iter()
+        .find(|(_, n)| n.gate_class == "BrickComponentType_Expr_MathMultiply")
+        .expect("the multiply gate")
+        .0;
+    broken.nodes.remove(&gate);
+    let mut diags = Vec::new();
+    check_wires_resolve(&broken, "a pass", true, &range, &mut diags);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0].code, "WS094");
+    assert!(diags[0].message.contains("after `a pass`"), "{}", diags[0].message);
+
+    // A wire to the never-allocated `NodeId(0)` is exempt only once an error
+    // has been reported.
+    let mut zero = r.module.clone();
+    zero.wires.push(crate::ir::Wire {
+        source: crate::ir::NodeId(0).port(WirePort::Output),
+        target: zero.outputs[0].port(WirePort::RerInput),
+    });
+    let mut diags = Vec::new();
+    check_wires_resolve(&zero, "a pass", true, &range, &mut diags);
+    assert_eq!(diags.iter().filter(|d| d.code == "WS094").count(), 1, "{diags:?}");
+    let mut diags = vec![crate::diagnostic::Diagnostic::error("WS002", "earlier error", range.clone())];
+    check_wires_resolve(&zero, "a pass", true, &range, &mut diags);
+    assert!(!diags.iter().any(|d| d.code == "WS094"), "{diags:?}");
+}
+
+/// `xs.pop()`, `get`, `min`, `max` and `average` read bare are the element
+/// (`Value`) and `find` is its `Index`, in typecheck as in lowering: an
+/// operator typed `fs.pop() + a` by the `IsEmpty` flag (`bool + int` is an
+/// `int`), so `var v` stored a float sum in an `int` var, and `+ a` with a
+/// `float` `a` was WS004.
+#[test]
+fn a_bare_multi_output_array_read_is_typed_by_the_output_it_reads() {
+    for (decl, expr, want) in [
+        ("var fs: float[]", "fs.pop() + a", Type::Float),
+        ("var fs: float[]", "fs.pop() + b", Type::Float),
+        ("var fs: float[]", "fs.min() + a", Type::Float),
+        ("var fs: float[]", "fs.get(0) + a", Type::Float),
+        ("var is: int[]", "is.find(3) + a", Type::Int),
+    ] {
+        let src = format!(
+            "in go: exec\nin a: int\nin b: float\n{decl}\nvar o: string = \"\"\nout oo: string = o\n\
+             mod f() {{\n  var v = {expr}\n  o = \"${{v}}\"\n}}\non go {{ f() }}"
+        );
+        let r = compile(&src);
+        assert_no_errors(&r);
+        let v = r
+            .module
+            .nodes
+            .values()
+            .find(|n| n.gate_class == crate::ir::gate_class::VAR && n.source_range.start.line == 8)
+            .unwrap_or_else(|| panic!("no `v`\n{src}"));
+        assert!(v.ports.outputs.iter().any(|p| p.ty == want), "{expr}: {:?}", v.ports.outputs);
+    }
+}
+
+/// A container receiver that no array or map method arm takes, calling a
+/// `self` mod of the method's name, is typed once: its diagnostics were
+/// reported twice.
+#[test]
+fn a_self_mod_on_a_container_receiver_types_the_receiver_once() {
+    let e = errs(
+        "in go: exec\nvar ms: Map<int, int>[]\nvar n: int = 0\nmod sum(self: Map<int, int>) -> int { return 1 }\n\
+         on go { n = ms[nope].sum() }",
+    );
+    assert_eq!(e.iter().filter(|c| *c == "WS002").count(), 1, "{e:?}");
+}
+
+/// A generic builtin's ports take the type its arguments and result pin, so no
+/// value port ships as `any` (the float variant) and none is an internal error.
+#[test]
+fn a_generic_builtin_types_every_port_from_its_arguments_and_result() {
+    let head = "in go: exec\nin c: bool\nin a: string\nin b: string\nvar s: string = \"\"\nout os: string = s\n";
+    for body in [
+        "on go { s = Select(c, a, b) }",
+        "on go { s = Swap(c, a, b).OutputB }",
+        "let d = Sleep(a, delay = 1.0)\nout od: string = d",
+        "let d = SleepTicks(a, delay = 2)\nout od: string = d",
+    ] {
+        let src = format!("{head}{body}");
+        let r = compile(&src);
+        assert_no_errors(&r);
+        assert!(!r.diagnostics.iter().any(|d| d.code == "WS094"), "{body}: {:?}", r.diagnostics);
+        let gate = r
+            .module
+            .nodes
+            .values()
+            .find(|n| n.gate_class.contains("Select") || n.gate_class.contains("Swap") || n.gate_class.contains("Buffer"))
+            .unwrap_or_else(|| panic!("{body}: no gate"));
+        for p in gate.ports.inputs.iter().chain(&gate.ports.outputs) {
+            let name = crate::intern::resolve(p.name);
+            if matches!(name, "Input" | "InputA" | "InputB" | "Output") {
+                let leaves = match &p.ty {
+                    Type::Record(fields) => fields.iter().map(|(_, t)| t.clone()).collect(),
+                    t => vec![t.clone()],
+                };
+                assert!(leaves.iter().all(|t| *t == Type::String), "{body}: port {name} is {:?}", p.ty);
+            }
+        }
+    }
 }

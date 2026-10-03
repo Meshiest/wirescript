@@ -40,11 +40,13 @@ fn a_non_generic_body_inside_a_generic_uses_the_empty_key() {
 #[derive(Debug)]
 pub(in crate::lower) struct Probe {
     start: usize,
-    subst: Vec<Type>,
+    subst: std::sync::Arc<[Type]>,
     target: Option<MethodTarget>,
     receiver: Option<ContainerKind>,
     api_target: Option<MethodTarget>,
     api_receiver: Option<ContainerKind>,
+    fallback: bool,
+    mono_depth: usize,
 }
 
 thread_local! {
@@ -67,6 +69,8 @@ pub(in crate::lower) fn probe_method_call(ctx: &LowerCtx, call: &Expr) {
         receiver: ctx.resolutions.container_kinds.get(&ctx.resolution_key(obj)).cloned(),
         api_target: ctx.method_target(call),
         api_receiver: ctx.container_kind(obj),
+        fallback: ctx.resolution_fallback_allowed(),
+        mono_depth: ctx.mono_stack.len(),
     };
     PROBES.with(|p| p.borrow_mut().as_mut().expect("collecting").push(probe));
 }
@@ -93,8 +97,8 @@ fn array_method(elem: Type, method: &str) -> MethodTarget {
 /// time the tables held its entry under exactly that key.
 fn assert_hits(src: &str, probes: &[Probe], needle: &str, method: &str, keys: &[(Vec<Type>, Type)]) {
     let got = at(src, probes, needle);
-    let substs: Vec<&Vec<Type>> = got.iter().map(|p| &p.subst).collect();
-    let want: Vec<&Vec<Type>> = keys.iter().map(|(k, _)| k).collect();
+    let substs: Vec<&[Type]> = got.iter().map(|p| &*p.subst).collect();
+    let want: Vec<&[Type]> = keys.iter().map(|(k, _)| k.as_slice()).collect();
     assert_eq!(substs, want, "`{needle}` lowered under these keys");
     for (p, (_, elem)) in got.iter().zip(keys) {
         assert_eq!(p.target, Some(array_method(elem.clone(), method)), "`{needle}` target under {:?}", p.subst);
@@ -166,6 +170,36 @@ fn an_argument_keeps_the_callers_key() {
     let (r, probes) = probed(src);
     assert_no_errors(&r);
     assert_hits(src, &probes, "xs.length()", "length", &[(vec![Type::Int], Type::Int)]);
+}
+
+#[test]
+fn a_generic_calls_arguments_lower_under_the_callers_frame() {
+    // `xs.length()` is the non-generic caller's expression: it lowers with no
+    // mono frame and never guesses a missing entry.
+    let src = "var xs: int[]\nvar n: int = 0\n\
+               mod id<A: int | float>(a: A) -> A { return a }\n\
+               in go: exec\non go { n = id(xs.length()) }";
+    let (r, probes) = probed(src);
+    assert_no_errors(&r);
+    let got = at(src, &probes, "xs.length()");
+    assert_eq!(got.len(), 1, "one probe: {probes:?}");
+    assert!(got[0].subst.is_empty());
+    assert_eq!(got[0].mono_depth, 0, "the callee's frame must not be active while its arguments lower");
+    assert!(!got[0].fallback, "a non-generic caller's argument must not use the generic fallback");
+}
+
+#[test]
+fn a_top_level_mod_inlined_in_a_generic_body_does_not_use_the_fallback() {
+    // `add1`'s body was checked once, non-generically, so it lowers exactly as
+    // it does from a non-generic caller, whose frame is still active.
+    let src = "mod add1(xs: int[]) { xs.push(1) }\nmod outer<T: int | string>(rows: int[][], t: T) { add1(rows[0]) }\n\
+               var a: int[][]\nin go: exec\non go { outer(a, 5) }";
+    let (r, probes) = probed(src);
+    assert_no_errors(&r);
+    let got = at(src, &probes, "xs.push(1)");
+    assert_eq!(got.len(), 1, "one probe: {probes:?}");
+    assert_eq!(got[0].mono_depth, 1, "the generic caller's frame is active");
+    assert!(!got[0].fallback, "a non-generic body must not use the generic fallback");
 }
 
 #[test]
@@ -260,8 +294,8 @@ fn container_ref_steps_resolve_each_receiver_shape() {
     assert!(sources.contains(&gc::ARRAY_VAR), "static var / record field: {sources:?}");
     assert!(sources.contains(&gc::MICROCHIP_INPUT), "in port: {sources:?}");
     assert!(sources.contains(&gc::ARRAY_GET), "runtime-bound parameter reads its element: {sources:?}");
-    // Nothing: a namespaced const in an unsupported position is still WS044.
-    let e = compile("const T = [1, 2]\nlet r = { t: T }\nvar n: int = 0\nin go: exec\non go { n = r.t.length() }");
+    // Nothing: a field holding a placeholder is still WS044.
+    let e = compile("var n: int = 0\nin go: exec\non go { let r = { t: [n, 2] }\n n = r.t.length() }");
     assert!(e.diagnostics.iter().any(|d| d.code == "WS044"), "{:?}", e.diagnostics);
 }
 

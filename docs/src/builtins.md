@@ -49,7 +49,7 @@ Wirescript provides built-in functions that map directly to Brickadia wire graph
 
 ## Notation
 
-- **Pure** functions are expressions -- they produce a value and can be used anywhere.
+- **Pure** functions are expressions: they produce a value and can be used anywhere.
 - **Exec** functions require an active exec context (inside an `on` handler). They are called as statements or in exec expressions.
 - Parameters marked with `?` are optional.
 
@@ -211,8 +211,8 @@ let yaw = r.ToEuler().Yaw
 
 `SplitColor`, `ToSRGB`, `ToHex`, and `ColorBlend` support receiver syntax on `color`.
 
-`Blend` is a different gate -- the math blend (an alias for `lerp`), which takes colours
-as one of its variants but has no colour-space selection.
+`Blend` is a different gate: the math blend (an alias for `lerp`), which takes colors
+as one of its variants but has no color-space selection.
 
 ```wirescript
 let red = Color(1.0, 0.0, 0.0)
@@ -254,7 +254,7 @@ let result = Swap(shouldSwap, left, right)
 
 `Edge` and `Changed` are pure: they produce a one-tick bool pulse (`Rising` on
 false→true, `Falling` on true→false; `Changed` on any change). `EdgeExec` and
-`Change` are their exec-flavored siblings — `EdgeExec`'s outputs fire exec
+`Change` are their exec-flavored siblings. `EdgeExec`'s outputs fire exec
 chains directly (use with `on`/`await`, like `Timer(...).Expired`), and
 `Change` pulses the new value through whenever the input changes.
 
@@ -268,7 +268,7 @@ on health.Falling { ctrl.ShowStatusMessage("taking damage!") }
 
 ## Logical XOR (`^^`)
 
-The `^^` operator is boolean XOR — returns true if exactly one operand is true.
+The `^^` operator is boolean XOR, which returns true if exactly one operand is true.
 
 ```wirescript
 let either = a ^^ b  // true if a or b but not both
@@ -338,14 +338,14 @@ rejected with `WS050`. See [Records as storage](types.md#records-as-storage).
 |--------|-----------|-------------|
 | `arr.push(value)` | `(value: T)` | Append an element |
 | `arr.pop()` | `() -> T` | Remove and return the last element |
-| `arr.get(index)` | `(index: int) -> {Value: T, OutOfBounds: bool}` | Read the element at `index` (auto-unwraps to `Value`); `.OutOfBounds` flags a bad index — the explicit form of `arr[i]` |
+| `arr.get(index)` | `(index: int) -> {Value: T, OutOfBounds: bool}` | Read the element at `index` (auto-unwraps to `Value`); `.OutOfBounds` flags a bad index. This is the explicit form of `arr[i]` |
 | `arr.length()` | `() -> int` | Number of elements |
 | `arr.remove(index)` | `(index: int)` | Remove the element at `index` |
 | `arr.insert(index, value)` | `(index: int, value: T)` | Insert before `index` |
 | `arr.clear()` | `()` | Remove all elements |
 | `arr.find(value)` | `(value: T) -> {Index: int, Found: bool, Value: T}` | Find the first match (auto-unwraps to `Index`); `Index` is `-1` when `Found` is `false` |
 | `arr.sort(descending?)` | `(descending?: bool)` | Sort in place |
-| `arr.sortMultiple(other, ..., descending?)` | `(other: T[], ..., descending?: bool)` | Sort in place, reordering up to 7 parallel arrays through the same permutation |
+| `arr.sortMultiple(other, ..., descending?)` | `(other: T[], ..., descending?: bool)` | Sort in place, reordering at most 7 parallel arrays through the same permutation (more is `WS011`). A record array argument is carried along as one array per field, and each field counts toward the 7. Only a trailing `bool` is `descending` |
 | `arr.reverse()` | `()` | Reverse in place |
 | `arr.shuffle()` | `()` | Randomly reorder |
 | `arr.swap(a, b)` | `(a: int, b: int)` | Swap two elements |
@@ -363,7 +363,7 @@ rejected with `WS050`. See [Records as storage](types.md#records-as-storage).
 Element access uses bracket syntax: `arr[i]` reads (with `.value` / `.bOutOfBounds`),
 `arr[i] = x` writes.
 
-**`exec =`.** Any exec-gate call — an array method, a builtin, or a mod/chip call —
+**`exec =`.** Any exec-gate call (an array method, a builtin, or a mod/chip call)
 accepts an `exec = <trigger>` argument that drives its exec input, firing the gate each
 time the trigger's value changes. A per-index, always-nonzero trigger like `index + 1`
 turns an array into a single-gate lookup table read straight from a pure binding:
@@ -414,12 +414,12 @@ InputReader(character: character) -> { ...same fields... }
 Read player input axes and pressed keys. Receiver on `character`.
 
 Returns a record with fields:
-- `Forward: float` -- forward/backward movement axis (-1 to 1)
-- `Right: float` -- left/right movement axis (-1 to 1)
-- `Up: float` -- up/down movement axis (-1 to 1)
-- `Pitch: float` / `Yaw: float` / `Roll: float` -- look axes
-- `MouseWheel: float` -- mouse wheel delta
-- `PressedC` / `PressedE` / `PressedQ` / `PressedLeftMouse` / `PressedRightMouse: bool` -- key/button states
+- `Forward: float`: forward/backward movement axis (-1 to 1)
+- `Right: float`: left/right movement axis (-1 to 1)
+- `Up: float`: up/down movement axis (-1 to 1)
+- `Pitch: float` / `Yaw: float` / `Roll: float`: look axes
+- `MouseWheel: float`: mouse wheel delta
+- `PressedC` / `PressedE` / `PressedQ` / `PressedLeftMouse` / `PressedRightMouse: bool`: key/button states
 
 ```wirescript
 let input = char.InputReader()
@@ -484,8 +484,8 @@ GetAim(character: character) -> { Origin: vector, Direction: vector }
 ```
 
 Reads the character's camera/aim in a single gate. Returns a record:
-- `Origin: vector` — aim origin position
-- `Direction: vector` — aim direction vector
+- `Origin: vector`: aim origin position
+- `Direction: vector`: aim direction vector
 
 Receiver on `character`. Access the fields with `.Origin` / `.Direction`; both
 share one gate, so reading both costs a single GetAim.
@@ -511,7 +511,7 @@ Display HUD text to a player. Receiver on `controller`. Returns the resolved
 
 The 2D layout ports are `Vector2D` composites, and the call feeds them one axis
 at a time: `positionX` / `positionY`, `anchorX` / `anchorY`, and so on, each a
-`float`. There is no `vector`-typed `position` or `anchor` -- passing one is a
+`float`. There is no `vector`-typed `position` or `anchor`, and passing one is a
 `WS041` error. A constant axis bakes into the parent `Vector2D` data field; a
 runtime value wires the matching sub-port. The call also exposes the scalar
 styling below, plus `fontSize` / `justify` / `easing` / `typeface` / `font`, which
@@ -679,7 +679,7 @@ entity.SetVelocity(linear?: vector, angular?: vector)
 SetVelocity(entity: entity, linear?: vector, angular?: vector)
 ```
 
-Set velocity. Both `linear` and `angular` are optional -- pass whichever components you want to set.
+Set velocity. Both `linear` and `angular` are optional, so pass whichever components you want to set.
 
 ### AddVelocity
 ```
@@ -878,8 +878,8 @@ character.SetInventoryItemAdv(item, slot?, damage?, speed?, scale?, itemName?, p
 ```
 
 Give items, procedural bricks, or spawnable entities to a character's
-inventory. Asset args are `$Type/Name` references — `$BRItemBase/...` for
-items, a brick asset for bricks, an entity type for entities — inlined into
+inventory. Asset args are `$Type/Name` references (`$BRItemBase/...` for
+items, a brick asset for bricks, an entity type for entities), inlined into
 the gate's data. The `Adv` variants add per-item overrides: damage/weapon
 speed/scale multipliers, a display-name override, and a projectile override.
 All receive on `character`.
@@ -970,7 +970,7 @@ player.PlayClientAudio(audio, volume?, pitch?)
 
 Play a one-shot sound at an entity's location (spatialized by default),
 globally for all players, or non-spatially for a single player
-(`PlayClientAudio`, receiver on the player — a character or persistent player
+(`PlayClientAudio`, receiver on the player, which is a character or persistent player
 reference; also callable as `PlayClientAudio(player, audio, ...)`). The `audio`
 arg is a `$BrickOneShotAudioDescriptor/...` asset reference. `PlayAudioAt`
 receives on `entity` (characters work too).
@@ -988,7 +988,7 @@ entity.SetTag(tag: string)
 entity.GetTag() -> string
 ```
 
-Attach an arbitrary string tag to any entity and read it back later — handy
+Attach an arbitrary string tag to any entity and read it back later. This is handy
 for marking players/entities with game state (team, slot index, role). Zone
 components can also filter on tags. Receiver on `entity`.
 
@@ -998,7 +998,7 @@ components can also filter on tags. Receiver on `entity`.
 |----------|-----------|-------------|
 | `FindPlayer(query)` | `(query: string) -> character` (exec) | Look up a player by name; emits their character |
 | `PrintToConsole(text)` | `(text: any) -> ()` (exec) | Print a value to the game console (debugging) |
-| `Opaque(value)` | `(value: any) -> any` (pure) | Identity rerouter; the permanent constant-fold barrier — the wrapped value always stays a real runtime wire, never folded or seen through (probe/test circuits; see [Constant Folding](folding.md)) |
+| `Opaque(value)` | `(value: any) -> any` (pure) | Identity rerouter; the permanent constant-fold barrier: the wrapped value always stays a real runtime wire, never folded or seen through (probe/test circuits; see [Constant Folding](folding.md)) |
 | `DeltaTime()` | `() -> float` | Seconds elapsed since the previous tick |
 | `ServerUptime()` | `() -> float` | Seconds the server has been running |
 | `ReadBrickGrid()` | `() -> entity` | The brick grid this gate's microchip is on, as an entity |
@@ -1029,7 +1029,7 @@ out elapsed = t.Time
 on t.Expired { /* fired when Time reaches the limit */ }
 ```
 
-`ReadBrickGrid()` is pure and takes no arguments — it returns the brick grid
+`ReadBrickGrid()` is pure and takes no arguments. It returns the brick grid
 that this gate's microchip is placed on as an `entity`, ready to pass to entity
 getters/setters or wire into gates that expect a brick grid:
 
@@ -1040,11 +1040,11 @@ let origin = grid.GetLocation()
 
 ## Gate config properties
 
-Some gate settings are not wire inputs — they are the checkboxes, dropdowns,
+Some gate settings are not wire inputs. They are the checkboxes, dropdowns,
 and values in a gate's in-game **settings menu**. Wirescript sets them as
 **optional, constant-only call arguments**; a constant is baked into the gate's
 data, and anything you omit keeps the game default. (A non-constant value is a
-compile error — these can't be wired.)
+compile error, because these can't be wired.)
 
 **Enum values are bare member names**, validated against the game's own enum
 member list at compile time. An unknown name is a `WS028` error; a raw int is
@@ -1066,7 +1066,7 @@ let c = ColorBlend(a, b, t, blendSpace = ColorSpace.Oklab, clampAlpha = true)
 p.DisplayText("hi", typeface = TextTypeface.Bold, justify = DisplayTextJustification.Center, easing = DisplayTextEasing.EaseInOut)
 ```
 
-**Every** config field is settable — not just the aliases below. In addition to
+**Every** config field is settable, not just the aliases below. In addition to
 the friendly names, each gate exposes each `bool`/`int`/`float`/`string`/`enum`
 settings-menu field under its **raw game name**, so any of the ~60 config gates
 works even without a curated alias:
@@ -1085,7 +1085,7 @@ Config attributes by gate:
 | Gate | Config attributes |
 |------|-------------------|
 | `Sweep` | `bodyPartsOnly` |
-| `SweepSimple` | `direction` (EBrickDirection), `spreadTowardCenter`, `detectBricks`, `detectPlayers1`–`4`, `bodyPartsOnly`, `detectPhysics`, `detectMap` |
+| `SweepSimple` | `direction` (EBrickDirection), `spreadTowardCenter`, `detectBricks`, `detectPlayers1` to `4`, `bodyPartsOnly`, `detectPhysics`, `detectMap` |
 | `Blend` | `clampAlpha` |
 | `ColorBlend` | `blendSpace` (EBRColorSpace), `clampAlpha` |
 | `Slerp` | `shortestPath`, `clampAlpha` |
@@ -1103,7 +1103,7 @@ Enum member names: **EBRColorSpace** `Linear Srgb Oklab Hsv`; **EBREasingFunctio
 Y_Positive Y_Negative Z_Positive Z_Negative`.
 
 Each of these schema enum types is also usable directly, under its clean
-Wirescript name, as a [built-in game enum](enums.md#built-in-game-enums) --
+Wirescript name, as a [built-in game enum](enums.md#built-in-game-enums):
 `EBREasingFunction` as `EasingFunction`, `EBREasingDirection` as
 `EasingDirection`, `EBRColorSpace` as `ColorSpace`, `EBRTextTypeface` as
 `TextTypeface`, `EBRDisplayTextJustification` as `DisplayTextJustification`,
@@ -1146,7 +1146,7 @@ on ChatCommand("greet", "Greets the player") -> (controller, arguments) {
 ```
 
 The description is optional and can use the named form. Binding params are also
-optional — omit the ones you don't need:
+optional, so omit the ones you don't need:
 
 ```wirescript
 on ChatCommand("wave", Description = "Wave at everyone") {
@@ -1158,11 +1158,11 @@ on ChatCommand("wave", Description = "Wave at everyone") {
 
 A named, cross-gate event channel that carries up to **8 data values**. Each comes
 in two flavours: **personal** (same-owner) and **global** (ownership-agnostic), on
-**separate** channel namespaces — a personal `"x"` and a global `"x"` never mix.
+**separate** channel namespaces, so a personal `"x"` and a global `"x"` never mix.
 
 ### SendCustomEvent (Exec)
 
-`SendCustomEvent(name, data1, … data8, target = …)` — `name` is the channel, a
+`SendCustomEvent(name, data1, … data8, target = …)`: `name` is the channel, a
 **constant** string baked into the gate (a variable or computed value is a `WS028`
 error), followed by up to 8 optional data values of any type. `target` is an
 optional entity whose grid receives the matching **object** events. Delivery is
@@ -1214,13 +1214,13 @@ on CustomEvent("damage") -> (amount: int, attacker: character) {
 }
 ```
 
-### Global variants — SendGlobalCustomEvent / on GlobalCustomEvent
+### Global variants: SendGlobalCustomEvent / on GlobalCustomEvent
 
 `SendGlobalCustomEvent` and `on GlobalCustomEvent` are the **ownership-agnostic**
 counterparts: delivery ignores the owner, reaching every matching global receiver.
 They have the same shape (constant channel name, up to 8 typed data values,
 optional `target` entity, `isObject` config), on a channel namespace that is
-**separate** from the personal one — `SendGlobalCustomEvent("x")` reaches
+**separate** from the personal one: `SendGlobalCustomEvent("x")` reaches
 `on GlobalCustomEvent("x")` but never `on CustomEvent("x")`, and vice versa.
 
 ```wirescript
@@ -1231,24 +1231,25 @@ on hit { SendGlobalCustomEvent("score", 10) }
 ```
 
 > **One-tick delay.** A `CustomEvent` receiver fires on the **tick after** the
-> `SendCustomEvent` runs — the pulse is delivered on the next frame, not
+> `SendCustomEvent` runs. The pulse is delivered on the next frame, not
 > synchronously within the sender's exec chain. Anything that must observe the
 > event's effect immediately has to account for that one-tick latency (and a
 > send → receive → send round trip costs a tick each hop).
 
 > **Signature checking (`WS030`).** When a send targets a **constant** channel name,
-> the compiler compares each data value's wire type against the matching receiver's
-> declared param types and warns (`WS030`) on a mismatch — e.g. sending a `float` where
-> the receiver declared `int`. This runs for both the personal (`SendCustomEvent` /
+> the compiler compares each data value's wire type against every matching receiver's
+> declared param types (and a typed `let v: T = await CustomEvent("c")` capture's `T`)
+> and warns (`WS030`) on a mismatch, e.g. sending a `float` where the receiver declared
+> `int`. A constant is sent as the type it has, so `2.5` to an `int` param warns too. This runs for both the personal (`SendCustomEvent` /
 > `on CustomEvent`) and global (`SendGlobalCustomEvent` / `on GlobalCustomEvent`) pairs,
 > each within its own namespace. Types that share a
-> wire variant are interchangeable and never flagged (any two entity kinds —
-> `character`/`entity`/`controller`/… — are all the same `Object` variant). The channel
+> wire variant are interchangeable and never flagged (any two entity kinds,
+> `character`/`entity`/`controller`/…, are all the same `Object` variant). The channel
 > name must be a constant literal, so every send's receiver set is known at compile time.
 > In the editor, **go-to-definition** on a send's channel-name string jumps to the receiver.
 >
 > A *non-constant* data value is still typed as `float` on the wire at emit rather than
-> from the value's real type — full end-to-end typing waits on generics. For now the
+> from the value's real type. Full end-to-end typing waits on generics. For now the
 > receiver's annotations are the source of truth, and constant sends carry their type.
 
 ## Prefab Spawning (Exec)
@@ -1257,7 +1258,7 @@ on hit { SendGlobalCustomEvent("score", 10) }
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `prefab` | prefab ref | No | The prefab to spawn — a `$./file.brz` archive, a `$./file.ws` source compiled on reference, or an inline `$` triple-backtick block ([prefab reference](expressions.md#prefab-references)). Embedded into the bundle at compile. |
+| `prefab` | prefab ref | No | The prefab to spawn: a `$./file.brz` archive, a `$./file.ws` source compiled on reference, or an inline `$` triple-backtick block ([prefab reference](expressions.md#prefab-references)). Embedded into the bundle at compile. |
 | `offset` | `vector` | No | Spawn position offset |
 | `rotation` | `rotator` | No | Spawn rotation offset |
 | `velocity` | `vector` | No | Initial velocity of the spawned entity |
@@ -1265,7 +1266,7 @@ on hit { SendGlobalCustomEvent("score", 10) }
 | `limit` | `int` | No | Max concurrent instances |
 | `destroyAll` | `exec` | No | Wire an exec here; pulsing it destroys every entity this gate has already spawned. Independent of the spawn `Exec`, so one gate both spawns and clears. |
 
-Returns: `entity` -- the spawned entity. Give the prefab with a `$…brz`
+Returns: `entity`, the spawned entity. Give the prefab with a `$…brz`
 reference; omit `prefab` to configure it on the placed gate in-game instead
 (copy a prefab onto the Spawn Prefab brick).
 
@@ -1309,7 +1310,7 @@ Spawns an explosion of a given projectile/explosion class.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `projectileType` | class ref | Yes | The explosion/projectile class — a `$…` asset reference (or a wired value) |
+| `projectileType` | class ref | Yes | The explosion/projectile class: a `$…` asset reference (or a wired value) |
 | `instigator` | `entity` | No | The character/entity that caused it (kill credit, etc.) |
 | `offset` | `vector` | No | Spawn position offset |
 | `scale` | `float` | No | Explosion scale multiplier |
@@ -1329,7 +1330,7 @@ from the gate's brick.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `worldPosition` | `vector` | Yes | Absolute world position to spawn the explosion at |
-| `projectileType` | class ref | Yes | The explosion/projectile class — a `$…` asset reference (or a wired value) |
+| `projectileType` | class ref | Yes | The explosion/projectile class: a `$…` asset reference (or a wired value) |
 | `instigator` | `entity` | No | The character/entity that caused it (kill credit, etc.) |
 | `scale` | `float` | No | Explosion scale multiplier |
 | `damage` | `float` | No | Damage multiplier |
@@ -1354,11 +1355,11 @@ on hit {
 | `ignore` | `entity` | No | A single entity to exclude from hits |
 | `ignoreList` | `entity[]` | No | An array var of additional entities to exclude (on top of `ignore`) |
 | `ignoreOwningGrid` | `bool` | No | Exclude the grid this gate sits on (prevents self-hits) |
-| `collisionChannel` | `int` | No | Collision channel to sweep on (`EBRSweepCollisionChannel`: 0 Physics, 1 Weapon, 2 Interaction, 3 Tool, 4–7 Player1–4, 8 NoAdditionalRestriction) |
-| `detectBricks` | `bool` | No | Detect brick grids, including spawned prefabs — **default false** |
-| `detectMap` | `bool` | No | Detect the static world / environment — **default false** |
-| `detectPhysics` | `bool` | No | Detect physics-simulating objects — **default false** |
-| `detectPlayers1`–`detectPlayers4` | `bool` | No | Detect players on collision channels 1–4 — **default false** |
+| `collisionChannel` | `int` | No | Collision channel to sweep on (`EBRSweepCollisionChannel`: 0 Physics, 1 Weapon, 2 Interaction, 3 Tool, 4-7 Player1-4, 8 NoAdditionalRestriction) |
+| `detectBricks` | `bool` | No | Detect brick grids, including spawned prefabs (**default false**) |
+| `detectMap` | `bool` | No | Detect the static world / environment (**default false**) |
+| `detectPhysics` | `bool` | No | Detect physics-simulating objects (**default false**) |
+| `detectPlayers1` to `detectPlayers4` | `bool` | No | Detect players on collision channels 1-4 (**default false**) |
 
 > **Detection is opt-in.** Every `detect*` flag defaults to `false`, so a Sweep
 > with none set **detects nothing and always fires `Miss`.** Enable the channel you
@@ -1366,12 +1367,12 @@ on hit {
 > players, `detectPhysics` for loose physics objects.
 
 Returns a record with fields:
-- `HitDistance: float` -- Distance to hit point
-- `HitEntity: entity` -- Entity that was hit
-- `HitLocation: vector` -- World position of hit
-- `HitNormal: vector` -- Surface normal at hit
-- `Hit: exec` -- Fires if something was hit
-- `Miss: exec` -- Fires if nothing was hit
+- `HitDistance: float`: Distance to hit point
+- `HitEntity: entity`: Entity that was hit
+- `HitLocation: vector`: World position of hit
+- `HitNormal: vector`: Surface normal at hit
+- `Hit: exec`: Fires if something was hit
+- `Miss: exec`: Fires if nothing was hit
 
 ```wirescript
 on trigger {
@@ -1402,7 +1403,7 @@ on RoundStart() {
 }
 ```
 
-`Random` rides the same PrimMath variant as the [arithmetic operators](expressions.md#arithmetic-operators), so its `min`/`max` may be a `vector`, `rotator`, `quat`, or `color` — it then rolls each component independently and returns that same type. `Random(Vec(0.0, 0.0, 0.0), Vec(1.0, 1.0, 1.0))` is a random point in the unit cube; `Random(a, b)` on two colors is a random color between them (all four RGBA channels). Both bounds share the type of the result.
+`Random` rides the same PrimMath variant as the [arithmetic operators](expressions.md#arithmetic-operators), so its `min`/`max` may be a `vector`, `rotator`, `quat`, or `color`, and it then rolls each component independently and returns that same type. `Random(Vec(0.0, 0.0, 0.0), Vec(1.0, 1.0, 1.0))` is a random point in the unit cube; `Random(a, b)` on two colors is a random color between them (all four RGBA channels). Both bounds share the type of the result.
 
 Note: `Random` is an exec function because it requires sequential execution to produce a new random value each time.
 
@@ -1415,9 +1416,9 @@ Buffer gates that delay a value passing through. Most useful with `await` and th
 | `Sleep(input, delay?, hold?)` | `(input: any, delay?: float, hold?: float) -> any` | Delay by seconds (BufferSeconds gate) |
 | `SleepTicks(input, delay?, hold?)` | `(input: any, delay?: int, hold?: int) -> any` | Delay by ticks (BufferTicks gate) |
 
-- `input` -- the value to delay. Use `_` inside `await` to wire the armed flag.
-- `delay` -- seconds/ticks to wait before the output follows the input.
-- `hold` -- seconds/ticks to hold the output after the input drops to zero. Set to -1 to use delay instead.
+- `input`: the value to delay. Use `_` inside `await` to wire the armed flag.
+- `delay`: seconds/ticks to wait before the output follows the input.
+- `hold`: seconds/ticks to hold the output after the input drops to zero. Set to -1 to use delay instead.
 
 ```wirescript
 // Sleep 2 seconds using await
@@ -1452,7 +1453,7 @@ This wires `someTrigger` as the exec input of the gate, bypassing the requiremen
 Player-reference gates (`DisplayText`, `ShowChatMessage`, `HasRole`, leaderboard and
 team setters, the join/left/chat events, `ControllerOf`/`CharacterOf`) target the
 persistent player-state on the current build. The `controller` type is unchanged and
-still wires straight into them — existing scripts keep working.
+still wires straight into them, so existing scripts keep working.
 
 ### Entity (Exec)
 ```
@@ -1525,7 +1526,7 @@ input and **takes no receiver**. To sweep from an arbitrary point, use
 the full `Sweep(origin, direction, distance, ...)` gate, which has a `vector` `origin` input.
 `distance` is positional (`SweepSimple(500.0, ...)`).
 
-### Zone array fills (Exec) — array methods
+### Zone array fills (Exec): array methods
 ```
 arr.fillFromZoneEntities(zone, tagFilter?)   // entities inside a zone
 arr.fillFromZonePlayers(zone, tagFilter?)    // players inside a zone
@@ -1549,7 +1550,7 @@ mod inc(v: Ref<int>) { v = v + 1 }   // same as *int
 
 A map is a keyed variable collection (the `MapVar` gate family), declared as a `var`
 of the generic `Map<K, V>` type. Keys must be `int`, `string`, or an object reference
-(entity/character/controller) — any other key type is a **`WS039`** error; values may
+(entity/character/controller). Any other key type is a **`WS039`** error; values may
 be any wire-storable scalar (int/float/bool/string/vector/rotator/quat/color/object).
 A map starts empty unless given a constant literal initializer (`= {}` is the explicit
 empty form).
@@ -1594,21 +1595,21 @@ on tick { m = { [runtimeKey] => x } }                // computed key -- desugars
 ```
 
 A **constant** map literal (every key and value a compile-time constant) in a
-`var` initializer bakes straight into the map at rest -- no runtime
-gates, the map loads pre-populated. An initializer with any non-constant
-entry doesn't bake -- its entries are dropped (with a compiler warning) and
+`var` initializer bakes straight into the map at rest, with no runtime
+gates; the map loads pre-populated. An initializer with any non-constant
+entry doesn't bake: its entries are dropped (with a compiler warning) and
 the map loads empty; build it at runtime instead. Inside an exec handler,
 `m = { ... }` (or a literal with runtime keys/values) desugars to `clear()`
-followed by one `set(key, value)` per entry, in source order -- the same
+followed by one `set(key, value)` per entry, in source order, the same
 clear-then-populate shape as [array literal assignment](statements.md).
 
-`{ foo: 1 }` with a **bare identifier** key is a record literal, not a map --
+`{ foo: 1 }` with a **bare identifier** key is a record literal, not a map, because
 `:` only introduces a map key for a string/atom/int literal or a `[expr]`
 computed key. Use `foo => 1` or `[foo]: 1` to key a map by an identifier's
 value.
 
 Assigning a whole map from another map variable (`m = m2`) is not supported
--- there is no whole-map-copy gate. Use `m.copyFrom(m2)` instead.
+because there is no whole-map-copy gate. Use `m.copyFrom(m2)` instead.
 
 ## Exec-flow gates (Union / Branch)
 
@@ -1619,7 +1620,7 @@ Union(a: exec, b: exec) -> exec
 Branch(cond: bool, exec: exec) -> (A: exec, B: exec)
 ```
 
-- **`Union(a, b)`** merges two exec signals into one — the result fires whenever
+- **`Union(a, b)`** merges two exec signals into one: the result fires whenever
   *either* input fires. Handy for running one handler from several triggers:
 
   ```wirescript
@@ -1640,8 +1641,8 @@ Branch(cond: bool, exec: exec) -> (A: exec, B: exec)
 
 Every variable / array / map wire gate is also exposed as a plain function named
 after the in-game gate, alongside its method / operator / assignment form. The
-two forms are **identical** — the call desugars to the method or assignment at
-parse time — so pick whichever reads better. Named after the game gates for
+two forms are **identical** (the call desugars to the method or assignment at
+parse time), so pick whichever reads better. Named after the game gates for
 discoverability (and completion).
 
 **Variables**
@@ -1652,7 +1653,7 @@ discoverability (and completion).
 | `SetVariable(v, x)` | `v = x` |
 | `IncrementVariable(v, n)` | `v = v + n` |
 
-**Arrays** — the function name maps to the [array method](#array-methods-exec) of
+**Arrays**: the function name maps to the [array method](#array-methods-exec) of
 the same operation; the receiver is the first argument:
 
 | Builtin | Same as | | Builtin | Same as |
@@ -1669,8 +1670,8 @@ the same operation; the receiver is the first argument:
 | `FillArray(a, x)` | `a.fill(x)` | | `ArrayMaximum(a)` | `a.max()` |
 | `ResizeArray(a, n, x)` | `a.resize(n, x)` | | `ArrayMinimum(a)` | `a.min()` |
 
-**Array fills** (Gamemode / Zone gates — the function-call twins of the
-[`fillFrom*` array methods](#zone-array-fills-exec--array-methods)):
+**Array fills** (Gamemode / Zone gates, the function-call twins of the
+[`fillFrom*` array methods](#zone-array-fills-exec-array-methods)):
 
 | Builtin | Same as |
 | --- | --- |
@@ -1679,7 +1680,7 @@ the same operation; the receiver is the first argument:
 | `GetPlayersInZone(a, zone, tagFilter?)` | `a.fillFromZonePlayers(zone, tagFilter?)` |
 | `GetEntitiesInZone(a, zone, tagFilter?)` | `a.fillFromZoneEntities(zone, tagFilter?)` |
 
-**Maps** — map to the [map methods](#maps-var-m-mapk-v) of the same name:
+**Maps**: map to the [map methods](#maps-var-m-mapk-v) of the same name:
 
 | Builtin | Same as | | Builtin | Same as |
 | --- | --- | --- | --- | --- |

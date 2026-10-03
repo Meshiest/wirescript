@@ -6,12 +6,15 @@ use super::interp::eval_call;
 use crate::ir::Literal;
 
 fn empty_ctx() -> ConstCtx<'static> {
-    ConstCtx {
-        consts: Arc::new(crate::collections::HashMap::default()),
-        module_consts: Arc::new(crate::collections::HashMap::default()),
-        enum_defs: Arc::new(crate::collections::HashMap::default()),
-        lookup_mod: None,
-    }
+    ConstCtx::new(
+        crate::const_scope::ConstNames::default(),
+        Arc::new(crate::collections::HashMap::default()),
+        Arc::default(),
+        Arc::default(),
+        Default::default(),
+        Arc::default(),
+        None,
+    )
 }
 
 fn eval_str(src_expr: &str) -> Result<Literal, ConstError> {
@@ -94,13 +97,16 @@ fn eval_mod_call_with(
     for (name, lit) in caller_locals {
         consts.insert(name, lit);
     }
-    let cx = ConstCtx {
-        consts: Arc::new(consts),
-        module_consts: Arc::new(module_consts),
-        enum_defs: enum_defs.clone(),
-        lookup_mod: None,
-    };
-    eval_call(decl, args, &cx, &mut budget)
+    let cx = ConstCtx::new(
+        crate::const_scope::ConstNames::of(Arc::new(consts)),
+        Arc::new(module_consts),
+        Arc::default(),
+        enum_defs.clone(),
+        Default::default(),
+        Arc::new(super::DeclaredTypes::for_program(&p.ast.decls, &enum_defs)),
+        None,
+    );
+    eval_call(decl, args, &[], &cx, &mut budget)
 }
 
 #[test]
@@ -592,13 +598,16 @@ fn eval_mod_call_resolving(
     let module_consts = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
     let lookup = |name: &str| chips.iter().find(|c| c.name == name).cloned();
     let module_consts = Arc::new(module_consts);
-    let cx = ConstCtx {
-        consts: module_consts.clone(),
+    let cx = ConstCtx::new(
+        crate::const_scope::ConstNames::of(module_consts.clone()),
         module_consts,
-        enum_defs: enum_defs.clone(),
-        lookup_mod: Some(&lookup),
-    };
-    eval_call(decl, args, &cx, &mut Budget::default())
+        Arc::default(),
+        enum_defs.clone(),
+        Default::default(),
+        Arc::new(super::DeclaredTypes::for_program(&p.ast.decls, &enum_defs)),
+        Some(&lookup),
+    );
+    eval_call(decl, args, &[], &cx, &mut Budget::default())
 }
 
 /// A const-mod call PER ELEMENT — not just named constants — inside an array
@@ -655,12 +664,15 @@ fn eval_str_resolving(mods_src: &str, probe_expr: &str) -> Result<Literal, Const
         panic!("expected the last decl to be `let probe = ...`")
     };
     let module_consts = Arc::new(module_consts);
-    let cx = ConstCtx {
-        consts: module_consts.clone(),
+    let cx = ConstCtx::new(
+        crate::const_scope::ConstNames::of(module_consts.clone()),
         module_consts,
-        enum_defs: enum_defs.clone(),
-        lookup_mod: Some(&lookup),
-    };
+        Arc::default(),
+        enum_defs.clone(),
+        Default::default(),
+        Arc::new(super::DeclaredTypes::for_program(&p.ast.decls, &enum_defs)),
+        Some(&lookup),
+    );
     eval_expr(&probe.value, &cx, &mut Budget::default())
 }
 
@@ -1993,4 +2005,34 @@ fn const_is_folds_to_a_bool() {
     let src = "enum Dir { N, E, S, W }\nconst d = Dir.E\nconst hit = d is Dir.E\nconst miss = d is Dir.N\n";
     assert_eq!(eval_ok(src, "hit"), Literal::Bool(true));
     assert_eq!(eval_ok(src, "miss"), Literal::Bool(false));
+}
+
+/// A float made an `int` truncates toward zero, says whether that kept the
+/// value written, and is `None` past the 64-bit range or when not finite;
+/// `coerce_const_to_type` holds the result as an integer.
+#[test]
+fn a_float_made_an_int_truncates_or_has_no_int() {
+    use super::{coerce_const_to_type, float_as_int, written_float, DeclaredTypes};
+    use crate::ir::Type;
+    assert_eq!(float_as_int(2.5), Some((2, false)));
+    assert_eq!(float_as_int(-2.5), Some((-2, false)));
+    assert_eq!(float_as_int(-0.5), Some((0, false)));
+    assert_eq!(float_as_int(13.0), Some((13, true)));
+    assert_eq!(float_as_int(-9_223_372_036_854_775_808.0), Some((i64::MIN, true)));
+    assert_eq!(float_as_int(9_223_372_036_854_774_784.0), Some((9_223_372_036_854_774_784, true)));
+    for none in [9_223_372_036_854_775_808.0, -9_223_372_036_854_777_856.0, 1e30, -1e30, f64::INFINITY, f64::NAN] {
+        assert_eq!(float_as_int(none), None, "{none}");
+    }
+    let types = DeclaredTypes::default();
+    assert_eq!(coerce_const_to_type(Literal::Float(2.5), &Type::Int, &types), Literal::Int(2));
+    assert_eq!(coerce_const_to_type(Literal::Float(1e30), &Type::Int, &types), Literal::Float(1e30));
+    let arr = Literal::Array(vec![Literal::Float(1.5), Literal::Float(-3.9)]);
+    assert_eq!(
+        coerce_const_to_type(arr, &Type::Array(Box::new(Type::Int)), &types),
+        Literal::Array(vec![Literal::Int(1), Literal::Int(-3)])
+    );
+    assert_eq!(written_float(1e10), "1e10");
+    assert_eq!(written_float(1e30), "1e30");
+    assert_eq!(written_float(2147483648.0), "2147483648.0");
+    assert_eq!(written_float(2.5), "2.5");
 }

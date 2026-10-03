@@ -403,18 +403,18 @@ fn shorthand_variant_fields_typecheck_clean() {
 //     scrutinee (WS066).
 #[test]
 fn non_exhaustive_match_is_ws054() {
-    let src = "enum S { A, B, C }\nout x = match s { A => 1, B => 2 }\nin s: S\n";
+    let src = "enum S { A, B, C }\nout x = match s { A => 1, B => 2 }\nvar s: S = S.A\n";
     assert!(has(src, "WS054"), "{:?}", diags(src));
 }
 #[test]
 fn exhaustive_match_stays_clean() {
-    let src = "enum S { A, B }\nin s: S\nout x = match s { A => 1, B => 2 }\n";
+    let src = "enum S { A, B }\nvar s: S = S.A\nout x = match s { A => 1, B => 2 }\n";
     let d = diags(src);
     assert!(!d.iter().any(|c| c == "WS054" || c == "WS061"), "{d:?}");
 }
 #[test]
 fn unreachable_arm_is_ws061() {
-    let src = "enum S { A, B }\nin s: S\nout x = match s { _ => 0, A => 1 }\n";
+    let src = "enum S { A, B }\nvar s: S = S.A\nout x = match s { _ => 0, A => 1 }\n";
     assert!(has(src, "WS061"), "{:?}", diags(src));
 }
 #[test]
@@ -426,14 +426,14 @@ fn match_on_non_enum_is_ws066() {
 // non-enum target does.
 #[test]
 fn valid_discriminant_access_on_enum_stays_clean() {
-    let src = "enum S { A, B }\nin s: S\nout d = s.Discriminant\n";
+    let src = "enum S { A, B }\nvar s: S = S.A\nout d = s.Discriminant\n";
     assert!(!has(src, "WS066"), "{:?}", diags(src));
 }
 // An unknown named field in a match pattern is the same typo the construction
 // side flags: WS010, not a silent `any` capture.
 #[test]
 fn match_unknown_named_field_is_ws010() {
-    let src = "enum Box { Dims { w: float } }\nin b: Box\nout x = match b { Dims { wdith } => 1.0 }\n";
+    let src = "enum Box { Dims { w: float } }\nvar b: Box = Box.Dims { w: 0.0 }\nout x = match b { Dims { wdith } => 1.0 }\n";
     assert!(has(src, "WS010"), "{:?}", diags(src));
 }
 

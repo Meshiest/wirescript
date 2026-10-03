@@ -476,7 +476,7 @@
         // `T` appears only in the return and the call passes no explicit type
         // argument, so nothing constrains it — InferError::Unpinnable — WS033.
         let r = tc(
-            "mod zero<T: Numeric>() -> T { static var z: T = z\n return z }\n\
+            "mod zero<T: Numeric>() -> T { static var z: T\n return z }\n\
              out r: int = zero()\n",
         );
         assert!(
@@ -2233,6 +2233,125 @@
     }
 
     #[test]
+    fn a_string_method_on_a_value_that_is_not_a_string_is_ws003() {
+        // `vv.Length()` on a vector read the length of the text the vector
+        // formats to; each string method on each value that is not a string
+        // is WS003, with the right spelling for a length.
+        let head = "var vv: vector = Vec(3.0, 4.0, 0.0)\nvar n: int = 3\nvar fl: float = 1.5\n\
+                    var b: bool = true\nvar cl: color = Color(1.0, 0.0, 0.0)\nvar rt: rotator = Rotation(0.0, 0.0, 0.0)\n\
+                    var xs: int[] = [1]\nvar m: Map<string, int> = {}\nvar s: string = \"abc\"\n\
+                    var r: int = 0\nvar rs: string = \"\"\nvar rb: bool = false\nin go: exec\nin who: entity\n";
+        let string_methods: Vec<&str> = crate::catalog::calls::calls()
+            .values()
+            .filter(|c| c.receiver == Some(Type::String) && c.receiver_target_param().is_none())
+            .map(|c| c.name)
+            .collect();
+        assert!(string_methods.contains(&"Length"), "{string_methods:?}");
+        for recv in ["vv", "n", "fl", "b", "cl", "rt", "xs", "m", "who"] {
+            for method in &string_methods {
+                let r = tc(&format!("{head}on go {{ let q = {recv}.{method}() }}"));
+                let d = r.diagnostics.iter().find(|d| d.code == "WS003");
+                assert!(
+                    d.is_some_and(|d| d.message.contains(&format!("`.{method}()` is a string method"))),
+                    "`{recv}.{method}()`: {:?}",
+                    r.diagnostics
+                );
+            }
+        }
+        let hint = |src: &str| {
+            let r = tc(&format!("{head}on go {{ {src} }}"));
+            r.diagnostics.iter().find(|d| d.code == "WS003").map(|d| d.message.clone()).unwrap_or_default()
+        };
+        assert!(hint("r = vv.Length()").contains("`Magnitude(vv)`"));
+        assert!(hint("r = xs.Length()").contains("`xs.length()`"));
+        assert!(hint("r = m.Length()").contains("`m.length()`"));
+        assert!(hint("rs = n.ToUpper()").contains("(`ToUpper(n)`)"));
+        // A literal receiver is spelled as written, with the article its type
+        // takes.
+        let lit = hint("r = 5.Length()");
+        assert!(lit.contains("and `5` is an `int`") && lit.contains("(`Length(5)`)"), "{lit}");
+        // The receiver's own errors are reported, once.
+        for src in ["r = (nosuch).Length() - 1", "r = (if b then nosuch else 2).Length()", "r = nosuch.Length()"] {
+            let r = tc(&format!("{head}on go {{ {src} }}"));
+            let unknown = r.diagnostics.iter().filter(|d| d.code == "WS002").count();
+            assert_eq!(unknown, 1, "`{src}`: {:?}", r.diagnostics);
+        }
+        assert!(hint("r = true.Length()").contains("and `true` is a `bool`"));
+        // A string receiver, and the argument form, still work.
+        let ok = tc(&format!("{head}on go {{ r = s.Length()\n r = Length(vv) }}"));
+        assert!(ok.diagnostics.iter().all(|d| d.severity != Severity::Error), "{:?}", ok.diagnostics);
+    }
+
+    #[test]
+    fn a_method_on_an_unbounded_type_parameter_names_the_parameter() {
+        // The body is checked for every type `T` may be, so the message says
+        // `T` is unbounded and which bound to add, through a `let` too, and for
+        // a `self` mod as for a string method. A bounded `T` compiles.
+        let head = "var n: int = 0\nvar s: string = \"abc\"\nvar f2: float = 0.0\n\
+                    var vv: vector = Vec(1.0, 2.0, 3.0)\nin go: exec\n";
+        for (body, want) in [
+            ("mod g<T>(v: T) -> int { return v.Length() }\non go { n = g(s) }", "`T` is unbounded, so `v` may be a `bool`; bound it: `<T: string>`"),
+            ("mod g<T>(v: T) -> int { let w = v\n return w.Length() }\non go { n = g(s) }", "so `w` may be a `bool`"),
+            ("mod g<U>(v: U) -> bool { return v.StartsWith(\"a\") }\non go { let q = g(s) }", "`U` is unbounded"),
+            (
+                "mod Length(self: vector) -> float { return 777.0 }\nmod g<T>(v: T) -> float { return v.Length() }\non go { f2 = g(vv) }",
+                "`.Length()` calls `Length(self: vector)`, and `T` is unbounded, so `v` may be a `bool`; bound it: `<T: string | vector>`",
+            ),
+            ("mod g<T>(v: T) -> int { let w: T = v\n return w.Length() }\non go { n = g(s) }", "so `w` may be a `bool`"),
+            // A receiver that reads an element or a field of a value declared
+            // with `T`, or a name taken from one, is `T` too.
+            ("mod g<T>(v: T[]) -> int { return v[0].Length() }\non go { n = g([s]) }", "`T` is unbounded, so `v[0]` may be a `bool`; bound it: `<T: string>`"),
+            (
+                "mod g<T>(v: T[]) -> int { var t: int = 0\n for x in v { t = t + x.Length() }\n return t }\non go { n = g([s]) }",
+                "`T` is unbounded, so `x` may be a `bool`; bound it: `<T: string>`",
+            ),
+            (
+                "type B<T> = { v: T }\nmod g<T>(b: B<T>) -> int { return b.v.Length() }\non go { n = g({ v: s }) }",
+                "`T` is unbounded, so `b.v` may be a `bool`; bound it: `<T: string>`",
+            ),
+            ("mod g<T>(v: T[]) -> int { let w = v[0]\n return w.Length() }\non go { n = g([s]) }", "so `w` may be a `bool`"),
+            // A call's result bound to `T`, and an element read with a
+            // string key, which is spelled.
+            (
+                "mod id<A>(v: A) -> A { return v }\nmod g<T>(v: T) -> int { return id(v).Length() }\non go { n = g(s) }",
+                "`T` is unbounded, so the receiver may be a `bool`; bound it: `<T: string>`",
+            ),
+            (
+                "mod g<T>(m: Map<string, T>) -> int { return m[\"a\"].Length() }\nvar ms: Map<string, string> = {}\non go { n = g(ms) }",
+                "`T` is unbounded, so `m[\"a\"]` may be a `bool`; bound it: `<T: string>`",
+            ),
+        ] {
+            let r = tc(&format!("{head}{body}"));
+            let d = r.diagnostics.iter().find(|d| d.code == "WS003");
+            assert!(d.is_some_and(|d| d.message.contains(want)), "`{body}`: {:?}", r.diagnostics);
+            // The bound it suggests compiles.
+            let bounded = format!("{head}{}", body.replacen("<T>(", "<T: string>(", 1).replacen("<U>(", "<U: string>(", 1));
+            if !body.contains("self: vector") {
+                let ok = tc(&bounded);
+                assert!(ok.diagnostics.iter().all(|d| d.severity != Severity::Error), "`{bounded}`: {:?}", ok.diagnostics);
+            }
+        }
+        let ok = tc(&format!("{head}mod g<T: string>(v: T) -> int {{ return v.Length() }}\non go {{ n = g(s) }}"));
+        assert!(ok.diagnostics.iter().all(|d| d.severity != Severity::Error), "{:?}", ok.diagnostics);
+        // The bound the `self` mod form suggests admits a string too, so the
+        // program's own string call still compiles.
+        let both = "mod Length(self: vector) -> float { return 777.0 }\n\
+                    mod g<T: string | vector>(v: T) -> float { return v.Length() }\non go { f2 = g(vv)\n f2 = g(s) }";
+        let ok = tc(&format!("{head}{both}"));
+        assert!(ok.diagnostics.iter().all(|d| d.severity != Severity::Error), "{:?}", ok.diagnostics);
+        // A non-generic receiver keeps naming its own type, also beside a
+        // type parameter bound to the same type.
+        for body in [
+            "mod g(v: bool) -> int { return v.Length() }",
+            "mod g<T>(v: T, b: bool) -> int { return b.Length() }\non go { n = g(s, true) }",
+        ] {
+            let r = tc(&format!("{head}{body}"));
+            let d = r.diagnostics.iter().find(|d| d.code == "WS003").unwrap();
+            assert!(!d.message.contains("unbounded") && d.message.contains("is a `bool`"), "{}", d.message);
+        }
+    }
+
+    #[test]
     fn non_self_mod_receiver_type_still_not_shadow() {
         // A normal (non-`self`) mod is never a receiver method, so it can never
         // shadow a builtin receiver-method even if it shares the name.
@@ -2604,7 +2723,7 @@
         // Scalar mask (int/float) — an explicit type argument is validated
         // against the bound exactly like inference is.
         let r = tc(
-            "mod onlyScalarZero<T: Scalar>() -> T { static var z: T = z\n return z }\n\
+            "mod onlyScalarZero<T: Scalar>() -> T { static var z: T\n return z }\n\
              out r: int = onlyScalarZero<string>()\n",
         );
         assert!(
@@ -2798,28 +2917,23 @@
     }
 
     #[test]
-    fn return_in_handler_with_single_output_is_checked() {
-        // Lowering wires `return <value>` into the single enclosing output
-        // (`output_count() == 1`) even from a top-level handler — so a
-        // wrong-typed value must still error (it would otherwise wire a string
-        // straight into an int output's port).
-        let r = tc("out o: int\nin go: exec\nvar flag: bool = false\non go { if flag { return \"bail\" } }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "return of wrong type in a single-output handler must error: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn return_not_checked_when_more_than_one_output_exists() {
-        // With >1 total output, lowering DROPS a bare `return <value>`
-        // (`output_count() != 1`), so it must not be checked — even if exactly
-        // one of the outputs is annotated. The module frame counts ALL outs
-        // (unannotated as `Any`) so its length matches `output_count()`.
+    fn a_return_value_in_a_top_level_handler_is_ws099() {
+        // With one module output it drove that output from load time, and
+        // with several the value was dropped: neither is what it says.
+        for src in [
+            "out o: int\nin go: exec\nvar flag: bool = false\non go { if flag { return \"bail\" } }",
+            "out o: int\nin go: exec\nvar flag: bool = false\non go { if flag { return 3 } }",
+            "out o: int\nout y = 5\nin go: exec\nvar flag: bool = false\non go { if flag { return 3 } }",
+            "in go: exec\nvar n: int = 0\non go { n = 2\n return 1 }\nout o = n.Value",
+        ] {
+            let r = tc(src);
+            assert!(r.diagnostics.iter().any(|d| d.code == "WS099"), "{src}: {:?}", r.diagnostics);
+        }
+        // A bare `return` there, and a value `return` inside a mod or a chip's
+        // handler, are fine.
+        assert_no_diags(&tc("out o: int\nin go: exec\nvar flag: bool = false\non go { if flag { return } }"));
         assert_no_diags(&tc(
-            "out o: int\nout y = 5\nin go: exec\nvar flag: bool = false\n\
-             on go { if flag { return \"bail\" } }",
+            "in go: exec\nchip C(t: exec) -> (r: int) { on t { return 4 } }\nvar n: int = 0\non go { n = C(go).r }",
         ));
     }
 
@@ -4338,6 +4452,40 @@
                  in go: exec\n\
                  on go { let a = if true then 9 else 0\n  inner() }",
             ),
+            (
+                "a caller-local var must not reach into an inlined callee",
+                "const a = 1\nvar x: int = 0\nvar k: int = 3\n\
+                 mod inner() { if a == 1 { x = 1 } else { x = 2 } }\n\
+                 in go: exec\n\
+                 on go { var a: int = k\n  inner() }",
+            ),
+            // A parameter, `var`, loop variable or destructured name shadowing
+            // a top-level const is that binding: neither side decides on it.
+            (
+                "a mod parameter shadowing a top-level const",
+                "const a = 1\nconst b = 2\nvar x: int = 0\nvar k: int = 3\n\
+                 mod f(a: int) { if a == 1 { x = 1 } else { x = 2 }\n\
+                   if b == 2 { x = 3 } else { x = 4 } }\n\
+                 in go: exec\non go { f(k) }",
+            ),
+            (
+                "a var, a loop variable and a destructured name shadowing top-level consts",
+                "const a = 1\nconst b = 2\nconst c = 3\nconst d = 4\nvar x: int = 0\nvar k: int = 3\n\
+                 type P = { c: int }\nvar pv: P = { c: 3 }\n\
+                 in go: exec\n\
+                 on go { var a: int = k\n if a == 1 { x = 1 } else { x = 2 }\n\
+                   for b in 0..k { if b == 2 { x = 3 } }\n\
+                   let { c } = pv\n if c == 3 { x = 5 } else { x = 6 }\n\
+                   if d == 4 { x = 7 } else { x = 8 } }",
+            ),
+            (
+                "a const record parameter shadowing a top-level const",
+                "const a = { v: 1 }\nconst b = 2\nvar x: int = 0\n\
+                 type P = { v: int }\n\
+                 mod f(a: const P) { if a.v == 1 { x = 1 } else { x = 2 }\n\
+                   if b == 2 { x = 3 } else { x = 4 } }\n\
+                 in go: exec\non go { f({ v: 5 }) }",
+            ),
         ];
         for (label, src) in cases {
             let tc_dropped = typecheck_dropped(src);
@@ -5430,38 +5578,25 @@
     }
 
     #[test]
-    fn a_return_beside_an_anon_chip_port_is_checked_against_it() {
-        // The anon chip registers its port into the frame open around it, and
-        // a `return` in the same body delivers to that port just as an `out`
-        // or an `emit` there would. Finding the sole output has to look
-        // wherever a port write looks, or the three spellings disagree.
-        let r = tc(
-            "in go: exec\n\
-             in s: string\n\
-             on go {\n\
-             chip { out shared: int }\n\
-             return s\n\
-             }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "a return into an anon-chip-declared port must be checked against \
-             it; diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn a_return_beside_an_anon_chip_port_with_a_matching_value_stays_clean() {
-        let r = tc(
-            "in go: exec\n\
-             in n: int\n\
-             on go {\n\
-             chip { out shared: int }\n\
-             return n\n\
-             }",
-        );
-        assert_no_diags(&r);
+    fn a_return_value_beside_an_anon_chip_port_is_ws099() {
+        // Outside every mod and chip a `return <value>` has no output: the
+        // port an anon chip declares is written by name, as any `out` is.
+        for value in ["s", "n"] {
+            let r = tc(&format!(
+                "in go: exec\n\
+                 in s: string\n\
+                 in n: int\n\
+                 on go {{\n\
+                 chip {{ out shared: int }}\n\
+                 return {value}\n\
+                 }}"
+            ));
+            assert!(
+                r.diagnostics.iter().any(|d| d.code == "WS099"),
+                "`return {value}`: {:?}",
+                r.diagnostics
+            );
+        }
     }
 
     #[test]
@@ -5645,41 +5780,26 @@
     }
 
     #[test]
-    fn a_return_into_a_handler_declared_port_is_checked_against_it() {
-        // `return <value>` wires straight into the boundary's output when
-        // there is exactly one, and a handler-declared `out` is that output
-        // just as much as a top-level one is.
-        let r = tc(
-            "in go: exec
-             in go2: exec
-             on go {
-             out shared: int
-             }
-             on go2 {
-             return \"x\"
-             }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "a returned value that does not fit the sole output must report \
-             WS003; diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn a_return_matching_the_sole_handler_declared_port_stays_clean() {
-        let r = tc(
-            "in go: exec
-             in go2: exec
-             on go {
-             out shared: int
-             }
-             on go2 {
-             return 5
-             }",
-        );
-        assert_no_diags(&r);
+    fn a_return_value_beside_a_handler_declared_port_is_ws099() {
+        // A handler-declared `out` is a module port like a top-level one, and
+        // a top-level handler's `return <value>` gives it nothing.
+        for value in ["\"x\"", "5"] {
+            let r = tc(&format!(
+                "in go: exec
+                 in go2: exec
+                 on go {{
+                 out shared: int
+                 }}
+                 on go2 {{
+                 return {value}
+                 }}"
+            ));
+            assert!(
+                r.diagnostics.iter().any(|d| d.code == "WS099"),
+                "`return {value}`: {:?}",
+                r.diagnostics
+            );
+        }
     }
 
     #[test]
@@ -5822,8 +5942,47 @@
 
     #[test]
     fn emit_as_a_value_types_as_exec() {
-        let r = tc("in go: exec\non go {\n  let d: exec = emit\n}");
+        let r = tc("in go: exec\non go {\n  let d = emit\n}");
         assert_no_diags(&r);
+    }
+
+    #[test]
+    fn an_initializer_on_a_new_exec_signal_is_ws101() {
+        // `let s: exec` is a new signal fired by `emit s`; the initializer was
+        // dropped, and with it every `on s` handler's trigger.
+        for src in [
+            "var n: int = 0\nin go: exec\nlet s: exec = go\non s { n = 2 }",
+            "var n: int = 0\nin go: exec\non go {\n let s: exec = emit\n n = 1\n}",
+        ] {
+            let r = tc(src);
+            assert!(r.diagnostics.iter().any(|d| d.code == "WS101"), "{src}: {:?}", r.diagnostics);
+        }
+        assert_no_diags(&tc("var n: int = 0\nin go: exec\nlet s: exec\non s { n = 2 }\non go { emit s }"));
+        assert_no_diags(&tc("var n: int = 0\nin go: exec\nlet s = go\non s { n = 2 }"));
+    }
+
+    #[test]
+    fn a_record_type_read_as_a_value_is_ws100() {
+        // `Box { v: n }` reads as `Box` and a separate `{ v: n }`.
+        for decl in ["type Box = { v: int }", "type Box<T> = { v: T }"] {
+            let r = tc(&format!(
+                "{decl}\nin go: exec\nvar n: int = 3\nvar r: int = 0\non go {{\n let c = Box {{ v: n }}\n r = c.v\n}}"
+            ));
+            assert!(
+                r.diagnostics.iter().any(|d| d.code == "WS100" && d.message.contains("a record type has no")),
+                "{decl}: {:?}",
+                r.diagnostics
+            );
+        }
+        // A scalar alias is worded as one.
+        let r = tc("type Score = int\nvar n: int = 0\nin go: exec\non go {\n let s = Score\n}");
+        let d = r.diagnostics.iter().find(|d| d.code == "WS100").expect("WS100");
+        assert!(d.message.contains("another name for `int`") && !d.message.contains("record"), "{}", d.message);
+        assert_no_diags(&tc(
+            "type Box = { v: int }\nin go: exec\nvar n: int = 3\nvar r: int = 0\non go {\n let c: Box = { v: n }\n r = c.v\n}",
+        ));
+        // An enum's name still reaches its variants.
+        assert_no_diags(&tc("enum Hue { Red, Green }\nvar h: Hue = Hue.Red\nin go: exec\non go { h = Hue.Green }"));
     }
 
     #[test]
@@ -6187,4 +6346,42 @@
     fn well_formed_loops_typecheck_clean() {
         let c = codes("var t: int = 0\nin go: exec\non go { for i in 0..10 { t += i } }");
         assert!(c.is_empty(), "expected a clean typecheck, got {c:?}");
+    }
+
+    #[test]
+    fn a_namespace_in_an_assignment_target_keeps_its_type() {
+        // `u.xs[1] = 2` types `u` as a read of `u.xs` does, so hover shows it.
+        use crate::resolve::{MemLoader, resolve};
+        let loader = MemLoader {
+            files: [("lib.ws".to_string(), "var xs: int[] = [1, 2]".to_string())].into_iter().collect(),
+        };
+        let src = "import * as u from \"lib\"\nin go: exec\non go { u.xs[1] = 2 }";
+        let resolved = resolve(src, "main", &loader);
+        let r = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        let at = src.find("u.xs").unwrap();
+        assert!(
+            r.type_of_expr.keys().any(|(f, s, e)| &**f == "main" && *s == at && *e == at + 1),
+            "no type recorded for `u`"
+        );
+    }
+
+    #[test]
+    fn an_annotated_buffer_initializer_is_checked_against_its_type() {
+        // It was never checked: a string buffered in an `int` buffer, or a
+        // vector in a `float` one, compiled.
+        let head = "var n: int = 0\nvar x: float = 0.0\nin go: exec\nin v: vector\nin k: int\n";
+        for (body, wrong) in [
+            ("on go { buffer bb: int = \"abc\"\n n = bb }", true),
+            ("on go { buffer bb: float = v\n x = bb }", true),
+            ("buffer bb: string = 5\non go { n = bb.Length() }", false),
+            ("on go { buffer bb: float = 5\n x = bb / 2 }", false),
+            ("on go { buffer bb: float = k + 1\n x = bb / 2 }", false),
+            ("on go { buffer bb: bool = k\n n = bb }", false),
+        ] {
+            let r = tc(&format!("{head}{body}"));
+            let ws003 = r.diagnostics.iter().any(|d| d.code == "WS003");
+            assert_eq!(ws003, wrong, "`{body}`: {:?}", r.diagnostics);
+            assert!(wrong || r.diagnostics.iter().all(|d| d.severity != Severity::Error), "`{body}`: {:?}", r.diagnostics);
+        }
     }

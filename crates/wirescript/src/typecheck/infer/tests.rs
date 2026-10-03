@@ -639,6 +639,9 @@ fn payload_enum_array_cannot_cross_a_port_but_a_unit_enum_array_can() {
     let d = ws049("enum E { A, B(int) }\nin es: E[]\n");
     assert_eq!(d.len(), 1, "{d:?}");
     assert!(ws049("enum C { Red, Green }\nin cs: C[]\n").is_empty());
+    // A chip's pin has no column of tags to hand an enum array's elements.
+    let d = ws049("enum C { Red, Green }\nchip K(g: exec, cs: C[]) { }\n");
+    assert_eq!(d.len(), 1, "{d:?}");
     // A record variable stores any enum array field as columns, so a record
     // holding one can't cross a port even without payloads.
     let d = ws049("enum C { Red, Green }\ntype H = { cs: C[], n: int }\nchip K(hh: H) { in k: exec }\n");
@@ -875,7 +878,7 @@ fn variant_named_from_int_still_constructs() {
     // A real variant literally named `FromInt` wins over the tag-only
     // constructor: `E.FromInt(3)` builds that unit... payload variant, typing
     // as the enum, with no WS060.
-    let src = "enum E { A, FromInt(int) }\nout e = E.FromInt(3)\n";
+    let src = "enum E { A, FromInt(int) }\nlet e = E.FromInt(3)\n";
     assert_eq!(type_of(src, "E.FromInt(3)"), "E");
     let p = parse(src, "test");
     let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
@@ -963,7 +966,7 @@ fn positional_and_named_construction_type_as_the_enum() {
 
 #[test]
 fn match_binds_payload_and_joins_arm_types() {
-    let src = "enum Shape { Circle(float), Rect(float, float) }\nin s: Shape\n\
+    let src = "enum Shape { Circle(float), Rect(float, float) }\nvar s: Shape = Shape.Circle(1.0)\n\
                out area = match s { Circle(r) => r, Rect(w, h) => w }\n";
     assert_eq!(type_of(src, "match s { Circle(r) => r, Rect(w, h) => w }"), "float");
 }
@@ -974,7 +977,7 @@ fn match_binds_payload_and_joins_arm_types() {
 // cleanly and no diagnostic would fire, so this locks in the field typing.
 #[test]
 fn match_arm_capture_type_mismatch_is_ws003() {
-    let src = "enum P { I(int), S(string) }\nin p: P\n\
+    let src = "enum P { I(int), S(string) }\nvar p: P = P.I(0)\n\
                out r = match p { I(n) => n, S(s) => s }\n";
     let p = parse(src, "test");
     let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
@@ -998,7 +1001,7 @@ fn generic_variant_infers_and_annotates() {
 // instead of `Option.Some`/`Option.None`/`Result.Ok`/`Result.Err`).
 #[test]
 fn prelude_option_result_are_builtin() {
-    let src = "out a = Some(42)\nout b: Option<int> = None\nout c = Ok(1)\nout d: Result<int, int> = Err(2)\n";
+    let src = "let a = Some(42)\nlet b: Option<int> = None\nlet c = Ok(1)\nlet d: Result<int, int> = Err(2)\n";
     assert_eq!(type_of(src, "Some(42)"), "Option<int>");
     assert_eq!(type_of(src, "Ok(1)"), "Result<int, int>");
     assert_eq!(type_of(src, "None"), "Option<int>");
@@ -1058,8 +1061,8 @@ fn a_user_symbol_named_some_shadows_the_prelude_variant() {
 // `Err(2)` alone as WS063 while `Ok(1)` alone works cleanly.
 #[test]
 fn unconstrained_sibling_default_is_order_independent() {
-    assert_eq!(type_of("out c = Ok(1)\n", "Ok(1)"), "Result<int, int>");
-    let src = "out d = Err(2)\n";
+    assert_eq!(type_of("let c = Ok(1)\n", "Ok(1)"), "Result<int, int>");
+    let src = "let d = Err(2)\n";
     assert_eq!(type_of(src, "Err(2)"), "Result<int, int>");
     let p = parse(src, "test");
     let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());

@@ -9,8 +9,9 @@ use crate::collections::HashMap;
 use crate::ir::Type;
 use std::sync::Arc;
 
-/// `(file, start, end, substitution)`.
-pub type ResolutionKey = (Arc<str>, usize, usize, Vec<Type>);
+/// `(file, start, end, substitution)`. The substitution is shared, so a key
+/// costs no copy of it.
+pub type ResolutionKey = (Arc<str>, usize, usize, Arc<[Type]>);
 
 /// What a container-valued expression is.
 #[derive(Clone, Debug, PartialEq)]
@@ -70,4 +71,23 @@ pub fn classify_method(name: &str, receiver: &Type) -> Option<MethodTarget> {
 pub struct Resolutions {
     pub method_targets: HashMap<ResolutionKey, MethodTarget>,
     pub container_kinds: HashMap<ResolutionKey, ContainerKind>,
+    /// The type of each expression inside a generic body, per instantiation.
+    /// The range-keyed `type_of_expr` holds only the last one checked.
+    pub generic_expr_types: HashMap<ResolutionKey, Type>,
+    /// Every expression range inside a generic body.
+    pub generic_ranges: crate::collections::HashSet<(Arc<str>, usize, usize)>,
+    /// The type arguments of each call of a generic mod or chip, in its
+    /// declared order, keyed by the call and the caller's substitution.
+    /// Lowering instantiates the callee with exactly these.
+    pub call_type_args: HashMap<ResolutionKey, Vec<Type>>,
+    /// Every mod or chip body typecheck checked: the declaration's range and
+    /// the body's resolution key. Lowering builds no other.
+    pub checked_bodies: crate::collections::HashSet<ResolutionKey>,
+    /// The type a module port no site annotates is stored as, the join of
+    /// its writes, keyed by each write's value. Only a port some write of
+    /// which has another type has entries.
+    pub untyped_port_types: HashMap<(Arc<str>, usize, usize), Type>,
+    /// Every argument that is a record given to a parameter of one value
+    /// (WS003), by range: the parameter is bound to nothing of it.
+    pub rejected_record_args: crate::collections::HashSet<(Arc<str>, usize, usize)>,
 }

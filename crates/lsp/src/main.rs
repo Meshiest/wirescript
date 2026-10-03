@@ -1872,7 +1872,11 @@ impl LanguageServer for Backend {
                             MessageType::ERROR,
                             format!(
                                 "[compile]   {}:{}:{} {} {}",
-                                d.range.file, d.range.start.line, d.range.start.col, d.code, d.message
+                                wirescript::diagnostic::display_path(&d.range.file),
+                                d.range.start.line,
+                                d.range.start.col,
+                                d.code,
+                                d.message
                             ),
                         )
                         .await;
@@ -1922,7 +1926,11 @@ impl LanguageServer for Backend {
                     MessageType::WARNING,
                     format!(
                         "[compile]   {}:{}:{} {} {}",
-                        d.range.file, d.range.start.line, d.range.start.col, d.code, d.message
+                        wirescript::diagnostic::display_path(&d.range.file),
+                        d.range.start.line,
+                        d.range.start.col,
+                        d.code,
+                        d.message
                     ),
                 )
                 .await;
@@ -2103,7 +2111,7 @@ fn member_completions(
     // `.Discriminant`, swizzle fields, builtin receiver-methods, then
     // in-scope user `self`-mods whose receiver matches.
     let push_type_members = |ty: &str, items: &mut Vec<CompletionItem>| {
-        if enum_registry.contains_key(ty) {
+        if enum_registry.editor_lookup(ty).is_some() {
             items.push(CompletionItem {
                 label: "Discriminant".to_string(),
                 kind: Some(CompletionItemKind::FIELD),
@@ -2144,7 +2152,7 @@ fn member_completions(
     // `resolve_variant_for_construction`: a value symbol whose name equals the
     // enum's shadows the type, so the name is NOT a construction site).
     if sym.is_none_or(|s| s.kind == "type") {
-        if let Some(def) = enum_registry.get(var_name) {
+        if let Some(def) = enum_registry.editor_lookup(var_name) {
             push_variant_completions(&mut items, def);
             return items;
         }
@@ -2161,9 +2169,9 @@ fn member_completions(
         if let Some(owner) = wirescript::typecheck::enums::resolve_bare_variant_enum(
             &enum_registry,
             var_name,
-            |n| enum_registry.contains_key(n),
+            |n| enum_registry.editor_lookup(n).is_some(),
         ) {
-            push_type_members(owner, &mut items);
+            push_type_members(&owner.name, &mut items);
             if !items.is_empty() {
                 return items;
             }
@@ -2396,7 +2404,7 @@ fn nested_block_at(
 /// a full parse would, at zero cost for the common no-enum file.
 fn enum_registry_from_source(
     source: &str,
-) -> wirescript::collections::HashMap<String, wirescript::typecheck::enums::EnumDef> {
+) -> wirescript::typecheck::enums::EnumRegistry {
     if !source.contains("enum ") {
         return wirescript::typecheck::enums::build_registry(&[]);
     }
@@ -2749,7 +2757,7 @@ fn build_completions(
     if let Some(scrutinee) = match_arm_head_scrutinee_at(source, line, col) {
         if let Some(ty) = resolve_symbol(symbols, source, &scrutinee, line, col).and_then(|s| s.ty.as_deref()) {
             let registry = enum_registry_from_source(source);
-            if let Some(def) = registry.get(ty) {
+            if let Some(def) = registry.editor_lookup(ty) {
                 push_variant_completions(&mut items, def);
                 if !items.is_empty() {
                     return items;

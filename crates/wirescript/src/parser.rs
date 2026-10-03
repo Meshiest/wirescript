@@ -91,6 +91,9 @@ struct Parser<'a> {
     /// it, `0..n-1` groups as `(0..n) - 1` and the range never forms. Reset
     /// inside any bracketed sub-expression, where a `..` is unambiguous again.
     stop_at_dotdot: bool,
+    /// Token positions where [`Parser::split_closing_angle`] split a `>>` into
+    /// two `>`s, newest last, so a speculative parse can put them back.
+    angle_splits: Vec<usize>,
     /// Current nesting level, in expression operands, blocks and type levels.
     /// See [`MAX_NEST_DEPTH`].
     depth: usize,
@@ -124,6 +127,7 @@ impl<'a> Parser<'a> {
             pending_stmts: Vec::new(),
             no_brace_construct: false,
             stop_at_dotdot: false,
+            angle_splits: Vec::new(),
             depth: 0,
             depth_exceeded: false,
         }
@@ -228,6 +232,66 @@ impl<'a> Parser<'a> {
             return false;
         }
         text.is_none_or(|s| t.text == s)
+    }
+
+    /// The operator tokens that begin with the `>` closing a type-argument
+    /// list: `>>` closes two nested ones (`Map<string, Map<string, int>>`),
+    /// and `>=`/`>>=` close one or two right before an initializer's `=`.
+    const CLOSING_ANGLE_TOKENS: [&'static str; 4] = [">", ">>", ">=", ">>="];
+
+    /// Whether the current token closes a type-argument list (see
+    /// [`Self::CLOSING_ANGLE_TOKENS`]).
+    fn check_closing_angle(&self) -> bool {
+        let t = self.peek();
+        t.kind == TokenKind::Op && Self::CLOSING_ANGLE_TOKENS.contains(&t.text.as_str())
+    }
+
+    /// Split a current `>>`, `>=` or `>>=` into a `>` and the rest, so the `>`
+    /// closes one type-argument list. The lexer reads these as the shift,
+    /// comparison and shift-assign operators, which only an expression
+    /// position means.
+    fn split_closing_angle(&mut self) {
+        if !self.check_closing_angle() || self.check(TokenKind::Op, Some(">")) {
+            return;
+        }
+        let whole = self.tokens[self.pos].clone();
+        let mid = crate::diagnostic::Pos {
+            offset: whole.start.offset + 1,
+            line: whole.start.line,
+            col: whole.start.col + 1,
+        };
+        self.tokens[self.pos] = Token {
+            text: ">".to_string(),
+            end: mid,
+            ..whole.clone()
+        };
+        self.tokens.insert(
+            self.pos + 1,
+            Token {
+                text: whole.text[1..].to_string(),
+                start: mid,
+                ..whole
+            },
+        );
+        self.angle_splits.push(self.pos);
+    }
+
+    /// Expect the `>` that closes a type-argument list, splitting a `>>`,
+    /// `>=` or `>>=`.
+    fn expect_closing_angle(&mut self) -> Token {
+        self.split_closing_angle();
+        self.expect(TokenKind::Op, Some(">"))
+    }
+
+    /// Put back every split since `angle_splits` had `keep` entries, for a
+    /// speculative parse that backtracks to an expression.
+    fn unsplit_closing_angles(&mut self, keep: usize) {
+        while self.angle_splits.len() > keep {
+            let at = self.angle_splits.pop().expect("len > keep");
+            let second = self.tokens.remove(at + 1);
+            self.tokens[at].text.push_str(&second.text);
+            self.tokens[at].end = second.end;
+        }
     }
 
     fn match_tok(&mut self, kind: TokenKind, text: Option<&str>) -> Option<Token> {
@@ -431,6 +495,7 @@ impl<'a> Parser<'a> {
             flat: module_anns.flat,
             invisible: module_anns.invisible,
             module_label,
+            imports: Default::default(),
         }
     }
 

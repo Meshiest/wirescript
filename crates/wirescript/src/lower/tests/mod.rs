@@ -3,38 +3,49 @@ use crate::parser::parse;
 use crate::template_cache::TemplateCache;
 use crate::typecheck::{typecheck, typecheck_with_inference};
 
+mod alias_conversion;
 mod annotations;
 mod basic;
 mod block_expr;
 mod boundary_pins;
 mod chip;
 mod compound;
+mod conditional_writes;
 mod const_collections;
 mod const_if;
 mod const_init;
 mod const_params;
 mod cse;
+pub(super) mod declaring_scope;
 mod enums;
 mod exec_fork;
 mod flatten;
+mod float_slots;
 mod fold;
 mod for_loop;
 mod fusion;
 mod gate_config;
+mod generic_differential;
 mod generics;
+mod int_slots;
 mod imports;
+mod lexical_scope;
 mod namespace_values;
 mod opaque;
 mod out_reads;
+mod position_parity;
 mod port_side;
 mod purity;
+mod record_assign_order;
 mod record_field_columns;
 mod records;
+mod ref_records;
 mod refs;
 mod regression_bugs;
 pub(in crate::lower) mod resolution;
 mod returns;
 mod scope;
+mod shadow_differential;
 mod string;
 mod types;
 mod varget_cache;
@@ -69,6 +80,7 @@ pub(super) fn compile(src: &str) -> LowerResult {
         ce_slots: &ce_slots,
     });
     r.diagnostics.extend(tc.diagnostics);
+    crate::diagnostic::drop_internal_errors_beside_errors(&mut r.diagnostics);
     r
 }
 
@@ -97,6 +109,7 @@ pub(super) fn compile_folded(src: &str) -> LowerResult {
         ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
     r.diagnostics.extend(tc.diagnostics);
+    crate::diagnostic::drop_internal_errors_beside_errors(&mut r.diagnostics);
     r
 }
 
@@ -123,6 +136,7 @@ pub(super) fn compile_auto(src: &str) -> LowerResult {
         ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
     r.diagnostics.extend(tc.diagnostics);
+    crate::diagnostic::drop_internal_errors_beside_errors(&mut r.diagnostics);
     r
 }
 
@@ -161,6 +175,7 @@ pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResu
     // the one test covering that shape could not see it.
     r.diagnostics.extend(resolved.diagnostics);
     r.diagnostics.extend(tc.diagnostics);
+    crate::diagnostic::drop_internal_errors_beside_errors(&mut r.diagnostics);
     r
 }
 
@@ -215,6 +230,27 @@ pub(super) fn assert_no_errors(r: &LowerResult) {
         "unexpected errors: {:?}",
         r.diagnostics
     );
+}
+
+/// The gates and wires of `m`, ignoring node ids: each wire by the classes and
+/// ports it joins (a literal source by its value), and each gate class.
+pub(super) fn wiring_shape(m: &crate::ir::Module) -> Vec<String> {
+    use crate::intern::sym;
+    let name = |id: &crate::ir::NodeId| {
+        let n = &m.nodes[id];
+        match n.properties.get(&*sym::VALUE) {
+            Some(v) if n.gate_class == crate::ir::gate_class::LITERAL => format!("{}={v:?}", n.gate_class),
+            _ => n.gate_class.to_string(),
+        }
+    };
+    let mut out: Vec<String> = m
+        .wires
+        .iter()
+        .map(|w| format!("{}.{:?} -> {}.{:?}", name(&w.source.node_id), w.source.port, name(&w.target.node_id), w.target.port))
+        .collect();
+    out.extend(m.nodes.keys().map(name));
+    out.sort();
+    out
 }
 
 pub(super) fn has_gate(r: &LowerResult, class: &str) -> bool {

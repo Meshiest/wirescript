@@ -91,7 +91,7 @@ fn build_gate_data_map(
                     {
                         Box::new(embed_prefab(lit, world, prefab_resolver, nested_compiler)?)
                     }
-                    FieldKind::Enum(type_name) => match resolve_enum_value(type_name, lit) {
+                    FieldKind::Enum(type_name) => match resolve_enum_value(type_name, &in_native_field(&fm.kind, lit)) {
                         Some(ev) => Box::new(ev),
                         None => literal_to_boxed_native(lit).ok_or_else(|| {
                             EmitError::UnrepresentableLiteral {
@@ -120,9 +120,8 @@ fn build_gate_data_map(
                             }
                         })?
                     }
-                    _ => literal_to_boxed_native(lit).ok_or_else(|| EmitError::UnrepresentableLiteral {
-                        field: field.to_string(),
-                        literal: (**lit).clone(),
+                    _ => literal_to_boxed_native(&in_native_field(&fm.kind, lit)).ok_or_else(|| {
+                        EmitError::UnrepresentableLiteral { field: field.to_string(), literal: (**lit).clone() }
                     })?,
                 },
                 // No inlined value. Wire-typed ports still need a typed default
@@ -148,6 +147,221 @@ fn build_gate_data_map(
             data.insert(BString::Static(field), val);
         }
     Ok(Some(data))
+}
+
+/// A constant `lit` as a native scalar field of `kind` holds it: an integer,
+/// float or bool constant for a field of another of those kinds converts as
+/// the value would on a wire (a float truncates, a non-finite float is 0, a
+/// number is `true` when non-zero), and any other constant is unchanged.
+fn in_native_field<'l>(kind: &FieldKind, lit: &'l Literal) -> std::borrow::Cow<'l, Literal> {
+    use std::borrow::Cow;
+    let truncated = |f: f64| if f.is_finite() { f as i64 } else { 0 };
+    match (kind, lit) {
+        (FieldKind::Integer(_) | FieldKind::Enum(_), Literal::Float(f)) => Cow::Owned(Literal::Int(truncated(*f))),
+        (FieldKind::Integer(_), Literal::Bool(b)) => Cow::Owned(Literal::Int(*b as i64)),
+        (FieldKind::Real(_), Literal::Int(n)) => Cow::Owned(Literal::Float(*n as f64)),
+        (FieldKind::Real(_), Literal::Bool(b)) => Cow::Owned(Literal::Float(if *b { 1.0 } else { 0.0 })),
+        (FieldKind::Boolean, Literal::Int(n)) => Cow::Owned(Literal::Bool(*n != 0)),
+        (FieldKind::Boolean, Literal::Float(f)) => Cow::Owned(Literal::Bool(*f != 0.0)),
+        _ => Cow::Borrowed(lit),
+    }
+}
+
+/// How a constant lands in a native setting field.
+enum Landing {
+    /// As written, or converted without changing its value (`2.0` into an
+    /// integer field, `1` into a bool field, `true` into the number field of
+    /// a setting whose pin takes a bool).
+    Exact,
+    /// Converted to a different value: a fraction dropped, a number made a
+    /// bool, a bool made a number. Carries the value stored.
+    Inexact(String),
+    /// Not storable at all: outside the field's range, or no value of its
+    /// enum. Carries why.
+    Invalid(String),
+}
+
+/// How the constant `lit` lands in a field of `kind`. `bool_pin` is set when
+/// the setting's pin takes a bool, so a bool stored as a number there is the
+/// field's own encoding.
+fn landing(kind: &FieldKind, lit: &Literal, bool_pin: bool) -> Landing {
+    let int_range = |ty: &str| -> (i128, i128) {
+        match ty {
+            "i8" => (i8::MIN as i128, i8::MAX as i128),
+            "i16" => (i16::MIN as i128, i16::MAX as i128),
+            "i32" => (i32::MIN as i128, i32::MAX as i128),
+            "u8" => (0, u8::MAX as i128),
+            "u16" => (0, u16::MAX as i128),
+            "u32" => (0, u32::MAX as i128),
+            "u64" => (0, u64::MAX as i128),
+            _ => (i64::MIN as i128, i64::MAX as i128),
+        }
+    };
+    let whole = |f: f64| -> Option<i128> { f.is_finite().then(|| f.trunc() as i128) };
+    match (kind, lit) {
+        (FieldKind::Integer(ty), Literal::Int(n)) => {
+            let (lo, hi) = int_range(ty);
+            if (lo..=hi).contains(&(*n as i128)) {
+                Landing::Exact
+            } else {
+                Landing::Invalid(format!("its field holds a whole number from {lo} to {hi}"))
+            }
+        }
+        (FieldKind::Integer(ty), Literal::Float(f)) => {
+            let (lo, hi) = int_range(ty);
+            match whole(*f) {
+                Some(n) if (lo..=hi).contains(&n) && n as f64 == *f => Landing::Exact,
+                Some(n) if (lo..=hi).contains(&n) => Landing::Inexact(n.to_string()),
+                _ => Landing::Invalid(format!("its field holds a whole number from {lo} to {hi}")),
+            }
+        }
+        (FieldKind::Integer(_), Literal::Bool(b)) if !bool_pin => Landing::Inexact((*b as i64).to_string()),
+        (FieldKind::Real(ty), Literal::Int(n)) => {
+            let stored = if *ty == "f32" { *n as f32 as f64 } else { *n as f64 };
+            if stored as i128 == *n as i128 {
+                Landing::Exact
+            } else {
+                Landing::Inexact(format!("{stored}"))
+            }
+        }
+        (FieldKind::Real("f32"), Literal::Float(f)) if f.is_finite() && f.abs() > f32::MAX as f64 => {
+            Landing::Invalid("its field holds a 32-bit float".to_string())
+        }
+        (FieldKind::Real(_), Literal::Bool(b)) if !bool_pin => Landing::Inexact(if *b { "1.0" } else { "0.0" }.to_string()),
+        (FieldKind::Boolean, Literal::Int(n)) if *n != 0 && *n != 1 => Landing::Inexact("true".to_string()),
+        (FieldKind::Boolean, Literal::Float(f)) if *f != 0.0 && *f != 1.0 => Landing::Inexact((*f != 0.0).to_string()),
+        (FieldKind::Enum(ty), Literal::Int(n)) => match crate::catalog::enum_has_value(ty, *n) {
+            true => Landing::Exact,
+            false => Landing::Invalid(enum_choices(ty)),
+        },
+        (FieldKind::Enum(ty), Literal::Float(f)) => match whole(*f) {
+            Some(n) if i64::try_from(n).is_ok_and(|n| crate::catalog::enum_has_value(ty, n)) => {
+                if n as f64 == *f { Landing::Exact } else { Landing::Inexact(n.to_string()) }
+            }
+            _ => Landing::Invalid(enum_choices(ty)),
+        },
+        (FieldKind::Enum(ty), Literal::Bool(b)) => match crate::catalog::enum_has_value(ty, *b as i64) {
+            true => Landing::Inexact((*b as i64).to_string()),
+            false => Landing::Invalid(enum_choices(ty)),
+        },
+        _ => Landing::Exact,
+    }
+}
+
+/// The members of the schema enum `ty`, as a WS028 lists them.
+fn enum_choices(ty: &str) -> String {
+    format!(
+        "it is not a valid {ty} value; expected one of: {}",
+        crate::catalog::enum_member_names(ty).join(", ")
+    )
+}
+
+/// The written form of a constant as a diagnostic quotes it.
+fn written(lit: &Literal) -> String {
+    match lit {
+        Literal::Float(f) => crate::const_eval::written_float(*f),
+        Literal::Int(n) => n.to_string(),
+        Literal::Bool(b) => b.to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Check every constant a gate stores in a native setting field (a number,
+/// bool or enum field of its component data, such as `SleepTicks`' tick count
+/// or `DisplayText`'s font size and justification) against the field it lands
+/// in, across `root` and every chip module under it. A constant the field
+/// cannot hold (out of its range, or no value of its enum) is `WS028`, as the
+/// integer spelling of a bad enum value already is; one stored as a different
+/// value (a fraction dropped, a number made a bool, a bool made a number) is
+/// the warning `WS106`, naming the setting, the value written and the value
+/// stored. A constant stored as written is silent.
+pub fn check_native_settings(root: &crate::ir::Module, diagnostics: &mut Vec<crate::diagnostic::Diagnostic>) {
+    let mut seen: crate::collections::HashSet<(crate::diagnostic::SourceRange, String)> = Default::default();
+    check_module_settings(root, &mut seen, diagnostics);
+}
+
+fn check_module_settings(
+    m: &crate::ir::Module,
+    seen: &mut crate::collections::HashSet<(crate::diagnostic::SourceRange, String)>,
+    diagnostics: &mut Vec<crate::diagnostic::Diagnostic>,
+) {
+    let value_sym = *sym::VALUE;
+    let mut inlined: HashMap<NodeId, Vec<(Sym, &Literal, &crate::diagnostic::SourceRange)>> = HashMap::default();
+    for w in &m.wires {
+        if let Some(src) = m.nodes.get(&w.source.node_id)
+            && src.gate_class == gc::LITERAL
+            && let Some(lit) = src.properties.get(&value_sym)
+        {
+            let port = crate::intern::intern(w.target.port.as_str());
+            inlined.entry(w.target.node_id).or_default().push((port, lit, &src.source_range));
+        }
+    }
+    for (id, node) in &m.nodes {
+        if node.kind == crate::ir::NodeKind::Chip {
+            continue;
+        }
+        let Some(fields) = gate_field_meta(node.gate_class) else { continue };
+        let mut values: HashMap<Sym, (&Literal, &crate::diagnostic::SourceRange)> = HashMap::default();
+        for (port, lit, range) in inlined.get(id).into_iter().flatten() {
+            values.insert(*port, (lit, range));
+        }
+        for (prop, lit) in node.properties.as_ref() {
+            values.entry(*prop).or_insert((lit, &node.source_range));
+        }
+        for fm in fields {
+            if matches!(fm.kind, FieldKind::WireValue) {
+                continue;
+            }
+            let Some((lit, lit_range)) = values.get(&fm.sym) else { continue };
+            let bool_pin = node.ports.inputs.iter().any(|p| p.name == fm.sym && p.ty == crate::ir::Type::Bool);
+            let landed = landing(&fm.kind, lit, bool_pin);
+            if matches!(landed, Landing::Exact) {
+                continue;
+            }
+            let param = node
+                .note
+                .and_then(crate::catalog::calls::find_call)
+                .and_then(|spec| spec.params.iter().find(|p| p.port.as_str() == fm.name).map(|p| (spec.name, p.name)));
+            // An input of a pure expression gate (`sqrt(x)`, `BitCount(x)`) is
+            // an operand the program passes, not a setting of the gate.
+            let what = if node.gate_class.starts_with("BrickComponentType_Expr_")
+                && crate::catalog::is_wire_input(node.gate_class, fm.name)
+            {
+                "argument"
+            } else {
+                "setting"
+            };
+            let setting = match param {
+                Some((call, name)) if name == fm.name => format!("`{call}` {what} `{name}`"),
+                Some((call, name)) => format!("`{call}` {what} `{name}` ({})", fm.name),
+                None => format!("{what} `{}`", fm.name),
+            };
+            let range = if lit_range.file.is_empty() { node.source_range.clone() } else { (*lit_range).clone() };
+            let range = if range.file.is_empty() { node.source_range.clone() } else { range };
+            let diagnostic = match landed {
+                Landing::Exact => continue,
+                Landing::Inexact(stored) => crate::diagnostic::Diagnostic::warning(
+                    "WS106",
+                    format!(
+                        "{setting} is stored as {stored}, not the {} written: the field cannot hold that value exactly. Write {stored} if that is what you mean",
+                        written(lit)
+                    ),
+                    range,
+                ),
+                Landing::Invalid(why) => crate::diagnostic::Diagnostic::error(
+                    "WS028",
+                    format!("{setting} cannot be {}: {why}", written(lit)),
+                    range,
+                ),
+            };
+            if seen.insert((diagnostic.range.clone(), diagnostic.message.clone())) {
+                diagnostics.push(diagnostic);
+            }
+        }
+    }
+    for child in m.chips.values() {
+        check_module_settings(child, seen, diagnostics);
+    }
 }
 
 /// Embed a prefab literal into `world`, content-addressed via `add_prefab`,

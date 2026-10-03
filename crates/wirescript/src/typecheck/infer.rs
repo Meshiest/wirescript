@@ -101,22 +101,57 @@ fn check_ws_prefab_ref(ctx: &mut TypeCheckCtx, path: &str, range: &SourceRange) 
 }
 
 pub(crate) fn infer(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
+    let reported = ctx.diagnostics.len();
     let t = infer_node(ctx, e);
-    let r = e.range();
-    ctx.type_of_expr
-        .insert((r.file.clone(), r.start.offset, r.end.offset), t.clone());
+    ctx.record_expr_type(e.range(), &t);
+    if holds_any(&t) && (ctx.reads_untyped_var(e) || has_error_since(ctx, reported) || operand_error_typed(ctx, e)) {
+        let r = e.range();
+        ctx.error_typed.insert((r.file.clone(), r.start.offset, r.end.offset));
+    }
     t
 }
 
-/// An array or map is already a reference (it wires `ArrayVarRef`/`MapVarRef`),
-/// so a `Ref` around one is redundant — and `*T[]` is actively broken (it
-/// silently drops writes). Collapse `Ref(Array)`/`Ref(Map)` to the container;
-/// a scalar `*T` (a ref to a mutable cell) is meaningful and left untouched.
-fn collapse_container_ref(t: Type) -> Type {
+/// How a method's receiver is spelled: a name or a literal, or a field,
+/// element or tuple element read of one (`v[0]`, `b.v`). `None` for any
+/// other expression.
+fn receiver_spelling(e: &Expr) -> Option<String> {
+    Some(match e {
+        Expr::Ident { name, .. } => name.clone(),
+        Expr::IntLit { text, .. } | Expr::FloatLit { text, .. } => text.clone(),
+        Expr::BoolLit { value, .. } => value.to_string(),
+        Expr::StringLit { value, .. } if !value.contains(['"', '\\', '\n']) => format!("\"{value}\""),
+        Expr::FieldAccess { obj, field, .. } => format!("{}.{field}", receiver_spelling(obj)?),
+        Expr::TuplePick { obj, index, .. } => format!("{}.{index}", receiver_spelling(obj)?),
+        Expr::IndexAccess { obj, index, .. } => format!("{}[{}]", receiver_spelling(obj)?, receiver_spelling(index)?),
+        _ => return None,
+    })
+}
+
+/// Whether `t` is `any` or holds it (an `any[]`).
+fn holds_any(t: &Type) -> bool {
     match t {
-        Type::Ref(inner) if matches!(&*inner, Type::Array(_) | Type::Map(_, _)) => *inner,
-        other => other,
+        Type::Any => true,
+        Type::Ref(t) | Type::Array(t) => holds_any(t),
+        Type::Map(k, v) => holds_any(k) || holds_any(v),
+        _ => false,
     }
+}
+
+/// Whether an operand of `e` (an expression directly inside it) is error
+/// typed.
+fn operand_error_typed(ctx: &TypeCheckCtx, e: &Expr) -> bool {
+    use crate::ast::walk::{Ctx, Node, walk};
+    if ctx.error_typed.is_empty() {
+        return false;
+    }
+    let mut found = false;
+    walk(Node::Expr(e), Ctx::default(), &mut |n, _| {
+        if let Node::Expr(x) = n {
+            found = found || ctx.is_error_typed(x);
+        }
+        false
+    });
+    found
 }
 
 /// Lowering distributes an index over an if-expression object
@@ -148,9 +183,15 @@ pub(crate) fn namespace_member_type(ctx: &TypeCheckCtx, obj: &Expr, field: &str)
     {
         return None;
     }
-    ctx.ns_members(ns_name, &ns_range.file)
-        .and_then(|m| m.get(field))
-        .and_then(|info| info.value_type.clone())
+    let info = ctx.ns_members(ns_name, &ns_range.file)?.get(field)?;
+    let ty = info.value_type.clone()?;
+    // A destructured place reads as its var, as it does in its own module.
+    if info.let_decl.as_ref().is_some_and(|k| ctx.let_places.contains(k)) {
+        return Some(unwrap_ref(&ty));
+    }
+    // An array or map ref reads as the container, as a `var cur: *int[]` of
+    // the reading file does.
+    Some(ty.container_ref_as_value())
 }
 
 /// The column `field` names on a record array or record map: `pts.x` on
@@ -227,7 +268,7 @@ fn container_receiver_type(ctx: &TypeCheckCtx, e: &Expr) -> Option<Type> {
                     .map(|(_, t)| unwrap_ref(t))
             };
             match recv {
-                Type::Record(fields) => field_ty(&fields),
+                Type::Record(fields) | Type::Outputs(fields) => field_ty(&fields),
                 Type::Array(inner) => match inner.as_ref() {
                     Type::Record(fields) => {
                         field_ty(fields).map(|t| Type::Array(Box::new(t)))
@@ -253,10 +294,13 @@ fn container_receiver_type(ctx: &TypeCheckCtx, e: &Expr) -> Option<Type> {
 /// receiver's value, so it needs the receiver's type (`rows[y].push(v)`, or
 /// `cur.length()` on a `var cur: *int[]`).
 ///
-/// A receiver that is not a container keeps nothing from the inference, so it
-/// still falls through to the remaining call arms without having emitted
-/// anything. Called once per call node: a generic mod body is checked once per
-/// type combination, and each check must infer the receiver afresh.
+/// A receiver that is not a container drops the inference's diagnostics, so
+/// it still falls through to the remaining call arms without having reported
+/// anything; the types and read contexts the inference recorded stay. A
+/// container receiver's recorded type is the container itself (`int[]` for a
+/// `var cur: *int[]`), which replaces the ref type the inference recorded at
+/// the receiver. Called once per call node: a generic mod body is checked once
+/// per type combination, and each check must infer the receiver afresh.
 fn method_receiver_type(ctx: &mut TypeCheckCtx, obj: &Expr) -> Option<Type> {
     let is_container = |t: &Type| matches!(t, Type::Array(_) | Type::Map(_, _));
     let ty = match container_receiver_type(ctx, obj) {
@@ -273,8 +317,7 @@ fn method_receiver_type(ctx: &mut TypeCheckCtx, obj: &Expr) -> Option<Type> {
     };
     if is_container(&ty) {
         let r = obj.range();
-        ctx.type_of_expr
-            .insert((r.file.clone(), r.start.offset, r.end.offset), ty.clone());
+        ctx.record_expr_type(r, &ty);
     }
     // A column receiver (`pts.x.sort()`, `qs.p.x.sort()`): record each record
     // container it is a column of, up to the root, which is how lowering tells
@@ -300,7 +343,7 @@ fn method_receiver_type(ctx: &mut TypeCheckCtx, obj: &Expr) -> Option<Type> {
 /// Evaluated against [`TypeCheckCtx::const_ctx_without_placeholders`], NOT
 /// `const_ctx` — this decides whether to SUPPRESS a diagnostic, and a `const`
 /// PARAMETER's placeholder is a type-shaped zero seeded once before any call
-/// site exists (see `scoped_const_placeholders`'s doc comment). Evaluating
+/// site exists (see `crate::const_scope::Marks::placeholder`). Evaluating
 /// against it would let a fictional index value silently suppress WS007 for a
 /// read whose real (call-site) index is unknown at this point in the pass —
 /// exactly the placeholder-deciding-something hazard `const_ctx_without_placeholders`
@@ -345,8 +388,10 @@ fn container_call_exec_exempt(
     obj: &Expr,
     args: &[CallArg],
 ) -> bool {
-    let const_read =
-        !mutates && matches!(obj, Expr::Ident { name, .. } if ctx.const_declared.contains(name));
+    let declared_at_top = |name: &str| {
+        ctx.consts.declared_at_top(name) && ctx.constant(name, crate::const_scope::Admit::Declared).is_some()
+    };
+    let const_read = !mutates && matches!(obj, Expr::Ident { name, .. } if declared_at_top(name));
     let has_exec_arg = args
         .iter()
         .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
@@ -421,6 +466,57 @@ fn precheck_ref_element_args(ctx: &mut TypeCheckCtx, elem: &Type, params: &mut [
 /// than the scan falsely flagging the global.
 type ScanLocals = crate::collections::HashMap<String, Type>;
 
+/// `arr.sortMultiple(a, b, ..., descending?)`: the gate sorts at most seven
+/// parallel arrays with the key (`ArrayVarRef2`..`ArrayVarRef8`), and only a
+/// trailing `bool` is `descending`; every other positional must be an array.
+fn check_sort_multiple_args(ctx: &mut TypeCheckCtx, args: &[CallArg], range: &SourceRange) {
+    const MAX_PARALLEL: usize = 7;
+    let positional: Vec<&Expr> = args
+        .iter()
+        .filter_map(|a| match a {
+            CallArg::Positional(e) => Some(e),
+            _ => None,
+        })
+        .collect();
+    let mut arrays = 0;
+    for (i, e) in positional.iter().enumerate() {
+        let key = {
+            let r = e.range();
+            (r.file.clone(), r.start.offset, r.end.offset)
+        };
+        let t = match ctx.type_of_expr.get(&key).cloned() {
+            Some(t) => t,
+            None => infer(ctx, e),
+        };
+        let last = i + 1 == positional.len();
+        match unwrap_ref(&t) {
+            Type::Array(_) => arrays += 1,
+            Type::Bool if last => {}
+            Type::Any => {}
+            other => ctx.emit(
+                "WS003",
+                format!(
+                    "'sortMultiple' argument {}: expected a parallel array{}, got {}",
+                    i + 1,
+                    if last { " or a trailing `descending` bool" } else { "" },
+                    crate::analysis::types::type_str(&other)
+                ),
+                e.range().clone(),
+            ),
+        }
+    }
+    if arrays > MAX_PARALLEL {
+        ctx.emit(
+            "WS011",
+            format!(
+                "'sortMultiple' sorts at most {MAX_PARALLEL} parallel arrays along with this one \
+                 (the gate has {MAX_PARALLEL} array ports), got {arrays}"
+            ),
+            range.clone(),
+        );
+    }
+}
+
 fn is_scan_container(t: &Type) -> bool {
     matches!(unwrap_ref(t), Type::Array(_) | Type::Map(_, _))
 }
@@ -436,29 +532,12 @@ fn is_scan_container(t: &Type) -> bool {
 /// `let` alias of another container, is still not detected - the same class of gap
 /// the whole scan documents, traded against re-inferring `let` RHS types here.
 fn build_scan_locals(ctx: &TypeCheckCtx, decl: &crate::ast::ChipDecl) -> ScanLocals {
-    // The in-scope alias snapshot is an O(scope-size) frame scan, so build it
-    // LAZILY - only when a non-primitive annotation is actually resolved. A
+    // The in-scope alias snapshot is an O(scope-size) frame scan, which the
+    // resolver builds only when a non-primitive annotation is resolved. A
     // param-less mod (or one with only primitive params, the common case)
     // resolves nothing and never pays for it, which is what keeps the whole scan
     // from going O(N^2) again on a deep chain of primitive-typed mods.
-    let alias_map: std::cell::RefCell<
-        Option<std::sync::Arc<crate::collections::HashMap<String, Type>>>,
-    > = std::cell::RefCell::new(None);
-    let resolve = |te: &crate::ast::TypeExpr| -> Type {
-        if let crate::ast::TypeExpr::Name { name, .. } = te
-            && let Some(prim) = crate::types::resolve::primitive(name)
-        {
-            return prim;
-        }
-        let mut slot = alias_map.borrow_mut();
-        let aliases = slot.get_or_insert_with(|| ctx.scope.type_aliases());
-        let cx = crate::types::resolve::ResolveCtx {
-            params: &[],
-            type_aliases: aliases,
-            generic_aliases: &ctx.generic_type_aliases,
-        };
-        crate::types::resolve::resolve_type(te, &cx, &mut Vec::new())
-    };
+    let resolve = super::resolve::quiet_resolver(ctx, &decl.range.file);
     let mut env: ScanLocals = crate::collections::HashMap::default();
     for p in &decl.inputs {
         env.insert(p.name.clone(), resolve(&p.typ));
@@ -586,7 +665,17 @@ fn scan_receiver_type(ctx: &TypeCheckCtx, locals: &ScanLocals, e: &Expr) -> Opti
 ///   site is flagged. The residual is a container reached only through a field
 ///   chain rooted at a parameter record, or an untracked `let` alias (see
 ///   `build_scan_locals`).
+///
+/// Scanning another mod's body resolves its names from here, which is no use of
+/// the body being checked, so the storage log (WS091) does not see it.
 pub(super) fn mod_is_exec_requiring(ctx: &mut TypeCheckCtx, name: &str) -> bool {
+    ctx.scope.pause_storage_log();
+    let requires = exec_requiring_scan(ctx, name);
+    ctx.scope.resume_storage_log();
+    requires
+}
+
+fn exec_requiring_scan(ctx: &mut TypeCheckCtx, name: &str) -> bool {
     if let Some(&cached) = ctx.exec_requiring_memo.get(name) {
         return cached;
     }
@@ -821,8 +910,8 @@ fn expr_has_direct_exec(
                 match callee.as_ref() {
                     // A builtin whose CallSpec is exec-form, called without an
                     // `exec =` override (mirrors the builtin WS007 below).
-                    Expr::Ident { name, .. } => {
-                        if let Some(c) = find_call(name) {
+                    Expr::Ident { name, range } => {
+                        if let Some(c) = find_call(name).filter(|_| !ctx.calls_user_mod(name, &range.file)) {
                             if c.exec && !call_has_exec_arg(args) {
                                 direct = true;
                             }
@@ -1001,6 +1090,22 @@ enum VariantResolution {
     Resolved(Type, crate::typecheck::enums::VariantDef, Vec<crate::ast::TypeParam>),
 }
 
+/// The enum name an expression path's head writes: `Dir` in `Dir.N`, and for
+/// the head `c.Dir` of `c.Dir.N`, where `c` is an `import * as` namespace
+/// whose module declares enum `Dir`, that enum's own name (see
+/// `EnumRegistry::namespaced`).
+pub(super) fn enum_head<'e>(ctx: &TypeCheckCtx, head: &'e Expr) -> Option<&'e str> {
+    match head {
+        Expr::Ident { name, .. } => Some(name),
+        Expr::FieldAccess { obj, field, .. } => {
+            let Expr::Ident { name: ns, range } = obj.as_ref() else { return None };
+            let namespace = ctx.scope.binding_frame(ns).is_some_and(|(_, s)| s.kind == SymbolKind::Namespace);
+            (namespace && ctx.enum_defs.namespaced(&range.file, ns, field).is_some()).then_some(field.as_str())
+        }
+        _ => None,
+    }
+}
+
 /// Resolve `enum_name . variant` for a construction site. See
 /// [`VariantResolution`]. `range` is where `WS060` points if the variant is
 /// unknown.
@@ -1027,7 +1132,7 @@ fn resolve_variant_for_construction(
     // Resolve registry membership + the (owned) matched variant and type params
     // in one borrow so the immutable `ctx.enum_defs` borrow ends before any
     // `ctx.emit`.
-    let (is_enum, type_params, variant_def) = match ctx.enum_defs.get(enum_name) {
+    let (is_enum, type_params, variant_def) = match ctx.enum_defs.expression_path(enum_name) {
         Some(def) => (
             true,
             def.type_params.clone(),
@@ -1044,6 +1149,17 @@ fn resolve_variant_for_construction(
         name: enum_name.to_string(),
         args: vec![Type::Any; type_params.len()],
     };
+    // A library names the enums it declares or imports, as it names aliases.
+    if !super::resolve::enum_visible_in(ctx, enum_name, &range.file) {
+        let message = hidden_enum_message(ctx, enum_name, range).unwrap_or_else(|| {
+            format!(
+                "unknown type '{enum_name}': this file neither declares it nor imports it (the enum of \
+                 that name belongs to a file importing this one)"
+            )
+        });
+        ctx.emit("WS002", message, range.clone());
+        return VariantResolution::UnknownVariant(enum_ty);
+    }
     match variant_def {
         Some(vdef) => VariantResolution::Resolved(enum_ty, vdef, type_params),
         None => {
@@ -1078,7 +1194,7 @@ fn resolve_bare_variant_enum(ctx: &TypeCheckCtx, name: &str) -> Option<String> {
     crate::typecheck::enums::resolve_bare_variant_enum(&ctx.enum_defs, name, |n| {
         ctx.scope.lookup(n).is_some()
     })
-    .map(str::to_string)
+    .map(|def| def.name.clone())
 }
 
 /// The type of a BARE reference to `variant` (no call syntax) once it has
@@ -1160,12 +1276,13 @@ fn try_construct_variant_positional(
             // enum's payload keeps its type parameters as `Type::Param`, so
             // `check_args`'s own `type_has_param` guard skips coercing those
             // args (their types drive the parameter solve below instead).
+            let bound = expected_enum_args(expected, enum_name, &type_params);
             let params: Vec<Param> = payload_types
                 .iter()
                 .enumerate()
                 .map(|(i, ty)| Param {
                     name: i.to_string(),
-                    ty: resolve_payload_param_type(ctx, ty, &type_params),
+                    ty: instantiated(resolve_payload_param_type(ctx, ty, &type_params), &bound),
                     optional: false,
                     kind: ParamKind::Wire,
                 })
@@ -1193,8 +1310,13 @@ fn try_construct_variant_positional(
                 config_gate: None,
             };
             check_args(ctx, &sig, args, 0, false, true, call_range);
+            args_fill_float_params(ctx, &sig.params, args);
             if type_params.is_empty() {
                 return Some(enum_ty);
+            }
+            if let Some(args) = bound {
+                let args = args.into_iter().map(|(_, t)| t).collect();
+                return Some(Type::Enum { name: enum_name.to_string(), args });
             }
             // The caller's preamble inferred every positional arg into
             // `positional_arg_types`; solve the enum's type params against
@@ -1213,6 +1335,38 @@ fn try_construct_variant_positional(
                 args: solved_args,
             })
         }
+    }
+}
+
+/// The type arguments of the generic enum `enum_name` when `expected` is
+/// that enum with every argument known: a construction where it is expected
+/// is built at that type, so each payload value is checked against its
+/// instantiated type (an integer given for a `float` payload is that float).
+fn expected_enum_args(
+    expected: Option<&Type>,
+    enum_name: &str,
+    type_params: &[crate::ast::TypeParam],
+) -> Option<Vec<(String, Type)>> {
+    match expected {
+        Some(Type::Enum { name, args })
+            if name == enum_name
+                && !type_params.is_empty()
+                && args.len() == type_params.len()
+                && args.iter().all(|a| !matches!(a, Type::Any) && !super::type_has_param(a)) =>
+        {
+            Some(type_params.iter().map(|p| p.name.clone()).zip(args.iter().cloned()).collect())
+        }
+        _ => None,
+    }
+}
+
+/// `t`, a payload type resolved at a construction site, with the enum's type
+/// parameters replaced by `bound` when the construction is built at a known
+/// instantiation.
+fn instantiated(t: Type, bound: &Option<Vec<(String, Type)>>) -> Type {
+    match bound {
+        Some(args) => crate::types::mono::substitute(&t, &args.iter().cloned().collect()),
+        None => t,
     }
 }
 
@@ -1534,7 +1688,7 @@ pub(super) fn check_match_pattern(
             // Classified under the `enum_defs` borrow because the diagnostics
             // below need `ctx` mutably.
             let bare = match matched {
-                Type::Enum { name: en, .. } => ctx.enum_defs.get(en).map(|edef| {
+                Type::Enum { name: en, .. } => ctx.enum_defs.of(matched).map(|edef| {
                     let kind = match edef.variants.iter().find(|v| &v.name == name) {
                         Some(v) if matches!(v.payload, Payload::Unit) => BarePattern::UnitVariant,
                         Some(_) => BarePattern::PayloadVariant,
@@ -1581,6 +1735,14 @@ pub(super) fn check_match_pattern(
                 ctx.readonly_captures
                     .insert((range.file.clone(), range.start.offset));
             }
+            // A mutable capture names its payload slot, so it is typed like a
+            // var: the storage wrapping what the slot holds. Unwrapped, a `*T`
+            // payload read as a `T` place instead of the ref the slot holds.
+            let ty = if mutable && matches!(matched, Type::Ref(_)) {
+                Type::Ref(Box::new(matched.clone()))
+            } else {
+                matched.clone()
+            };
             ctx.scope.declare(
                 name,
                 SymbolInfo {
@@ -1590,7 +1752,7 @@ pub(super) fn check_match_pattern(
                         SymbolKind::LetBinding
                     },
                     name: name.clone(),
-                    ty: matched.clone(),
+                    ty,
                     decl_range: range.clone(),
                     signature: None,
                     event_data: None,
@@ -1606,7 +1768,11 @@ pub(super) fn check_match_pattern(
             // spelling construction and `is` both require; naming a DIFFERENT
             // enum is the mistake it exists to catch, since the variant name
             // alone can belong to several enums.
-            if let Some(q) = enum_path
+            let written = enum_path.as_deref().map(|q| match q.split_once('.') {
+                Some((ns, name)) if ctx.enum_defs.namespaced(&range.file, ns, name).is_some() => name,
+                _ => q,
+            });
+            if let Some(q) = written
                 && q != en
                 && !q.is_empty()
             {
@@ -1618,7 +1784,7 @@ pub(super) fn check_match_pattern(
                     range.clone(),
                 );
             }
-            let edef = match ctx.enum_defs.get(en) {
+            let edef = match ctx.enum_defs.of(matched) {
                 Some(d) => d.clone(),
                 None => {
                     bind_sub_as_any(ctx, sub, mutable);
@@ -1688,6 +1854,46 @@ pub(super) fn check_match_pattern(
 /// Type an arm body, returning its value type for the arm-result join. An
 /// expression arm contributes its inferred type; a block arm runs for its
 /// side effects (statement errors surface) but contributes no value type.
+/// The instantiation an `if`/`match` value checked against an enum type gives
+/// each of its branches: every branch is a value of that type, so a generic
+/// enum constructed in one (`Opt.Some(7)`, `Opt.None`) takes its type
+/// arguments from it, as the same construction does checked against the type
+/// directly.
+fn enum_branch_hint(expected: Option<&Type>) -> Option<Type> {
+    expected.map(unwrap_ref).filter(|t| matches!(t, Type::Enum { .. }))
+}
+
+/// `infer` with `hint` as the expected type of `e`'s own node (see
+/// [`enum_branch_hint`]).
+fn infer_hinted(ctx: &mut TypeCheckCtx, e: &Expr, hint: Option<&Type>) -> Type {
+    let prev = std::mem::replace(&mut ctx.expected_ty, hint.cloned());
+    let t = infer(ctx, e);
+    ctx.expected_ty = prev;
+    t
+}
+
+/// The enum type the parameter at `index` of the user `mod`/`chip` `callee`
+/// names, when the argument `arg` for it is an `if` or `match` value whose
+/// branches build that enum (see [`enum_branch_hint`]). A parameter typed by
+/// one of the callee's own type parameters gives none: what it binds is
+/// inferred from the arguments.
+fn branch_arg_hint(ctx: &mut TypeCheckCtx, callee: &Expr, index: usize, arg: &Expr) -> Option<Type> {
+    if !matches!(arg, Expr::IfExpr { .. } | Expr::MatchExpr { .. }) {
+        return None;
+    }
+    let Expr::Ident { name, range } = callee else { return None };
+    if !ctx.calls_user_mod(name, &range.file) {
+        return None;
+    }
+    let decl = ctx.resolve_mod(name)?;
+    let param = decl.inputs.get(index)?;
+    if !decl.type_params.is_empty() {
+        return None;
+    }
+    let t = resolve_type_expr(ctx, &param.typ);
+    enum_branch_hint(Some(&t)).filter(|t| !super::resolve::type_has_param(t))
+}
+
 fn infer_match_body(ctx: &mut TypeCheckCtx, body: &MatchBody) -> Option<Type> {
     match body {
         MatchBody::Expr(expr) => Some(infer(ctx, expr)),
@@ -1703,64 +1909,31 @@ fn infer_match_body(ctx: &mut TypeCheckCtx, body: &MatchBody) -> Option<Type> {
 /// Whether the record/tuple projection `e` (`r.f`, `r.a.b`, `t.0`) reads a
 /// PLACE, so a `*T` field there names storage and reads as its target: a
 /// field of a variable or parameter (a `*Record` parameter's distributed
-/// fields, a record parameter's ref field bound to the caller's var), of a
-/// record `let` that bundles vars (`{ cpsr, skip }`), or of a user mod's
-/// record result. A field that arrived on a wire (a map or array read, a
-/// builtin's result, event data, a literal's `p: &a`) is a record VALUE whose
-/// `*T` field is the ref itself.
+/// fields, a record parameter's ref field bound to the caller's), or of a
+/// record `let` that bundles vars (`{ cpsr, skip }`), through any projection
+/// or namespace. A field that arrived on a wire (a map or array read, a call's
+/// result, event data, a literal's `p: &a` or `p: h` with `h: *int`) is a
+/// record VALUE whose `*T` field is the ref itself. Classified by
+/// `let_binding::ref_values_at`, which lowering's record bindings follow.
 pub(crate) fn projection_is_place(ctx: &TypeCheckCtx, e: &Expr) -> bool {
     let (root, segs) = flatten_access(e);
-    match root {
-        Expr::Ident { name, .. } => match ctx.scope.lookup(name) {
-            Some(s) => match s.kind {
-                SymbolKind::Var | SymbolKind::Param | SymbolKind::Namespace => true,
-                SymbolKind::LetBinding => !ctx
-                    .let_ref_values
-                    .get(&(s.decl_range.file.clone(), s.decl_range.start.offset))
-                    .is_some_and(|v| v.covers(&segs)),
-                _ => false,
-            },
-            None => true,
-        },
-        Expr::Call { callee, .. } => call_returns_places(ctx, callee),
-        _ => false,
-    }
+    !matches!(
+        super::let_binding::ref_values_at(ctx, root, &segs),
+        Some(super::let_binding::LetRefValues::All)
+    )
 }
 
-/// Whether `callee` names a user `mod`/`chip` (plain, namespaced or a
-/// `self`-receiver) returning ONE record, which may bundle the caller's
-/// storage (`return { cpsr, skip }`), as opposed to a builtin or container
-/// method, or a multi-output call, whose outputs are each on a wire.
-pub(crate) fn call_returns_places(ctx: &TypeCheckCtx, callee: &Expr) -> bool {
-    let user = |name: &str| {
-        ctx.scope.lookup(name).is_some_and(|s| {
-            matches!(s.kind, SymbolKind::Fn | SymbolKind::Chip)
-                && s.signature.as_ref().is_none_or(|sig| sig.outputs.len() <= 1)
-        })
-    };
-    match callee {
-        Expr::Ident { name, .. } => user(name),
-        Expr::FieldAccess { obj, field, .. } => {
-            matches!(obj.as_ref(), Expr::Ident { name, .. }
-                if ctx.scope.lookup(name).map(|s| s.kind) == Some(SymbolKind::Namespace))
-                || user(field)
-        }
-        _ => false,
-    }
-}
-
-/// Whether `e` names storage a `*T` can alias: a var, array or map, a `*T`
-/// parameter, an array `in`, or a field chain over one that reads a place.
-pub(crate) fn names_storage(ctx: &TypeCheckCtx, e: &Expr) -> bool {
+/// Whether `e` names storage a `*T` record field can hold as a place: a var, a
+/// `*T` parameter, or a projection or `let` that bundles vars.
+fn names_a_place(ctx: &TypeCheckCtx, e: &Expr) -> bool {
     match e {
-        Expr::Ident { name, .. } => ctx.scope.lookup(name).is_some_and(|s| {
-            matches!(s.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map)
-                || (s.kind == SymbolKind::Param && matches!(&s.ty, Type::Ref(_)))
-                || (s.kind == SymbolKind::In && matches!(&s.ty, Type::Array(_)))
+        Expr::Ident { name, .. } => ctx.scope.lookup(name).is_some_and(|sym| match sym.kind {
+            SymbolKind::Var => true,
+            SymbolKind::Param => matches!(sym.ty, Type::Ref(_)),
+            SymbolKind::LetBinding => projection_is_place(ctx, e),
+            _ => false,
         }),
-        Expr::FieldAccess { .. } | Expr::TuplePick { .. } => {
-            matches!(flatten_access(e).0, Expr::Ident { .. }) && projection_is_place(ctx, e)
-        }
+        Expr::FieldAccess { .. } => super::sig::field_names_storage(ctx, e),
         _ => false,
     }
 }
@@ -1805,7 +1978,8 @@ pub(super) fn infer_variant_test(
     path: &Expr,
     range: &SourceRange,
 ) -> Type {
-    let value_ty = unwrap_ref(&infer(ctx, value));
+    // A gate read whose first output is an enum tests that enum.
+    let value_ty = first_output(&unwrap_ref(&infer(ctx, value)));
     // Infers the path first, so an unknown variant reports WS060 from the
     // shared resolution rather than the weaker "not a variant" below.
     let path_ty = infer(ctx, path);
@@ -1823,10 +1997,9 @@ pub(super) fn infer_variant_test(
     // A variant path is a `.`-chain whose last segment names a variant of the
     // enum it resolved to (`Shape.Circle`, `ns.Shape.Circle`).
     let names_a_variant = match (path, &path_ty) {
-        (Expr::FieldAccess { field, .. }, Type::Enum { name, .. }) => ctx
-            .enum_defs
-            .get(name)
-            .is_some_and(|def| def.variants.iter().any(|v| &v.name == field)),
+        (Expr::FieldAccess { field, .. }, t @ Type::Enum { .. }) => {
+            ctx.enum_defs.of(t).is_some_and(|def| def.variants.iter().any(|v| &v.name == field))
+        }
         _ => false,
     };
     if !names_a_variant {
@@ -1891,7 +2064,7 @@ pub(super) fn infer_unsafe_access(ctx: &mut TypeCheckCtx, inner: &Expr, range: &
         );
         return Type::Any;
     };
-    let Some(edef) = ctx.enum_defs.get(en).cloned() else {
+    let Some(edef) = ctx.enum_defs.of(&base_ty).cloned() else {
         return Type::Any;
     };
     let Some(vdef) = edef.variants.iter().find(|v| &v.name == variant).cloned() else {
@@ -2006,8 +2179,8 @@ fn ref_operator_type(
     if matches!(lt, Type::Any) || matches!(rt, Type::Any) {
         return None;
     }
-    let plain = |k: Option<crate::ir::RefKind>, t: &Type| k.is_none() && !matches!(t, Type::Opaque);
-    if plain(lk, lt) || plain(rk, rt) {
+    let plain = |t: &Type| t.ref_kind().is_none() && !matches!(t, Type::Opaque);
+    if plain(lt) || plain(rt) {
         ctx.emit(
             "WS084",
             format!(
@@ -2074,7 +2247,9 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             for p in parts {
                 if let InterpPart::Expr(expr) = p {
                     let t = unwrap_ref(&infer(ctx, expr));
-                    coerce_or_emit(ctx, &t, &Type::String, expr.range());
+                    if !record_read_as_one_value(ctx, expr, &t) {
+                        coerce_or_emit(ctx, &t, &Type::String, expr.range());
+                    }
                 }
             }
             Type::String
@@ -2208,6 +2383,40 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 );
                 return Type::Any;
             };
+            // A library names the top-level values it declares or imports, as
+            // it names types and mods: one only a file importing it declares
+            // is none of its own.
+            if matches!(
+                sym.kind,
+                SymbolKind::LetBinding
+                    | SymbolKind::Var
+                    | SymbolKind::Array
+                    | SymbolKind::Map
+                    | SymbolKind::Buffer
+                    | SymbolKind::In
+                    | SymbolKind::Out
+            ) && !range.file.is_empty()
+                && !sym.decl_range.file.is_empty()
+                && sym.decl_range.file != range.file
+                && ctx.scope.binding_frame(name).is_some_and(|(i, _)| i == 0)
+                && ctx.imports.imports_file(&sym.decl_range.file, &range.file)
+                && !ctx.top_names.file_sees(&ctx.imports, &range.file, &sym.decl_range.file, name)
+            {
+                let base = |f: &str| f.rsplit(['/', '\\']).next().unwrap_or(f).to_string();
+                ctx.emit(
+                    "WS002",
+                    format!(
+                        "unknown identifier '{name}': `{}` neither declares nor imports it; `{}`, which imports \
+                         it, does, and a library names the values it declares or imports, as it names types and mods",
+                        base(&range.file),
+                        base(&sym.decl_range.file)
+                    ),
+                    range.clone(),
+                );
+                return Type::Any;
+            }
+            #[cfg(test)]
+            ctx.ident_decls.push((range.clone(), sym.decl_range.clone(), false));
             match sym.kind {
                 SymbolKind::Event => Type::Exec,
                 SymbolKind::Fn | SymbolKind::Chip => Type::Any,
@@ -2221,6 +2430,31 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 // reads as the field's value, like a `*T` parameter does.
                 SymbolKind::Param if matches!(sym.ty, Type::Ref(_)) => unwrap_ref(&sym.ty),
                 SymbolKind::Array => sym.ty.clone(),
+                // A `type` name read as a value: `let c = Box { v: n }` parses
+                // as `let c = Box` and a separate `{ v: n }`. An enum's name
+                // reaches its variants and stays a value.
+                SymbolKind::Type if !matches!(sym.ty, Type::Enum { .. }) => {
+                    let generic_record = ctx
+                        .generic_type_aliases
+                        .get(name.as_str())
+                        .is_some_and(|a| matches!(a.body, crate::ast::TypeExpr::Record { .. }));
+                    let message = if matches!(sym.ty, Type::Record(_)) || generic_record {
+                        format!(
+                            "`{name}` is a type, not a value, and a record type has no \
+                             constructor call: `{name} {{ .. }}` reads as `{name}` and a separate \
+                             `{{ .. }}`. Give the record literal the type instead: \
+                             `let x: {name} = {{ .. }}`"
+                        )
+                    } else {
+                        format!(
+                            "`{name}` is a type (another name for `{}`), not a value. Write a \
+                             value and give it the type: `let x: {name} = ..`",
+                            crate::analysis::types::type_str(&sym.ty)
+                        )
+                    };
+                    ctx.emit("WS100", message, range.clone());
+                    Type::Any
+                }
                 _ => sym.ty.clone(),
             }
         }
@@ -2229,7 +2463,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 ctx.emit(
                     "WS006",
                     format!(
-                        "'*{}' deref requires exec context — use .Value for pure reads",
+                        "'*{}' deref requires exec context; use .Value for pure reads",
                         target_name(operand).unwrap_or("<expr>".into())
                     ),
                     range.clone(),
@@ -2267,11 +2501,12 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             if !matches!(t, Type::Ref(_)) && !super::is_ref_able(ctx, operand) {
                 ctx.emit(
                     "WS008",
-                    "cannot take `&` of a non-reference — `&`/`ref` needs a variable, ref parameter, \
-                     or a record field of one, not a temporary value or an element of a value \
-                     container",
+                    "cannot take `&` of this value: `&` needs a variable, a ref parameter or a \
+                     record field of one, and a temporary value or an element of a value \
+                     container has no ref",
                     range.clone(),
                 );
+                return Type::Any;
             }
             // A ref to a ref has no storage in the game.
             if matches!(t, Type::Ref(_)) {
@@ -2300,8 +2535,12 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             }
             // An array/map is already a reference, so `&arr` is a no-op — never
             // `*T[]` (which is redundant and drops writes).
+            // A record has no single ref: `&r` is the ref of each field, the
+            // form a `*Record` parameter or output already takes.
             if t.is_reference_backed() {
                 t
+            } else if matches!(t, Type::Record(_) | Type::Outputs(_) | Type::Tuple(_)) {
+                crate::types::resolve::distribute_ref(t)
             } else {
                 Type::Ref(Box::new(t))
             }
@@ -2320,6 +2559,9 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 );
                 return Type::Any;
             }
+            if record_read_as_one_value(ctx, operand, &operand_t) {
+                return Type::Any;
+            }
             let unwrapped = op_operand_type(&operand_t);
             // `resolve_op` maps unary `-` to the table's `-u` key internally.
             let rule = resolve_op(op.as_str(), &[unwrapped]);
@@ -2329,7 +2571,26 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     (range.file.clone(), range.start.offset, range.end.offset),
                     r.clone(),
                 );
+                // The one integer whose negation no `int` holds.
+                if op == crate::catalog::operators::op::NEG
+                    && r.operands.first() == Some(&Type::Int)
+                    && int_constant_value(ctx, operand) == Some(i64::MIN)
+                {
+                    ctx.emit(
+                        "WS028",
+                        format!(
+                            "this negates {}, which makes 9223372036854775808, and no `int` holds it: an `int` \
+                             holds whole numbers from {} to {}",
+                            i64::MIN,
+                            i64::MIN,
+                            i64::MAX
+                        ),
+                        range.clone(),
+                    );
+                }
                 result
+            } else if ctx.is_error_typed(operand) {
+                Type::Any
             } else {
                 let code = if matches!(op.as_str(), "&" | "|" | "^" | "~" | "<<" | ">>") {
                     "WS011"
@@ -2338,7 +2599,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 };
                 ctx.emit(
                     code,
-                    format!("no overload for '{op}' on {:?}", operand_t),
+                    format!("no overload for '{op}' on {}", crate::analysis::types::type_str(&operand_t)),
                     range.clone(),
                 );
                 Type::Any
@@ -2381,6 +2642,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 );
                 Type::Any
             } else {
+                // `|` so both operands report.
+                if record_read_as_one_value(ctx, left, &lt) | record_read_as_one_value(ctx, right, &rt) {
+                    return Type::Any;
+                }
                 let lt_u = op_operand_type(&lt);
                 let rt_u = op_operand_type(&rt);
                 let rule = resolve_op(op, &[lt_u, rt_u]);
@@ -2392,6 +2657,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     );
                     result
                 } else {
+                    // An operand whose type is an error already reported has
+                    // no overload to report.
+                    if ctx.is_error_typed(left) || ctx.is_error_typed(right) {
+                        return Type::Any;
+                    }
                     let code = if matches!(op.as_str(), "&" | "|" | "^" | "<<" | ">>") {
                         "WS011"
                     } else {
@@ -2399,7 +2669,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     };
                     ctx.emit(
                         code,
-                        format!("no overload for '{op}' on {:?}, {:?}", lt, rt),
+                        format!(
+                            "no overload for '{op}' on {}, {}",
+                            crate::analysis::types::type_str(&lt),
+                            crate::analysis::types::type_str(&rt)
+                        ),
                         range.clone(),
                     );
                     Type::Any
@@ -2407,6 +2681,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             }
         }
         Expr::FieldAccess { obj, field, range } => {
+            ctx.reserve_check(field, range);
             // A namespace that TRAVELED in privately (a pulled-in module's own
             // `import * as`) is not nameable from this file — reading through it
             // is a missing import here, reported like any unknown base rather
@@ -2417,7 +2692,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 ctx.emit(
                     "WS002",
                     format!(
-                        "unknown identifier '{ns_name}' — no namespace, variable, or \
+                        "unknown identifier '{ns_name}': no namespace, variable, or \
                          value named '{ns_name}' is in scope (is an import missing?)"
                     ),
                     ns_range.clone(),
@@ -2475,7 +2750,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // types as the enum regardless of payload shape; an unknown
             // variant is WS060 (recover as the enum type); a non-enum /
             // shadowed / generic name falls through to `infer(ctx, obj)`.
-            if let Expr::Ident { name: enum_name, .. } = obj.as_ref() {
+            if let Some(enum_name) = enum_head(ctx, obj) {
                 match resolve_variant_for_construction(ctx, enum_name, field, range) {
                     VariantResolution::NotConstruction => {}
                     VariantResolution::UnknownVariant(_) => return Type::Any,
@@ -2523,11 +2798,13 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             }
             // `cN.prev` where `cN` was auto-dereffed in exec context:
             // the obj's type is the inner T, not Ref(T). Look up the
-            // declared var type directly.
+            // declared var type directly. A record with a field of that name
+            // reads the field.
             if (field == "Value" || field == "prev")
                 && let Expr::Ident { name, .. } = obj.as_ref()
                 && let Some(sym) = ctx.scope.lookup(name)
                 && let Type::Ref(inner) = &sym.ty
+                && !inner.fields().is_some_and(|fs| fs.iter().any(|(n, _)| n == field))
             {
                 return inner.as_ref().clone();
             }
@@ -2535,7 +2812,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // with its own `Value` field (a multi-output gate result such as
             // `a.pop()` → `{ Value, IsEmpty }`) must project that field instead,
             // or `.Value` yields the whole record and every use of it mistypes.
-            if (field == "value" || field == "Value") && !matches!(ot, Type::Record(_)) {
+            if (field == "value" || field == "Value") && !matches!(ot, Type::Record(_) | Type::Outputs(_)) {
                 return unwrap_ref(&ot);
             }
             // `.exec` names the exec output of an event/exec-producing expression.
@@ -2545,7 +2822,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // exec value it is the identity.
             if field == "exec"
                 && (matches!(ot, Type::Exec)
-                    || matches!(&ot, Type::Record(fs) if matches!(fs.first(), Some((_, Type::Exec)))))
+                    || matches!(
+                        &ot,
+                        Type::Record(fs) | Type::Outputs(fs) if matches!(fs.first(), Some((_, Type::Exec)))
+                    ))
             {
                 return Type::Exec;
             }
@@ -2557,7 +2837,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // is projected below and keeps whatever type it declares.
             if field == "exec"
                 && matches!(obj.as_ref(), Expr::Call { .. })
-                && !matches!(&ot, Type::Record(fs) if fs.iter().any(|(n, _)| n == "exec"))
+                && !matches!(&ot, Type::Record(fs) | Type::Outputs(fs) if fs.iter().any(|(n, _)| n == "exec"))
             {
                 return Type::Exec;
             }
@@ -2572,7 +2852,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 ctx.record_container_kind(obj, &ot);
                 return column;
             }
-            if let Type::Record(fields) = &ot {
+            if let Type::Record(fields) | Type::Outputs(fields) = &ot {
                 if let Some((_, t)) = fields.iter().find(|(k, _)| k == field) {
                     // A ref field of a record PARAMETER (`*T` on a record
                     // distributes onto its fields) is a place: it reads its
@@ -2607,7 +2887,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // keyed by variant, so the surface name reaches nothing; without
             // this the read fell to `any` and lowered to a placeholder.
             if let Type::Enum { name: en, .. } = &ot
-                && let Some(edef) = ctx.enum_defs.get(en)
+                && let Some(edef) = ctx.enum_defs.of(&ot)
                 && let Some(v) = edef
                     .variants
                     .iter()
@@ -2622,7 +2902,9 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 ctx.emit(
                     "WS010",
                     format!(
-                        "`{field}` is payload of variant `{v}`, not a field of enum `{en}`. Read it through a destructure (`if let {v} {{ {field} }} = <value> {{ ... }}`, or a `match` arm), or `unsafe <value>.{v}.{field}` to read the slot without testing the tag"
+                        "`{field}` is payload of variant `{v}`, not a field of enum `{en}`. Read it through a \
+                         destructure (`if let {v} {{ {field} }} = <value> {{ ... }}`, or a `match` arm), or \
+                         `unsafe <value>.{v}.{field}` to read the slot without testing the tag"
                     ),
                     range.clone(),
                 );
@@ -2693,6 +2975,18 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     );
                     Type::Any
                 }
+                // A call's one enum output, projected by its name (`f(c).r`
+                // on `-> (r: Hue)`), is that output, as for a scalar.
+                (Type::Enum { .. }, _)
+                    if matches!(obj.as_ref(), Expr::Call { callee, .. }
+                        if matches!(callee.as_ref(), Expr::Ident { name, range }
+                            if ctx.calls_user_mod(name, &range.file)
+                                && ctx
+                                    .resolve_mod(name)
+                                    .is_some_and(|d| d.outputs.len() == 1 && d.outputs[0].name == *field))) =>
+                {
+                    unwrap_ref(&ot)
+                }
                 _ => Type::Any,
             }
         }
@@ -2732,6 +3026,35 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 // string. The Substring gate behind it is pure, so this carries
                 // no exec-context requirement the way a container read does.
                 Type::String => Type::String,
+                Type::Record(_) | Type::Outputs(_) | Type::Tuple(_) | Type::Enum { .. } => {
+                    let name = target_name(obj);
+                    let what = match &name {
+                        Some(name) => format!("'{name}'"),
+                        None => "this value".to_string(),
+                    };
+                    let base = name.unwrap_or_default();
+                    // A tuple is a record whose fields are its positions.
+                    let tuple = matches!(&ot, Type::Tuple(_))
+                        || matches!(&ot, Type::Record(fields)
+                            if !fields.is_empty() && fields.iter().all(|(n, _)| n.parse::<usize>().is_ok()));
+                    let fix = match &ot {
+                        _ if tuple => format!("read an element by its position (`{base}.0`)"),
+                        Type::Record(fields) | Type::Outputs(fields) => match fields.first() {
+                            Some((field, _)) => format!("read a field by its name (`{base}.{field}`)"),
+                            None => "read a field by its name".to_string(),
+                        },
+                        _ =>"read it with `match`, `is` or `.Discriminant`".to_string(),
+                    };
+                    ctx.emit(
+                        "WS044",
+                        format!(
+                            "{what} is {}, not an array, map or string, so it can't be indexed: {fix}",
+                            crate::analysis::types::type_str(&ot),
+                        ),
+                        range.clone(),
+                    );
+                    Type::Any
+                }
                 _ => Type::Any,
             }
         }
@@ -2748,7 +3071,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     );
                     Type::Any
                 }),
-                Type::Record(fields) => fields
+                Type::Record(fields) | Type::Outputs(fields) => fields
                     .get(*index)
                     .map(|(_, t)| read(t))
                     .unwrap_or(Type::Any),
@@ -2764,19 +3087,22 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
         } => {
             ctx.if_contexts
                 .insert((range.file.clone(), range.start.offset), false);
-            infer(ctx, cond);
-            let tt = infer(ctx, then_branch);
-            let et = infer(ctx, else_branch);
-            // A reference (a var ref, or a `zone`/`teleport` component ref) can't
-            // flow through the Select gate an if-expr compiles to — Select routes
-            // a value, not a reference. Flag whichever branch is a reference.
+            let ct = infer(ctx, cond);
+            record_read_as_one_value(ctx, cond, &ct);
+            let branch = enum_branch_hint(expected.as_ref());
+            let tt = infer_hinted(ctx, then_branch, branch.as_ref());
+            let et = infer_hinted(ctx, else_branch, branch.as_ref());
+            // A component reference (`zone`, `teleport`) or a prefab reference
+            // can't flow through the Select gate an if-expr compiles to: it is
+            // wired or rerouted, never a value. A var ref or a brick is a value
+            // and may be selected. Flag whichever branch is such a reference.
             for (br, bty) in [(then_branch, &tt), (else_branch, &et)] {
                 if matches!(bty, Type::Zone | Type::Teleport | Type::PrefabRef) {
                     ctx.emit(
                         "WS031",
                         format!(
-                            "'{}' is a reference-only value and can't be used in an if-then-else \
-                             — a Select routes a value, not a reference; wire or reroute it \
+                            "'{}' is a reference-only value and can't be used in an if-then-else: \
+                             a Select routes a value, not a reference; wire or reroute it \
                              instead",
                             crate::analysis::types::type_str(bty),
                         ),
@@ -2785,7 +3111,12 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 }
             }
             match widening_join(&tt, &et) {
-                Some(j) => j,
+                Some(j) => {
+                    // Each branch gives a value of the joined type.
+                    int_constants_in_slot(ctx, then_branch, &j);
+                    int_constants_in_slot(ctx, else_branch, &j);
+                    j
+                }
                 None => {
                     ctx.emit(
                         "WS003",
@@ -2810,7 +3141,39 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             t
         }
         Expr::MatchExpr { scrutinee, arms, range } => {
-            let scrut_ty = unwrap_ref(&infer(ctx, scrutinee));
+            let as_statement = std::mem::take(&mut ctx.statement_match);
+            // A value `match` reads its value after the arms rejoin, so a block
+            // arm, which has none, must leave through a `return`.
+            if !as_statement && ctx.exec_mode() != ExecMode::Exec {
+                // Outside an exec chain the arms are a pure Select, so a block
+                // arm's statements, its `return` included, never run.
+                if let Some(arm) = arms.iter().find(|a| matches!(a.body, MatchBody::Block(_))) {
+                    ctx.emit(
+                        "WS095",
+                        "this `match` is used as a value outside an exec context, so this block \
+                         arm never runs: its statements and its `return` need a handler's exec \
+                         chain. Write the arm as a value (`A => expr`), or move the `match` into an \
+                         `on` handler",
+                        arm.range.clone(),
+                    );
+                }
+            } else if !as_statement {
+                for arm in arms {
+                    if let MatchBody::Block(b) = &arm.body
+                        && !super::stmt::block_returns(b)
+                    {
+                        ctx.emit(
+                            "WS095",
+                            "this `match` is used as a value, but this arm is a block, which has no \
+                             value: a block arm of a value `match` must end in `return`. Write the arm \
+                             as a value (`A => expr`), or make the `match` a statement whose arms \
+                             assign a `var`",
+                            arm.range.clone(),
+                        );
+                    }
+                }
+            }
+            let scrut_ty = infer_scrutinee(ctx, scrutinee);
             if !matches!(scrut_ty, Type::Enum { .. }) {
                 ctx.emit(
                     "WS066",
@@ -2832,11 +3195,14 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             }
 
             let mutable = crate::typecheck::stmt::scrutinee_is_mutable(ctx, scrutinee);
+            let branch = enum_branch_hint(expected.as_ref());
             let mut tys: Vec<Type> = Vec::new();
             for arm in arms {
                 ctx.push_scope();
                 check_match_pattern(ctx, &arm.pattern, &scrut_ty, mutable);
-                if let Some(t) = infer_match_body(ctx, &arm.body) {
+                if let MatchBody::Expr(x) = &arm.body {
+                    tys.push(infer_hinted(ctx, x, branch.as_ref()));
+                } else if let Some(t) = infer_match_body(ctx, &arm.body) {
                     tys.push(t);
                 }
                 ctx.pop_scope();
@@ -2857,6 +3223,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     }
                 }
                 if joined {
+                    for arm in arms {
+                        if let MatchBody::Expr(x) = &arm.body {
+                            int_constants_in_slot(ctx, x, &acc);
+                        }
+                    }
                     acc
                 } else {
                     ctx.emit(
@@ -2876,7 +3247,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
 
             let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
             let usefulness =
-                crate::typecheck::patterns::analyze(&ctx.enum_defs, &scrut_ty, &arm_patterns);
+                crate::typecheck::patterns::analyze(ctx.enums(), &scrut_ty, &arm_patterns);
             for witness in &usefulness.missing {
                 ctx.emit(
                     "WS054",
@@ -2924,7 +3295,8 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         Type::Array(inner) => *inner,
                         other => other,
                     },
-                    ArrayElem::Item(_) => t,
+                    // An element is one value: a gate read's first output.
+                    ArrayElem::Item(_) => first_output(&t),
                 };
                 elem = Some(match elem {
                     None => et,
@@ -2955,6 +3327,13 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         }
                     },
                 });
+            }
+            if let Some(elem) = &elem {
+                for el in elements {
+                    if let ArrayElem::Item(v) = el {
+                        int_constants_in_slot(ctx, v, elem);
+                    }
+                }
             }
             Type::Array(Box::new(elem.unwrap_or(Type::Any)))
         }
@@ -3002,7 +3381,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 field: variant,
                 range: fa_range,
             } = path.as_ref()
-                && let Expr::Ident { name: enum_name, .. } = obj.as_ref()
+                && let Some(enum_name) = enum_head(ctx, obj)
             {
                 match resolve_variant_for_construction(ctx, enum_name, variant, fa_range) {
                     VariantResolution::NotConstruction => {}
@@ -3012,6 +3391,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     }
                     VariantResolution::Resolved(enum_ty, vdef, type_params) => {
                         let annotation = expected;
+                        let bound = expected_enum_args(annotation.as_ref(), enum_name, &type_params);
                         let crate::typecheck::enums::Payload::Named(named_types) = &vdef.payload
                         else {
                             ctx.emit(
@@ -3028,7 +3408,9 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         // its arg feeds the type-parameter solve below.
                         let named_ptypes: Vec<(String, Type)> = named_types
                             .iter()
-                            .map(|(n, ty)| (n.clone(), resolve_payload_param_type(ctx, ty, &type_params)))
+                            .map(|(n, ty)| {
+                                (n.clone(), instantiated(resolve_payload_param_type(ctx, ty, &type_params), &bound))
+                            })
                             .collect();
                         let mut seen: Vec<&str> = Vec::new();
                         // Inferred value type per provided field, keyed by name -
@@ -3115,6 +3497,12 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         if type_params.is_empty() {
                             return enum_ty;
                         }
+                        if let Some(args) = bound {
+                            return Type::Enum {
+                                name: enum_name.to_string(),
+                                args: args.into_iter().map(|(_, t)| t).collect(),
+                            };
+                        }
                         let param_types: Vec<Type> =
                             named_ptypes.iter().map(|(_, ty)| ty.clone()).collect();
                         let arg_types: Vec<Type> = named_ptypes
@@ -3136,7 +3524,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                             annotation.as_ref(),
                             range,
                         );
-                        return Type::Enum { name: enum_name.clone(), args };
+                        return Type::Enum { name: enum_name.to_string(), args };
                     }
                 }
             }
@@ -3168,7 +3556,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // can be skipped below — a bare member name (`function = Bounce`)
             // is not a variable and must not be inferred as one.
             let arg_spec: Option<&'static crate::catalog::calls::CallSpec> = match callee.as_ref() {
-                Expr::Ident { name, .. } => find_call(name),
+                Expr::Ident { name, range } => find_call(name).filter(|_| !ctx.calls_user_mod(name, &range.file)),
                 Expr::FieldAccess { field, .. } => {
                     find_call(field).filter(|c| c.receiver.is_some())
                 }
@@ -3219,7 +3607,8 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 }
                 match a {
                     CallArg::Positional(v) => {
-                        let t = infer(ctx, v);
+                        let hint = branch_arg_hint(ctx, callee, pos - 1, v);
+                        let t = infer_hinted(ctx, v, hint.as_ref());
                         positional_arg_types.push(t);
                     }
                     CallArg::Named { value, .. } => {
@@ -3258,9 +3647,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 );
                 return Type::Int;
             }
-            // Resolve callee if it's a plain identifier.
+            // Resolve callee if it's a plain identifier. A user mod or chip
+            // named like a builtin is the one called when the calling file can
+            // name it, as lowering calls it.
             if let Expr::Ident { name, range } = callee.as_ref() {
-                if let Some(c) = find_call(name) {
+                if let Some(c) = find_call(name).filter(|_| !ctx.calls_user_mod(name, &range.file)) {
                     // Explicit type arguments on a builtin are ignored: a
                     // builtin's result type is derived from its arguments (the
                     // masked-generic engine), not pinned by an explicit `<...>`.
@@ -3270,7 +3661,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                             severity: Severity::Warning,
                             code: "WS037".into(),
                             message: format!(
-                                "explicit type arguments are ignored on builtin `{name}` — its \
+                                "explicit type arguments are ignored on builtin `{name}`, since its \
                                  result type is derived from the arguments"
                             ),
                             range: range.clone(),
@@ -3281,7 +3672,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                             .iter()
                             .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
                         if !has_exec_arg {
-                            ctx.emit("WS007", format!("exec call '{name}' outside an exec context (pass exec = ... to override)"), range.clone());
+                            ctx.emit(
+                                "WS007",
+                                format!("exec call '{name}' outside an exec context (pass exec = ... to override)"),
+                                range.clone(),
+                            );
                         }
                     }
                     // Change/Edge detectors watch a single wire VALUE. A reference
@@ -3300,7 +3695,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                             ctx.emit(
                                 "WS059",
                                 format!(
-                                    "`{name}` can't watch a {} — a change/edge detector \
+                                    "`{name}` can't watch a {}: a change/edge detector \
                                      observes a single wire value, and a reference or container \
                                      (map, array, `*T`, zone, teleport) has none",
                                     crate::analysis::types::type_str(&unwrap_ref(&at))
@@ -3340,7 +3735,8 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     if name == "EnumToInt" {
                         match positional_arg_types.first() {
                             Some(t) => {
-                                let ut = unwrap_ref(t);
+                                // A gate read gives its first output.
+                                let ut = first_output(&unwrap_ref(t));
                                 if !matches!(ut, Type::Enum { .. } | Type::Any) {
                                     ctx.emit(
                                         "WS003",
@@ -3387,6 +3783,9 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         }
                     }
                     check_args(ctx, &sig_of_callspec(c), args, 0, true, true, range);
+                    if let Some(t) = integer_math_result(ctx, name, args) {
+                        return t;
+                    }
                     if !c.outputs.is_empty() {
                         return output_record_type(ctx, c, args, range);
                     }
@@ -3419,7 +3818,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     for d in &evt.data {
                         fields.push((d.name.to_string(), d.ty.clone()));
                     }
-                    return Type::Record(fields);
+                    return Type::call_result(fields);
                 }
                 let Some(sym) = ctx.scope.lookup(name).cloned() else {
                     // Bare positional enum-variant construction (`Some(42)`
@@ -3466,6 +3865,14 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     );
                     return Type::Any;
                 };
+                if matches!(sym.kind, SymbolKind::Fn | SymbolKind::Chip)
+                    && !ctx.imports.user_mod_answers(&sym.decl_range, &range.file)
+                {
+                    if let Some(msg) = ctx.unnamed_mod_call(name, &sym.decl_range, &range.file, false) {
+                        ctx.emit("WS002", msg, range.clone());
+                    }
+                    return Type::Any;
+                }
                 let has_spread = args.iter().any(|a| matches!(a, CallArg::Spread(_)));
                 let has_exec_arg = args
                     .iter()
@@ -3500,14 +3907,14 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // result types as the enum.
             if let Expr::FieldAccess { obj, field, range: fa_range } = callee.as_ref()
                 && field == "FromInt"
-                && let Expr::Ident { name: enum_name, .. } = obj.as_ref()
+                && let Some(enum_name) = enum_head(ctx, obj)
                 && !matches!(
                     ctx.scope.lookup(enum_name).map(|s| s.kind),
                     Some(k) if k != SymbolKind::Type
                 )
                 && let Some(type_params) = ctx
                     .enum_defs
-                    .get(enum_name)
+                    .expression_path(enum_name)
                     .filter(|def| !def.variants.iter().any(|v| v.name == "FromInt"))
                     .map(|def| def.type_params.clone())
             {
@@ -3532,7 +3939,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     Some(Type::Enum { name: en, args }) if en == enum_name => args.clone(),
                     _ => vec![Type::Any; type_params.len()],
                 };
-                return Type::Enum { name: enum_name.clone(), args: args_ty };
+                return Type::Enum { name: enum_name.to_string(), args: args_ty };
             }
             // Enum payload construction, positional form: `Enum.Variant(args)`.
             // Resolution + construction is shared with the other construction
@@ -3549,7 +3956,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 field: variant,
                 range: fa_range,
             } = callee.as_ref()
-                && let Expr::Ident { name: enum_name, .. } = obj.as_ref()
+                && let Some(enum_name) = enum_head(ctx, obj)
                 && let Some(ty) = try_construct_variant_positional(
                     ctx,
                     enum_name,
@@ -3572,12 +3979,48 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 && let Expr::Ident { name: ns_name, range: ns_range } = obj.as_ref()
                 && ctx.namespace_visible(ns_name, &ns_range.file)
             {
-                let ns_lookup = ctx
+                let member = ctx
                     .ns_members(ns_name, &ns_range.file)
                     .and_then(|ns_map| ns_map.get(field.as_str()))
-                    .map(|info| (info.kind, info.return_type.clone(), info.params.clone()));
+                    .cloned();
+                // A generic member infers its type params from the arguments
+                // and types its outputs over them, as a flat call does.
+                if let Some(info) = &member
+                    && let Some((sig, decl_range)) = &info.generic
+                {
+                    let sym = SymbolInfo {
+                        kind: info.kind,
+                        name: field.clone(),
+                        ty: Type::Any,
+                        decl_range: decl_range.clone(),
+                        signature: Some(sig.clone()),
+                        event_data: None,
+                    };
+                    let has_spread = args.iter().any(|a| matches!(a, CallArg::Spread(_)));
+                    let has_exec_arg = args
+                        .iter()
+                        .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
+                    let positional_count = args
+                        .iter()
+                        .filter(|a| matches!(a, CallArg::Positional(_)))
+                        .count();
+                    return type_user_symbol_call(
+                        ctx,
+                        field,
+                        &sym,
+                        &positional_arg_types,
+                        args,
+                        type_args,
+                        positional_count,
+                        has_spread,
+                        has_exec_arg,
+                        call_range,
+                        fa_range,
+                    );
+                }
+                let ns_lookup = member.map(|info| (info.kind, info.outputs.clone(), info.params.clone()));
                 match ns_lookup {
-                    Some((kind, ret, params)) => {
+                    Some((kind, outputs, params)) => {
                         // Route the call through the shared arg checker —
                         // skipping it risks a silent miscompile on wrong type
                         // or arity. Only `Fn`/`Chip` members are callable;
@@ -3632,15 +4075,12 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                                 );
                             }
                             check_args(ctx, &sig, args, 0, false, true, fa_range);
+                            args_fill_float_params(ctx, &sig.params, args);
                         }
-                        match ret {
-                            Some(ret) => return resolve_type_expr(ctx, &ret),
-                            // A `mod` with no output has no result, and the
-                            // un-namespaced path already says so. `Any` here
-                            // meant `N.noret(1)` as a value type-checked
-                            // clean while the identical `noret(1)` was WS072.
-                            None => return Type::Never,
-                        }
+                        // A `mod` with no output has no result (`Never`), as
+                        // the un-namespaced path says.
+                        let outputs = outputs.iter().map(|(n, te)| (n.clone(), resolve_type_expr(ctx, te))).collect();
+                        return Type::call_result(outputs);
                     }
                     None => {
                         ctx.emit(
@@ -3712,6 +4152,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     check_arity,
                     fa_range,
                 );
+                args_fill_float_params(ctx, &sig.params, args);
+                if !check_arity {
+                    check_sort_multiple_args(ctx, args, fa_range);
+                }
                 ctx.record_method_target(
                     call_range,
                     MethodTarget::Container {
@@ -3768,6 +4212,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     /*check_named=*/ true,
                     fa_range,
                 );
+                args_fill_float_params(ctx, &sig.params, args);
                 ctx.record_method_target(
                     call_range,
                     MethodTarget::Container {
@@ -3783,6 +4228,79 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 return crate::catalog::maps::map_return_type(field, &key, &value)
                     .unwrap_or(Type::Any);
             }
+            // A receiver builtin is called only on a value of its receiver type
+            // or one that converts to it as a value (an int to a float, a
+            // character to an entity), the same rule WS035 uses. A `self` mod
+            // of that name is called on any other value, and a string method
+            // on a value that is not a string (`vv.Length()` on a vector,
+            // which would read the text the vector formats to) is WS003.
+            let mut defer_to_self_mod = false;
+            if let Expr::FieldAccess { obj, field, range: fa_range } = callee.as_ref()
+                && let Some(recv) = find_call(field).and_then(|c| c.receiver.as_ref())
+                && let self_mod = ctx.visible_self_mod(field, &fa_range.file).is_some()
+                && (self_mod || *recv == Type::String)
+            {
+                let mark = ctx.diagnostics.len();
+                let got = unwrap_ref(&infer(ctx, obj)).container_ref_as_value();
+                let receiver_errors = ctx.diagnostics.split_off(mark);
+                let fits = matches!(coerce(&got, recv), CoerceRule::Same | CoerceRule::Coerce);
+                defer_to_self_mod = !fits && self_mod;
+                // The receiver is typed once, here, unless a `self` mod takes
+                // the call and types it again: its own errors stand.
+                if !defer_to_self_mod {
+                    ctx.diagnostics.extend(receiver_errors);
+                }
+                let container = matches!(got, Type::Array(_) | Type::Map(_, _));
+                if !fits
+                    && !self_mod
+                    && *recv == Type::String
+                    && (container || coerce(&got, recv) == CoerceRule::ViaString)
+                {
+                    let spelled = receiver_spelling(obj);
+                    let got_str = crate::analysis::types::type_str(&got);
+                    let a = if got_str.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+                    let what = spelled.as_ref().map_or("the receiver".to_string(), |s| format!("`{s}`"));
+                    let message = match (ctx.unbounded_param_of(obj, &got), spelled.as_deref()) {
+                        (Some(tp), _) => format!(
+                            "`.{field}()` is a string method, and `{tp}` is unbounded, so {what} may be \
+                             {a} `{got_str}`; bound it: `<{tp}: string>`"
+                        ),
+                        (None, s) => {
+                            let hint = match (field.as_str(), &got, s) {
+                                ("Length", Type::Vector, Some(s)) => {
+                                    format!("; a vector's length is `Magnitude({s})`")
+                                }
+                                ("Length", Type::Vector, None) => "; a vector's length is its `Magnitude`".to_string(),
+                                ("Length", Type::Array(_), Some(s)) => {
+                                    format!("; an array's element count is `{s}.length()`")
+                                }
+                                ("Length", Type::Map(..), Some(s)) => {
+                                    format!("; a map's entry count is `{s}.length()`")
+                                }
+                                ("Length", Type::Array(_) | Type::Map(..), None) => {
+                                    "; its element count is `.length()`".to_string()
+                                }
+                                _ if container => String::new(),
+                                (_, _, Some(s)) => format!(
+                                    ", and it would read the text the {got_str} formats to. Pass it as an \
+                                     argument (`{field}({s})`) to format it on purpose"
+                                ),
+                                (_, _, None) => format!(
+                                    ", and it would read the text the {got_str} formats to. Pass it as an \
+                                     argument to `{field}` to format it on purpose"
+                                ),
+                            };
+                            format!("`.{field}()` is a string method, and {what} is {a} `{got_str}`{hint}")
+                        }
+                    };
+                    if let (Some(tp), Some(body)) = (ctx.unbounded_param_of(obj, &got), ctx.open_bodies.last()) {
+                        let hint = (fa_range.clone(), message.clone(), body.clone(), tp.to_string());
+                        ctx.string_bound_hints.push(hint);
+                    }
+                    ctx.emit("WS003", message, fa_range.clone());
+                    return Type::Any;
+                }
+            }
             // Receiver method call: entity.SetLocation(pos)
             if let Expr::FieldAccess {
                 obj,
@@ -3791,8 +4309,9 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             } = callee.as_ref()
                 && let Some(c) = find_call(field)
                 && c.receiver.is_some()
+                && !defer_to_self_mod
             {
-                ctx.record_method_target(call_range, MethodTarget::Builtin(field.clone()));
+                let mark = ctx.diagnostics.len();
                 // Named-target receiver (`entity.SendCustomEvent(…)`) binds the
                 // object to `target`; positional args stay as the channel name +
                 // data. Ordinary receiver binds the object as positional arg 0.
@@ -3810,6 +4329,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     v
                 };
                 check_args(ctx, &sig_of_callspec(c), &recv_args, 0, true, true, fa_range);
+                // A call whose arguments do not fit resolves to nothing.
+                if !has_error_since(ctx, mark) {
+                    ctx.record_method_target(call_range, MethodTarget::Builtin(field.clone()));
+                }
                 // Same exec-context rule the plain-call form applies above —
                 // the receiver spelling of the same gate needs it too, or
                 // `e.GetLocation()` would silently compile to a no-op in pure
@@ -3841,21 +4364,22 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // `dist(v, o)` — bind the receiver as positional arg 0 and type it
             // exactly like the plain `dist(v, o)` call would (generics inferred
             // through the receiver too). Placed AFTER the builtin-receiver case
-            // so a builtin receiver-method of the same name wins (a user
-            // self-mod shadowing one is rejected as WS035 at its declaration).
+            // so a builtin receiver-method of the same name wins on its own
+            // receiver type (a user self-mod shadowing one is rejected as WS035
+            // at its declaration).
             if let Expr::FieldAccess {
                 obj,
                 field,
                 range: fa_range,
             } = callee.as_ref()
-                && let Some(sym) = ctx.scope.lookup(field).cloned()
-                && sym.kind == SymbolKind::Chip
-                && sym
-                    .signature
-                    .as_ref()
-                    .is_some_and(|s| s.params.first().is_some_and(|p| p.name == "self"))
+                && let Some(sym) = ctx.visible_self_mod(field, &fa_range.file).cloned()
             {
-                let recv_ty = infer(ctx, obj);
+                // A container receiver was typed above, its diagnostics with
+                // it; inferring it again would report them twice.
+                let recv_ty = match &container_recv {
+                    Some(t) => t.clone(),
+                    None => infer(ctx, obj),
+                };
                 let mut recv_pos_types = Vec::with_capacity(positional_arg_types.len() + 1);
                 recv_pos_types.push(recv_ty);
                 recv_pos_types.extend(positional_arg_types.iter().cloned());
@@ -3873,8 +4397,8 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     .iter()
                     .filter(|a| matches!(a, CallArg::Positional(_)))
                     .count();
-                ctx.record_method_target(call_range, MethodTarget::SelfMod(field.clone()));
-                return type_user_symbol_call(
+                let mark = ctx.diagnostics.len();
+                let ty = type_user_symbol_call(
                     ctx,
                     field,
                     &sym,
@@ -3887,6 +4411,35 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     call_range,
                     fa_range,
                 );
+                if !has_error_since(ctx, mark) {
+                    ctx.record_method_target(call_range, MethodTarget::SelfMod(field.clone()));
+                }
+                // A receiver of an unbounded type parameter is checked as each
+                // type it may be; say so rather than naming that type alone.
+                let recv_val = unwrap_ref(&recv_pos_types[0]).container_ref_as_value();
+                if let Some(tp) = ctx.unbounded_param_of(obj, &recv_val).map(str::to_string)
+                    && let Some(self_ty) = sym.signature.as_ref().and_then(|s| s.params.first()).map(|p| p.ty.clone())
+                {
+                    let what = target_name(obj).map_or("the receiver".to_string(), |s| format!("`{s}`"));
+                    let got = crate::analysis::types::type_str(&recv_val);
+                    let want = crate::analysis::types::type_str(&self_ty);
+                    let a = if got.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+                    // A builtin method of the same name answers its own
+                    // receiver type, so the bound admits both.
+                    let bound = match find_call(field).and_then(|c| c.receiver.as_ref()) {
+                        Some(r) if *r != self_ty => format!("{} | {want}", crate::analysis::types::type_str(r)),
+                        _ => want.clone(),
+                    };
+                    for d in &mut ctx.diagnostics[mark..] {
+                        if d.message.starts_with("argument 'self'") {
+                            d.message = format!(
+                                "`.{field}()` calls `{field}(self: {want})`, and `{tp}` is unbounded, so \
+                                 {what} may be {a} `{got}`; bound it: `<{tp}: {bound}>`"
+                            );
+                        }
+                    }
+                }
+                return ty;
             }
             // A method/namespace call whose base identifier resolves to nothing:
             // e.g. `card.drawLobby(...)` after an `import * as card` was removed.
@@ -3912,7 +4465,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 ctx.emit(
                     "WS002",
                     format!(
-                        "unknown identifier '{name}' in call `{name}.{field}(...)` — \
+                        "unknown identifier '{name}' in call `{name}.{field}(...)`: \
                          no namespace, variable, or value named '{name}' is in scope \
                          (is an import missing?)"
                     ),
@@ -3965,10 +4518,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 field,
                 range: fa_range,
             } = callee.as_ref()
-                && ctx
-                    .scope
-                    .lookup(field)
-                    .is_some_and(|s| s.kind == SymbolKind::Chip)
+                && ctx.scope.lookup(field).is_some_and(|s| {
+                    s.kind == SymbolKind::Chip
+                        && s.signature.as_ref().is_none_or(|sig| sig.params.first().is_none_or(|p| p.name != "self"))
+                })
             {
                 // Keep the receiver's type in the map (hover/goto) even though
                 // the call itself doesn't resolve to a value.
@@ -3976,7 +4529,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 ctx.emit(
                     "WS036",
                     format!(
-                        "`{field}` is not a receiver method — its first parameter is not \
+                        "`{field}` is not a receiver method: its first parameter is not \
                          named `self`, so it can't be called as `x.{field}(…)`. Call \
                          `{field}(<receiver>, …)` directly, or rename its first parameter \
                          to `self` to allow method syntax."
@@ -4002,12 +4555,27 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 ctx.emit(
                     "WS036",
                     format!(
-                        "`{field}` takes no receiver — it acts on its own brick, not a \
+                        "`{field}` takes no receiver: it acts on its own brick, not a \
                          receiver object. Call it as `{field}(…)` directly, not \
                          `x.{field}(…)`."
                     ),
                     fa_range.clone(),
                 );
+                return Type::Any;
+            }
+            // A `self` mod this file can't name: a module's private one, present
+            // only because an imported body calls it, or the importer's own.
+            if let Expr::FieldAccess {
+                obj,
+                field,
+                range: fa_range,
+            } = callee.as_ref()
+                && let Some(s) = ctx.scope.lookup(field).filter(|s| s.kind == SymbolKind::Chip).cloned()
+            {
+                infer(ctx, obj);
+                if let Some(msg) = ctx.unnamed_mod_call(field, &s.decl_range, &fa_range.file, true) {
+                    ctx.emit("WS036", msg, fa_range.clone());
+                }
                 return Type::Any;
             }
             // Every resolvable call form returned above. A callee whose object
@@ -4047,18 +4615,44 @@ pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
     if let Expr::NullLit { .. } = e {
         return check_null(ctx, e, expected);
     }
+    // `{}` where a map is expected is the empty map literal (the parser reads
+    // it as an empty record literal), so it is valid exactly where a map
+    // literal is: here, a map field of a stored record's literal.
+    if let Expr::RecordLit { fields, range } = e
+        && fields.is_empty()
+        && let Type::Map(k, v) = unwrap_ref(expected)
+    {
+        if !map_fields {
+            ctx.emit(
+                "WS026",
+                "a map literal must initialize or assign a Map variable",
+                range.clone(),
+            );
+        }
+        let map = Type::Map(k, v);
+        ctx.record_expr_type(range, &map);
+        return map;
+    }
     // Push a record type into a record literal so each field value is CHECKED
     // against its target type (a `null` field resolves to it) rather than
     // inferred blind. Guarded to a plain, exactly-matching set of named fields;
     // any spread / shorthand / arity mismatch defers to the infer+coerce below,
     // which reports the structural error unchanged.
+    // A shorthand field `{ x }` is the named field `{ x: x }`.
     if let Expr::RecordLit { fields, .. } = e
         && let Type::Record(ftypes) = unwrap_ref(expected)
         && let Some(named) = fields
             .iter()
             .map(|f| match f {
-                RecordLitField::Named { name, value, .. } => Some((name.clone(), value)),
-                _ => None,
+                RecordLitField::Named { name, value, .. } => Some((name.clone(), std::borrow::Cow::Borrowed(value))),
+                RecordLitField::Shorthand { name, range } => Some((
+                    name.clone(),
+                    std::borrow::Cow::Owned(Expr::Ident {
+                        name: name.clone(),
+                        range: range.clone(),
+                    }),
+                )),
+                RecordLitField::Spread { .. } => None,
             })
             .collect::<Option<Vec<_>>>()
         && named.len() == ftypes.len()
@@ -4067,13 +4661,18 @@ pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
             .all(|(fname, _)| named.iter().any(|(k, _)| k == fname))
     {
         for (fname, ftype) in &ftypes {
-            let val = named.iter().find(|(k, _)| k == fname).map(|(_, v)| *v).unwrap();
-            match (val, unwrap_ref(ftype)) {
-                (Expr::MapLit { entries, .. }, Type::Map(k, v)) if map_fields => {
+            let val: &Expr = named.iter().find(|(k, _)| k == fname).map(|(_, v)| v.as_ref()).unwrap();
+            // A place (a var, or a `*T` parameter) fills a `*T` field by
+            // naming its var, and reads as that var's value.
+            let ftype = match ftype {
+                Type::Ref(inner) if names_a_place(ctx, val) => inner.as_ref(),
+                other => other,
+            };
+            match (super::decl::map_init_entries(val), unwrap_ref(ftype)) {
+                (Some(entries), Type::Map(k, v)) if map_fields => {
                     super::decl::check_map_literal(ctx, entries, &k, &v);
                     let r = val.range();
-                    ctx.type_of_expr
-                        .insert((r.file.clone(), r.start.offset, r.end.offset), Type::Map(k, v));
+                    ctx.record_expr_type(r, &Type::Map(k, v));
                 }
                 _ => {
                     ctx.record_lit_map_fields = map_fields && matches!(val, Expr::RecordLit { .. });
@@ -4083,8 +4682,7 @@ pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
         }
         let r = e.range();
         let rec = Type::Record(ftypes);
-        ctx.type_of_expr
-            .insert((r.file.clone(), r.start.offset, r.end.offset), rec.clone());
+        ctx.record_expr_type(r, &rec);
         return rec;
     }
     // Any other shape of a stored record's literal (a spread, a shorthand) is
@@ -4095,8 +4693,7 @@ pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
         && let Type::Record(ftypes) = unwrap_ref(expected)
     {
         let t = infer_record_lit(ctx, fields, Some(&ftypes));
-        ctx.type_of_expr
-            .insert((range.file.clone(), range.start.offset, range.end.offset), t.clone());
+        ctx.record_expr_type(range, &t);
         coerce_or_emit(ctx, &t, expected, range);
         return t;
     }
@@ -4142,8 +4739,7 @@ pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
         }
         let r = e.range();
         let arr = Type::Array(want.clone());
-        ctx.type_of_expr
-            .insert((r.file.clone(), r.start.offset, r.end.offset), arr.clone());
+        ctx.record_expr_type(r, &arr);
         return arr;
     }
     // Push the expected type down for the single node `infer` is about to type,
@@ -4154,10 +4750,355 @@ pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
     let prev = ctx.expected_ty.replace(expected.clone());
     let t = infer(ctx, e);
     ctx.expected_ty = prev;
-    coerce_or_emit(ctx, &t, expected, e.range());
+    coerce_value_or_emit(ctx, e, &t, expected);
+    int_constants_in_slot(ctx, e, expected);
     t
 }
 
+/// [`int_constants_in_slot`] for each argument against the parameter it
+/// binds. Only for parameters whose type is the slot's own type (a user
+/// `mod`/`chip` parameter, a container element): a builtin's `float`-declared
+/// math port takes any number as written. A spread's arguments are not
+/// matched to parameters here.
+pub(crate) fn args_fill_float_params(ctx: &mut TypeCheckCtx, params: &[Param], args: &[CallArg]) {
+    let mut positional = params.iter();
+    for a in args {
+        match a {
+            CallArg::Positional(e) => match positional.next() {
+                Some(p) => int_constants_in_slot(ctx, e, &p.ty),
+                None => break,
+            },
+            CallArg::Named { name, value, .. } => {
+                if let Some(p) = params.iter().find(|p| &p.name == name) {
+                    int_constants_in_slot(ctx, value, &p.ty);
+                }
+            }
+            CallArg::Spread(_) => break,
+        }
+    }
+}
+
+/// `min`/`max`/`clamp`, `abs`/`sign` and the roundings over integers give an
+/// integer: the call types as the join of its operands, `int` when every one
+/// is an `int` (the catalog's `float` result is the join once one is a
+/// float). `None` leaves the catalog's type.
+fn integer_math_result(ctx: &TypeCheckCtx, name: &str, args: &[CallArg]) -> Option<Type> {
+    const JOINED: [&str; 8] = ["min", "max", "clamp", "abs", "sign", "floor", "ceil", "round"];
+    if !JOINED.contains(&name) || args.is_empty() {
+        return None;
+    }
+    let all_int = args.iter().all(|a| {
+        let e = match a {
+            CallArg::Positional(e) | CallArg::Named { value: e, .. } => e,
+            CallArg::Spread(_) => return false,
+        };
+        let r = e.range();
+        matches!(
+            ctx.type_of_expr.get(&(r.file.clone(), r.start.offset, r.end.offset)).map(unwrap_ref),
+            Some(Type::Int)
+        )
+    });
+    all_int.then_some(Type::Int)
+}
+
+/// The type a `match`, `if let` or `let ... else` reads from `scrutinee`: a
+/// gate read whose first output is an enum (`hs.pop()`, `m.get(k)`, a call
+/// of a `mod` with several outputs) is that enum, as it is wherever one value
+/// is expected.
+pub(super) fn infer_scrutinee(ctx: &mut TypeCheckCtx, scrutinee: &Expr) -> Type {
+    let t = unwrap_ref(&infer(ctx, scrutinee));
+    if let Type::Outputs(fields) = &t
+        && let Some((_, first)) = fields.first()
+        && let first @ Type::Enum { .. } = unwrap_ref(first)
+    {
+        return first;
+    }
+    t
+}
+
+/// An integer constant takes the numeric type of the slot it flows into: the
+/// float a `float` slot names, the integer an `int` slot names. A float
+/// constant that is the whole value of an `int` slot is the integer it
+/// truncates to (`WS106` when that drops a fraction), as a `var` declared `int`
+/// stores it; a float constant giving one branch of an `if`/`match` keeps the
+/// join's type, and the slot converts the joined value. This is the
+/// one place that rule lives (its literal form is
+/// `const_eval::coerce_const_to_type`): every route a value takes into a
+/// typed slot (`check`, user `mod`/`chip` and container-method arguments, a
+/// namespaced call, an enum payload, an annotated `let`/`const`, an output
+/// write, a `return`, a map or array literal, a record or tuple literal's
+/// fields, the join of an `if`/`match`) calls it with the slot's type, and the
+/// outermost slot is applied last, so it decides. It records the type of each
+/// integer leaf of `e`: a literal (or a negated one), a name bound to an
+/// integer constant, the value an `if`/`match` arm or a block gives, and, for
+/// a record, tuple, array or map slot, the fields, elements and entries of a
+/// literal of that shape. Lowering builds a float for every integer constant
+/// recorded `float`, so the folded and runtime values agree.
+pub(crate) fn int_constants_in_slot(ctx: &mut TypeCheckCtx, e: &Expr, slot: &Type) {
+    constants_in_slot(ctx, e, slot, true)
+}
+
+/// [`int_constants_in_slot`] for `e`, which is the whole value of the slot
+/// when `whole` is set and one branch of a join otherwise.
+fn constants_in_slot(ctx: &mut TypeCheckCtx, e: &Expr, slot: &Type, whole: bool) {
+    let slot = unwrap_ref(slot);
+    let number = matches!(slot, Type::Float | Type::Int);
+    let recorded = |ctx: &TypeCheckCtx, r: &SourceRange| {
+        ctx.type_of_expr.get(&(r.file.clone(), r.start.offset, r.end.offset)).cloned()
+    };
+    match (e, &slot) {
+        (Expr::IntLit { range, value, .. }, t) if number => {
+            ctx.record_expr_type(range, t);
+            warn_inexact_float(ctx, *value, t, range);
+        }
+        // An integer literal given to a `bool` place is the bool it names, and
+        // a bool literal given to an `int` place the integer.
+        (Expr::IntLit { range, .. }, Type::Bool) if whole => ctx.record_expr_type(range, &Type::Bool),
+        (Expr::BoolLit { range, .. }, Type::Int) if whole => ctx.record_expr_type(range, &Type::Int),
+        (Expr::FloatLit { range, value, text }, Type::Int) if whole => {
+            ctx.record_expr_type(range, &Type::Int);
+            report_float_made_int(ctx, *value, range, Some(text));
+        }
+        (Expr::UnOp { op, operand, range }, Type::Int)
+            if whole && op == crate::catalog::operators::op::NEG && matches!(operand.as_ref(), Expr::FloatLit { .. }) =>
+        {
+            if let Expr::FloatLit { range: inner, value, text } = operand.as_ref() {
+                ctx.record_expr_type(inner, &Type::Int);
+                ctx.record_expr_type(range, &Type::Int);
+                report_float_made_int(ctx, -*value, range, Some(&format!("-{text}")));
+            }
+        }
+        (Expr::UnOp { op, operand, range }, t)
+            if number
+                && op == crate::catalog::operators::op::NEG
+                && super::stmt::int_literal(operand).is_some() =>
+        {
+            ctx.record_expr_type(range, t);
+            int_constants_in_slot(ctx, operand, &slot);
+        }
+        // A name, an operator, a call, an index or a field read is typed by
+        // its operands; only an integer constant's value changes, and only
+        // away from the type it already has (`N + 2`, `-N`, `A[1]`, `R.a`
+        // with every name a constant).
+        (
+            Expr::Ident { range, .. }
+            | Expr::BinOp { range, .. }
+            | Expr::UnOp { range, .. }
+            | Expr::Call { range, .. }
+            | Expr::IndexAccess { range, .. }
+            | Expr::FieldAccess { range, .. }
+            | Expr::TuplePick { range, .. },
+            t,
+        ) if number && recorded(ctx, range).is_some_and(|r| matches!(r, Type::Int | Type::Float) && r != *t) => {
+            if let Some(value) = int_constant_value(ctx, e) {
+                ctx.record_expr_type(range, t);
+                warn_inexact_float(ctx, value, t, range);
+            } else if whole
+                && *t == Type::Int
+                && let Some(value) = float_constant_value(ctx, e)
+            {
+                ctx.record_expr_type(range, t);
+                report_float_made_int(ctx, value, range, None);
+            }
+        }
+        (Expr::IfExpr { then_branch, else_branch, .. }, _) => {
+            constants_in_slot(ctx, then_branch, &slot, false);
+            constants_in_slot(ctx, else_branch, &slot, false);
+        }
+        (Expr::MatchExpr { arms, .. }, _) => {
+            for arm in arms {
+                if let MatchBody::Expr(x) = &arm.body {
+                    constants_in_slot(ctx, x, &slot, false);
+                }
+            }
+        }
+        (Expr::BlockExpr { value, .. }, _) => constants_in_slot(ctx, value, &slot, whole),
+        (Expr::RecordLit { fields, .. }, Type::Record(_) | Type::Tuple(_)) => {
+            for f in fields {
+                if let RecordLitField::Named { name, value, .. } = f
+                    && let Some(ft) = field_slot(&slot, name)
+                {
+                    int_constants_in_slot(ctx, value, &ft);
+                }
+            }
+        }
+        (Expr::Array { elements, range }, Type::Array(elem)) => {
+            for el in elements {
+                if let ArrayElem::Item(v) = el {
+                    int_constants_in_slot(ctx, v, elem);
+                }
+            }
+            container_literal_in_slot(ctx, range, &slot);
+        }
+        (Expr::MapLit { entries, range }, Type::Map(k, v)) => {
+            for en in entries {
+                int_constants_in_slot(ctx, &en.key, k);
+                int_constants_in_slot(ctx, &en.value, v);
+            }
+            container_literal_in_slot(ctx, range, &slot);
+        }
+        _ => {}
+    }
+}
+
+/// An array or map literal at `range` in a container slot of type `slot`
+/// holds the slot's element types: the container lowering builds for it is
+/// declared by the slot, as a `var` of that type would be, when the two
+/// differ only by an integer the slot holds as a float (or an element type
+/// an empty literal leaves open).
+fn container_literal_in_slot(ctx: &mut TypeCheckCtx, range: &SourceRange, slot: &Type) {
+    fn held_as(from: &Type, to: &Type) -> bool {
+        match (from, to) {
+            (Type::Any, b) => !matches!(b, Type::Any | Type::Param(_)),
+            (Type::Int, Type::Float) => true,
+            (Type::Array(a), Type::Array(b)) => held_as(a, b),
+            (Type::Map(ka, va), Type::Map(kb, vb)) => held_as(ka, kb) && held_as(va, vb),
+            (Type::Record(a), Type::Record(b)) => {
+                a.len() == b.len() && a.iter().zip(b).all(|((na, ta), (nb, tb))| na == nb && held_as(ta, tb))
+            }
+            (Type::Tuple(a), Type::Tuple(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| held_as(x, y)),
+            (a, b) => crate::types::coerce::type_eq(a, b),
+        }
+    }
+    let key = (range.file.clone(), range.start.offset, range.end.offset);
+    if let Some(recorded) = ctx.type_of_expr.get(&key)
+        && recorded != slot
+        && held_as(recorded, slot)
+    {
+        ctx.record_expr_type(range, slot);
+    }
+}
+
+/// Whether an error was reported after the first `mark` diagnostics.
+fn has_error_since(ctx: &TypeCheckCtx, mark: usize) -> bool {
+    ctx.diagnostics[mark..].iter().any(|d| d.severity == crate::diagnostic::Severity::Error)
+}
+
+/// The type of field `name` of a record slot, or of element `name` (`"0"`,
+/// `"1"`, ...) of a tuple slot.
+fn field_slot(slot: &Type, name: &str) -> Option<Type> {
+    match slot {
+        Type::Record(fields) => fields.iter().find(|(n, _)| n == name).map(|(_, t)| t.clone()),
+        Type::Tuple(elems) => name.parse::<usize>().ok().and_then(|i| elems.get(i).cloned()),
+        _ => None,
+    }
+}
+
+/// The `WS002` for the enum `name` a file writes at `range` and the program
+/// does not let it name, when another enum of the name is declared where the
+/// file sees it: a duplicate of the program's (`WS013`), not a missing import.
+pub(super) fn hidden_enum_message(ctx: &TypeCheckCtx, name: &str, range: &SourceRange) -> Option<String> {
+    let file_name = |f: &str| f.rsplit(['/', '\\']).next().unwrap_or(f).to_string();
+    let from = ctx.enum_decls.get(name).and_then(|decls| {
+        decls.iter().find(|r| r.file == range.file || ctx.imports.sees(&range.file, r)).map(|r| file_name(&r.file))
+    })?;
+    Some(format!(
+        "unknown type '{name}': the enum `{name}` this file names (declared in {from}) is not the program's, \
+         which declares another enum of that name (`WS013`). Rename one"
+    ))
+}
+
+/// The value of `e` when it is an integer compile-time constant (a name bound
+/// to one by a `const` or a `let` of a constant, or an expression of such
+/// names and literals), whose value lowering bakes as a literal. Each name
+/// resolves through the scope (`certified_const_ctx`): a parameter or local of
+/// the same name is not that constant. An integer operation the certified
+/// fold table has no result for (an overflow), in `e`, in a `const mod` it
+/// calls or behind a name it reads, leaves the value to the gate.
+pub(super) fn int_constant_value(ctx: &TypeCheckCtx, e: &Expr) -> Option<i64> {
+    let lookup = |n: &str| ctx.resolve_mod(n);
+    let cx = ctx.certified_const_ctx(Some(&lookup));
+    let mut budget = crate::const_eval::Budget::default();
+    match crate::const_eval::eval_expr(e, &cx, &mut budget) {
+        Ok(crate::ir::Literal::Int(n)) if !budget.uncertified => Some(n),
+        _ => None,
+    }
+}
+
+/// The value of `e` when it is a float constant every operation of which the
+/// certified fold table gives.
+pub(super) fn float_constant_value(ctx: &TypeCheckCtx, e: &Expr) -> Option<f64> {
+    let lookup = |n: &str| ctx.resolve_mod(n);
+    let cx = ctx.certified_const_ctx(Some(&lookup));
+    let mut budget = crate::const_eval::Budget::default();
+    match crate::const_eval::eval_expr(e, &cx, &mut budget) {
+        Ok(crate::ir::Literal::Float(f)) if !budget.uncertified => Some(f),
+        _ => None,
+    }
+}
+
+/// A float constant made an integer (`const_eval::float_as_int`): one that
+/// drops a fraction doing so is stored as the integer it truncates to
+/// (`WS106`), and one no `int` holds is `WS028`; once per expression.
+fn report_float_made_int(ctx: &mut TypeCheckCtx, value: f64, range: &SourceRange, text: Option<&str>) {
+    if ctx.diagnostics.iter().any(|d| matches!(&*d.code, "WS106" | "WS028") && d.range == *range) {
+        return;
+    }
+    // A literal is quoted as written.
+    let written = text.map_or_else(|| crate::const_eval::written_float(value), str::to_string);
+    match crate::const_eval::float_as_int(value) {
+        // A literal no float holds exactly reads as the nearest float, which
+        // may be whole where the literal is not, or another whole number.
+        Some((stored, true)) if text.is_some_and(|t| !crate::const_eval::literal_is_integer(t, stored)) => ctx.warn(
+            "WS106",
+            format!(
+                "{written} goes into an `int` here, and no float holds it exactly, so it is stored as \
+                 {stored}, not the value written. Write {stored} if that is what you mean"
+            ),
+            range.clone(),
+        ),
+        Some((_, true)) => {}
+        Some((stored, false)) => ctx.warn(
+            "WS106",
+            format!(
+                "{written} goes into an `int` here, so it is stored as {stored}: the fraction is dropped. \
+                 Write {stored} if that is what you mean"
+            ),
+            range.clone(),
+        ),
+        None => {
+            // A literal written within the `int` range is a float beyond it.
+            let nearest = text
+                .filter(|t| !t.contains(['e', 'E']))
+                .and_then(|t| t.trim_start_matches('-').split('.').next()?.parse::<i128>().ok())
+                .filter(|n| i64::try_from(*n).is_ok())
+                .map(|_| format!(", where it is the float {value:.0} (no float holds the value written exactly)"))
+                .unwrap_or_default();
+            let that = if nearest.is_empty() { "it" } else { "that" };
+            ctx.emit(
+                "WS028",
+                format!(
+                    "{written} goes into an `int` here{nearest}, and no `int` holds {that}: an `int` holds whole \
+                     numbers from {} to {}",
+                    i64::MIN,
+                    i64::MAX
+                ),
+                range.clone(),
+            )
+        }
+    }
+}
+
+/// An integer constant made a float that a float cannot hold exactly (beyond
+/// 2^53 in magnitude, where floats skip integers) is stored as the nearest
+/// float: `WS104`, once per expression.
+fn warn_inexact_float(ctx: &mut TypeCheckCtx, value: i64, slot: &Type, range: &SourceRange) {
+    if !matches!(slot, Type::Float) || (value as f64) as i128 == value as i128 {
+        return;
+    }
+    if ctx.diagnostics.iter().any(|d| d.code == "WS104" && d.range == *range) {
+        return;
+    }
+    ctx.warn(
+        "WS104",
+        format!(
+            "{value} goes into a `float` here, and a float cannot hold it exactly: it is stored as {}. \
+             Integers beyond 2^53 (9007199254740992) need an `int` to keep every digit",
+            value as f64
+        ),
+        range.clone(),
+    );
+}
 /// Whether `null` can stand in for `t`: any stored VALUE type — a number, bool,
 /// string, vector/rotator/quat/color, or an entity/character/controller (the
 /// unset object). Records and containers have their own empty forms (`{}` / `[]`),
@@ -4187,7 +5128,7 @@ fn check_null(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
         ctx.emit(
             "WS051",
             format!(
-                "`null` has no value for type `{}` — it is only valid for a number, bool, \
+                "`null` has no value for type `{}`: it is only valid for a number, bool, \
                  string, vector/rotator/color, or an entity/character/controller",
                 crate::analysis::type_str(&t)
             ),
@@ -4195,8 +5136,7 @@ fn check_null(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
         );
     }
     let r = e.range();
-    ctx.type_of_expr
-        .insert((r.file.clone(), r.start.offset, r.end.offset), t.clone());
+    ctx.record_expr_type(r, &t);
     t
 }
 
@@ -4218,6 +5158,221 @@ pub(crate) fn check_index_type(ctx: &mut TypeCheckCtx, container: &Type, index: 
         _ => return,
     };
     coerce_or_emit(ctx, &got, &want, index.range());
+    if want == Type::Int {
+        int_constants_in_slot(ctx, index, &want);
+    }
+}
+
+/// Whether a record, tuple, array or map literal `e` fits `slot` part by
+/// part: each field, element or entry has its slot's type, is an integer
+/// where the slot is a `float`, or is a float constant where the slot is an
+/// `int`. A literal is built in place, so an integer part is the float a
+/// `float` slot names and a float constant part the integer an `int` slot
+/// truncates it to; a record or container VALUE keeps its own types
+/// (`coerce` holds them to their field and element types).
+pub(crate) fn literal_fits(ctx: &TypeCheckCtx, e: &Expr, slot: &Type) -> bool {
+    let slot = unwrap_ref(slot);
+    let part_fits = |x: &Expr, t: &Type| {
+        let r = x.range();
+        literal_fits(ctx, x, t)
+            || ctx
+                .type_of_expr
+                .get(&(r.file.clone(), r.start.offset, r.end.offset))
+                .is_some_and(|xt| {
+                    let (xt, t) = (unwrap_ref(xt), unwrap_ref(t));
+                    let xt = if matches!(t, Type::Record(_) | Type::Tuple(_)) { xt } else { first_output(&xt) };
+                    coerce(&xt, &t) == CoerceRule::Same
+                        || matches!((&xt, &t), (Type::Int, Type::Float))
+                        || matches!((xt, t), (Type::Float, Type::Int)) && float_constant_value(ctx, x).is_some()
+                })
+    };
+    match (e, &slot) {
+        (Expr::RecordLit { fields, .. }, Type::Record(_) | Type::Tuple(_)) => {
+            let width = match &slot {
+                Type::Record(f) => f.len(),
+                Type::Tuple(t) => t.len(),
+                _ => 0,
+            };
+            fields.len() == width
+                && fields.iter().all(|f| match f {
+                    RecordLitField::Named { name, value, .. } => {
+                        field_slot(&slot, name).is_some_and(|ft| part_fits(value, &ft))
+                    }
+                    RecordLitField::Shorthand { .. } | RecordLitField::Spread { .. } => false,
+                })
+        }
+        (Expr::Array { elements, .. }, Type::Array(elem)) => elements.iter().all(|el| match el {
+            ArrayElem::Item(v) => part_fits(v, elem),
+            ArrayElem::Spread(_) => false,
+        }),
+        (Expr::MapLit { entries, .. }, Type::Map(k, v)) => {
+            entries.iter().all(|en| part_fits(&en.key, k) && part_fits(&en.value, v))
+        }
+        _ => false,
+    }
+}
+
+/// The type a gate read `t` gives a place for one value: its first output.
+/// Any other type is itself.
+pub(crate) fn first_output(t: &Type) -> Type {
+    match t {
+        Type::Outputs(fields) if !fields.is_empty() => unwrap_ref(&fields[0].1),
+        other => other.clone(),
+    }
+}
+
+/// [`coerce_or_emit`] for the value `e`: a literal that fits the target part
+/// by part ([`literal_fits`]) is accepted, typed as the target, and its
+/// integer parts in `float` slots become floats.
+pub(crate) fn coerce_value_or_emit(ctx: &mut TypeCheckCtx, e: &Expr, from: &Type, to: &Type) {
+    if record_into_one_value(ctx, e, from, to) {
+        return;
+    }
+    literal_in_slot(ctx, e, from, to);
+    if coerce(from, to) == CoerceRule::Mismatch && literal_fits(ctx, e, to) {
+        ctx.record_expr_type(e.range(), &unwrap_ref(to));
+        int_constants_in_slot(ctx, e, to);
+        return;
+    }
+    coerce_or_emit(ctx, from, to, e.range());
+}
+
+/// A record or tuple literal is built in its slot: where a gate read fills
+/// one of its fields, the literal is typed as the slot, so that field gives
+/// the slot what it holds (one value its first output).
+pub(crate) fn literal_in_slot(ctx: &mut TypeCheckCtx, e: &Expr, from: &Type, to: &Type) {
+    let slot = unwrap_ref(to);
+    if matches!(e, Expr::RecordLit { .. })
+        && from.holds_outputs()
+        && matches!(slot, Type::Record(_) | Type::Tuple(_))
+        && !super::resolve::type_has_param(&slot)
+        && coerce(from, &slot) != CoerceRule::Mismatch
+    {
+        ctx.record_expr_type(e.range(), &slot);
+    }
+}
+
+/// WS003 for a record (a record literal, or a value of a record type: a
+/// parameter, a `var`, a field, an element, a `mod` with one record output)
+/// given where one value goes. `coerce` reads a gate read there as its first
+/// output (`x = Edge(b)`, `n = fs.max()`, a call of a `mod` with several
+/// outputs: a [`Type::Outputs`]); a record has no output to wire, so lowering
+/// would wire something else. Whether it reported.
+pub(crate) fn record_into_one_value(ctx: &mut TypeCheckCtx, e: &Expr, from: &Type, to: &Type) -> bool {
+    if !rejected_where_one_value_goes(from, to) {
+        return false;
+    }
+    report_record_as_one_value(ctx, e, from, &crate::analysis::types::type_str(&unwrap_ref(to)));
+    true
+}
+
+/// [`record_into_one_value`] where no type is written for the one value: an
+/// operand, a condition, an interpolated part. Whether it reported.
+pub(crate) fn record_read_as_one_value(ctx: &mut TypeCheckCtx, e: &Expr, t: &Type) -> bool {
+    if record_read_as_one(t).is_none() || ctx.is_error_typed(e) {
+        return false;
+    }
+    report_record_as_one_value(ctx, e, t, "one value");
+    true
+}
+
+/// WS003 for `e`, of type `t`, a record read where `expected` (one value)
+/// goes.
+fn report_record_as_one_value(ctx: &mut TypeCheckCtx, e: &Expr, t: &Type, expected: &str) {
+    let Some(value) = record_read_as_one(t) else { return };
+    // A field to read instead, named after the value when it is a name.
+    let field = match (&value, receiver_spelling(e)) {
+        (Type::Record(fields), Some(name)) if matches!(unwrap_ref(t), Type::Record(_)) => {
+            fields.iter().find(|(f, _)| !f.starts_with("__")).map(|(f, _)| format!(" (`{name}.{f}`)"))
+        }
+        _ => None,
+    };
+    // A gate read whose first output is a record names that output.
+    let first = match unwrap_ref(t) {
+        Type::Outputs(fields) => format!(" (its first output `{}`)", fields[0].0),
+        _ => String::new(),
+    };
+    // A record a bounded type parameter stands for in this check: a field of
+    // it is no field of the bound's other members, so name the bound to
+    // narrow instead.
+    let narrow = ctx
+        .bounded_type_params
+        .iter()
+        .rev()
+        .find(|(_, _, now)| crate::types::coerce::type_eq(&unwrap_ref(now), &value))
+        .and_then(|(tp, mask, _)| {
+            let rest: Vec<String> = mask
+                .iter()
+                .filter(|m| record_read_as_one(m).is_none())
+                .map(crate::analysis::types::type_str)
+                .collect();
+            (!rest.is_empty()).then(|| {
+                format!(
+                    "`{tp}` may be that record here, and {}; {}`<{tp}: {}>`",
+                    crate::diagnostic::RECORD_INTO_ONE_VALUE,
+                    crate::diagnostic::NARROW_THE_BOUND,
+                    rest.join(" | ")
+                )
+            })
+        });
+    let hint = match narrow {
+        Some(narrow) => narrow,
+        None => format!(
+            "{}, so read one of its fields{}",
+            crate::diagnostic::RECORD_INTO_ONE_VALUE,
+            field.unwrap_or_default()
+        ),
+    };
+    ctx.emit(
+        "WS003",
+        format!("expected {expected}, got record {}{first}: {hint}", record_spelling(ctx, e, &value)),
+        e.range().clone(),
+    );
+}
+
+/// The record a value of type `t` is where one value is read: a record of
+/// the program's own, or a gate read's first output when that output is
+/// one. A gate read gives its first output once, never a field of it.
+pub(crate) fn record_read_as_one(t: &Type) -> Option<Type> {
+    match unwrap_ref(t) {
+        r @ Type::Record(_) => Some(r),
+        Type::Outputs(fields) => match unwrap_ref(&fields.first()?.1) {
+            r @ Type::Record(_) => Some(r),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether a value of type `from` is a record where one value of type `to`
+/// goes (see [`record_into_one_value`]).
+pub(crate) fn rejected_where_one_value_goes(from: &Type, to: &Type) -> bool {
+    record_read_as_one(from)
+        .is_some_and(|value| holds_one_value(to) && coerce(&value, &unwrap_ref(to)) != CoerceRule::Mismatch)
+}
+
+/// Whether a place of type `t` holds one value: not a record, a tuple, a
+/// generic parameter or `any`.
+fn holds_one_value(t: &Type) -> bool {
+    !matches!(
+        unwrap_ref(t),
+        Type::Record(_) | Type::Outputs(_) | Type::Tuple(_) | Type::Any | Type::Opaque | Type::Param(_)
+    )
+}
+
+/// How a message names the record type `t` of `e`: the alias that names
+/// exactly it, or its fields, as for a record literal, which names none.
+fn record_spelling(ctx: &TypeCheckCtx, e: &Expr, t: &Type) -> String {
+    if matches!(e, Expr::RecordLit { .. }) {
+        return format!("`{}`", crate::analysis::types::type_str(t));
+    }
+    let aliases = ctx.scope.type_aliases();
+    let mut names: Vec<&String> = aliases.iter().filter(|(_, a)| unwrap_ref(a) == *t).map(|(n, _)| n).collect();
+    names.sort();
+    match names.first() {
+        Some(n) => format!("`{n}`"),
+        None => format!("`{}`", crate::analysis::types::type_str(t)),
+    }
 }
 
 pub(crate) fn coerce_or_emit(ctx: &mut TypeCheckCtx, from: &Type, to: &Type, range: &SourceRange) {
@@ -4267,13 +5422,16 @@ fn infer_record_lit(
 ) -> Type {
     let mut rec_fields: Vec<(String, Type)> = Vec::new();
     for f in fields {
+        if let RecordLitField::Named { name, range, .. } | RecordLitField::Shorthand { name, range } = f {
+            ctx.reserve_check(name, range);
+        }
         match f {
             RecordLitField::Named { name, value, .. } => {
                 // A map literal filling a `Map` field of a stored record's literal
                 // (see `TypeCheckCtx::record_lit_map_fields`) is checked against
                 // that field's type instead of reaching the `MapLit` guard.
-                let map_field = match (value, map_field_types) {
-                    (Expr::MapLit { entries, .. }, Some(types)) => types
+                let map_field = match (super::decl::map_init_entries(value), map_field_types) {
+                    (Some(entries), Some(types)) => types
                         .iter()
                         .find(|(n, _)| n == name)
                         .and_then(|(_, t)| match unwrap_ref(t) {
@@ -4287,8 +5445,7 @@ fn infer_record_lit(
                         super::decl::check_map_literal(ctx, entries, &k, &v);
                         let map = Type::Map(k, v);
                         let r = value.range();
-                        ctx.type_of_expr
-                            .insert((r.file.clone(), r.start.offset, r.end.offset), map.clone());
+                        ctx.record_expr_type(r, &map);
                         map
                     }
                     None => infer(ctx, value),
@@ -4300,15 +5457,15 @@ fn infer_record_lit(
                     rec_fields.push((name.clone(), ty));
                 }
             }
-            RecordLitField::Shorthand { name, .. } => {
-                // `{ arr }` captures the array/map var by its container
-                // ref, not `*T[]` (a var's symbol type is `Ref(T)`, but
-                // an array/map is already a ref). A scalar `*int` stays.
-                let ty = ctx
-                    .scope
-                    .lookup(name)
-                    .map(|s| collapse_container_ref(s.ty.clone()))
-                    .unwrap_or(Type::Any);
+            RecordLitField::Shorthand { name, range } => {
+                // `{ x }` is `{ x: x }`: a place reads as its var's value.
+                let ty = infer(
+                    ctx,
+                    &Expr::Ident {
+                        name: name.clone(),
+                        range: range.clone(),
+                    },
+                );
                 if let Some(existing) = rec_fields.iter_mut().find(|(n, _)| n == name) {
                     existing.1 = ty;
                 } else {
@@ -4317,7 +5474,7 @@ fn infer_record_lit(
             }
             RecordLitField::Spread { value, .. } => {
                 let spread_ty = infer(ctx, value);
-                if let Type::Record(spread_fields) = spread_ty {
+                if let Type::Record(spread_fields) | Type::Outputs(spread_fields) = spread_ty {
                     for (fname, fty) in spread_fields {
                         if let Some(existing) =
                             rec_fields.iter_mut().find(|(n, _)| *n == fname)

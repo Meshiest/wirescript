@@ -228,8 +228,8 @@ fn has_error(r: &LowerResult, code: &str) -> bool {
 #[test]
 fn a_method_on_a_placeholder_field_still_reports_ws044() {
     let r = compile(
-        "const T: int[] = [1, 2, 3]\nvar n: int = 0\nin go: exec\n\
-         on go { let r = { t: T }\n n = r.t.length() }",
+        "var n: int = 0\nin go: exec\n\
+         on go { let r = { t: [n, 2] }\n n = r.t.length() }",
     );
     assert!(has_error(&r, "WS044"), "{:?}", r.diagnostics);
 }
@@ -333,6 +333,12 @@ fn a_dynamically_bound_param_forwards_to_a_nested_call() {
     let set = gates(&r, gc::VAR_SET)[0];
     let (src, _) = source_of(&r, set, WirePort::VarRef).unwrap();
     assert_eq!(class_of(&r, src), gc::VAR_GET, "q's wire reaches inner's p unchanged");
+    // One read of `h`, straight from its var: a second read would deref the
+    // ref `h` holds instead of forwarding it.
+    let gets = gates(&r, gc::VAR_GET);
+    assert_eq!(gets, [src], "one read of h");
+    let (h, _) = source_of(&r, src, WirePort::VarRef).unwrap();
+    assert_eq!(class_of(&r, h), gc::VAR);
 }
 
 #[test]
@@ -500,7 +506,7 @@ fn a_non_ref_field_never_reaches_a_ref_param() {
 
 /// The gate that finally drives `(node, port)`, following chip input and
 /// output pins anywhere in the chip tree.
-fn driver_through_pins(root: &crate::ir::Module, node: NodeId, port: WirePort) -> (&'static str, WirePort) {
+pub(super) fn driver_through_pins(root: &crate::ir::Module, node: NodeId, port: WirePort) -> (&'static str, WirePort) {
     fn find(m: &crate::ir::Module, node: NodeId, port: WirePort) -> Option<(NodeId, WirePort)> {
         m.wires
             .iter()
@@ -557,10 +563,12 @@ fn a_chip_ref_output_is_fed_from_the_ref_its_param_names() {
 
 #[test]
 fn an_array_literal_binds_no_chip_array_param() {
+    // A constant literal is an immutable container, so mutating it is WS044.
     let r = compile("chip Add1(xs: int[]) { xs.push(1) }\nin go: exec\non go { Add1([1, 2]) }");
     assert!(has_error(&r, "WS044"), "{:?}", r.diagnostics);
-    // Reported at the call even when the body never uses the parameter.
-    let r = compile("chip Keep(xs: int[]) { }\nin go: exec\non go { Keep([1, 2]) }");
+    // A literal with a runtime element names no storage at all: reported at
+    // the call even when the body never uses the parameter.
+    let r = compile("chip Keep(xs: int[]) { }\nin go: exec\nin n: int\non go { Keep([n, 2]) }");
     assert!(has_error(&r, "WS044"), "{:?}", r.diagnostics);
 }
 
@@ -573,4 +581,50 @@ fn a_dropped_ref_initializer_says_the_ref_starts_null() {
         .find(|d| d.code == "WSP001")
         .expect("the dropped initializer warns");
     assert!(w.message.contains("null ref") && w.message.contains("handler"), "{}", w.message);
+}
+
+/// An integer literal written through a `*float` ref is the float it names, as
+/// in `var x: float = 0`: accepted, through a ref parameter and through a
+/// ref-holding var alike: each write's value is a float literal on a `float`
+/// port, so folding and the game read the same value.
+#[test]
+fn an_int_literal_written_through_a_float_ref_is_a_float() {
+    let r = compile(
+        "var x: float = 1
+var y: float = 1
+var h: *float
+         mod z(f: *float) { *f = 0 }
+         in go: exec
+         on go {
+  z(&x)
+  h = &y
+  *h = -2
+}",
+    );
+    assert_no_errors(&r);
+    let mut written = Vec::new();
+    for (id, n) in &r.module.nodes {
+        if n.gate_class != gc::VAR_SET {
+            continue;
+        }
+        let port_ty = n.ports.inputs.iter().find(|p| p.name == *crate::intern::sym::VALUE).map(|p| &p.ty);
+        let value = n.properties.get(&crate::intern::sym::VALUE).cloned().or_else(|| {
+            r.module
+                .wires
+                .iter()
+                .find(|w| w.target.node_id == *id && w.target.port == WirePort::Value)
+                .and_then(|w| r.module.nodes.get(&w.source.node_id))
+                .filter(|src| src.gate_class == gc::LITERAL)
+                .and_then(|src| src.properties.get(&crate::intern::sym::VALUE).cloned())
+        });
+        if let Some(v) = value {
+            written.push((v, port_ty.cloned()));
+        }
+    }
+    let float_on_float = |want: f64| {
+        written.iter().any(|(v, t)| {
+            matches!(v, crate::ir::Literal::Float(n) if *n == want) && matches!(t, Some(Type::Float))
+        })
+    };
+    assert!(float_on_float(0.0) && float_on_float(-2.0), "{written:?}");
 }

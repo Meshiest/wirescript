@@ -157,10 +157,14 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
     // `elem` carries the collection's element types (empty for a range).
     // `None` means typecheck already rejected the source (WS075) or its
     // record-typed element (WS082), so there is nothing left to lower.
-    let Some((kind, elem)) = loop_kind(ctx, &s.source) else {
+    let Some((kind, mut elem)) = loop_kind(ctx, &s.source) else {
         return;
     };
     let spec = plane_spec(kind);
+    // An array or map of enums or tuples is stored as one container per
+    // column: the loop runs off one of them, and the body reads every column
+    // at the element's index or key.
+    let mut columns = None;
 
     // Drivers, on the outer grid. Lowered before the shell node exists so
     // that `ctx.current_exec` has already advanced past any `Var_Get` a
@@ -168,32 +172,65 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
     let drivers: Vec<(WirePort, PortRef)> = match &s.source {
         ForSource::Range(r) => {
             let pins = normalize_range(r);
-            // Count is lowered first and its value handed to the other two,
-            // because `.rev()` builds `FirstIndex` out of it.
-            let count = lower_pin_val(ctx, &pins.count, &s.range, None);
+            // Each bound the author wrote runs once, in source order; the
+            // pins below are built from those values. Count is lowered first
+            // and its value handed to the other two, because `.rev()` builds
+            // `FirstIndex` out of it.
+            let mut scope = PinScope::default();
+            let mut written: Vec<&Expr> = match &r.extent {
+                RangeExtent::Bounds { start, end } => vec![start, end],
+                RangeExtent::Count { count, from } => std::iter::once(count).chain(from).collect(),
+            };
+            written.extend(&r.step);
+            written.sort_by_key(|e| e.range().start.offset);
+            for e in written {
+                let stride = r.step.as_ref().is_some_and(|st| std::ptr::eq(st, e));
+                lower_user(ctx, e, !stride, &mut scope);
+            }
+            let count = lower_pin_val(ctx, &pins.count, &s.range, &mut scope);
             let count_port = pin_port(ctx, count.clone(), &Type::Int, &s.range);
+            scope.count = Some(count);
             vec![
                 (WirePort::Count, count_port),
                 (
                     WirePort::FirstIndex,
-                    lower_pin(ctx, &pins.first_index, &Type::Int, &s.range, Some(&count)),
+                    lower_pin(ctx, &pins.first_index, &Type::Int, &s.range, &mut scope),
                 ),
                 (
                     WirePort::Step,
-                    lower_pin(ctx, &pins.step, &Type::Int, &s.range, Some(&count)),
+                    lower_pin(ctx, &pins.step, &Type::Int, &s.range, &mut scope),
                 ),
             ]
         }
         ForSource::Collection { expr, .. } => {
             // The shell takes a REFERENCE: resolved like any other container receiver.
-            let port = ctx
-                .container_kind(expr)
-                .and_then(|k| container_ref(ctx, expr, &k))
-                .and_then(|s| match s {
-                    ContainerSource::Ref(p) => Some(p),
-                    ContainerSource::Columns(_) => None,
-                })
-                .unwrap_or_else(|| lower_expr(ctx, expr));
+            let source = ctx.container_kind(expr).and_then(|k| container_ref(ctx, expr, &k));
+            let port = match source {
+                Some(ContainerSource::Ref(p)) => Some(p),
+                Some(ContainerSource::Columns(cols)) => {
+                    let driver = match kind {
+                        LoopKind::ForEachArray => crate::lower::access::leaf_arrays(&cols).into_iter().next(),
+                        _ => crate::lower::access::leaf_maps(&cols).into_iter().next(),
+                    };
+                    columns = Some(cols);
+                    driver.map(|v| {
+                        elem = match (kind, &v.inner_type) {
+                            (LoopKind::ForEachArray, t) => vec![t.clone()],
+                            _ => {
+                                let (k, val) = crate::lower::access::map_kv(&v);
+                                vec![k, val]
+                            }
+                        };
+                        let port = match kind {
+                            LoopKind::ForEachArray => WirePort::ArrayVarRef,
+                            _ => WirePort::MapVarRef,
+                        };
+                        v.node_id.port(port)
+                    })
+                }
+                None => None,
+            };
+            let port = port.unwrap_or_else(|| lower_expr(ctx, expr));
             vec![(collection_driver_port(kind), port)]
         }
     };
@@ -262,6 +299,29 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
     // chain runs dry, so there is no inner analogue of `Completed` and the
     // exec the body ends on is dropped.
     ctx.current_exec = Some(entry.port(WirePort::Body));
+    // A columnar element binds as the record of its columns read at the
+    // element's index (an array) or key (a map), at the top of each sweep.
+    if let Some(cols) = &columns {
+        for (pat, slot) in s.bindings.iter().zip(for_slots(kind, &s.bindings)) {
+            let (ForPat::Name(name, _), ForSlot::Slot(i)) = (pat, slot) else {
+                continue;
+            };
+            if spec.entry_slots[i] != "Value" {
+                continue;
+            }
+            let fields = match kind {
+                LoopKind::ForEachArray => {
+                    let index = entry.port(WirePort::Index);
+                    crate::lower::access::record_array_index_read(ctx, cols, index, &s.range)
+                }
+                _ => {
+                    let key = entry.port(WirePort::Key);
+                    crate::lower::access::record_map_key_read(ctx, cols, key, &s.range)
+                }
+            };
+            ctx.scope.insert(name, Binding::Record(fields));
+        }
+    }
     ctx.loop_body_ranges.push(s.body.range.clone());
     lower_block(ctx, &s.body);
     ctx.loop_body_ranges.pop();
@@ -474,10 +534,21 @@ fn lower_pin(
     e: &PinExpr,
     want: &Type,
     range: &SourceRange,
-    count: Option<&PinVal>,
+    scope: &mut PinScope,
 ) -> PortRef {
-    let v = lower_pin_val(ctx, e, range, count);
+    let v = lower_pin_val(ctx, e, range, scope);
     pin_port(ctx, v, want, range)
+}
+
+/// What the driver pins of one loop share while they are lowered: the loop's
+/// own `Count`, once it is, and each expression the author wrote, lowered once
+/// however many pins its value feeds. A range's start feeds both `Count` and
+/// `FirstIndex`, and its stride `Count` and `Step`, so lowering it per use
+/// ran a call in it once per pin.
+#[derive(Default)]
+struct PinScope {
+    count: Option<PinVal>,
+    written: HashMap<(std::sync::Arc<str>, usize, usize), PinVal>,
 }
 
 /// The port a lowered pin value wires from, emitting a literal gate of the
@@ -514,23 +585,18 @@ fn lower_pin_val(
     ctx: &mut LowerCtx,
     e: &PinExpr,
     range: &SourceRange,
-    count: Option<&PinVal>,
+    scope: &mut PinScope,
 ) -> PinVal {
     match e {
         PinExpr::Int(n) => PinVal::Const(Literal::Int(*n)),
         PinExpr::Float(f) => PinVal::Const(Literal::Float(*f)),
         // `normalize_range` builds this only into `FirstIndex`, which is
         // lowered after `Count` and so always has the value to hand.
-        PinExpr::CountPin => count
-            .cloned()
-            .unwrap_or(PinVal::Const(Literal::Int(0))),
-        PinExpr::User(expr) => match const_user_expr(ctx, expr) {
-            Some(lit) => PinVal::Const(lit),
-            None => PinVal::Port(lower_expr(ctx, expr)),
-        },
+        PinExpr::CountPin => scope.count.clone().unwrap_or(PinVal::Const(Literal::Int(0))),
+        PinExpr::User(expr) => lower_user(ctx, expr, true, scope),
         PinExpr::Bin { op, lhs, rhs } => {
-            let l = lower_pin_val(ctx, lhs, range, count);
-            let r = lower_pin_val(ctx, rhs, range, count);
+            let l = lower_pin_val(ctx, lhs, range, scope);
+            let r = lower_pin_val(ctx, rhs, range, scope);
             if let (PinVal::Const(a), PinVal::Const(b)) = (&l, &r)
                 && let Some(lit) = eval_const_binop(op, a.clone(), b.clone())
             {
@@ -553,7 +619,7 @@ fn lower_pin_val(
             };
             let vals: Vec<PinVal> = args
                 .iter()
-                .map(|a| lower_pin_val(ctx, a, range, count))
+                .map(|a| lower_pin_val(ctx, a, range, scope))
                 .collect();
             if let Some(lit) = fold_builtin(spec, &vals) {
                 return PinVal::Const(lit);
@@ -565,6 +631,23 @@ fn lower_pin_val(
             PinVal::Port(build_builtin(ctx, spec, &ports, range))
         }
     }
+}
+
+/// A bound or stride the author wrote, lowered the first time a pin asks for
+/// it and shared by every later one. A bound is an `int` place (`int_place`);
+/// a stride keeps a float value.
+fn lower_user(ctx: &mut LowerCtx, expr: &Expr, int_place: bool, scope: &mut PinScope) -> PinVal {
+    let r = expr.range();
+    let key = (r.file.clone(), r.start.offset, r.end.offset);
+    if let Some(v) = scope.written.get(&key) {
+        return v.clone();
+    }
+    let v = match const_user_expr(ctx, expr, int_place) {
+        Some(lit) => PinVal::Const(lit),
+        None => PinVal::Port(lower_expr(ctx, expr)),
+    };
+    scope.written.insert(key, v.clone());
+    v
 }
 
 /// Give a `PinVal` a port, emitting a literal gate when it is still constant.
@@ -584,12 +667,17 @@ fn materialize(ctx: &mut LowerCtx, v: PinVal, range: &SourceRange) -> PortRef {
 }
 
 /// The value of a user-written bound or stride when it is a compile-time
-/// constant, read through the ordinary lowering constant environment.
-fn const_user_expr(ctx: &LowerCtx, e: &Expr) -> Option<Literal> {
+/// constant, read through the ordinary lowering constant environment. In an
+/// `int` place (a bound) a float constant is the integer it truncates to.
+fn const_user_expr(ctx: &LowerCtx, e: &Expr, int_place: bool) -> Option<Literal> {
     let lookup = |n: &str| ctx.resolve_mod(n);
     let cx = ctx.const_ctx(Some(&lookup));
     let mut budget = crate::const_eval::Budget::default();
-    crate::const_eval::eval_expr(e, &cx, &mut budget).ok()
+    let lit = crate::const_eval::eval_expr(e, &cx, &mut budget).ok()?;
+    if !int_place {
+        return Some(lit);
+    }
+    Some(crate::const_eval::coerce_const_to_type(lit, &Type::Int, ctx.consts.types()))
 }
 
 /// Build the Math gate for a synthesized binary operator.

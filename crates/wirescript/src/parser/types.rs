@@ -156,13 +156,13 @@ impl<'a> Parser<'a> {
         if self.check(TokenKind::Op, Some("<")) {
             self.advance();
             let mut args: Vec<TypeExpr> = Vec::new();
-            while !self.check(TokenKind::Op, Some(">")) && self.peek().kind != TokenKind::Eof {
+            while !self.check_closing_angle() && self.peek().kind != TokenKind::Eof {
                 args.push(self.parse_type());
                 if self.match_tok(TokenKind::Comma, None).is_none() {
                     break;
                 }
             }
-            let close = self.expect(TokenKind::Op, Some(">"));
+            let close = self.expect_closing_angle();
             end = close.end;
             let range = self.make_range(name_tok.start, end);
             if name == "Array" && args.len() == 1 {
