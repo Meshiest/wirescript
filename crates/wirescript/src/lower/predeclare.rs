@@ -389,7 +389,7 @@ pub(crate) fn default_literal_for_var_type(t: &Type) -> Option<Literal> {
         }
         // No literal spells a ref. With no initial value, emit writes the
         // port type's null ref.
-        Type::Ref(_) | Type::Brick => None,
+        Type::Ref(_) | Type::Brick | Type::Component(_) => None,
         _ => Some(Literal::Float(0.0)),
     }
 }
@@ -1036,6 +1036,11 @@ fn expr_to_literal_impl<C: Constants + ?Sized>(e: &Expr, env: Option<&C>) -> Opt
         Expr::FloatLit { value, .. } => Some(Literal::Float(*value)),
         Expr::BoolLit { value, .. } => Some(Literal::Bool(*value)),
         Expr::StringLit { value, .. } => Some(Literal::String(value.clone())),
+        // `3 as float`, for the conversions measured in game.
+        Expr::As { value, ty: TypeExpr::Name { name, .. }, .. } => crate::typecheck::convert::fold_as(
+            &expr_to_literal(value)?,
+            &crate::types::resolve::primitive(name)?,
+        ),
         // Negative numeric literals: `-5`, `-1.0`.
         Expr::UnOp { op, operand, .. } if op == crate::catalog::operators::op::NEG => {
             match expr_to_literal(operand)? {
@@ -1106,6 +1111,14 @@ fn expr_to_literal_lit<C: Constants + ?Sized>(e: &Expr, env: Option<&C>) -> Opti
             fold_constructor(name, &lits)
         }
         // Asset reference `$Type/Name` — inlined into the gate's component data.
+        // A component type is the asset a save stores it as,
+        // `BrickComponentTypeBase/<class>`.
+        Expr::AssetRef { asset_type, .. } if asset_type == crate::analysis::assets::COMPONENT => {
+            crate::typecheck::props::component_type_arg(e).map(|class| Literal::Asset {
+                asset_type: "BrickComponentTypeBase".to_string(),
+                asset_name: class.to_string(),
+            })
+        }
         Expr::AssetRef {
             asset_type,
             asset_name,

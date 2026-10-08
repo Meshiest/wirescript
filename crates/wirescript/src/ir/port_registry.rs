@@ -80,19 +80,16 @@ wire_ports! {
     Step = "Step",
     Completed = "Completed",
     Body = "Body",
-    Ordinal = "Ordinal",
-    BIsFirst = "bIsFirst",
-    BIsLast = "bIsLast",
     IterationsExecuted = "IterationsExecuted",
     BAborted = "bAborted",
-    AbortCode = "AbortCode",
+    BRunning = "bRunning",
     DeltaTime = "DeltaTime",
     Uptime = "Uptime",
     Tolerance = "Tolerance",
     Target = "Target",
     // `WholeGridTargeted`'s trigger output. That gate has no `ExecOut`, so this
-    // port doubles as the exec the handler body chains from (the dump types it
-    // `any`), the same shape as `Clock`'s `Pulse`.
+    // exec output is the one the handler body chains from, the same shape as
+    // `Clock`'s `Pulse`.
     Targeted = "Targeted",
     SmoothTime = "SmoothTime",
     Function = "Function",
@@ -148,6 +145,7 @@ wire_ports! {
     DamageLimit = "DamageLimit",
     Amount = "Amount",
     BFrozen = "bFrozen",
+    BVisible = "bVisible",
     Name = "Name",
     Player = "Player",
     BTeamWinsInstead = "bTeamWinsInstead",
@@ -556,7 +554,6 @@ wire_ports! {
     PickupBobHeight = "PickupBobHeight",
     PickupBobSpeed = "PickupBobSpeed",
     PickupClass = "PickupClass",
-    PickupMeshColors = "PickupMeshColors",
     PickupMinigameResetRespawnDelay = "PickupMinigameResetRespawnDelay",
     PickupOffsetDirection = "PickupOffsetDirection",
     PickupOffsetDistance = "PickupOffsetDistance",
@@ -697,6 +694,41 @@ wire_ports! {
     PivotY = "Pivot.Y",
     ShadowOffsetX = "ShadowOffset.X",
     ShadowOffsetY = "ShadowOffset.Y",
+    // Brick handles and component references.
+    Brick = "Brick",
+    HitBrick = "HitBrick",
+    Component = "Component",
+    ComponentType = "ComponentType",
+    ContainerRef = "ContainerRef",
+    Property = "Property",
+    BIncludeDead = "bIncludeDead",
+    // Get Value Type's result.
+    Type = "Type",
+    // Player dialogs: the answering player, the confirming button's exec, and
+    // the exec fired for every other outcome.
+    ClickedBy = "ClickedBy",
+    OkClicked = "OkClicked",
+    YesClicked = "YesClicked",
+    Declined = "Declined",
+    // FunctionCall's numbered argument and result pins.
+    Input0 = "Input0",
+    Input1 = "Input1",
+    Input2 = "Input2",
+    Input3 = "Input3",
+    Input4 = "Input4",
+    Input5 = "Input5",
+    Input6 = "Input6",
+    Input7 = "Input7",
+    Output0 = "Output0",
+    Output1 = "Output1",
+    Output2 = "Output2",
+    Output3 = "Output3",
+    Output4 = "Output4",
+    Output5 = "Output5",
+    Output6 = "Output6",
+    Output7 = "Output7",
+    // A function definition shell's binding output, and the call's input for it.
+    Definition = "Definition",
 }
 
 #[cfg(test)]

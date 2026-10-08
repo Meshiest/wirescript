@@ -40,15 +40,22 @@ on ReadBrickGrid() {
 
   k = h
   assert(1, 0 + (k == h), "a copied ref equals its original")
+  *k += 1
+  assert(8, a, "a write through a copied ref reaches the original")
   k = &b
   assert(0, 0 + (k == h), "refs to different vars differ")
+  BroadcastChatMessage("info: a stored var ref prints as [${h}]")
+
+  await SleepTicks(_, delay = 2)
+  *h += 1
+  assert(9, a, "a stored ref still reaches its var a few ticks later")
 
   bump(h, 10)
-  assert(17, a, "a *int value binds a mod's *int parameter")
+  assert(19, a, "a *int value binds a mod's *int parameter")
   bump(k, 3)
   assert(3, b, "the same mod through another ref")
   bump(a, 1)
-  assert(18, a, "a plain var still binds by alias")
+  assert(20, a, "a plain var still binds by alias")
 
   store(k, 42)
   assert(42, b, "a *int value binds a chip's *int parameter")

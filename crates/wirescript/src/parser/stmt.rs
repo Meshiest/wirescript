@@ -64,6 +64,34 @@ impl<'a> Parser<'a> {
             let anns = self.parse_annotations();
             let t2 = self.peek().clone();
             let kw = |k: &str| t2.kind == TokenKind::Kw && t2.text == k;
+            if let Some(r) = &anns.sliced {
+                let alone = anns.side.is_none()
+                    && anns.label.is_none()
+                    && anns.label_expr.is_none()
+                    && anns.closed.is_none()
+                    && anns.nofold.is_none()
+                    && anns.invisible.is_none();
+                if kw("for") || self.at_let_for() {
+                    if !alone {
+                        self.error(
+                            "a `for` loop takes no annotation besides @sliced".to_string(),
+                            t.start,
+                            t2.start,
+                        );
+                    }
+                    let mut s =
+                        if kw("for") { self.parse_for_stmt() } else { self.parse_let_for() };
+                    if let Stmt::For(f) = &mut s {
+                        f.sliced = true;
+                    }
+                    return Some(s);
+                }
+                self.error(
+                    "@sliced must be followed by a `for` loop".to_string(),
+                    r.start,
+                    r.end,
+                );
+            }
             if kw("in") || kw("out") {
                 if let Some(r) = &anns.closed {
                     self.error(
@@ -259,6 +287,9 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 "let" => {
+                    if self.at_let_for() {
+                        return Some(self.parse_let_for());
+                    }
                     let decl = self.parse_let_decl(false);
                     match decl {
                         TopDecl::Let(v) => return Some(Stmt::Let(v)),
@@ -678,8 +709,38 @@ impl<'a> Parser<'a> {
 
     /// `for <pat> [, <pat>]* in <source> [as <name>] { <body> }`
     fn parse_for_stmt(&mut self) -> Stmt {
+        self.parse_for_with_result(None, None)
+    }
+
+    /// Whether the next tokens open `let <name> = for`.
+    fn at_let_for(&self) -> bool {
+        let tok = |i: usize, kind: TokenKind, text: &str| {
+            let t = self.peek_at(i);
+            t.kind == kind && t.text == text
+        };
+        tok(0, TokenKind::Kw, "let")
+            && self.peek_at(1).kind == TokenKind::Ident
+            && tok(2, TokenKind::Op, "=")
+            && tok(3, TokenKind::Kw, "for")
+    }
+
+    /// `let run = for ...`: the loop, with `run` bound to its outcome record
+    /// after it ends. `start` is the `let`, so the statement spans both.
+    pub(super) fn parse_let_for(&mut self) -> Stmt {
+        let start = self.expect(TokenKind::Kw, Some("let")).start;
+        let name = self.expect(TokenKind::Ident, None);
+        let name_range = self.make_range(name.start, name.end);
+        self.expect(TokenKind::Op, Some("="));
+        self.parse_for_with_result(Some((name.text, name_range)), Some(start))
+    }
+
+    fn parse_for_with_result(
+        &mut self,
+        mut result: Option<(String, SourceRange)>,
+        let_start: Option<Pos>,
+    ) -> Stmt {
         let kw = self.expect(TokenKind::Kw, Some("for"));
-        let start = kw.start;
+        let start = let_start.unwrap_or(kw.start);
 
         let mut bindings = vec![self.parse_for_pat()];
         while self.match_tok(TokenKind::Comma, None).is_some() {
@@ -687,14 +748,27 @@ impl<'a> Parser<'a> {
         }
 
         self.expect(TokenKind::Kw, Some("in"));
+        // A bare `as` ends the source (`Parser::stop_at_as`): the retired
+        // `for .. as run` form lands below rather than reading as a conversion.
+        let saved_as = std::mem::replace(&mut self.stop_at_as, true);
         let source = self.parse_for_source();
+        self.stop_at_as = saved_as;
 
-        // `as run` - optional result binding.
-        let result = if self.match_tok(TokenKind::Kw, Some("as")).is_some() {
-            Some(self.expect(TokenKind::Ident, None).text)
-        } else {
-            None
-        };
+        if let Some(as_tok) = self.match_tok(TokenKind::Kw, Some("as")) {
+            let name = self.expect(TokenKind::Ident, None);
+            self.error(
+                format!(
+                    "`for ... as {0}` is now written `let {0} = for ...`; to convert the loop \
+                     source, put it in parentheses: `for x in (xs as T)`",
+                    name.text
+                ),
+                as_tok.start,
+                name.end,
+            );
+            if result.is_none() {
+                result = Some((name.text.clone(), self.make_range(name.start, name.end)));
+            }
+        }
 
         let body = self.parse_block();
         let end = body.range.end;
@@ -702,6 +776,7 @@ impl<'a> Parser<'a> {
             bindings,
             source,
             result,
+            sliced: false,
             body,
             range: self.make_range(start, end),
         })

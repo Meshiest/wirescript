@@ -481,3 +481,63 @@ mod DisplayBasis(w: float, h: float) -> (width: float, height: float) {
       (out_declaration
         (identifier)
         (identifier)))))
+
+================================================================================
+a loop bound to its result
+================================================================================
+
+on go {
+  let run = for i in 0..n {
+    seen = seen + 1
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (let_declaration
+        (identifier)
+        (for_statement
+          (identifier)
+          (binary_expression
+            (integer)
+            (identifier))
+          (block
+            (assignment_statement
+              (identifier)
+              (binary_expression
+                (identifier)
+                (integer)))))))))
+
+================================================================================
+a sliced loop
+================================================================================
+
+on go {
+  @sliced for i in 0..n {
+    seen = seen + 1
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (for_statement
+        (annotation
+          (annotation_name))
+        (identifier)
+        (binary_expression
+          (integer)
+          (identifier))
+        (block
+          (assignment_statement
+            (identifier)
+            (binary_expression
+              (identifier)
+              (integer))))))))

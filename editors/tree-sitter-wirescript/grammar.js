@@ -30,6 +30,7 @@ const PREC = {
   additive: 10, // + - ..
   multiplicative: 11, // * / %
   power: 12, // **  (right associative)
+  cast: 13, // as
   unary: 15, // - ! ~ * & ref
   postfix: 16, // call, index, field, tuple pick
 };
@@ -185,7 +186,7 @@ module.exports = grammar({
       ),
 
     // `let x = 1`, `let sig: exec`, `let {a, b: c} = r`, `let (a, b) = t`,
-    // `let e = on Trigger { … }`, `let v = await x on done`
+    // `let e = on Trigger { … }`, `let v = await x on done`, `let run = for …`
     let_declaration: ($) =>
       seq(
         optional($._annotations),
@@ -197,7 +198,7 @@ module.exports = grammar({
             '=',
             field(
               'value',
-              choice($._expression, $.event_source, $.await_expression),
+              choice($._expression, $.event_source, $.await_expression, $.for_statement),
             ),
           ),
         ),
@@ -292,15 +293,15 @@ module.exports = grammar({
         field('body', $.block),
       ),
 
-    // `fn name(params) -> T = expr` — expression bodied.
+    // `fn name(params) -> outputs { body }`: a `mod` signature, compiled once
+    // into a function definition plane.
     function_declaration: ($) =>
       seq(
         'fn',
         field('name', $.identifier),
         field('parameters', $.parameter_list),
-        optional(seq('->', field('return_type', $._type))),
-        '=',
-        field('body', $._expression),
+        optional(seq('->', field('output', $._chip_output))),
+        field('body', $.block),
       ),
 
     parameter_list: ($) => seq('(', commaSepTrailing($.parameter), ')'),
@@ -313,6 +314,7 @@ module.exports = grammar({
         ),
         ':',
         field('type', $._type),
+        optional(seq('=', field('default', $._expression))),
       ),
 
     // `-> (a: int, b: bool)` or `-> int`
@@ -401,21 +403,22 @@ module.exports = grammar({
         ),
       ),
 
-    // `for <pat> [, <pat>]* in <source> [as <name>] { <body> }`. The source
-    // is `$._expression_no_brace`, like `if_statement`, so the body's `{`
-    // is never read as a record literal.
+    // `[@sliced] for <pat> [, <pat>]* in <source> { <body> }`, bound to a
+    // result with `let run = for ...` (`let_declaration`). The source is
+    // `$._expression_no_brace`, like `if_statement`, so the body's `{` is
+    // never read as a record literal.
     for_statement: ($) =>
       seq(
+        optional($._annotations),
         'for',
         commaSep1(field('binding', $._for_pattern)),
         'in',
         field('source', $._expression_no_brace),
-        optional(seq('as', field('result', $.identifier))),
         field('body', $.block),
       ),
 
     // One binding slot: an identifier (`_` included, itself a valid
-    // identifier), or a record pattern like `{ index, isLast }`.
+    // identifier), or a record pattern like `{ index }`.
     _for_pattern: ($) => choice($.identifier, $.record_pattern),
 
     break_statement: (_$) => 'break',
@@ -509,6 +512,7 @@ module.exports = grammar({
         $.dereference_expression,
         $.unsafe_expression,
         $.binary_expression,
+        $.cast_expression,
         $.variant_test,
         $.call_expression,
         $.field_expression,
@@ -589,6 +593,15 @@ module.exports = grammar({
       prec.right(
         PREC.postfix + 1,
         seq($.identifier, repeat1(seq('.', $.identifier))),
+      ),
+
+    // `<value> as <type>`: binds tighter than every binary operator and looser
+    // than a prefix operator, so `-x as int` converts `-x`. The target is a
+    // type without `|` alternatives, so `x as int | m` is a bitwise or.
+    cast_expression: ($) =>
+      prec.left(
+        PREC.cast,
+        seq(field('value', $._expression), 'as', field('type', $._type_postfix)),
       ),
 
     binary_expression: ($) => {

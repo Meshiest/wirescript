@@ -480,20 +480,18 @@
     }
 
     #[test]
-    fn fn_decl_is_removed() {
-        // The `fn` declaration form was removed in favor of
-        // `mod NAME(params) -> T { return <expr> }`. Using it is a parse error
-        // (parsing still recovers the rest of the file).
-        let r = crate::parser::parse("fn add(a: int, b: int) -> int = a + b", "test");
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.message.contains("`fn` declarations have been removed")),
-            "fn decl must be rejected: {:?}",
-            r.diagnostics
-        );
-        let rm = crate::parser::parse("mod add(a: int, b: int) -> int { return a + b }", "test");
-        assert!(rm.diagnostics.is_empty(), "mod replacement: {:?}", rm.diagnostics);
+    fn fn_decl_takes_the_mod_grammar() {
+        let r = crate::parser::parse("fn add(a: int, b: int = 1) -> int { return a + b }", "test");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let crate::ast::TopDecl::Chip(c) = &r.ast.decls[0] else {
+            panic!("a fn is a chip decl: {:?}", r.ast.decls[0]);
+        };
+        assert!(c.is_fn && c.inline && !c.is_const);
+        assert!(c.inputs[0].default.is_none());
+        assert!(matches!(c.inputs[1].default, Some(crate::ast::Expr::IntLit { value: 1, .. })));
+        // The old expression-bodied form is not the grammar.
+        let old = crate::parser::parse("fn add(a: int, b: int) -> int = a + b", "test");
+        assert!(!old.diagnostics.is_empty());
     }
 
     #[test]
@@ -860,7 +858,7 @@
         let r = parse("@middle in a: bool", "test");
         assert!(
             r.diagnostics[0].message.contains(
-                "expected @left, @right, @top, @bottom, @label, @closed, @invisible, or @nofold"
+                "expected @left, @right, @top, @bottom, @label, @closed, @invisible, @nofold, or @sliced"
             ),
             "diags: {:?}",
             r.diagnostics
@@ -2451,9 +2449,49 @@ on go {
     }
 
     #[test]
-    fn for_as_binds_a_result_name() {
-        let f = only_for("in go: exec\non go { for i in 0..n as run { } }");
-        assert_eq!(f.result.as_deref(), Some("run"));
+    fn let_for_binds_a_result_name() {
+        let f = only_for("in go: exec\non go { let run = for i in 0..n { } }");
+        assert_eq!(f.result.as_ref().map(|(n, _)| n.as_str()), Some("run"));
+    }
+
+    #[test]
+    fn the_retired_for_as_form_says_how_to_write_it() {
+        let parsed = crate::parser::parse("in go: exec\non go { for i in 0..n as run { } }", "test");
+        assert!(
+            parsed.diagnostics.iter().any(|d| d.message.contains("let run = for")),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_parenthesized_conversion_is_a_for_source() {
+        let parsed = crate::parser::parse("in go: exec\non go { for i in 0..(n as int) { } }", "test");
+        assert!(parsed.diagnostics.is_empty(), "parse diags: {:?}", parsed.diagnostics);
+    }
+
+    #[test]
+    fn a_bitwise_or_after_as_stays_an_operator() {
+        use crate::ast::{Expr, TopDecl};
+        let parsed = crate::parser::parse("let y = a as int | mask", "test");
+        assert!(parsed.diagnostics.is_empty(), "parse diags: {:?}", parsed.diagnostics);
+        let TopDecl::Let(d) = &parsed.ast.decls[0] else { panic!("a let") };
+        assert!(matches!(&d.value, Expr::BinOp { op, .. } if op == "|"), "{:?}", d.value);
+    }
+
+    #[test]
+    fn as_binds_tighter_than_binary_operators() {
+        use crate::ast::{Expr, TopDecl};
+        let parsed = crate::parser::parse("let y = a + -b as float * 2.0", "test");
+        assert!(parsed.diagnostics.is_empty(), "parse diags: {:?}", parsed.diagnostics);
+        let TopDecl::Let(d) = &parsed.ast.decls[0] else { panic!("a let") };
+        // a + ((-b as float) * 2.0)
+        let Expr::BinOp { op, right, .. } = &d.value else { panic!("{:?}", d.value) };
+        assert_eq!(op, "+");
+        let Expr::BinOp { op, left, .. } = right.as_ref() else { panic!("{right:?}") };
+        assert_eq!(op, "*");
+        let Expr::As { value, .. } = left.as_ref() else { panic!("{left:?}") };
+        assert!(!matches!(value.as_ref(), Expr::BinOp { .. } | Expr::As { .. }), "{value:?}");
     }
 
     #[test]

@@ -230,3 +230,38 @@ fn an_await_reached_through_an_inlined_mod_call_fails_to_compile() {
         "expected WS079 among the compile errors, got {diags:?}"
     );
 }
+
+/// `@sliced` reaches the save as the shell's `bRunAcrossTicks`, on every
+/// loop kind, and a plain `for` leaves it off.
+#[test]
+fn sliced_is_baked_into_every_loop_shell() {
+    use brdb::schema::BrdbValue;
+    let flags = |src: &str| -> Vec<(String, bool)> {
+        let mut out: Vec<(String, bool)> = common::world_components(&brz(src))
+            .iter()
+            .filter(|c| c.get_name().starts_with("BrickComponentData_Internal_Microchip_"))
+            .filter_map(|c| match c.get("bRunAcrossTicks") {
+                Some(BrdbValue::Bool(b)) => Some((c.get_name().to_string(), *b)),
+                _ => None,
+            })
+            .collect();
+        out.sort();
+        out
+    };
+    let body = "var t: int = 0\nvar xs: int[]\nvar m: Map<string, int>\nin go: exec\non go {\n";
+    assert_eq!(
+        flags(&format!(
+            "{body}  @sliced for i in 0..3 {{ t += i }}\n  @sliced for v in xs {{ t += v }}\n  \
+             @sliced for k, v in m {{ t += v }}\n}}"
+        )),
+        vec![
+            ("BrickComponentData_Internal_Microchip_CountFor".to_string(), true),
+            ("BrickComponentData_Internal_Microchip_ForEachArray".to_string(), true),
+            ("BrickComponentData_Internal_Microchip_ForEachMap".to_string(), true),
+        ]
+    );
+    assert_eq!(
+        flags(&format!("{body}  for i in 0..3 {{ t += i }}\n}}")),
+        vec![("BrickComponentData_Internal_Microchip_CountFor".to_string(), false)]
+    );
+}

@@ -93,6 +93,13 @@ pub mod sym {
     // Pseudo-property (not a game field): set on every node lowered from a
     // `@nofold` declaration subtree; the fold pass must skip these nodes.
     def!(NO_FOLD, "_nofold");
+    // Pseudo-property (not a game field): the index into a procedural gate's
+    // catalog `variants` that `lower::gate_variants` chose from the ports the
+    // node uses. Layout and emit both size the brick from it.
+    def!(GATE_VARIANT, "_variant");
+    // Pseudo-property (not a game field): a Convert gate an `as` made, which
+    // `lower::convert::prune_unread_conversions` drops when nothing reads it.
+    def!(AS_CONVERT, "_as");
 
     // Gate classes
     def!(LITERAL, "_Literal");

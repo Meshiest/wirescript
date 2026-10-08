@@ -23,7 +23,6 @@ pub use bus::{BusEnd, BusLayout, BusNode, BusNodeId, BusRole, BusWire};
 
 use crate::collections::HashMap;
 
-use crate::catalog::default_catalog;
 use crate::emit::Placement;
 use crate::ir::{Module, Node, NodeId, NodeKind, ROOT_SCOPE_ID, Type};
 
@@ -53,12 +52,11 @@ fn is_pseudo_storage(node: &Node) -> bool {
     )
 }
 
-/// Look up a node's brick half-size from the gate inventory, falling
-/// back to the standard 1×1 half-size.
+/// Look up a node's brick half-size from the gate inventory (a procedural
+/// gate's chosen variant), falling back to the standard 1×1 half-size.
 fn brick_half_size(node: &Node) -> (i32, i32) {
-    default_catalog()
-        .find_by_class(node.gate_class)
-        .map(|g| (g.half_size.x, g.half_size.y))
+    crate::catalog::node_half_size(node)
+        .map(|h| (h.x, h.y))
         .unwrap_or((DEFAULT_HALF_SIZE, DEFAULT_HALF_SIZE))
 }
 
@@ -66,9 +64,8 @@ fn brick_half_size(node: &Node) -> (i32, i32) {
 /// only engine that stacks bricks along `z`, so it is the only one that can
 /// collide along it.
 fn brick_half_height(node: &Node) -> i32 {
-    default_catalog()
-        .find_by_class(node.gate_class)
-        .map(|g| g.half_size.z)
+    crate::catalog::node_half_size(node)
+        .map(|h| h.z)
         .unwrap_or(DEFAULT_HALF_SIZE)
 }
 
@@ -337,7 +334,50 @@ const GRID_LAYOUT_THRESHOLD: usize = 5000;
 
 /// Like [`layout`] but with explicit options.
 pub fn layout_with_opts(module: &Module, opts: &LayoutOptions) -> LayoutResult {
-    layout_impl(module, opts, true)
+    let mut result = layout_impl(module, opts, true);
+    order_function_ports(module, &mut result);
+    result
+}
+
+/// Put each function plane's inputs, and its results, top to bottom in slot
+/// order.
+///
+/// A Function Call maps its `Input0..7` and `Output0..7` onto the plane's
+/// `FunctionInput` / `FunctionOutput` bricks by position, not `PortOrder`:
+/// the brick with the highest local X (the top of the board) is slot 0
+/// (measured in game 2026-10-08). The bricks are all 1x1, so this permutes
+/// the positions layout gave them among themselves, highest X to the lowest
+/// slot.
+fn order_function_ports(module: &Module, result: &mut LayoutResult) {
+    use crate::ir::gate_class as gc;
+    let port_order = crate::intern::intern("PortOrder");
+    for (id, child) in &module.chips {
+        let Some(sub) = result.chip_layouts.get_mut(id) else { continue };
+        if module.nodes.get(id).is_some_and(|n| n.gate_class == gc::MICROCHIP_FUNCTION_DEFINITION) {
+            for class in [gc::FUNCTION_INPUT, gc::FUNCTION_OUTPUT] {
+                let mut ports: Vec<(i64, NodeId)> = child
+                    .nodes
+                    .values()
+                    .filter(|n| n.gate_class == class && n.kind == NodeKind::Gate)
+                    .filter_map(|n| match n.properties.get(&port_order) {
+                        Some(crate::ir::Literal::Int(k)) => Some((*k, n.id)),
+                        _ => None,
+                    })
+                    .collect();
+                ports.sort();
+                let mut spots: Vec<Placement> =
+                    ports.iter().filter_map(|(_, n)| sub.placements.get(n).copied()).collect();
+                if spots.len() != ports.len() {
+                    continue;
+                }
+                spots.sort_by_key(|p| (std::cmp::Reverse(p.x), p.y, p.z));
+                for ((_, n), spot) in ports.iter().zip(spots) {
+                    sub.placements.insert(*n, spot);
+                }
+            }
+        }
+        order_function_ports(child, sub);
+    }
 }
 
 fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutResult {

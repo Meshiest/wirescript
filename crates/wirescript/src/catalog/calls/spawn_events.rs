@@ -179,6 +179,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                     ("HitLocation".into(), Type::Vector),
                     ("HitNormal".into(), Type::Vector),
                     ("HitColor".into(), Type::Color),
+                    ("HitBrick".into(), Type::Brick),
                     ("Hit".into(), Type::Exec),
                     ("Miss".into(), Type::Exec),
                 ]),

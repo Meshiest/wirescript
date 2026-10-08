@@ -18,6 +18,7 @@ Statements are the building blocks of Wirescript programs. They declare data, de
 - [`match` -- Branch on an Enum Variant](#match----branch-on-an-enum-variant)
 - [`if let` / `let else` -- Refutable Enum Binds](#if-let--let-else----refutable-enum-binds)
 - [`for` Loops](#for-loops)
+- [`fn` -- Function](#fn----function)
 - [`on` -- Event Handler](#on----event-handler)
 - [`let on` -- Event Declaration](#let-on----event-declaration)
 - [`emit` -- Emit Signal](#emit----emit-signal)
@@ -1209,9 +1210,9 @@ range-only form, described below:
 
 | source | slots | a single binding means |
 |---|---|---|
-| range / `count(...)` | `index`, `ordinal`, `isFirst`, `isLast` | `index` |
+| range / `count(...)` | `index` | `index` |
 | array | `index`, `value` | `value` |
-| map | `key`, `value`, `ordinal` | `key` |
+| map | `key`, `value`, `index` | `key` |
 
 ```wirescript
 in go: exec
@@ -1227,25 +1228,25 @@ on go {
 }
 ```
 
-`{ }` names the loop's own entry ports, and only a range accepts it: it is the
-only way to reach `isFirst`, `isLast` and `ordinal`. An array or map slot
-holds a value rather than a set of ports, and no slot of either kind is a
-record, so `{ }` on one is rejected (`WS076`) - name the slot instead.
+`{ }` names the loop's own entry ports, and only a range accepts it. An array
+or map slot holds a value rather than a set of ports, and no slot of either
+kind is a record, so `{ }` on one is rejected (`WS076`) - name the slot
+instead.
 
 ```wirescript
 in go: exec
-var lastIndex: int = -1
+var total: int = 0
 
 on go {
-  for { index, isLast } in 0..5 {
-    if isLast { lastIndex = index }
+  for { index } in count(3, from = 10, step = 5) {
+    total = total + index
   }
 }
 ```
 
-`index` is the counter value and respects `from`/`step`; `ordinal` is the
-zero-based count of iterations so far. The two agree on a plain range and
-differ on a stepped one.
+`index` is the counter value and respects `from`/`step`. A range has no
+first/last flags or iteration ordinal; compare `index` against the bounds
+instead.
 
 **A record-typed array cannot be iterated.** Both `for { x, y } in points` and
 the single-binding `for p in points` are rejected over a `Point[]` (`WS082`):
@@ -1273,17 +1274,19 @@ stored the same way but does iterate: the loop runs off one of its columns and
 reads the others at each element's index or key, so `for h in hues` binds `h`
 as the enum.
 
-### `as run`
+### Loop result (`let run = for`)
 
-`as run` binds the loop's result to a record readable after it ends: `{
-aborted, abortCode, iterations }`.
+`let run = for ...` binds the loop's result to a record readable after it
+ends: `{ aborted, iterations, running }`. `running` is true while the loop is
+still in progress, which only a loop running across ticks can be after it
+starts.
 
 ```wirescript
 in go: exec
 var seen: int = 0
 
 on go {
-  for i in 0..6 as run {
+  let run = for i in 0..6 {
     seen = seen + 1
   }
   if run.aborted {
@@ -1313,6 +1316,32 @@ A deliberate `break` does **not** set `run.aborted`. That field reports the
 runtime cutting a loop off on its own (an invocation limit, for instance),
 which a `break` is not.
 
+### Sliced loops (`@sliced`)
+
+A loop finishes within the tick it starts. `@sliced` before the `for`
+turns on the loop chip's Run Across Ticks setting, which lets the game spread
+the iterations over several ticks; the game decides how many run in each.
+Code after the loop runs when the loop completes, as it does without the
+annotation.
+
+```wirescript
+in go: exec
+var total: int = 0
+var busy: bool = false
+
+on go {
+  @sliced
+  let run = for i in 0..1000 {
+    total = total + i
+  }
+  busy = run.running
+}
+```
+
+`@sliced` goes on a `for` or a `let run = for` and nothing else, and
+takes no other annotation beside it. The body rules below still apply: a body
+cannot `await`, even when the game runs it across ticks.
+
 ### What a Loop Body Can't Do
 
 - **`continue`.** No primitive exists to lower it to.
@@ -1341,6 +1370,111 @@ recomputed on every pass. Compute it once above the loop and read it inside
 instead. This is the first loop in the language where that trade-off exists:
 a `mod` bakes its cost in per call site at compile time, so there was never a
 runtime sweep to hoist work out of.
+
+## `fn` -- Function
+
+A `fn` is written like a `mod`, but compiles once. Its body becomes one
+function definition plane, and every call is a Function Call gate bound to
+that plane, so ten calls cost ten small gates instead of ten copies of the
+body. The call runs the body to the end, synchronously, then continues the
+caller's chain with the results.
+
+```wirescript
+var total: int = 0
+
+fn add(x: int, y: int = 1) -> int {
+  total += x
+  return x + y
+}
+
+in go: exec
+on go {
+  let a = add(3)       // y takes its default, 1
+  let b = add(4, 5)
+  BroadcastChatMessage("${a} ${b} ${total}")
+}
+```
+
+The signature is a `mod`'s: parameters, `-> T` or `-> (a: int, b: float)`,
+and `return`. A trailing parameter may have a default value, a constant used
+when a call leaves the argument out (a `mod` takes defaults too).
+
+**What crosses into the plane.** Nothing is wired across a function plane's
+wall: the game runs a plane only through its call. Parameters arrive through
+the call's inputs and results leave through its outputs. A body may still use
+storage declared outside it, a `var`, array or map: the compiler places a
+handle inside the plane, a var holding a reference to that storage, and the
+body reads and writes through it. A `*T` or container parameter is passed the
+same way, as a reference the body uses in place.
+
+```wirescript
+var log: int[]
+
+fn record(p: { x: int, y: int }) -> (sum: int, diff: int) {
+  log.push(p.x)
+  return (p.x + p.y, p.x - p.y)
+}
+
+fn bump(v: *int) {
+  *v = *v + 1
+}
+
+var count: int = 0
+in go: exec
+on go {
+  let r = record({ x: 3, y: 4 })
+  bump(&count)
+  BroadcastChatMessage("${r.sum} ${r.diff} ${count}")
+}
+```
+
+A computed value from outside (an `in` port, a `let`) has no way in and is
+`WS113`; pass it as a parameter. Constants fold into the body as usual.
+
+**Calling from pure context.** A call needs an exec chain to fire on. Outside
+a handler, give it one with `exec = trigger`. The call then does not join any
+chain: its result carries the Function Call's completion as an `exec` field,
+so `on` can run a body once the call has finished, with the results bound by
+`-> (...)`. Inside a handler, `f(...).exec` names the same completion and
+forks, as described in [Forking the Exec Chain](exec-context.md#forking-the-exec-chain).
+
+```wirescript
+var last: int = 0
+var done: int = 0
+
+fn add(x: int, y: int = 1) -> int {
+  return x + y
+}
+
+fn tally(n: int) {
+  done += n
+}
+
+in go: exec
+on add(2, exec = go) -> (v) {
+  last = v                  // runs when the call completes, v = 3
+}
+on tally(1, exec = go) {
+  BroadcastChatMessage("tallied ${done}")
+}
+```
+
+**No recursion.** A `fn` may call another `fn`, but not itself, directly or
+through another `fn` (`WS020`): the game does not run a recursive Function
+Call. Use a `for` loop instead.
+
+**Limits.** A call carries at most 8 values in and 8 out, and a record
+parameter takes one per field (`WS115`). A `fn` is one plane, so it cannot be
+generic, take `...rest`, `const` or `exec` parameters, or return a record,
+tuple, enum or `exec` (`WS114`). A call with neither an exec chain nor an
+`exec =` trigger is `WS111`.
+
+| | `mod` | `fn` | `for` |
+|---|---|---|---|
+| Compiled | once per call site | once | once per loop |
+| Runs | inline, as part of the caller | when its call fires, to the end | once per iteration, in one tick (several with `@sliced`) |
+| Outer storage | wired directly | through handles in its plane | wired through the plane's pins |
+| Recursion | no (`WS020`) | no (`WS020`) | no |
 
 ## `on` -- Event Handler
 
@@ -1968,9 +2102,9 @@ These events are available as handler triggers. Parameters listed can be bound u
 | `CharacterSpawned` | `character: character` | A character spawned |
 | `CharacterDied` | `character: character`, `killer: character`, `killerWeapon: entity`, `killerWeaponName: string` | A character died (`killer` / `killerWeapon` are who/what killed it) |
 | `ControllerJoined` | `controller: controller`, `userId: string`, `userName: string` | A player joined |
-| `ControllerLeft` | `controller: controller`, `userId: string`, `userName: string` | A player left (`userId` / `userName` stay valid even as the controller is torn down on disconnect) |
+| `ControllerLeft` | `userId: string`, `userName: string` | A player left (the player is already gone, so there is no `controller`) |
 | `ControllerJoinedTeam` | `controller: entity`, `team: entity`, `userId: string`, `userName: string` | A player joined a team (`team` is the team they joined) |
-| `ControllerLeftTeam` | `controller: entity`, `team: entity`, `userId: string`, `userName: string` | A player left a team |
+| `ControllerLeftTeam` | `controller: entity`, `team: entity`, `userId: string`, `userName: string` | A player left a team (`controller` is empty if they left the server) |
 | `ZoneEntered` | `character: character` | A character entered a zone |
 | `ZoneLeft` | `character: character` | A character left a zone |
 | `EntityZoneEntered` | `entity: entity` | An entity entered a zone |

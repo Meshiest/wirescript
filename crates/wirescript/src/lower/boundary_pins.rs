@@ -153,10 +153,15 @@ fn index_owners(m: &Module, path: &mut ModPath, owner: &mut HashMap<NodeId, ModP
 fn extract_crossings(root: &mut Module, owner: &HashMap<NodeId, ModPath>, out: &mut Vec<Wire>) {
     let mut literal_ids: HashSet<NodeId> = Default::default();
     collect_literals(root, &mut literal_ids);
+    // A call's definition wire runs straight from the `fn` shell, through any
+    // wall (see `function::is_definition_wire`).
+    let mut shells: HashSet<NodeId> = Default::default();
+    collect_fn_shells(root, &mut shells);
     fn walk(
         m: &mut Module,
         owner: &HashMap<NodeId, ModPath>,
         literal_ids: &HashSet<NodeId>,
+        shells: &HashSet<NodeId>,
         out: &mut Vec<Wire>,
     ) {
         m.wires.retain(|w| {
@@ -164,6 +169,9 @@ fn extract_crossings(root: &mut Module, owner: &HashMap<NodeId, ModPath>, out: &
                 return true;
             }
             if literal_ids.contains(&w.source.node_id) {
+                return true;
+            }
+            if shells.contains(&w.source.node_id) && w.source.port == WirePort::Definition {
                 return true;
             }
             let (Some(sp), Some(tp)) = (owner.get(&w.source.node_id), owner.get(&w.target.node_id))
@@ -179,10 +187,21 @@ fn extract_crossings(root: &mut Module, owner: &HashMap<NodeId, ModPath>, out: &
         let mut kids: Vec<NodeId> = m.chips.keys().copied().collect();
         kids.sort();
         for k in kids {
-            walk(m.chips.get_mut(&k).unwrap(), owner, literal_ids, out);
+            walk(m.chips.get_mut(&k).unwrap(), owner, literal_ids, shells, out);
         }
     }
-    walk(root, owner, &literal_ids, out);
+    walk(root, owner, &literal_ids, &shells, out);
+}
+
+fn collect_fn_shells(m: &Module, out: &mut HashSet<NodeId>) {
+    for (id, n) in &m.nodes {
+        if n.gate_class == gc::MICROCHIP_FUNCTION_DEFINITION {
+            out.insert(*id);
+        }
+    }
+    for c in m.chips.values() {
+        collect_fn_shells(c, out);
+    }
 }
 
 fn collect_literals(m: &Module, out: &mut HashSet<NodeId>) {

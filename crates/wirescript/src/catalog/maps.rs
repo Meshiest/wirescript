@@ -2,30 +2,29 @@
 //! (`m.get(k)`, `m.set(k, v)`, `m.has(k)`, ...). Parallels [`super::arrays`].
 //!
 //! Each entry pairs a surface name with the `MapVar` gate it lowers to plus
-//! curated display strings. The per-method input wiring lives in
-//! [`crate::lower::access::lower_map_method`]; every name here must be handled
-//! there (enforced by a test in that module).
+//! curated display strings and its [`Lowering`], which `lower::access` builds
+//! the gate from.
 
-use crate::ir::Type;
 use crate::ir::gate_class as gc;
+use crate::ir::Type;
+use crate::ir::port_registry::WirePort;
+use crate::typecheck::ContainerKind;
+
+use super::methods::{arg, generic, opt, val, ArgKind, ArgTy, Lowering};
 
 /// One map method: surface name, the gate it lowers to, curated display, and
-/// its typed-parameter builder.
+/// how it lowers. Its typed parameters are derived from the lowering's
+/// arguments.
 pub struct MapMethod {
     pub name: &'static str,
     pub gate: &'static str,
     pub signature: &'static str,
     pub doc: &'static str,
-    /// The method's structured, typed params as a function of the map's key
-    /// type `K` and value type `V` — the machine-readable counterpart to the
-    /// human-readable `signature` string. Stored per-entry as DATA (not a
-    /// name-match) so the compiler requires every method to supply one: adding
-    /// a method to `MAP_METHODS` without a param builder is a compile error,
-    /// not a silent no-param gap or a runtime panic. Every param is
-    /// `ParamKind::Wire` (map methods have no config-only params).
-    /// `map_return_type` is the source of truth for the return type —
-    /// `CallSignature` doesn't carry one.
-    pub params: fn(&Type, &Type) -> Vec<crate::typecheck::Param>,
+    /// Which argument feeds which gate input and which output the call
+    /// returns. Typecheck reads the same arguments as the method's parameters
+    /// ([`MapMethod::params`]). `map_return_type` is the source of truth for
+    /// the return type; `CallSignature` doesn't carry one.
+    pub lowering: Lowering,
     /// Does this method CHANGE the receiver's contents? Same per-entry-data
     /// rule and the same reader as [`super::arrays::ArrayMethod::mutates`].
     /// `keys`/`values` are read-only here because what they write is a
@@ -33,43 +32,40 @@ pub struct MapMethod {
     pub mutates: bool,
 }
 
-/// Build one `ParamKind::Wire` parameter (shared by the `params` builders).
-fn p(name: &str, ty: Type, optional: bool) -> crate::typecheck::Param {
-    crate::typecheck::Param {
-        name: name.to_string(),
-        ty,
-        optional,
-        kind: crate::typecheck::ParamKind::Wire,
-    }
-}
-
 impl MapMethod {
+    /// The method's typed parameters on a `Map<key, value>`.
+    pub fn params(&self, key: &Type, value: &Type) -> Vec<crate::typecheck::Param> {
+        self.lowering.params(&ContainerKind::Map { key: key.clone(), value: value.clone() })
+    }
+
     /// Build the [`CallSignature`](crate::typecheck::CallSignature) for a call
     /// on a `Map<key, value>`.
     pub fn signature(&self, key: &Type, value: &Type) -> crate::typecheck::CallSignature {
         crate::typecheck::CallSignature {
             name: self.name.to_string(),
-            params: (self.params)(key, value),
+            params: self.params(key, value),
             config_gate: None,
         }
     }
 }
 
+use ArgTy::{Bool, Key, MapValue};
+use WirePort as P;
+
 /// Every method callable on a map, in a stable display order.
 pub static MAP_METHODS: &[MapMethod] = &[
-    MapMethod { name: "get", mutates: false, gate: gc::MAP_GET, signature: "(key)", doc: "Read the value at key; gives its Value (default) and Found", params: |k, _| vec![p("key", k.clone(), false)] },
-    MapMethod { name: "set", mutates: true, gate: gc::MAP_SET, signature: "(key, value)", doc: "Insert or overwrite the value at key", params: |k, v| vec![p("key", k.clone(), false), p("value", v.clone(), false)] },
-    MapMethod { name: "has", mutates: false, gate: gc::MAP_HAS, signature: "(key)", doc: "Whether the map contains key", params: |k, _| vec![p("key", k.clone(), false)] },
-    MapMethod { name: "remove", mutates: true, gate: gc::MAP_REMOVE, signature: "(key)", doc: "Remove key; gives whether it was present", params: |k, _| vec![p("key", k.clone(), false)] },
-    MapMethod { name: "clear", mutates: true, gate: gc::MAP_CLEAR, signature: "()", doc: "Remove all entries", params: |_, _| vec![] },
-    MapMethod { name: "copyFrom", mutates: true, gate: gc::MAP_COPY_FROM, signature: "(source)", doc: "Replace contents with a copy of another map", params: |k, v| vec![p("source", Type::Map(Box::new(k.clone()), Box::new(v.clone())), false)] },
-    MapMethod { name: "length", mutates: false, gate: gc::MAP_GET_LENGTH, signature: "() -> int", doc: "Number of entries", params: |_, _| vec![] },
-    // `keys`/`values` fill a caller-supplied destination array in place (see
-    // `lower::access::lower_map_method`, which reads the first arg as the
-    // array-ref destination); the `out: K[]`/`V[]` array is a PARAMETER, and
-    // the call itself has no value (`Never`, `map_return_type`).
-    MapMethod { name: "keys", mutates: false, gate: gc::MAP_GET_KEYS, signature: "(destArray)", doc: "Fill an array with the map's keys", params: |k, _| vec![p("out", Type::Array(Box::new(k.clone())), false)] },
-    MapMethod { name: "values", mutates: false, gate: gc::MAP_GET_VALUES, signature: "(destArray)", doc: "Fill an array with the map's values", params: |_, v| vec![p("out", Type::Array(Box::new(v.clone())), false)] },
+    MapMethod { name: "get", mutates: false, gate: gc::MAP_GET, signature: "(key)", doc: "Read the value at key; gives its Value (default) and Found", lowering: generic(&[val("key", P::Key, Key)], P::Value) },
+    MapMethod { name: "set", mutates: true, gate: gc::MAP_SET, signature: "(key, value)", doc: "Insert or overwrite the value at key", lowering: generic(&[val("key", P::Key, Key), val("value", P::Value, MapValue)], P::ExecOut) },
+    MapMethod { name: "has", mutates: false, gate: gc::MAP_HAS, signature: "(key)", doc: "Whether the map contains key", lowering: generic(&[val("key", P::Key, Key)], P::BFound) },
+    MapMethod { name: "remove", mutates: true, gate: gc::MAP_REMOVE, signature: "(key)", doc: "Remove key; gives whether it was present", lowering: generic(&[val("key", P::Key, Key)], P::BFound) },
+    MapMethod { name: "clear", mutates: true, gate: gc::MAP_CLEAR, signature: "()", doc: "Remove all entries", lowering: generic(&[], P::ExecOut) },
+    MapMethod { name: "copyFrom", mutates: true, gate: gc::MAP_COPY_FROM, signature: "(source)", doc: "Replace contents with a copy of another map", lowering: generic(&[arg("source", P::SourceRef, ArgKind::MapRef)], P::ExecOut) },
+    MapMethod { name: "length", mutates: false, gate: gc::MAP_GET_LENGTH, signature: "() -> int", doc: "Number of entries", lowering: generic(&[], P::Length) },
+    // `keys`/`values` fill a caller-supplied destination array in place; the
+    // `destArray: K[]`/`V[]` array is a PARAMETER, and the call itself has no
+    // value (`Never`, `map_return_type`).
+    MapMethod { name: "keys", mutates: false, gate: gc::MAP_GET_KEYS, signature: "(destArray, includeDead?)", doc: "Fill an array with the map's keys; a brick key whose brick is gone is skipped unless includeDead", lowering: generic(&[arg("destArray", P::ArrayVarRef, ArgKind::DestArray(Key)), opt("includeDead", P::BIncludeDead, Bool)], P::ExecOut) },
+    MapMethod { name: "values", mutates: false, gate: gc::MAP_GET_VALUES, signature: "(destArray)", doc: "Fill an array with the map's values", lowering: generic(&[arg("destArray", P::ArrayVarRef, ArgKind::DestArray(MapValue))], P::ExecOut) },
 ];
 
 pub fn map_methods() -> &'static [MapMethod] {

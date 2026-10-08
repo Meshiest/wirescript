@@ -81,8 +81,9 @@ pub(super) fn var_type_to_wire_value(ty: Option<&crate::ir::Type>) -> WireValue 
             a: 1.0,
         },
         // A var ref, and an array or map ref (a `VarRef` of an ArrayVar /
-        // MapVar), is a component ref; unset, it is the game's null one.
-        Some(Type::Ref(_) | Type::Array(_) | Type::Map(_, _)) => {
+        // MapVar), is a component ref, as is a `Component<X>` from Get/Add
+        // Component; unset, it is the game's null one.
+        Some(Type::Ref(_) | Type::Array(_) | Type::Map(_, _) | Type::Component(_)) => {
             WireValue::ComponentRef(null_component_ref())
         }
         Some(Type::Brick) => WireValue::BrickRef(null_brick_ref()),
@@ -105,8 +106,9 @@ pub(super) fn dynamic_type_name(ty: Option<&crate::ir::Type>) -> &'static str {
         Some(Type::Color) => "LinearColor",
         Some(Type::Controller | Type::Character | Type::Entity) => "weak_object",
         // Handle storage is kind-strict in game: a component_handle container
-        // keeps var, array and map refs; a brick_handle one keeps bricks.
-        Some(Type::Ref(_) | Type::Array(_) | Type::Map(_, _)) => "component_handle",
+        // keeps var, array and map refs and components; a brick_handle one
+        // keeps bricks.
+        Some(Type::Ref(_) | Type::Array(_) | Type::Map(_, _) | Type::Component(_)) => "component_handle",
         Some(Type::Brick) => "brick_handle",
         _ => "f64",
     }
@@ -234,6 +236,7 @@ pub(super) fn map_from_type(ty: &crate::ir::Type) -> DynMap {
             let key_type = match k.as_ref() {
                 Type::Int | Type::Bool => "i64",
                 Type::String => "Str",
+                Type::Brick => "brick_handle",
                 _ => "weak_object",
             };
             (key_type, dynamic_type_name(Some(v.as_ref())))

@@ -115,6 +115,9 @@ pub(super) fn lower_chip_call(
     type_args: &[TypeExpr],
     range: &SourceRange,
 ) -> PortRef {
+    if chip_decl.is_fn {
+        return crate::lower::function::lower_fn_call(ctx, chip_decl, args, range);
+    }
     let named = !chip_decl.name.is_empty();
     if named && ctx.chip_call_stack.iter().any(|(decl, open)| *open && *decl == chip_decl.range) {
         ctx.diagnostics.push(Diagnostic::error(

@@ -22,7 +22,14 @@ pub const CALLABLE_ENTRY_FOR_EACH_MAP: &str =
     "BrickComponentType_CallableEntry_ForEachMap";
 pub const CALLABLE_BREAK: &str = "BrickComponentType_Exec_CallableBreak";
 
-/// True for a gate class that hosts an isolated plane (a callable loop shell).
+// Callable function microchips
+pub const MICROCHIP_FUNCTION_DEFINITION: &str = "Component_Internal_Microchip_FunctionDefinition";
+pub const CALLABLE_ENTRY_FUNCTION: &str = "BrickComponentType_CallableEntry_Function";
+pub const FUNCTION_INPUT: &str = "BrickComponentType_FunctionInput";
+pub const FUNCTION_OUTPUT: &str = "BrickComponentType_FunctionOutput";
+
+/// True for a gate class that hosts an isolated plane (a callable loop or
+/// function shell).
 /// Distinct from `MICROCHIP`/`MICROCHIP_ALT`, whose wall is visual only.
 ///
 /// Answered by asking for the class's plane spec rather than by a second list:
@@ -262,6 +269,7 @@ pub const ENTITY_SET_LINEAR_VELOCITY: &str = "BrickComponentType_Exec_Entity_Set
 pub const ENTITY_SET_ANGULAR_VELOCITY: &str = "BrickComponentType_Exec_Entity_SetAngularVelocity";
 pub const ENTITY_SET_GRAVITY_DIRECTION: &str = "BrickComponentType_Exec_Entity_SetGravityDirection";
 pub const ENTITY_SET_FROZEN: &str = "BrickComponentType_Exec_Entity_SetFrozen";
+pub const ENTITY_SET_VISIBLE: &str = "BrickComponentType_Exec_Entity_SetVisible";
 
 // Gamemode
 pub const GAMEMODE_GET_TEAM_BY_NAME: &str = "BrickComponentType_Exec_Gamemode_GetTeamByName";
@@ -293,6 +301,12 @@ pub const PLAYERSTATE_SHOW_CHAT: &str =
     "BrickComponentType_Exec_PlayerState_ShowChatMessage";
 pub const PLAYERSTATE_SHOW_MESSAGE_BOX: &str =
     "BrickComponentType_Exec_PlayerState_ShowMessageBox";
+pub const PLAYERSTATE_SHOW_OK_CANCEL_BOX: &str =
+    "BrickComponentType_Exec_PlayerState_ShowOkCancelBox";
+pub const PLAYERSTATE_SHOW_YES_NO_BOX: &str =
+    "BrickComponentType_Exec_PlayerState_ShowYesNoBox";
+pub const PLAYERSTATE_SHOW_TEXT_INPUT_BOX: &str =
+    "BrickComponentType_Exec_PlayerState_ShowTextInputBox";
 pub const GAMEMODE_BROADCAST_CHAT: &str =
     "BrickComponentType_Exec_Gamemode_BroadcastChatMessage";
 pub const GAMEMODE_BROADCAST_STATUS: &str =
@@ -307,12 +321,31 @@ pub const PLAY_CLIENT_AUDIO: &str = "BrickComponentType_Exec_PlayClientAudio";
 pub const ENTITY_GET_TAG: &str = "BrickComponentType_Exec_Entity_GetTag";
 pub const ENTITY_SET_TAG: &str = "BrickComponentType_Exec_Entity_SetTag";
 
+// Entity custom properties
+pub const ENTITY_SET_CUSTOM_PROPERTY: &str = "BrickComponentType_Exec_Entity_SetCustomProperty";
+pub const ENTITY_GET_CUSTOM_PROPERTY: &str = "BrickComponentType_Exec_Entity_GetCustomProperty";
+pub const ENTITY_REMOVE_CUSTOM_PROPERTY: &str = "BrickComponentType_Exec_Entity_RemoveCustomProperty";
+pub const ENTITY_COPY_CUSTOM_PROPERTIES: &str = "BrickComponentType_Exec_Entity_CopyCustomProperties";
+
 // Player lookup
 pub const FIND_PLAYER: &str = "BrickComponentType_Exec_FindPlayer";
 
 // Change detector
 pub const CHANGE_DETECTOR: &str = "BrickComponentType_Expr_ChangeDetector";
 pub const CHANGE_DETECTOR_EXEC: &str = "BrickComponentType_Expr_ChangeDetectorExec";
+pub const CONVERT: &str = "BrickComponentType_Expr_Convert";
+pub const GET_VALUE_TYPE: &str = "BrickComponentType_Expr_GetValueType";
+pub const GET_ENVIRONMENT_PROPERTY: &str = "BrickComponentType_Exec_GetEnvironmentProperty";
+pub const SET_ENVIRONMENT_PROPERTY: &str = "BrickComponentType_Exec_SetEnvironmentProperty";
+pub const GET_COMPONENT: &str = "BrickComponentType_Exec_GetComponent";
+pub const ADD_COMPONENT: &str = "BrickComponentType_Exec_AddComponent";
+pub const REMOVE_COMPONENT: &str = "BrickComponentType_Exec_RemoveComponent";
+pub const GET_COMPONENT_PROPERTY: &str = "BrickComponentType_Exec_GetComponentProperty";
+pub const SET_COMPONENT_PROPERTY: &str = "BrickComponentType_Exec_SetComponentProperty";
+pub const CONTAINER_CHANGE_DETECTOR: &str = "BrickComponentType_Expr_ContainerChangeDetector";
+pub const GET_BRICK_PROPERTY: &str = "BrickComponentType_Exec_GetBrickProperty";
+pub const SET_BRICK_PROPERTY: &str = "BrickComponentType_Exec_SetBrickProperty";
+pub const FUNCTION_CALL: &str = "BrickComponentType_FunctionCall";
 
 // Quaternion make/split/dot
 pub const MAKE_QUATERNION: &str = "BrickComponentType_Expr_MakeQuaternion";

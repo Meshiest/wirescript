@@ -133,11 +133,18 @@ fn build_gate_data_map(
                 // (e.g. DisplayText FontSize=16, Lifetime=5) — falling back to a
                 // type-zero when no default is registered.
                 None if is_wire_value => {
+                    // Convert's setting is a value of the type it converts to:
+                    // the variant stored in `TargetType` picks the output.
+                    let port_sym = if gate_class == crate::ir::gate_class::CONVERT && field == "TargetType" {
+                        *crate::intern::sym::OUTPUT
+                    } else {
+                        fm.sym
+                    };
                     let port_ty = ports
                         .inputs
                         .iter()
                         .chain(ports.outputs.iter())
-                        .find(|p| p.name == fm.sym)
+                        .find(|p| p.name == port_sym)
                         .map(|p| &p.ty);
                     let wv = var_type_to_wire_value(port_ty);
                     Box::new(if bool_as_int { coerce_bool_to_int(wv) } else { wv })
@@ -493,6 +500,10 @@ impl brdb::BrdbComponent for NativeStruct {
     fn component_type(&self) -> Option<BString> {
         Some(BString::Static(self.name))
     }
+
+    fn component_type_ref(&self) -> Option<&str> {
+        Some(self.name)
+    }
 }
 
 /// The schema `Color { B, G, R, A: u8 }` value for one `MeshColors` element.
@@ -639,6 +650,38 @@ pub(super) fn build_adv_inventory_component(
     data.insert("WeaponAmmoOverride".into(), Box::new(ammo));
 
     Ok(NativeStruct::new(gate_class, data))
+}
+
+/// One `InputSources` entry per `Input0..7` pin. The game writes all eight
+/// even on a call with nothing wired, as it does for the other fixed-size
+/// arrays above.
+const CALLABLE_INPUT_SLOTS: usize = 8;
+
+/// A Function Call: its pin values plus `InputSources`, the
+/// `ECallableInputSource[]` that says per input whether the call supplies the
+/// value (`Override`, 1) or the definition's `DefaultValue` does
+/// (`DefinitionDefault`, 0). Read from an `InputSources` array of ints; any
+/// slot it leaves out is `DefinitionDefault`.
+pub(super) fn build_function_call_component(
+    ports: &crate::ir::GateIO,
+    inlined: &HashMap<Sym, &Literal>,
+    world: &mut World,
+    prefab_resolver: Option<&PrefabResolver>,
+    nested_compiler: Option<&NestedCompiler>,
+) -> Result<NativeStruct, EmitError> {
+    let mut data = build_gate_data_map(gc::FUNCTION_CALL, ports, inlined, world, prefab_resolver, nested_compiler)?
+        .unwrap_or_default();
+    let given: &[Literal] = match inlined.get(&intern_static("InputSources")).copied() {
+        Some(Literal::Array(v)) => v.as_slice(),
+        _ => &[],
+    };
+    let mut sources: Vec<Box<dyn AsBrdbValue>> = Vec::with_capacity(CALLABLE_INPUT_SLOTS);
+    for i in 0..CALLABLE_INPUT_SLOTS {
+        let v = matches!(given.get(i), Some(Literal::Int(1))) as u8;
+        sources.push(Box::new(v));
+    }
+    data.insert("InputSources".into(), Box::new(NativeArray(sources)));
+    Ok(NativeStruct::new(gc::FUNCTION_CALL, data))
 }
 
 /// Test-only: build the advanced-inventory component for `node` and round-trip

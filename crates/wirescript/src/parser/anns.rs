@@ -16,6 +16,8 @@ pub(super) struct ParsedAnnotations {
     pub(super) closed: Option<SourceRange>,
     pub(super) nofold: Option<SourceRange>,
     pub(super) invisible: Option<SourceRange>,
+    /// `@sliced`, legal only before a `for` loop.
+    pub(super) sliced: Option<SourceRange>,
 }
 
 /// Result of [`Parser::collect_module_annotations`] — which module-level
@@ -426,6 +428,13 @@ impl<'a> Parser<'a> {
                         anns.invisible = Some(self.make_range(tok.start, tok.end));
                     }
                 }
+                "sliced" => {
+                    if anns.sliced.is_some() {
+                        self.error("duplicate @sliced".to_string(), tok.start, tok.end);
+                    } else {
+                        anns.sliced = Some(self.make_range(tok.start, tok.end));
+                    }
+                }
                 "nofold" => {
                     if anns.nofold.is_some() {
                         self.error("duplicate @nofold".to_string(), tok.start, tok.end);
@@ -476,7 +485,7 @@ impl<'a> Parser<'a> {
                             )
                         } else {
                             format!(
-                                "unknown annotation '@{}'; expected @left, @right, @top, @bottom, @label, @closed, @invisible, or @nofold",
+                                "unknown annotation '@{}'; expected @left, @right, @top, @bottom, @label, @closed, @invisible, @nofold, or @sliced",
                                 w
                             )
                         };

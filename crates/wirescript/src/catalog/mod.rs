@@ -7,7 +7,9 @@ pub mod calls;
 pub mod events;
 pub mod gate_builtins;
 pub mod maps;
+pub mod methods;
 pub mod operators;
+pub mod properties;
 pub mod storage;
 
 use crate::collections::HashMap;
@@ -29,6 +31,7 @@ pub enum RawPortType {
     Entity,
     Character,
     Controller,
+    Brick,
     VarRef,
     ArrayVarRef,
     Exec,
@@ -90,6 +93,14 @@ pub struct ComponentSpec {
     /// SearchTags metadata); empty for gates the game hasn't tagged.
     #[serde(default)]
     pub search_tags: String,
+    /// The game's grouping (`Gameplay`, `Environment`, ...); empty for most
+    /// logic gates.
+    #[serde(default)]
+    pub category: String,
+    /// A player can add this component with the applicator (the CDO's
+    /// `bPlayerSpawnable`).
+    #[serde(default)]
+    pub player_spawnable: bool,
     pub kind: ComponentKind,
     #[serde(default)]
     pub family: String,
@@ -124,9 +135,68 @@ pub struct GateSpec {
     pub brick_summary: String,
     pub half_size: HalfSize,
     pub component: ComponentSpec,
+    /// Sizes of a procedural gate brick (`PB_Gate_*`), smallest first. Empty
+    /// for an ordinary basic-brick gate. A procedural gate is placed at
+    /// exactly one variant's `half_size` (the game rejects any other size) and
+    /// each size shows a different set of physical ports; every other logical
+    /// port is still reachable through the omniport.
+    #[serde(default)]
+    pub variants: Vec<GateVariant>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+/// One placeable size of a procedural gate brick and the ports it shows.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GateVariant {
+    pub half_size: HalfSize,
+    #[serde(default)]
+    pub inputs: Vec<String>,
+    #[serde(default)]
+    pub outputs: Vec<String>,
+}
+
+impl GateSpec {
+    /// The smallest variant whose physical ports include every used port that
+    /// any variant shows. `used` yields `(is_output, port)`; a port no variant
+    /// shows (an omniport-only one such as `TicksToWait`) never affects the
+    /// size. `None` for a gate without variants. When no variant shows them
+    /// all, the largest is the closest fit.
+    pub fn pick_variant<'a>(&self, used: impl IntoIterator<Item = (bool, &'a str)>) -> Option<usize> {
+        let last = self.variants.len().checked_sub(1)?;
+        let shown_by = |v: &GateVariant, out: bool, port: &str| {
+            let list = if out { &v.outputs } else { &v.inputs };
+            list.iter().any(|p| p == port)
+        };
+        let needed: Vec<(bool, &str)> = used
+            .into_iter()
+            .map(|(out, p)| (out, p.split('.').next().unwrap_or(p)))
+            .filter(|&(out, p)| self.variants.iter().any(|v| shown_by(v, out, p)))
+            .collect();
+        Some(
+            self.variants
+                .iter()
+                .position(|v| needed.iter().all(|&(out, p)| shown_by(v, out, p)))
+                .unwrap_or(last),
+        )
+    }
+
+    /// The half-size the brick is placed at: the chosen variant's for a
+    /// procedural gate (the smallest when none was chosen or the index is
+    /// stale), the catalog's own otherwise.
+    pub fn placed_half_size(&self, variant: Option<usize>) -> HalfSize {
+        match self.variants.as_slice() {
+            [] => self.half_size,
+            vs => vs.get(variant.unwrap_or(0)).unwrap_or(&vs[0]).half_size,
+        }
+    }
+
+    /// A procedural gate brick (`PB_Gate_*`) rather than a basic one.
+    pub fn is_procedural(&self) -> bool {
+        !self.variants.is_empty()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 pub struct HalfSize {
     #[serde(rename = "X")]
     pub x: i32,
@@ -214,6 +284,108 @@ impl Catalog {
             None => true,
         }
     }
+}
+
+/// The half-size `node`'s brick is placed at, or `None` for a class the
+/// catalog does not know. For a procedural gate this is the variant
+/// `lower::gate_variants` recorded on the node, so layout (which reserves the
+/// cell) and emit (which sizes and centers the brick) can never disagree.
+pub fn node_half_size(node: &crate::ir::Node) -> Option<HalfSize> {
+    let spec = default_catalog().find_by_class(node.gate_class)?;
+    Some(spec.placed_half_size(node_variant(node)))
+}
+
+/// The procedural-gate variant recorded on `node`, if any.
+pub fn node_variant(node: &crate::ir::Node) -> Option<usize> {
+    match node.properties.get(&*crate::intern::sym::GATE_VARIANT) {
+        Some(crate::ir::Literal::Int(i)) => usize::try_from(*i).ok(),
+        _ => None,
+    }
+}
+
+/// A component type the component gates (Add/Get Component, Get/Set Component
+/// Property) can be set to.
+#[derive(Clone, Debug)]
+pub struct ComponentTypeOption {
+    /// The name a `$Component/<name>` reference spells: the display name
+    /// without its spaces (`PointLight`, `OneShotAudioPlayer`).
+    pub name: String,
+    /// The component class, as the game names it (`Component_PointLight`).
+    pub class: &'static str,
+    pub display_name: &'static str,
+    pub category: &'static str,
+    pub description: &'static str,
+}
+
+/// The component types the component gates' Component Type setting offers,
+/// sorted by display name: the property map's components (taken from the
+/// gates' own picker), with each one's category and description from the
+/// gate inventory.
+pub fn component_types() -> &'static [ComponentTypeOption] {
+    use std::sync::OnceLock;
+    static LIST: OnceLock<Vec<ComponentTypeOption>> = OnceLock::new();
+    LIST.get_or_init(|| {
+        let mut out: Vec<ComponentTypeOption> = properties::property_map()
+            .components
+            .iter()
+            .map(|c| {
+                let inv = default_catalog().find_by_class(&c.option).map(|g| &g.component);
+                ComponentTypeOption {
+                    name: c.label.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect(),
+                    class: &c.option,
+                    display_name: &c.label,
+                    category: inv.map_or("", |c| c.category.as_str()),
+                    description: inv.map_or("", |c| c.description.as_str()),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.display_name.cmp(b.display_name));
+        out
+    })
+}
+
+/// The name a program spells component `class` by (`PointLight` for
+/// `Component_PointLight`); the class itself for one the gates don't offer.
+pub fn component_name(class: &str) -> String {
+    component_types()
+        .iter()
+        .find(|o| o.class == class)
+        .map_or_else(|| class.to_string(), |o| o.name.clone())
+}
+
+/// The component type `name` (a `$Component/<name>` spelling) names, if the
+/// component gates accept it.
+pub fn component_type(name: &str) -> Option<&'static ComponentTypeOption> {
+    component_types().iter().find(|o| o.name == name)
+}
+
+/// A property of a component, for the Get/Set Component Property gates'
+/// Property Name setting.
+#[derive(Clone, Debug)]
+pub struct ComponentProperty {
+    pub name: &'static str,
+    /// The property's type as the property map gives it (`float`, `color`,
+    /// an enum's name, ...).
+    pub ty: String,
+}
+
+/// The properties of component `class`, from the property map. The map reads
+/// them from the save schema, so the list is a superset of the in-game picker:
+/// it can hold internal fields and flattened per-team flags.
+pub fn component_properties(class: &str) -> Vec<ComponentProperty> {
+    let Some(c) = properties::component(class) else {
+        return Vec::new();
+    };
+    let mut out: Vec<ComponentProperty> = c
+        .properties
+        .iter()
+        .map(|p| ComponentProperty {
+            name: &p.name,
+            ty: p.enum_type.clone().unwrap_or_else(|| p.ty.clone()),
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(b.name));
+    out
 }
 
 /// [`Catalog::is_wire_input`] against the bundled inventory.
@@ -397,6 +569,17 @@ pub fn config_referenced_enum_types() -> Vec<&'static str> {
             if let Some(ty) = config_field_enum_type(&gate.component.class, &prop.name) {
                 types.insert(ty);
             }
+        }
+    }
+
+    // Enum properties of environments and components (`ReverbEffect`), so a
+    // write can name a member (`Environment.Ambience.ReverbEffect = ReverbEffect.Cave`).
+    let map = properties::property_map();
+    for p in map.environments.iter().flat_map(|e| &e.properties).chain(map.components.iter().flat_map(|c| &c.properties)) {
+        if let Some(e) = &p.enum_type
+            && !enum_member_names(e).is_empty()
+        {
+            types.insert(e.as_str());
         }
     }
 

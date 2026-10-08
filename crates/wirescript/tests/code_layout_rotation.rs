@@ -114,8 +114,13 @@ fn overlap_half_sizes() -> HashMap<String, (i32, i32)> {
 /// exactly the mistake these sweeps exist to catch, and a `_` would decide it
 /// silently for whatever gets added next.
 fn brick_half_size(brick: &brdb::Brick, sizes: &HashMap<String, (i32, i32)>) -> Option<(i32, i32)> {
-    let asset = brick.asset.asset().to_string();
-    let (hx, hy) = *sizes.get(&asset)?;
+    // A procedural gate (`PB_Gate_*`) is placed at a variant size of its own,
+    // which the per-asset catalog default would understate.
+    let known = *sizes.get(brick.asset.asset().as_ref())?;
+    let (hx, hy) = match &brick.asset {
+        brdb::BrickType::Procedural { size, .. } => (size.x as i32, size.y as i32),
+        brdb::BrickType::Basic(_) => known,
+    };
     Some(match brick.rotation {
         brdb::Rotation::Deg90 | brdb::Rotation::Deg270 => (hy, hx),
         brdb::Rotation::Deg0 | brdb::Rotation::Deg180 => (hx, hy),

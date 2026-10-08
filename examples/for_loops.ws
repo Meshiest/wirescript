@@ -90,30 +90,12 @@ on ReadBrickGrid() {
 
   // Entry-gate bindings
 
-  // `isFirst` and `isLast` must each be true exactly once, and `isLast` must
-  // land on the final index rather than one past it.
-  var firsts: int = 0
-  var lasts: int = 0
-  var lastFlagIndex: int = -1
-  for { index, isFirst, isLast } in 0..4 {
-    firsts = firsts + isFirst
-    lasts = lasts + isLast
-    if isLast { lastFlagIndex = index }
-  }
-  assert(1, firsts, "isFirst is true once")
-  assert(1, lasts, "isLast is true once")
-  assert(3, lastFlagIndex, "isLast lands on the final index")
-
-  // `index` is the counter value and respects `from`/`step`; `ordinal` is the
-  // zero-based iteration number. A stepped range separates them.
+  // `index` is the counter value and respects `from`/`step`.
   var indexSum: int = 0
-  var ordinalSum: int = 0
-  for { index, ordinal } in count(3, from = 10, step = 5) {
+  for { index } in count(3, from = 10, step = 5) {
     indexSum = indexSum + index
-    ordinalSum = ordinalSum + ordinal
   }
   assert(10 + 15 + 20, indexSum, "index respects from and step")
-  assert(0 + 1 + 2, ordinalSum, "ordinal counts iterations")
 
   // Arrays
 
@@ -200,7 +182,7 @@ on ReadBrickGrid() {
   // Loop result
 
   var seen: int = 0
-  for i in 0..6 as run {
+  let run = for i in 0..6 {
     seen = seen + 1
   }
   assert(6, seen, "the loop ran six times")
@@ -233,7 +215,7 @@ on ReadBrickGrid() {
   // reports the runtime cutting a loop off, such as an invocation limit, so
   // breaking leaves it false. Verified in game.
   var brokeRuns: int = 0
-  for i in 0..10 as run {
+  let run = for i in 0..10 {
     if i == 3 { break }
     brokeRuns = brokeRuns + 1
   }

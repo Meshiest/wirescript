@@ -211,9 +211,19 @@ pub(super) fn emit_module(
         // with the cell grid line at (pos.x, pos.y). This keeps every brick
         // inside its own cell regardless of size (1x1, wide DisplayText, etc.)
         // and prevents overlaps between adjacent cells of different sizes.
-        let (half_x, half_y) = match catalog_entry {
-            Some(g) => (g.half_size.x, g.half_size.y),
+        // A procedural gate (`PB_Gate_*`) is a procedural brick at the
+        // variant lowering chose, the same size layout reserved; the game
+        // rejects these assets at any size that is not one of the variants.
+        let placed = catalog_entry.map(|g| g.placed_half_size(crate::catalog::node_variant(node)));
+        let (half_x, half_y) = match placed {
+            Some(h) => (h.x, h.y),
             _ => (5, 5),
+        };
+        let asset = match (catalog_entry, placed) {
+            (Some(g), Some(h)) if g.is_procedural() => {
+                BrickType::from((brick_asset, (h.x as u16, h.y as u16, h.z as u16)))
+            }
+            _ => BrickType::from(brick_asset),
         };
         // A quarter-turned brick swaps its footprint, so its center sits at
         // the swapped half-extent from the same min corner. The layout has
@@ -234,7 +244,7 @@ pub(super) fn emit_module(
             z: pos.z,
         };
         let (mut brick, brick_id) = brdb::Brick {
-            asset: BrickType::from(brick_asset),
+            asset,
             position: inner_pos,
             rotation: match rotation {
                 NodeRotation::Deg0 => brdb::Rotation::Deg0,
@@ -271,6 +281,14 @@ pub(super) fn emit_module(
         {
             Box::new(build_adv_inventory_component(
                 effective_class_str,
+                &node.ports,
+                &gate_inlined,
+                world,
+                ctx.prefab_resolver.as_ref(),
+                ctx.nested_compiler.as_ref(),
+            )?)
+        } else if effective_class_str == gc::FUNCTION_CALL {
+            Box::new(build_function_call_component(
                 &node.ports,
                 &gate_inlined,
                 world,
@@ -463,7 +481,9 @@ pub(super) fn emit_module(
         };
         let label_spec = match effective_class_str {
             "BrickComponentType_Internal_MicrochipInput"
-            | "BrickComponentType_Internal_MicrochipOutput" => {
+            | "BrickComponentType_Internal_MicrochipOutput"
+            | "BrickComponentType_FunctionInput"
+            | "BrickComponentType_FunctionOutput" => {
                 let label = microchip_io_label(node);
                 // A container access gate (Var/ArrayVar/MapVar_*) reads its small
                 // tag by tracing its ref wire back to the source's label. When the
@@ -500,6 +520,8 @@ pub(super) fn emit_module(
                     label.map(|s| (s, LABEL_LINE_HEIGHT))
                 }
             }
+            // A Function Call: the name of the `fn` it runs.
+            c if c == gc::FUNCTION_CALL => node.properties.get(&*sym::NAME_LABEL).and_then(named).map(|s| (s, LABEL_LINE_HEIGHT)),
             // Var/ArrayVar exec gates: a smaller tag naming the variable
             // they access, traced through the gate's (Array)VarRef wire.
             // The var node is always emitted first, so its label is known.

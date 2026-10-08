@@ -46,18 +46,20 @@ fn map_method_param_types_track_kv() {
 
 #[test]
 fn map_keys_values_fill_dest_array() {
-    // `keys`/`values` take a destination-array argument they fill in place
-    // (`lower::access::lower_map_method` reads it as the array-ref dest); their
-    // own return is `Any`, so the `out: K[]`/`V[]` array is a param, not the result.
+    // `keys`/`values` take a destination-array argument they fill in place;
+    // their own return is `Never`, so the `destArray: K[]`/`V[]` array is a
+    // param, not the result.
     let keys = map_method("keys").unwrap().signature(&Type::String, &Type::Int);
-    assert_eq!(keys.params.len(), 1);
-    assert_eq!(keys.params[0].name, "out");
-    assert_eq!(keys.params[0].ty, Type::Array(Box::new(Type::String))); // out: K[]
+    assert_eq!(keys.params.len(), 2);
+    assert_eq!(keys.params[0].name, "destArray");
+    assert_eq!(keys.params[0].ty, Type::Array(Box::new(Type::String))); // destArray: K[]
+    // `includeDead`: also list keys whose brick or component is gone.
+    assert_eq!((keys.params[1].name.as_str(), keys.params[1].optional), ("includeDead", true));
 
     let values = map_method("values").unwrap().signature(&Type::String, &Type::Int);
     assert_eq!(values.params.len(), 1);
-    assert_eq!(values.params[0].name, "out");
-    assert_eq!(values.params[0].ty, Type::Array(Box::new(Type::Int))); // out: V[]
+    assert_eq!(values.params[0].name, "destArray");
+    assert_eq!(values.params[0].ty, Type::Array(Box::new(Type::Int))); // destArray: V[]
 }
 
 #[test]

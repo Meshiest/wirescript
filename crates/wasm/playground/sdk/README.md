@@ -95,7 +95,7 @@ let aim = char.GetAim()   // record: aim.Origin / aim.Direction (camera aim)
 
 ### Built-in Events
 `RoundStart`, `RoundEnd`, `CharacterSpawned(character)`, `CharacterDied(character)`,
-`ControllerJoined(controller)`, `ControllerLeft(controller)`,
+`ControllerJoined(controller)`, `ControllerLeft(userId)`,
 `ZoneEntered(character)`, `ZoneLeft(character)`, `BrickChanged(brick)`, `BrickRemoved(brick)`,
 `ChatCommand("cmd", "help", controller, arguments)` — leading string literals set the command name + help text (help can be `Description = "..."`); the `controller`/`arguments` identifiers bind the outputs
 

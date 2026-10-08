@@ -307,7 +307,9 @@ feature (see [Reference values](types.md#reference-values)):
 ## Loop Ticks
 
 A `for` loop runs its entire body, every iteration, to completion within the
-tick that triggers it. An N-iteration loop costs one tick, not N.
+tick that triggers it. An N-iteration loop costs one tick, not N. The
+exception is a loop marked `@sliced`, whose chip lets the game spread
+the iterations over several ticks.
 
 The standing guidance to give each entity its own chip instance rather than
 sweep a central one in a loop (see

@@ -155,6 +155,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 closed: false,
                 no_fold: false,
                 is_const: false,
+                is_fn: false,
             };
             lower_chip_decl(ctx, &chip);
         }
@@ -1312,15 +1313,19 @@ fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecor
     // here. Gated on a record type and a non-call source (a record-returning
     // CALL is handled below via `pending_inline_record`), so a scalar or call
     // RHS never routes here.
-    if matches!(
-        &d.value,
-        Expr::IndexAccess { .. }
-            | Expr::FieldAccess { .. }
-            | Expr::TuplePick { .. }
-            | Expr::IfExpr { .. }
-            | Expr::MatchExpr { .. }
-            | Expr::RefOf { .. }
-    ) && matches!(ctx.type_of(&d.value), Type::Record(_) | Type::Enum { .. })
+    // `let q = p as Q` converts field by field, a tuple as much as a record.
+    let converted_aggregate = matches!(&d.value, Expr::As { .. })
+        && matches!(ctx.type_of(&d.value), Type::Record(_) | Type::Tuple(_));
+    if (converted_aggregate
+        || matches!(
+            &d.value,
+            Expr::IndexAccess { .. }
+                | Expr::FieldAccess { .. }
+                | Expr::TuplePick { .. }
+                | Expr::IfExpr { .. }
+                | Expr::MatchExpr { .. }
+                | Expr::RefOf { .. }
+        ) && matches!(ctx.type_of(&d.value), Type::Record(_) | Type::Enum { .. }))
         && let Some(src) = crate::lower::stmt::value_record_fields(ctx, &d.value)
     {
         if install_record_binding(ctx, d, src) {

@@ -922,6 +922,7 @@ fn check_decl_inner(
             ctx.pop_scope();
         }
         TopDecl::Chip(c) => {
+            super::fn_decl::check_signature(ctx, c);
             // Bounded-polymorphism body checking. Body-check the
             // decl once per concrete member of the cartesian product of its
             // type params' masks — an operation on a type param (`a + 1`)

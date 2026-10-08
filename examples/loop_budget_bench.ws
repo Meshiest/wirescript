@@ -34,7 +34,6 @@ var pending: bool = false
 var pendBudget: int = 0
 var pendIters: int = 0
 var pendAborted: bool = false
-var pendCode: int = 0
 
 var trivialBest: int = 0
 var heavyBest: int = 0
@@ -61,7 +60,7 @@ on tick {
     let slow = dt > DT_CEILING
     let capped = short || pendAborted
     let name = if phase == 0 then "trivial" else "heavy"
-    BroadcastChatMessage("${name} ${pendBudget}: ran ${pendIters} aborted ${pendAborted} code ${pendCode} tick ${dt}s")
+    BroadcastChatMessage("${name} ${pendBudget}: ran ${pendIters} aborted ${pendAborted} tick ${dt}s")
     pending = false
 
     if phase == 0 { trivialBest = pendIters }
@@ -85,18 +84,17 @@ on tick {
   }
 
   if phase == 0 {
-    for _ in 0..budget as runT {
+    let runT = for _ in 0..budget {
       acc = acc + 1
     }
     pendBudget = budget
     pendIters = runT.iterations
     pendAborted = runT.aborted
-    pendCode = runT.abortCode
     pending = true
   }
 
   if phase == 1 {
-    for _ in 0..budget as runH {
+    let runH = for _ in 0..budget {
       mix(acc)
       mix(acc)
       mix(acc)
@@ -109,7 +107,6 @@ on tick {
     pendBudget = budget
     pendIters = runH.iterations
     pendAborted = runH.aborted
-    pendCode = runH.abortCode
     pending = true
   }
 
@@ -119,10 +116,10 @@ on tick {
   // budget gives two full runs and a shared one starves the second.
   if phase == 2 {
     let ask = trivialBest
-    for _ in 0..ask as runA {
+    let runA = for _ in 0..ask {
       acc = acc + 1
     }
-    for _ in 0..ask as runB {
+    let runB = for _ in 0..ask {
       acc = acc + 1
     }
     BroadcastChatMessage("shared: asked ${ask} twice, got ${runA.iterations} aborted ${runA.aborted} then ${runB.iterations} aborted ${runB.aborted}")

@@ -582,6 +582,10 @@ pub(in crate::lower) fn lower_builtin_call(
         }
     }
 
+    // `GetMicrochipBrick()` is a var emit fills with the program's own microchip brick.
+    if spec.name == "GetMicrochipBrick" {
+        properties.insert(intern(crate::lower::function::MICROCHIP_BRICK), Literal::Bool(true));
+    }
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: spec.gate_class,
         source_range: range.clone(),

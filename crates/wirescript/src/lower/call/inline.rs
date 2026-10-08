@@ -109,7 +109,8 @@ pub(in crate::lower) fn lower_chip_call_inline(
     for (i, param) in chip_decl.inputs.iter().enumerate() {
         bound.bind(&mut in_order, &val_bindings, &record_bindings, &aliases, _range);
         in_order.next(ctx);
-        let Some(arg_expr) = positional_args.get(i) else {
+        // An omitted argument takes the parameter's default value.
+        let Some(arg_expr) = positional_args.get(i).copied().or(param.default.as_ref()) else {
             continue;
         };
         let arg_expr = &*ctx.with_map_literals(arg_expr);
@@ -192,6 +193,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
                     | Expr::TuplePick { .. }
                     | Expr::IfExpr { .. }
                     | Expr::MatchExpr { .. }
+                    | Expr::As { .. }
             )
             && (ctx.record_or_tuple_fields(&param.typ).is_some()
             || matches!(

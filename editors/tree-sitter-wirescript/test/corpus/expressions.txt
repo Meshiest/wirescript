@@ -631,3 +631,40 @@ let ok = e is E.A && flag
           (identifier)
           (identifier)))
       (identifier))))
+
+================================================================================
+as binds tighter than binary operators and looser than prefix ones
+================================================================================
+
+let y = a + -b as float * 2.0
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (binary_expression
+        (cast_expression
+          (unary_expression
+            (identifier))
+          (type_identifier))
+        (float)))))
+
+================================================================================
+a bitwise or after as stays an operator
+================================================================================
+
+let y = a as int | mask
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (cast_expression
+        (identifier)
+        (type_identifier))
+      (identifier))))

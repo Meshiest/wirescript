@@ -30,6 +30,9 @@ Wirescript provides built-in functions that map directly to Brickadia wire graph
 - [Broadcast Messaging (Exec)](#broadcast-messaging-exec)
 - [Audio (Exec)](#audio-exec)
 - [Entity Tags (Exec)](#entity-tags-exec)
+- [Entity Custom Properties (Exec)](#entity-custom-properties-exec)
+- [Bricks (Exec)](#bricks-exec)
+- [Environment and Components (Exec)](#environment-and-components-exec)
 - [Misc (Pure / Exec)](#misc-pure--exec)
 - [Gate config properties](#gate-config-properties)
 - [Clock (Event)](#clock-event)
@@ -251,6 +254,7 @@ let result = Swap(shouldSwap, left, right)
 | `EdgeExec(input)` | `(input: float) -> {Rising, Falling: exec}` | Exec pulses when a value rises/falls |
 | `Changed(input)` | `(input: any) -> bool` | Bool pulse when the input changes |
 | `Change(input)` | `(input: any) -> any` | Pulse the input value through when it changes |
+| `ContainerChange(container)` | `(container: T[] \| Map<K, V>) -> exec` | Exec pulse on the update after an array or map changes |
 
 `Edge` and `Changed` are pure: they produce a one-tick bool pulse (`Rising` on
 false→true, `Falling` on true→false; `Changed` on any change). `EdgeExec` and
@@ -264,6 +268,17 @@ on edges.Rising { count = count + 1 }
 
 let health = EdgeExec(hp)
 on health.Falling { ctrl.ShowStatusMessage("taking damage!") }
+```
+
+`Change` and the other detectors watch a wire value, and an array or map's
+wire carries the same reference however its contents move (`WS059`).
+`ContainerChange` watches the contents instead: it fires on the update after
+the array or map changes in any way.
+
+```wirescript
+var scores: Map<string, int>
+var shown: int = 0
+on ContainerChange(scores) { shown = scores.length() }
 ```
 
 ## Logical XOR (`^^`)
@@ -721,6 +736,15 @@ SetFrozen(entity: entity, frozen: bool)
 
 Freeze or unfreeze an entity's physics.
 
+### SetVisible
+```
+entity.SetVisible(visible: bool)
+SetVisible(entity: entity, visible: bool)
+```
+
+Show or hide a physics object or dynamic brick grid. A hidden one keeps its
+collision and renders only for players holding a tool that shows hidden bricks.
+
 ```wirescript
 on trigger {
   entity.SetLocation(Vec(0.0, 0.0, 100.0))
@@ -917,12 +941,29 @@ ShowChatMessage(controller: controller, message: string)
 Send a chat message that only this player sees (a whisper). Receiver on
 `controller`.
 
-### ShowMessageBox
+### Dialogs
 ```
-controller.ShowMessageBox(message: string, title?: string)
+controller.ShowMessageBox(message: string, title?: string) -> { ClickedBy, OkClicked, Declined }
+controller.ShowOkCancelBox(message: string, title?: string) -> { ClickedBy, OkClicked, Declined }
+controller.ShowYesNoBox(message: string, title?: string) -> { ClickedBy, YesClicked, Declined }
+controller.ShowTextInputBox(message: string, title?: string) -> { ClickedBy, Text, OkClicked, Declined }
 ```
 
-Pop up a modal message box for this player. Receiver on `controller`.
+Pop up a dialog for this player. Receiver on `controller`. The call itself
+continues at once; the answer arrives later. When the player confirms, the
+`OkClicked` (or `YesClicked`) exec field pulses, `ClickedBy` is the player who
+answered (a `controller`), and `ShowTextInputBox`'s `Text` is the line they
+typed. Every other outcome pulses `Declined`: Cancel or No, closing the
+dialog, or a dialog the game could not show.
+
+```wirescript
+var ready: int = 0
+on ControllerJoined() -> (c) {
+  let r = c.ShowYesNoBox("Ready to play?", title = "Start")
+  on r.YesClicked { ready = ready + 1 }
+  on r.Declined { c.ShowChatMessage("Type /ready when you want to join") }
+}
+```
 
 ### Player info
 ```
@@ -991,6 +1032,150 @@ entity.GetTag() -> string
 Attach an arbitrary string tag to any entity and read it back later. This is handy
 for marking players/entities with game state (team, slot index, role). Zone
 components can also filter on tags. Receiver on `entity`.
+
+## Entity Custom Properties (Exec)
+
+```
+entity.SetCustomProperty(key: string, value)
+entity.GetCustomProperty(key: string) -> { Value, Found: bool }
+entity.RemoveCustomProperty(key: string) -> bool
+entity.CopyCustomProperties(source: entity)
+```
+
+A key/value store on an entity, a player or a dynamic grid. `SetCustomProperty`
+replaces any value already under the key. `GetCustomProperty` gives the value,
+auto-unwrapped like a map read, and `Found` is `false` when the key is not set.
+`RemoveCustomProperty` gives whether anything was removed.
+`CopyCustomProperties` replaces the receiver's properties with a copy of
+`source`'s, for instance to give a spawned replacement the original's data. A
+holder keeps up to 256 properties, and a key is at most 100 characters. The
+value can be any wire value; annotate the read (`let hp: int = ...`) to give it
+a type.
+
+```wirescript
+on CharacterSpawned() -> (character) {
+  character.SetCustomProperty("lives", 3)
+}
+on CharacterDied() -> (character) {
+  let lives = character.GetCustomProperty("lives")
+  if lives.Found {
+    let left: int = lives.Value
+    character.SetCustomProperty("lives", left - 1)
+  }
+}
+```
+
+## Bricks (Exec)
+
+### GetMicrochipBrick
+```
+GetMicrochipBrick() -> brick
+```
+
+The program's own microchip brick: the one brick a paste places on the main
+grid. It is a reference baked into the save, so it needs no wire or editor
+setup, and works anywhere in the program, a `fn` body included. It does not
+yet name the right brick inside a spawned prefab.
+
+```wirescript
+in go: exec
+on go {
+  GetMicrochipBrick().SetBrickProperty(Color, Color(0.0, 1.0, 0.0))
+}
+```
+
+### GetBrickProperty / SetBrickProperty
+```
+brick.GetBrickProperty(property: BrickProperty) -> bool | color | any
+brick.SetBrickProperty(property: BrickProperty, value)
+```
+
+Read or write one setting of a brick: recolor it, hide it, change what
+collides with it. `property` is a constant `BrickProperty` member (`Visible`,
+`Color`, `Material`, `MaterialOpacity`, `AllCollision`, `PlayerCollision`,
+`Player2Collision` to `Player4Collision`, `WeaponCollision`,
+`InteractionCollision`, `PhysicsCollision`), written bare or qualified
+(`BrickProperty.Color`). The value is a `bool` for `Visible` and the collision
+flags and a `color` for `Color`, both for what `GetBrickProperty` returns and
+for what `SetBrickProperty` accepts; any other type there is `WS003`.
+`Material` and `MaterialOpacity` read and write `any`. Receiver on `brick`.
+
+```wirescript
+in go: exec
+on go {
+  let r = SweepSimple(1000.0, detectBricks = true)
+  on r.Hit { r.HitBrick.SetBrickProperty(Color, Color(1.0, 0.0, 0.0)) }
+}
+```
+
+## Environment and Components (Exec)
+
+### Environment settings
+```
+Environment.<environment>.<property>            // read
+Environment.<environment>.<property> = value    // write
+```
+
+Reads and writes a setting of the world's environment: the time of day, the
+sky's color, the water's height. The environments are `Ambience`, `Ground`,
+`Sky`, `Lighting`, `Universe` and `Water`, as the game's environment dialog
+names them, and the editor completes them and their properties. Each property
+has its own type (`Environment.Sky.TimeOfDay` is a `float`,
+`Environment.Sky.SkyColor` a `color`), and a write must fit it. The game
+converts and clamps a written value as the environment dialog would, and leaves
+a setting the dialog has locked alone. An enum property reads and writes as an
+`int`, and a write also takes a member of its enum
+(`Environment.Ambience.ReverbEffect = ReverbEffect.LongHallway`). Both run on
+the exec chain.
+
+```wirescript
+in go: exec
+on go {
+  let t = Environment.Sky.TimeOfDay
+  Environment.Sky.TimeOfDay = t + 1.0
+  Environment.Sky.SkyColor = Color(1.0, 0.5, 0.0)
+}
+```
+
+### Components
+```
+brick.GetComponent($Component/<type>) -> Component<type>
+brick.AddComponent($Component/<type>) -> Component<type>
+brick.RemoveComponent($Component/<type>)
+component.<property>            // read
+component.<property> = value    // write
+```
+
+`GetComponent` gives a reference to the brick's component of that type (an
+empty reference if it has none); `AddComponent` adds one first if it has none.
+The reference is typed by its component type, so its properties read and write
+with their own types (`light.Brightness` is a `float`). The game converts a
+written value to the property's type and leaves a wired property alone.
+`RemoveComponent` removes the brick's component of that type after the current
+update, unless an `AddComponent` of its type runs first. It takes the brick,
+not a reference: no gate gives a reference's brick, so `component.Remove()` is
+`WS110`. The component types are the ones a
+player can add to a brick (see [Components](expressions.md#components)), and
+the editor completes a reference's properties.
+
+A reference can be passed to a `mod` taking `Component<PointLight>`, or
+`Component` for a reference of any type. It can be
+stored in a `var`, an array (`Component<PointLight>[]`) or a map value, but not
+used as a map key (`WS039`). The property lists come from the
+save schema, so they may name fields the game's own picker does not offer
+(unverified).
+
+```wirescript
+in go: exec
+on go {
+  let r = SweepSimple(1000.0, detectBricks = true)
+  on r.Hit {
+    let light = r.HitBrick.AddComponent($Component/PointLight)
+    light.Brightness = light.Brightness * 2.0
+    light.Color = Color(1.0, 0.5, 0.0)
+  }
+}
+```
 
 ## Misc (Pure / Exec)
 
@@ -1371,6 +1556,8 @@ Returns a record with fields:
 - `HitEntity: entity`: Entity that was hit
 - `HitLocation: vector`: World position of hit
 - `HitNormal: vector`: Surface normal at hit
+- `HitColor: color`: Color of the surface hit
+- `HitBrick: brick`: Brick that was hit (see [Bricks](#bricks-exec))
 - `Hit: exec`: Fires if something was hit
 - `Miss: exec`: Fires if nothing was hit
 
@@ -1498,7 +1685,23 @@ ItemToPickup(item: entity) -> entity                  // pickup asset for an ite
 color.ConvertColor(fromSpace?: int, toSpace?: int) -> color
 "A".ToCharCode() -> { Codepoint: int, Success: bool }
 FromCharCode(codepoint: int) -> { Character: string, Success: bool }
+GetValueType(value) -> int                            // which kind of value is on the wire
 ```
+
+`GetValueType` reports which kind of value a wire carries, to branch on what an
+untyped value (a custom property, an `any` var) holds. The numbers likely follow
+the game's wire-kind list, which this table copies from the save schema. **The
+mapping is not verified in game.**
+
+| Kind | Value | Kind | Value |
+|---|---|---|---|
+| bool | 0 | string | 7 |
+| int | 1 | enum | 8 |
+| float | 2 | object | 9 |
+| color | 3 | brick | 10 |
+| vector | 4 | component | 11 |
+| rotator | 5 | exec | 12 |
+| quat | 6 | none | 29 |
 
 `EnumToInt` / `IntToEnum` are the gate-backed twins of `.ToInt()` (=
 `.Discriminant`) and `Enum.FromInt(n)`. `EnumToInt` requires an enum
@@ -1549,8 +1752,8 @@ mod inc(v: Ref<int>) { v = v + 1 }   // same as *int
 ## Maps (`var m: Map<K, V>`)
 
 A map is a keyed variable collection (the `MapVar` gate family), declared as a `var`
-of the generic `Map<K, V>` type. Keys must be `int`, `string`, or an object reference
-(entity/character/controller). Any other key type is a **`WS039`** error; values may
+of the generic `Map<K, V>` type. Keys must be `int`, `string`, an object reference
+(entity/character/controller) or a `brick`. Any other key type is a **`WS039`** error; values may
 be any wire-storable scalar (int/float/bool/string/vector/rotator/quat/color/object).
 A map starts empty unless given a constant literal initializer (`= {}` is the explicit
 empty form).
@@ -1578,7 +1781,10 @@ on tick {
 
 Methods (exec context, like array methods): `set(key, value)`, `get(key)`,
 `has(key)`, `remove(key)`, `clear()`, `copyFrom(otherMap)`, `length()`,
-`keys(destArray)`, `values(destArray)`.
+`keys(destArray, includeDead?)`, `values(destArray)`.
+
+A map keyed by objects or bricks can outlive what a key names. `keys` skips a key
+whose brick no longer exists unless `includeDead = true`.
 
 ### Map literals
 
@@ -1687,8 +1893,8 @@ the same operation; the receiver is the first argument:
 | `GetMapElement(m, k)` | `m.get(k)` | | `ClearMap(m)` | `m.clear()` |
 | `SetMapElement(m, k, v)` | `m.set(k, v)` | | `CopyMap(m, src)` | `m.copyFrom(src)` |
 | `HasMapElement(m, k)` | `m.has(k)` | | `GetMapLength(m)` | `m.length()` |
-| `RemoveMapElement(m, k)` | `m.remove(k)` | | `GetMapKeys(m, out)` | `m.keys(out)` |
-| | | | `GetMapValues(m, out)` | `m.values(out)` |
+| `RemoveMapElement(m, k)` | `m.remove(k)` | | `GetMapKeys(m, dest)` | `m.keys(dest)` |
+| | | | `GetMapValues(m, dest)` | `m.values(dest)` |
 
 All array/map operations remain **exec-context only** (they run on the exec
 chain), exactly like their method forms.

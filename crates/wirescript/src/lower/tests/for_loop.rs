@@ -173,7 +173,7 @@ fn the_collection_source_drives_the_shells_ref_pin() {
 #[test]
 fn as_run_binds_the_shell_status_outputs_on_the_outer_grid() {
     let r = compile(
-        "var bad: bool = false\nin go: exec\non go { for i in 0..10 as run { } if run.aborted { bad = true } }",
+        "var bad: bool = false\nin go: exec\non go { let run = for i in 0..10 { } if run.aborted { bad = true } }",
     );
     assert_no_errors(&r);
     let sh = shell(&r);
@@ -190,8 +190,60 @@ fn as_run_binds_the_shell_status_outputs_on_the_outer_grid() {
         .expect("`run.aborted` must read the shell's bAborted pin");
     assert!(
         r.module.nodes.contains_key(&consumer.target.node_id),
-        "the `as run` read belongs on the outer grid, not inside the plane"
+        "the `let run = for` read belongs on the outer grid, not inside the plane"
     );
+}
+
+#[test]
+fn run_running_reads_the_shells_brunning_pin() {
+    let r = compile(
+        "var busy: bool = false\nin go: exec\non go { let run = for i in 0..10 { } busy = run.running }",
+    );
+    assert_no_errors(&r);
+    let sh = shell(&r);
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.source.node_id == sh.id && w.source.port == WirePort::BRunning),
+        "`run.running` must read the shell's bRunning pin"
+    );
+}
+
+#[test]
+fn sliced_sets_the_shell_setting_only_when_asked() {
+    let flag = |src: &str| {
+        let r = compile(src);
+        assert_no_errors(&r);
+        shell(&r).properties.get(&crate::intern::intern("bRunAcrossTicks")).cloned()
+    };
+    assert_eq!(flag("var t: int = 0\nin go: exec\non go { for i in 0..3 { t += i } }"), None);
+    assert_eq!(
+        flag("var t: int = 0\nin go: exec\non go {\n  @sliced for i in 0..3 { t += i }\n}"),
+        Some(crate::ir::Literal::Bool(true))
+    );
+    assert_eq!(
+        flag(
+            "var t: int = 0\nin go: exec\non go {\n  @sliced\n  let run = for i in 0..3 { t += i }\n  \
+             if run.running { t = 0 }\n}"
+        ),
+        Some(crate::ir::Literal::Bool(true))
+    );
+}
+
+#[test]
+fn sliced_belongs_on_a_for_loop() {
+    for src in [
+        "var t: int = 0\nin go: exec\non go {\n  @sliced t = 1\n}",
+        "var t: int = 0\nin go: exec\non go {\n  @sliced @nofold for i in 0..3 { t += i }\n}",
+        "@sliced\nvar t: int = 0\n",
+    ] {
+        let parsed = parse(src, "test");
+        assert!(
+            parsed.diagnostics.iter().any(|d| d.severity == crate::diagnostic::Severity::Error),
+            "expected an error for {src:?}"
+        );
+    }
 }
 
 #[test]
@@ -483,10 +535,9 @@ fn an_inlined_await_is_reported_at_every_call_site() {
 #[test]
 fn a_range_brace_binding_names_the_entry_ports() {
     // A counted loop has no element to destructure, so `{ }` names the
-    // loop's own slots. It is the only way to reach `isLast` without writing
-    // out the positional bindings before it.
+    // loop's own slots.
     let r = compile(
-        "var t: int = 0\nvar done: bool = false\nin go: exec\non go { for { index, isLast } in 0..10 { t = index\n done = isLast } }",
+        "var t: int = 0\nin go: exec\non go { for { index } in 0..10 { t = index } }",
     );
     assert_no_errors(&r);
     let child = only_chip(&r, "loop plane");
@@ -505,20 +556,12 @@ fn a_range_brace_binding_names_the_entry_ports() {
         reads.contains(&WirePort::Index),
         "`index` must wire from the entry gate's Index port, got {reads:?}"
     );
-    assert!(
-        reads.contains(&WirePort::BIsLast),
-        "`isLast` must wire from the entry gate's bIsLast port, got {reads:?}"
-    );
-    assert!(
-        !reads.contains(&WirePort::Ordinal) && !reads.contains(&WirePort::BIsFirst),
-        "only the named slots should be read, got {reads:?}"
-    );
 }
 
 #[test]
 fn a_count_spelling_takes_a_brace_binding_too() {
     let r = compile(
-        "var t: int = 0\nvar o: int = 0\nin go: exec\non go { for { index, ordinal } in count(5, from = 2) { t = index\n o = ordinal } }",
+        "var t: int = 0\nin go: exec\non go { for { index } in count(5, from = 2) { t = index } }",
     );
     assert_no_errors(&r);
     let child = only_chip(&r, "loop plane");
@@ -527,25 +570,18 @@ fn a_count_spelling_takes_a_brace_binding_too() {
         .values()
         .find(|n| n.gate_class == gc::CALLABLE_ENTRY_COUNT_FOR)
         .expect("entry gate");
-    let reads: Vec<WirePort> = child
-        .wires
-        .iter()
-        .filter(|w| w.source.node_id == entry.id)
-        .map(|w| w.source.port)
-        .collect();
     assert!(
-        reads.contains(&WirePort::Index) && reads.contains(&WirePort::Ordinal),
-        "both named slots must wire from the entry gate, got {reads:?}"
+        child
+            .wires
+            .iter()
+            .any(|w| w.source.node_id == entry.id && w.source.port == WirePort::Index),
+        "`index` must wire from the entry gate's Index port"
     );
 }
 
 #[test]
 fn a_range_brace_binding_takes_its_slots_type() {
-    // `isFirst` is a `bool` slot; binding it as anything else would wire a
-    // bool port into an int consumer.
-    let r = compile(
-        "var b: bool = false\nin go: exec\non go { for { isFirst } in 0..4 { b = isFirst } }",
-    );
+    let r = compile("var t: int = 0\nin go: exec\non go { for { index } in 0..4 { t = index } }");
     assert_no_errors(&r);
     let child = only_chip(&r, "loop plane");
     let entry = child
@@ -554,19 +590,24 @@ fn a_range_brace_binding_takes_its_slots_type() {
         .find(|n| n.gate_class == gc::CALLABLE_ENTRY_COUNT_FOR)
         .expect("entry gate");
     assert_eq!(
-        entry
-            .ports
-            .find_output(WirePort::BIsFirst.sym())
-            .map(|p| &p.ty),
-        Some(&crate::ir::Type::Bool)
+        entry.ports.find_output(WirePort::Index.sym()).map(|p| &p.ty),
+        Some(&crate::ir::Type::Int)
     );
-    assert!(
-        child
-            .wires
-            .iter()
-            .any(|w| w.source.node_id == entry.id && w.source.port == WirePort::BIsFirst),
-        "`isFirst` must read the bIsFirst slot"
-    );
+}
+
+#[test]
+fn removed_range_slots_are_ws076() {
+    // CL15948 dropped the CountFor entry's Ordinal/bIsFirst/bIsLast outputs.
+    for name in ["ordinal", "isFirst", "isLast"] {
+        let r = compile(&format!(
+            "var t: int = 0\nin go: exec\non go {{ for {{ index, {name} }} in 0..4 {{ t = index }} }}"
+        ));
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS076"),
+            "`{name}` is no longer a range slot, expected WS076: {:?}",
+            r.diagnostics
+        );
+    }
 }
 
 #[test]
@@ -595,12 +636,10 @@ fn an_unknown_range_slot_name_is_ws076() {
         r.diagnostics.iter().filter(|d| d.code == "WS076").collect();
     assert_eq!(ws076.len(), 1, "expected one WS076, got {:?}", r.diagnostics);
     let msg = &ws076[0].message;
-    for label in ["index", "ordinal", "isFirst", "isLast"] {
-        assert!(
-            msg.contains(label),
-            "WS076 must list the valid slots, missing `{label}`: {msg}"
-        );
-    }
+    assert!(
+        msg.contains("index"),
+        "WS076 must list the valid slots, missing `index`: {msg}"
+    );
 }
 
 #[test]
@@ -614,7 +653,7 @@ fn a_rest_pattern_on_a_range_is_ws076() {
         .find(|d| d.code == "WS076")
         .unwrap_or_else(|| panic!("expected WS076: {:?}", r.diagnostics));
     assert!(
-        ws076.message.contains("isLast"),
+        ws076.message.contains("index"),
         "WS076 must name the slots a range binding may spell: {}",
         ws076.message
     );

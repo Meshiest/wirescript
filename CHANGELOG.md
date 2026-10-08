@@ -1,12 +1,29 @@
 # Wirescript Changelog
 
 # 1.12.0
-- `for` loops compile to callable loop microchips, iterating a range, array or map within a single tick.
+- `for` loops compile to callable loop microchips, iterating a range, array or map within a single tick, or across ticks with `@sliced`; `let run = for` reads `run.aborted`, `run.iterations` and `run.running`.
+- `fn` declares a function compiled once into a function definition plane, with Function Output gates for its results, and run by a Function Call gate at each call site; its body reaches outer storage through handles baked inside the plane, and `mod`/`fn` parameters take default values (`WS111`-`WS115`); a `fn` cannot recurse (`WS020`).
+- `GetMicrochipBrick()` is the program's own microchip brick, as a `brick`.
+- A `fn` call takes `exec = trigger` outside a handler, and `on f(..., exec = t) -> (r) { }` runs when the call completes; `.exec` on a call that runs no exec step is now an error (`WS043`).
+- Component references can be stored in a `var`, an array or a map value.
+- Entity custom properties: `SetCustomProperty`, `GetCustomProperty`, `RemoveCustomProperty` and `CopyCustomProperties`, plus `GetValueType(x)`.
+- `brick.RemoveComponent($Component/...)` replaces `component.Remove()`, following the game's Remove Component gate, and `overrideColors` on the advanced inventory calls takes a runtime `bool`.
 - References are values: vars, arrays and maps hold `*T` refs (`&x` makes one, `*h` reads or writes through it), arrays nest (`int[][]`), refs travel as custom-event data, and a new `brick` type holds a brick set in the editor.
+- Player dialogs: `ShowOkCancelBox`, `ShowYesNoBox` and `ShowTextInputBox`, and `ShowMessageBox` now answers too, each with `ClickedBy`, an `OkClicked`/`YesClicked` exec field, and `Declined` for every other outcome.
+- `ControllerLeft` no longer binds `controller`; use `userId` and `userName`. A capture still naming it is `WS010`.
+- `entity.SetVisible(visible)` shows or hides a physics object or dynamic brick grid.
+- Bricks: `GetBrickProperty`/`SetBrickProperty` read and write a brick's color, visibility and collision, `Sweep`/`SweepSimple` give the `HitBrick`, maps take `brick` keys, and `keys(dest, includeDead)` lists keys whose brick is gone.
+- `ContainerChange(c)` fires when an array or map's contents change.
+- `Environment.Sky.TimeOfDay` reads and writes an environment setting, typed per property.
+- Components: `brick.GetComponent($Component/PointLight)` and `AddComponent` give a `Component<PointLight>` whose properties read and write as fields (`light.Brightness = 2.0`), and `light.Remove()` removes it; `$Component/<name>/<property>` names a property, all completed in the editor; an unknown name is `WS110`.
+- `value as T` converts a value with the game's Convert gate: one gate per value that changes type, field by field for records and tuples, none when the result goes unread, and none for a constant whose result is known (a float truncates toward zero); a conversion it cannot make yet is `WS109`.
 - Comparing a ref or brick with a non-ref is `WS084`, `*` on an array ref, map ref or brick is `WS085`, a ref to a ref is `WS086`, and an if-expression may select between refs and bricks (`WS031` no longer applies to them).
 
 ### Fixes
 
+- A method on a container read from a map or call (`m.get(k).Value.push(x)`) acts on that container instead of failing with `WS002`/`WS044`.
+- Array and map methods take named arguments (`a.insert(index = 0, value = 9)`, `m.keys(destArray = ks)`); they compiled to a placeholder before.
+- A Broadcast Chat Message gate is placed with a gap around it: the game dropped one placed touching another gate.
 - Order of evaluation: expression parts run in source order, each read before a later part changes it, and loop bounds, enum payloads and record-literal calls run once; a whole-record assignment is parallel (`WS087`, `WS089`), and `xs = [...xs, 1]` appends (`WS088`).
 - Name capture: a `mod` or `chip` body resolves names where it is declared, so a caller's `let`, `var`, parameter or nested mod no longer captures them (`WS091`, `WS021`), and a local named like an outer constant, alias or enum variant is its own value in every read (`WS046`).
 - Breaking: a `var` initializer reads the names around the declaration, as a `let`'s does (`var x = x + 1` with no outer `x` is `WS002`).

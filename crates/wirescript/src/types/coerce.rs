@@ -70,6 +70,7 @@ pub(crate) fn type_eq(a: &Type, b: &Type) -> bool {
         | (Any, Any)
         | (Opaque, Opaque)
         | (Never, Never) => true,
+        (Component(ac), Component(bc)) => ac == bc,
         (Ref(ai), Ref(bi)) => type_eq(ai, bi),
         (Array(ai), Array(bi)) => type_eq(ai, bi),
         (Map(ak, av), Map(bk, bv)) => type_eq(ak, bk) && type_eq(av, bv),
@@ -140,6 +141,13 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
         return CoerceRule::Same;
     }
     if type_eq(from, to) {
+        return CoerceRule::Same;
+    }
+    // A component reference of any type fits a place for any component (the
+    // class-less `Component("")`, as Remove takes).
+    if let (Component(_), Component(any)) = (from, to)
+        && any.is_empty()
+    {
         return CoerceRule::Same;
     }
 

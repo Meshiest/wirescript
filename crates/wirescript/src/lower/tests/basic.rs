@@ -1080,7 +1080,7 @@ fn every_canonical_array_method_lowers() {
     // the table (which drives editor completion/hover) to the dispatch in
     // lower_array_method: a table entry the dispatch can't handle would lower
     // to an `_Unsupported` gate and fail here.
-    let src = "var a: int[]\nvar b: int[]\nvar ent: entity\nin z: zone\nin t: exec\non t {\n  \
+    let src = "var a: int[]\nvar b: int[]\nvar bricks: brick[]\nvar ent: entity\nin z: zone\nin t: exec\non t {\n  \
         a.push(1)\n  let p = a.pop()\n  let n = a.length()\n  a.remove(0)\n  a.insert(0, 9)\n  \
         a.clear()\n  let i = a.find(3)\n  let g = a.get(0)\n  a.sort()\n  a.reverse()\n  a.shuffle()\n  a.swap(0, 1)\n  \
         a.fill(3)\n  a.resize(4, 0)\n  let s = a.sum()\n  let lo = a.min()\n  let hi = a.max()\n  \
@@ -2416,8 +2416,8 @@ fn detector_builtins_map_to_split_gate_classes() {
     ));
 }
 
-/// `on ControllerLeft() -> { controller: controller, userId: userId }` exposes
-/// the gate's `UserId` output via the second record field. The gate is a pure
+/// `on ControllerLeft() -> { userId: userId }` exposes the gate's `UserId`
+/// output. The gate is a pure
 /// source, so a wire SOURCED from its `UserId` port into the handler body
 /// proves the id is bound.
 #[test]
@@ -2425,7 +2425,7 @@ fn controller_left_exposes_user_id() {
     let r = compile(
         "\
 var lastLeft: string
-on ControllerLeft() -> { controller: controller, userId: userId } {
+on ControllerLeft() -> { userId: userId } {
   lastLeft = userId
 }",
     );

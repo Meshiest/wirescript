@@ -92,9 +92,11 @@ impl<'a> Parser<'a> {
     fn parse_expr_delimited(&mut self) -> Expr {
         let saved_brace = std::mem::replace(&mut self.no_brace_construct, false);
         let saved_dotdot = std::mem::replace(&mut self.stop_at_dotdot, false);
+        let saved_as = std::mem::replace(&mut self.stop_at_as, false);
         let e = self.parse_expr();
         self.no_brace_construct = saved_brace;
         self.stop_at_dotdot = saved_dotdot;
+        self.stop_at_as = saved_as;
         e
     }
 
@@ -103,9 +105,11 @@ impl<'a> Parser<'a> {
     fn parse_call_arg_delimited(&mut self) -> CallArg {
         let saved_brace = std::mem::replace(&mut self.no_brace_construct, false);
         let saved_dotdot = std::mem::replace(&mut self.stop_at_dotdot, false);
+        let saved_as = std::mem::replace(&mut self.stop_at_as, false);
         let a = self.parse_call_arg();
         self.no_brace_construct = saved_brace;
         self.stop_at_dotdot = saved_dotdot;
+        self.stop_at_as = saved_as;
         a
     }
 
@@ -211,6 +215,21 @@ impl<'a> Parser<'a> {
             if self.stop_at_dotdot && tok.kind == TokenKind::Op && tok.text == ".." {
                 self.pos = saved;
                 break;
+            }
+            // `value as T` binds tighter than every binary operator, as in
+            // Rust: `a + b as float` converts `b`, `-x as int` converts `-x`.
+            // A `for` source stops at it instead (`Parser::stop_at_as`).
+            if tok.kind == TokenKind::Kw && tok.text == "as" && !self.stop_at_as {
+                self.advance();
+                let ty = self.parse_cast_type();
+                let start = lhs.range().start;
+                let end = ty.range().end;
+                lhs = Expr::As { value: Box::new(lhs), ty, range: self.make_range(start, end) };
+                if !self.enter_nesting() {
+                    break;
+                }
+                levels += 1;
+                continue;
             }
             // `value is Enum.Variant` is a word-shaped infix operator.
             // Contextual, like `enum` and `unsafe`: it only reads as the

@@ -300,6 +300,91 @@ pub fn check_args(
             );
         }
     }
+
+    if sig.config_gate == Some(crate::ir::gate_class::SET_BRICK_PROPERTY) {
+        check_brick_property_value(ctx, sig, args, pos_base);
+    }
+}
+
+const BRICK_PROPERTY: &str = "EBRBrickProperty";
+
+/// The `BrickProperty` member a constant `property` argument names: bare
+/// (`Color`), qualified (`BrickProperty.Color`), quoted, or its integer.
+pub(super) fn brick_property_member(property: &Expr) -> Option<i64> {
+    const ENUM: &str = BRICK_PROPERTY;
+    match property {
+        Expr::Ident { name, .. } => crate::catalog::enum_member_value(ENUM, name),
+        Expr::StringLit { value, .. } => crate::catalog::enum_member_value(ENUM, value),
+        Expr::IntLit { value, .. } => Some(*value),
+        Expr::FieldAccess { obj, field, .. } => match obj.as_ref() {
+            Expr::Ident { name, .. } if crate::catalog::game_enum_schema_type(name) == Some(ENUM) => {
+                crate::catalog::builtin_game_enums()
+                    .into_iter()
+                    .find(|e| e.schema_type == ENUM)
+                    .and_then(|e| e.variants.into_iter().find(|v| &v.clean_name == field))
+                    .map(|v| v.disc)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The value a brick property reads and writes: `bool` for Visible and the
+/// collision flags, `color` for Color. `None` for Material and
+/// MaterialOpacity, whose wire type is not known.
+pub(super) fn brick_property_type(member: i64) -> Option<Type> {
+    match member {
+        0 | 4..=11 => Some(Type::Bool),
+        1 => Some(Type::Color),
+        _ => None,
+    }
+}
+
+/// `SetBrickProperty`'s value takes the type of the setting it writes (see
+/// [`brick_property_type`]). The setting is a constant, so the mismatch is
+/// caught here rather than written to a brick that silently ignores it.
+fn check_brick_property_value(ctx: &mut TypeCheckCtx, sig: &CallSignature, args: &[CallArg], pos_base: usize) {
+    const ENUM: &str = BRICK_PROPERTY;
+    if args.iter().any(|a| matches!(a, CallArg::Spread(_))) {
+        return;
+    }
+    let arg_for = |name: &str| -> Option<&Expr> {
+        let named = args.iter().find_map(|a| match a {
+            CallArg::Named { name: n, value, .. } if n == name => Some(value),
+            _ => None,
+        });
+        named.or_else(|| {
+            let idx = sig.params.iter().position(|p| p.name == name)?.checked_sub(pos_base)?;
+            args.iter()
+                .filter_map(|a| match a {
+                    CallArg::Positional(e) => Some(e),
+                    _ => None,
+                })
+                .nth(idx)
+        })
+    };
+    let (Some(property), Some(value)) = (arg_for("property"), arg_for("value")) else {
+        return;
+    };
+    let Some(member) = brick_property_member(property) else { return };
+    let Some(want) = brick_property_type(member) else { return };
+    let got = unwrap_ref(&arg_type(ctx, value));
+    if coerce(&got, &want) == CoerceRule::Mismatch {
+        let setting = crate::catalog::enum_member_names(ENUM)
+            .into_iter()
+            .find(|n| crate::catalog::enum_member_value(ENUM, n) == Some(member))
+            .unwrap_or_default();
+        ctx.emit(
+            "WS003",
+            format!(
+                "brick property {setting} takes a {}, got {}",
+                crate::analysis::types::type_str(&want),
+                crate::analysis::types::type_str(&got),
+            ),
+            value.range().clone(),
+        );
+    }
 }
 
 /// Validate one argument expression against the `Param` it binds to,

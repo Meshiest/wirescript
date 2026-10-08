@@ -46,8 +46,8 @@ static COUNT_FOR: PlaneSpec = PlaneSpec {
     brick_asset: "B_1x1_Microchip_CountFor",
     entry_class: gc::CALLABLE_ENTRY_COUNT_FOR,
     entry_brick_asset: "B_1x1_Gate_CallableEntry_CountFor",
-    entry_slots: &["Index", "Ordinal", "bIsFirst", "bIsLast"],
-    slot_labels: &["index", "ordinal", "isFirst", "isLast"],
+    entry_slots: &["Index"],
+    slot_labels: &["index"],
     single_binding_slot: 0,
     driver_ports: &["Count", "FirstIndex", "Step"],
 };
@@ -68,11 +68,28 @@ static FOR_EACH_MAP: PlaneSpec = PlaneSpec {
     brick_asset: "B_1x1_Microchip_ForEachMap",
     entry_class: gc::CALLABLE_ENTRY_FOR_EACH_MAP,
     entry_brick_asset: "B_1x1_Gate_CallableEntry_ForEachMap",
-    entry_slots: &["Key", "Value", "Ordinal"],
-    slot_labels: &["key", "value", "ordinal"],
+    entry_slots: &["Key", "Value", "Index"],
+    slot_labels: &["key", "value", "index"],
     single_binding_slot: 0,
     driver_ports: &["MapVarRef"],
 };
+
+/// A function definition: no driver pins and no entry slots. Its parameters are
+/// `FunctionInput` gates inside the plane, mapped onto a call's `Input0..7`.
+static FUNCTION_DEFINITION: PlaneSpec = PlaneSpec {
+    shell_class: gc::MICROCHIP_FUNCTION_DEFINITION,
+    brick_asset: "B_1x1_Microchip_FunctionDefinition",
+    entry_class: gc::CALLABLE_ENTRY_FUNCTION,
+    entry_brick_asset: "B_1x1_Gate_CallableEntry_Function",
+    entry_slots: &[],
+    slot_labels: &[],
+    single_binding_slot: 0,
+    driver_ports: &[],
+};
+
+pub fn function_plane_spec() -> &'static PlaneSpec {
+    &FUNCTION_DEFINITION
+}
 
 pub fn plane_spec(kind: LoopKind) -> &'static PlaneSpec {
     match kind {
@@ -90,15 +107,19 @@ pub fn plane_spec_for_class(class: &str) -> Option<&'static PlaneSpec> {
         gc::MICROCHIP_COUNT_FOR => Some(&COUNT_FOR),
         gc::MICROCHIP_FOR_EACH_ARRAY => Some(&FOR_EACH_ARRAY),
         gc::MICROCHIP_FOR_EACH_MAP => Some(&FOR_EACH_MAP),
+        gc::MICROCHIP_FUNCTION_DEFINITION => Some(&FUNCTION_DEFINITION),
         _ => None,
     }
 }
 
 /// Shell OUTPUT ports, identical across all three loop kinds.
-pub const SHELL_OUTPUTS: &[&str] =
-    &["Completed", "IterationsExecuted", "bAborted", "AbortCode"];
+pub const SHELL_OUTPUTS: &[&str] = &["Completed", "IterationsExecuted", "bAborted", "bRunning"];
 
-/// The record `as run` binds after a loop: surface field name, the shell
+/// The shell setting `@sliced` turns on. Off, the game runs the loop
+/// within the tick it starts; the schema carries it on all three shells.
+pub const RUN_ACROSS_TICKS: &str = "bRunAcrossTicks";
+
+/// The record `let run = for` binds after a loop: surface field name, the shell
 /// OUTPUT port that feeds it, and its type.
 ///
 /// Same one-table rule as [`slot_types`]: typecheck declares the binding's
@@ -108,15 +129,15 @@ pub const SHELL_OUTPUTS: &[&str] =
 pub fn result_fields() -> [(&'static str, &'static str, Type); 3] {
     [
         ("aborted", "bAborted", Type::Bool),
-        ("abortCode", "AbortCode", Type::Int),
         ("iterations", "IterationsExecuted", Type::Int),
+        ("running", "bRunning", Type::Bool),
     ]
 }
 
 /// The type of every entry slot of `kind`, in `entry_slots`/`slot_labels`
 /// order.
 ///
-/// A range's four slots are fixed by the gate. The two collection kinds take
+/// A range's one slot is fixed by the gate. The two collection kinds take
 /// their element types from the collection being iterated, which is what
 /// `elem` carries: empty for a range, `[element]` for an array, `[key, value]`
 /// for a map. A missing entry reads back as `Type::Any` rather than panicking,
@@ -124,12 +145,12 @@ pub fn result_fields() -> [(&'static str, &'static str, Type); 3] {
 ///
 /// The one table. Typecheck declares each binding's type from it and lowering
 /// declares the entry gate's output ports from it. A second copy could
-/// disagree about, say, whether `ordinal` is an `int`, and nothing would
+/// disagree about, say, whether a map's `index` is an `int`, and nothing would
 /// catch it: the wire would still be drawn, just typed wrong.
 pub fn slot_types(kind: LoopKind, elem: &[Type]) -> Vec<Type> {
     let at = |i: usize| elem.get(i).cloned().unwrap_or(Type::Any);
     match kind {
-        LoopKind::CountFor => vec![Type::Int, Type::Int, Type::Bool, Type::Bool],
+        LoopKind::CountFor => vec![Type::Int],
         LoopKind::ForEachArray => vec![Type::Int, at(0)],
         LoopKind::ForEachMap => vec![at(0), at(1), Type::Int],
     }
@@ -271,15 +292,35 @@ mod tests {
                 "{kind:?}: slot_types must yield one type per slot"
             );
 
-            // `as run` reads shell OUTPUT pins; a field naming a port the
+            // `let run = for` reads shell OUTPUT pins; a field naming a port the
             // shell does not have would wire from nowhere.
             for (field, port, _) in result_fields() {
                 assert!(
                     SHELL_OUTPUTS.contains(&port),
-                    "{kind:?}: `as run`'s `{field}` names {port:?}, which is not a shell output"
+                    "{kind:?}: the loop result's `{field}` names {port:?}, which is not a shell output"
                 );
             }
         }
+    }
+
+    /// The function shell and entry name a class and brick the dump has, and
+    /// the shell's one output is `Definition`.
+    #[test]
+    fn function_plane_spec_matches_the_live_dump() {
+        let catalog = crate::catalog::default_catalog();
+        let s = function_plane_spec();
+        let shell = catalog.find_by_class(s.shell_class).expect("shell class in the dump");
+        assert_eq!(shell.brick_asset, s.brick_asset);
+        let outs: Vec<&str> = shell.component.outputs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(outs, vec!["Definition"]);
+        let entry = catalog.find_by_class(s.entry_class).expect("entry class in the dump");
+        assert_eq!(entry.brick_asset, s.entry_brick_asset);
+        assert!(catalog.find_by_class(gc::FUNCTION_INPUT).is_some());
+        let output = catalog.find_by_class(gc::FUNCTION_OUTPUT).expect("FunctionOutput in the dump");
+        let ins: Vec<&str> = output.component.inputs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(ins, vec!["Value"]);
+        assert!(output.component.outputs.is_empty());
+        assert!(gc::is_plane_shell(s.shell_class));
     }
 
     /// Each kind's own `shell_class` must round-trip through the class lookup,

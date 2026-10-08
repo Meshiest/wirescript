@@ -504,6 +504,9 @@ fn check_stmt_inner(
                     a.range.clone(),
                 );
             }
+            if super::props::check_property_write(ctx, &a.target, &a.value) {
+                // A property write, checked against the property map.
+            } else {
             let (target_ty, through_ref) = match &a.target {
                 Expr::Deref { operand, range } => infer_deref_target(ctx, operand, range),
                 target => (infer_assign_target(ctx, target), false),
@@ -521,6 +524,7 @@ fn check_stmt_inner(
                 if through_ref {
                     check_deref_write_is_exact(ctx, &a.value, &target_ty);
                 }
+            }
             }
         }
         Stmt::OutBinding(b) => {
@@ -1084,11 +1088,11 @@ fn check_stmt_inner(
             ctx.loop_depth -= 1;
             ctx.pop_scope();
 
-            // `as run` binds the outcome record AFTER the loop, in the scope
-            // the `for` statement itself sits in, not the body scope just
-            // popped above.
-            if let Some(name) = &f.result {
-                declare_for_binding(ctx, name, loop_result_type(), &f.range);
+            // `let run = for ...` binds the outcome record AFTER the loop, in
+            // the scope the `for` statement itself sits in, not the body scope
+            // just popped above.
+            if let Some((name, name_range)) = &f.result {
+                declare_for_binding(ctx, name, loop_result_type(), name_range);
             }
         }
         Stmt::Break { range } => {
@@ -1201,7 +1205,7 @@ fn is_variable_ref(ctx: &TypeCheckCtx, e: &Expr) -> bool {
     }
 }
 
-/// The record `as run` binds after the loop: `{ aborted, abortCode, iterations }`.
+/// The record `let run = for` binds after the loop: `{ aborted, iterations }`.
 /// Built from `ir::plane::result_fields`, the same table lowering wires each
 /// field's shell pin from.
 fn loop_result_type() -> Type {
@@ -1213,8 +1217,8 @@ fn loop_result_type() -> Type {
     )
 }
 
-/// Declare one name a `for` loop binds (a slot pattern name, or the `as run`
-/// result) as a plain read-only local, the same `SymbolKind` a `let` capture
+/// Declare one name a `for` loop binds (a slot pattern name, or the
+/// `let run = for` result) as a plain read-only local, the same `SymbolKind` a `let` capture
 /// uses.
 fn declare_for_binding(ctx: &mut TypeCheckCtx, name: &str, ty: Type, range: &SourceRange) {
     ctx.scope.declare(
@@ -1231,7 +1235,7 @@ fn declare_for_binding(ctx: &mut TypeCheckCtx, name: &str, ty: Type, range: &Sou
 }
 
 /// Bind a `{ }` pattern that names a counted loop's own SLOTS rather than
-/// destructuring a value: `for { index, isLast } in 0..n`.
+/// destructuring a value: `for { index } in 0..n`.
 ///
 /// Field names resolve against `spec.slot_labels` and take `slot_tys` at the
 /// same index, keeping this in step with the entry-gate ports lowering looks

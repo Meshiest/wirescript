@@ -1,4 +1,5 @@
     use super::*;
+    use crate::catalog::default_catalog;
     use crate::ir::{GateIO, Module, Node, NodeKind, PortSpec, SourceRange, Type};
     use std::collections::HashMap;
     use std::sync::Arc;

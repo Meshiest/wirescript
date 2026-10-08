@@ -534,7 +534,7 @@ pub fn collect_stmt(syms: &mut Vec<SymbolDef>, s: &Stmt, tmap: &TypeMap, file: O
             for s in &f.body.stmts {
                 collect_stmt(syms, s, tmap, file, script);
             }
-            if let Some(name) = &f.result {
+            if let Some((name, name_range)) = &f.result {
                 let ty = Type::Record(
                     crate::ir::plane::result_fields()
                         .into_iter()
@@ -544,7 +544,7 @@ pub fn collect_stmt(syms: &mut Vec<SymbolDef>, s: &Stmt, tmap: &TypeMap, file: O
                 syms.push(SymbolDef {
                     name: name.clone(),
                     kind: "let",
-                    range: f.range.clone(),
+                    range: name_range.clone(),
                     ty: Some(type_str(&ty)),
                     exec: false,
                     is_const: false,

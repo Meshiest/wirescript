@@ -27,6 +27,60 @@ fn union_output_type(
     range: &SourceRange,
 ) -> Type {
     let declared = c.outputs[out_index].ty.clone();
+    // Get/Add Component give a reference of the type their `$Component/...` names.
+    if matches!(c.gate_class, crate::ir::gate_class::GET_COMPONENT | crate::ir::gate_class::ADD_COMPONENT) {
+        let pos = c.params.iter().position(|p| p.name == "componentType");
+        let arg = args
+            .iter()
+            .find_map(|a| match a {
+                CallArg::Named { name, value, .. } if name == "componentType" => Some(value),
+                _ => None,
+            })
+            .or_else(|| {
+                args.iter()
+                    .filter_map(|a| match a {
+                        CallArg::Positional(e) => Some(e),
+                        _ => None,
+                    })
+                    .nth(pos?)
+            });
+        return match arg.and_then(super::props::component_type_arg) {
+            Some(class) => Type::Component(class.to_string()),
+            None => {
+                // A `$Component/...` that names nothing has its own WS110.
+                if !matches!(arg, Some(Expr::AssetRef { asset_type, .. }) if asset_type == crate::analysis::assets::COMPONENT) {
+                    ctx.emit(
+                        "WS110",
+                        format!("`{}` takes the component type as `$Component/<name>`", c.name),
+                        arg.map_or(range, |a| a.range()).clone(),
+                    );
+                }
+                Type::Any
+            }
+        };
+    }
+    // `GetBrickProperty` reads whatever its constant `property` holds.
+    if c.gate_class == crate::ir::gate_class::GET_BRICK_PROPERTY {
+        let pos = c.params.iter().position(|p| p.name == "property");
+        let property = args
+            .iter()
+            .find_map(|a| match a {
+                CallArg::Named { name, value, .. } if name == "property" => Some(value),
+                _ => None,
+            })
+            .or_else(|| {
+                args.iter()
+                    .filter_map(|a| match a {
+                        CallArg::Positional(e) => Some(e),
+                        _ => None,
+                    })
+                    .nth(pos?)
+            });
+        return property
+            .and_then(super::sig::brick_property_member)
+            .and_then(super::sig::brick_property_type)
+            .unwrap_or(Type::Any);
+    }
     // Generic passthrough builtins (`Sleep`/`SleepTicks`/`Select`/`Swap`): a
     // `Type::Param(name)` output — bare or as a Record field — resolves to the
     // widening join of the args at that same param's positions, so
@@ -341,8 +395,9 @@ pub(super) fn type_user_symbol_call(
             name_range.clone(),
         );
     }
-    // Argument-count check. User chips/mods/fns have no default parameters, so
-    // the positional-argument count must equal the parameter count — each param
+    // Argument-count check. The positional-argument count must lie between the
+    // required count and the parameter count (trailing params with a default
+    // value may be omitted) — each param
     // (including a whole-record or destructured one, and the `self` receiver)
     // takes exactly one positional arg. A `...tuple` spread contributes its
     // element count; the check runs whenever every spread's arity is known,
@@ -361,14 +416,18 @@ pub(super) fn type_user_symbol_call(
         }
         // A variadic mod (`...rest`) fixes only the leading params; the trailing
         // args are captured, so the count just has to REACH the fixed count.
+        // Trailing params with a default value may be omitted.
+        let required = sig.required.min(expected);
         let count_wrong = if sig.variadic {
             effective < expected
         } else {
-            effective != expected
+            effective < required || effective > expected
         };
         if all_known && count_wrong {
             let expectation = if sig.variadic {
                 format!("at least {expected} argument{}", if expected == 1 { "" } else { "s" })
+            } else if required < expected {
+                format!("{required} to {expected} arguments")
             } else {
                 format!("{expected} argument{}", if expected == 1 { "" } else { "s" })
             };
@@ -584,6 +643,11 @@ pub(super) fn type_user_symbol_call(
     // the caller its exec continuation and wired an exec pin into the store's
     // `Value`. An `exec =` trigger keeps `Any`: that spelling carries the
     // chain's completion, which lowering does return as a real port.
+    // A `fn` call is a gate with a real `Completed` pin, so it returns that
+    // exec as its one field.
+    if has_exec_arg && sig.is_fn {
+        return Type::outputs(vec![("exec".into(), Type::Exec)]);
+    }
     if has_exec_arg {
         return Type::Any;
     }
@@ -681,7 +745,8 @@ fn sig_of_fnchip(
     let params = sig
         .params
         .iter()
-        .map(|p| {
+        .enumerate()
+        .map(|(i, p)| {
             let ty = match subst {
                 Some(s) => substitute(&p.ty, s),
                 None => p.ty.clone(),
@@ -689,7 +754,7 @@ fn sig_of_fnchip(
             Param {
                 name: p.name.clone(),
                 ty,
-                optional: false,
+                optional: i >= sig.required,
                 kind: if p.is_const {
                     ParamKind::Const
                 } else {

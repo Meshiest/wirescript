@@ -308,11 +308,12 @@ type Pair = (int, int)
       (type_identifier))))
 
 ================================================================================
-expression bodied fn
+fn with a default parameter
 ================================================================================
 
-fn double(x: int) -> int = x * 2
-fn add(a: int, b: int) = a + b
+fn add(x: int, y: int = 1) -> int {
+  return x + y
+}
 
 --------------------------------------------------------------------------------
 
@@ -322,20 +323,15 @@ fn add(a: int, b: int) = a + b
     (parameter_list
       (parameter
         (identifier)
-        (type_identifier)))
-    (type_identifier)
-    (binary_expression
-      (identifier)
-      (integer)))
-  (function_declaration
-    (identifier)
-    (parameter_list
-      (parameter
-        (identifier)
         (type_identifier))
       (parameter
         (identifier)
-        (type_identifier)))
-    (binary_expression
-      (identifier)
-      (identifier))))
+        (type_identifier)
+        (integer)))
+    (type_identifier)
+    (block
+      (return_statement
+        (binary_expression
+          (identifier)
+          (identifier))))))
+

@@ -149,11 +149,14 @@ out c: color = lut.get(i, exec = i + 1).Value   // pure — no handler needed
 let v = scores.get(k, exec = Change(k).exec)     // re-reads when k changes
 ```
 
-The same convention applies to user-defined exec chips and mods: outside an
-exec context, pass their trigger as `exec = ...`. The call then also returns
-the completion exec as an [`.exec`](expressions.md#exec-field-exec) field on the
-result record, so callers can `await r.exec` or `on r.exec { }`. See
-[Exec Chips](chips.md#exec-chips).
+The same convention applies to user-defined exec chips, mods and `fn`s:
+outside an exec context, pass their trigger as `exec = ...`. The call then also
+returns the completion exec as an [`.exec`](expressions.md#exec-field-exec)
+field on the result record, so callers can `await r.exec` or `on r.exec { }`,
+or write `on f(args, exec = trigger) -> (results) { }` directly. A `fn` call's
+completion is its Function Call's `Completed`, so it is there even when the
+`fn` returns nothing. See [Exec Chips](chips.md#exec-chips) and
+[`fn`](statements.md#fn----function).
 
 ## Reading Variables: Exec vs Pure
 
@@ -325,6 +328,10 @@ otherwise splice into the chain should run beside it instead.
 
 `let _ = <call>.exec` fires and forgets: `_` discards the binding only, and the
 call still runs.
+
+`.exec` needs a call that runs on an exec chain: a `chip`, a `fn`, or a `mod`
+whose body runs exec statements. A `mod` whose body is all values has no
+completion to name, and `.exec` on it is `WS043`.
 
 `emit` as a value is meaningful in exec context alone. Pure context has no chain
 point to name, so it reports WS007 rather than resolving to nothing.

@@ -591,6 +591,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     ty: Type::Any,
                     decl_range: f.range.clone(),
                     signature: Some(FnOrChipSig {
+                        required: params.len(),
                         params,
                         variadic: false,
                         outputs: vec![EventDataField {
@@ -599,6 +600,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             is_const: false,
                         }],
                         type_params: Vec::new(),
+                        is_fn: false,
                     }),
                     event_data: None,
                 },
@@ -728,10 +730,12 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     ty: Type::Any,
                     decl_range: c.range.clone(),
                     signature: Some(FnOrChipSig {
+                        required: c.inputs.iter().take_while(|p| p.default.is_none()).count(),
                         params,
                         variadic: c.rest.is_some(),
                         outputs,
                         type_params: type_param_masks,
+                        is_fn: c.is_fn,
                     }),
                     event_data: None,
                 },
@@ -986,6 +990,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             .collect();
                         let generic = has_type_params.then(|| {
                             let sig = FnOrChipSig {
+                                required: c.inputs.iter().take_while(|p| p.default.is_none()).count(),
                                 params: params.clone(),
                                 variadic: c.rest.is_some(),
                                 outputs: c
@@ -1002,6 +1007,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                     .iter()
                                     .map(|tp| (tp.name.clone(), super::resolve::type_param_mask(ctx, tp)))
                                     .collect(),
+                                is_fn: c.is_fn,
                             };
                             (sig, c.range.clone())
                         });

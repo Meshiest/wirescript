@@ -67,10 +67,14 @@ use access::*;
 
 pub(crate) mod boundary_pins;
 pub(crate) mod flatten;
+pub(crate) mod gate_variants;
+mod convert;
+mod props;
 
 // `for`-loop lowering, and the range normalisation it rests on: every range
 // spelling collapses onto the callable-loop shell's three driver pins.
 pub(crate) mod for_loop;
+pub(crate) mod function;
 
 // Maranget decision-tree builder for `match` lowering. Self-contained; the
 // match-expr / match-stmt lowering (later tasks) walks the `Decision` it emits.
@@ -736,6 +740,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     let mut module = ctx.builder.module;
     let whole_file = SourceRange::new(input.file, Default::default(), Default::default());
     prune_dead_exec_unions(&mut module);
+    convert::prune_unread_conversions(&mut module);
     // Before literal-inlining/materialization: a real computation still has its
     // operand WIRES here, so only genuinely wireless orphans (e.g. a top-level
     // constant duplicated by a namespace + named import of the same module) are
@@ -799,8 +804,11 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         crate::emit::partition_anon_chips(&mut module);
         check_wires_resolve(&module, "partition_anon_chips", false, &whole_file, &mut ctx.diagnostics);
     }
+    function::capture_through_handles(&mut module, &mut ctx.diagnostics);
     boundary_pins::synthesize_boundary_pins(&mut module);
     check_wires_resolve(&module, "synthesize_boundary_pins", true, &whole_file, &mut ctx.diagnostics);
+    // Last: the wire set is final, and the brick size follows the ports in use.
+    gate_variants::select_gate_variants(&mut module);
     check_no_exec_into_value(&module, &whole_file, &mut ctx.diagnostics);
     crate::emit::check_native_settings(&module, &mut ctx.diagnostics);
     LowerResult {
@@ -894,7 +902,12 @@ fn check_wires_resolve(
                     return Some((format!("{} references {end}, which no module holds", wire()), range_of(&other)));
                 };
                 let is_pin = || m.chips.values().any(|c| c.inputs.contains(&end) || c.outputs.contains(&end));
-                if !pinned || !carries_value || is_pin() {
+                let definition = || {
+                    owner_of(&src)
+                        .and_then(|o| o.nodes.get(&src))
+                        .is_some_and(|n| function::is_definition_wire(n, w))
+                };
+                if !pinned || !carries_value || is_pin() || definition() {
                     continue;
                 }
                 let what = if end_owner.nodes.get(&end).is_some_and(|n| n.gate_class == gc::LITERAL) {
@@ -2099,13 +2112,18 @@ fn cse_pure_gates(root: &mut Module) {
     }
 
     // A pure gate's behaviour is fully determined by (class, properties, the set
-    // of wires feeding its input ports). Build a stable, order-independent key:
-    // structured rather than formatted, so only property VALUES (which may hold
-    // f64s with no Eq/Hash) go through a canonicalizing Debug render.
+    // of wires feeding its input ports, and the types of its outputs). The output
+    // types matter where they are the setting: a Convert gate's target type is
+    // its `Output` port's type, so `x as int` and `x as string` share class,
+    // properties and input and must still stay two gates. Build a stable,
+    // order-independent key: structured rather than formatted, so only property
+    // VALUES (which may hold f64s with no Eq/Hash) and the output types go
+    // through a canonicalizing Debug render.
     type CseKey = (
         &'static str,
         Vec<(&'static str, String)>,
         Vec<(WirePort, NodeId, WirePort)>,
+        Vec<String>,
     );
     fn cse_key(n: &crate::ir::Node, incoming: Option<&Vec<(WirePort, NodeId, WirePort)>>) -> CseKey {
         let mut props: Vec<(&'static str, String)> = n
@@ -2116,7 +2134,8 @@ fn cse_pure_gates(root: &mut Module) {
         props.sort_unstable();
         let mut ins: Vec<(WirePort, NodeId, WirePort)> = incoming.cloned().unwrap_or_default();
         ins.sort_unstable_by_key(|(tp, sid, sp)| (*tp as u16, sid.0, *sp as u16));
-        (n.gate_class, props, ins)
+        let outs = n.ports.outputs.iter().map(|p| format!("{}:{:?}", crate::intern::resolve(p.name), p.ty)).collect();
+        (n.gate_class, props, ins, outs)
     }
 
     fn cse_module(module: &mut Module, external: &ExternalWires, redirect: &mut HashMap<NodeId, NodeId>) {

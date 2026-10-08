@@ -354,6 +354,19 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             Type::Exec,
         ),
     );
+    // A container's contents: pulses on the update after the array or map
+    // changes in any way. `Change` watches a wire value, and a container's
+    // wire carries the same reference however its contents move (WS059).
+    m.insert(
+        "ContainerChange",
+        vec_expr(
+            "ContainerChange",
+            gc::CONTAINER_CHANGE_DETECTOR,
+            vec![CallParam::req("container", WirePort::ContainerRef, Type::Any)],
+            WirePort::OnChanged,
+            Type::Exec,
+        ),
+    );
     m.insert(
         "Changed",
         vec_expr(
@@ -385,6 +398,19 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
     // effectively reading the tag, but it is emitted per the design so that
     // game/native enums route through the real gate; the fold path keeps
     // compile-time-known enums gate-free.
+    // Which kind of value is on the wire, as an int (`docs/src/builtins.md`
+    // lists the likely kinds; the mapping is not verified in game).
+    m.insert(
+        "GetValueType",
+        CallSpec {
+            name: "GetValueType",
+            gate_class: gc::GET_VALUE_TYPE,
+            params: vec![CallParam::req("value", WirePort::Input, Type::Any)],
+            exec: false,
+            outputs: vec![CallOutput::plain(WirePort::Type, Type::Int)],
+            receiver: None,
+        },
+    );
     m.insert(
         "EnumToInt",
         CallSpec {

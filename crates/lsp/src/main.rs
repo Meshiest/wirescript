@@ -2067,6 +2067,22 @@ fn member_completions(
 ) -> Vec<CompletionItem> {
     let mut items = Vec::new();
 
+    // A component reference: its properties and `Remove`.
+    if let Some(found) = resolve_symbol(symbols, source, var_name, line, col)
+        .and_then(|s| s.ty.as_deref())
+        .and_then(wirescript::analysis::component_member_completions)
+    {
+        return found
+            .into_iter()
+            .map(|(label, detail)| CompletionItem {
+                kind: Some(if label == "Remove" { CompletionItemKind::METHOD } else { CompletionItemKind::PROPERTY }),
+                label,
+                detail: Some(detail),
+                ..Default::default()
+            })
+            .collect();
+    }
+
     let enum_registry = enum_registry_from_source(source);
 
     // `arr[i].` — an indexed read, not the array itself. Its members are the
@@ -2710,7 +2726,7 @@ fn build_completions(
                 .chars()
                 .all(|c| c.is_alphanumeric() || c == '_' || c == '/')
             {
-                if let Some(slash) = frag.find('/') {
+                if let Some(slash) = frag.rfind('/') {
                     // filter_text = the name already typed, so ctrl-space at the
                     // end of a complete name still lists the other assets.
                     let typed = frag[slash + 1..].to_string();
@@ -2744,6 +2760,23 @@ fn build_completions(
     // recv's methods, not the enclosing call's params. A plain `Call(` (the dot
     // belongs to the callee, cursor at an arg boundary) yields no receiver here
     // and falls through to param completion below.
+    // `Environment.<env>.<property>`: environment names, then properties.
+    let env_items = if symbols.iter().any(|s| s.name == "Environment") {
+        None
+    } else {
+        wirescript::analysis::environment_completions(source, line, col)
+    };
+    if let Some(items) = env_items {
+        return items
+            .into_iter()
+            .map(|(label, detail)| CompletionItem {
+                label,
+                kind: Some(CompletionItemKind::PROPERTY),
+                detail: Some(detail),
+                ..Default::default()
+            })
+            .collect();
+    }
     if let Some(var_name) = member_receiver_at(source, line, col) {
         return member_completions(&var_name, symbols, source, line, col);
     }
@@ -3011,6 +3044,7 @@ fn build_completions(
         ("@bottom", "outer rerouter pin"),
         ("@label", "display-text override"),
         ("@closed", "compile chip collapsed"),
+        ("@sliced", "let a for loop run across ticks"),
         ("@fold", "module-level: fold constant expressions"),
         ("@nofold", "module-level: never fold"),
         ("@layout", "module-level: placement engine (code/cube)"),

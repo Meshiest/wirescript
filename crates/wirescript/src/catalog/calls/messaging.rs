@@ -2,6 +2,31 @@
 
 use super::*;
 
+/// A player dialog: `(target, message, title?)`, answering with a record of
+/// `ClickedBy` (the player who answered, first, so a bare use reads it), any
+/// `extra` value, the exec field for the confirming button, and `Declined`.
+fn dialog(
+    name: &'static str,
+    gate_class: &'static str,
+    confirm: &str,
+    extra: Option<(&str, Type)>,
+) -> CallSpec {
+    let mut fields = vec![("ClickedBy".to_string(), Type::Controller)];
+    fields.extend(extra.map(|(f, t)| (f.to_string(), t)));
+    fields.push((confirm.to_string(), Type::Exec));
+    fields.push(("Declined".to_string(), Type::Exec));
+    controller_exec(
+        name,
+        gate_class,
+        vec![
+            CallParam::req("target", WirePort::PlayerState, Type::Controller),
+            CallParam::req("message", WirePort::Message, Type::Any),
+            CallParam::opt("title", WirePort::Title, Type::Any),
+        ],
+        vec![CallOutput::plain(WirePort::ClickedBy, Type::Record(fields))],
+    )
+}
+
 pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
     // ---- Messaging --------------------------------------------
     m.insert(
@@ -16,17 +41,40 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             vec![],
         ),
     );
+    // The message box and the three question dialogs answer asynchronously:
+    // `ExecOut` continues at once, and some ticks later the confirming button
+    // pulses its exec output (`on r.YesClicked { ... }`), with `ClickedBy` the
+    // player who answered. Every other outcome (cancel, no, closed, or a dialog
+    // the game could not show) pulses `Declined` (`on r.Declined { ... }`).
     m.insert(
         "ShowMessageBox",
-        controller_exec(
-            "ShowMessageBox",
-            gc::PLAYERSTATE_SHOW_MESSAGE_BOX,
-            vec![
-                CallParam::req("target", WirePort::PlayerState, Type::Controller),
-                CallParam::req("message", WirePort::Message, Type::Any),
-                CallParam::opt("title", WirePort::Title, Type::Any),
-            ],
-            vec![],
+        dialog("ShowMessageBox", gc::PLAYERSTATE_SHOW_MESSAGE_BOX, "OkClicked", None),
+    );
+    m.insert(
+        "ShowOkCancelBox",
+        dialog(
+            "ShowOkCancelBox",
+            gc::PLAYERSTATE_SHOW_OK_CANCEL_BOX,
+            "OkClicked",
+            None,
+        ),
+    );
+    m.insert(
+        "ShowYesNoBox",
+        dialog(
+            "ShowYesNoBox",
+            gc::PLAYERSTATE_SHOW_YES_NO_BOX,
+            "YesClicked",
+            None,
+        ),
+    );
+    m.insert(
+        "ShowTextInputBox",
+        dialog(
+            "ShowTextInputBox",
+            gc::PLAYERSTATE_SHOW_TEXT_INPUT_BOX,
+            "OkClicked",
+            Some(("Text", Type::String)),
         ),
     );
     m.insert(

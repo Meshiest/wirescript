@@ -253,6 +253,18 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             vec![],
         ),
     );
+    m.insert(
+        "SetVisible",
+        entity_exec(
+            "SetVisible",
+            gc::ENTITY_SET_VISIBLE,
+            vec![
+                CallParam::req("entity", WirePort::Entity, Type::Entity),
+                CallParam::req("visible", WirePort::BVisible, Type::Bool),
+            ],
+            vec![],
+        ),
+    );
 
     // ---- Entity tags --------------------------------------------
     m.insert(
@@ -272,6 +284,62 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             vec![
                 CallParam::req("entity", WirePort::Entity, Type::Entity),
                 CallParam::req("tag", WirePort::Tag, Type::String),
+            ],
+            vec![],
+        ),
+    );
+    // ---- Entity custom properties ----------------------------------------
+    // A key/value store on an entity, player or dynamic grid: 256 keys per
+    // holder, keys up to 100 characters. The gates save `Key` as a string.
+    m.insert(
+        "SetCustomProperty",
+        entity_exec(
+            "SetCustomProperty",
+            gc::ENTITY_SET_CUSTOM_PROPERTY,
+            vec![
+                CallParam::req("entity", WirePort::Entity, Type::Entity),
+                CallParam::req("key", WirePort::Key, Type::String),
+                CallParam::req("value", WirePort::Value, Type::Any),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "GetCustomProperty",
+        entity_exec(
+            "GetCustomProperty",
+            gc::ENTITY_GET_CUSTOM_PROPERTY,
+            vec![
+                CallParam::req("entity", WirePort::Entity, Type::Entity),
+                CallParam::req("key", WirePort::Key, Type::String),
+            ],
+            vec![CallOutput::plain(
+                WirePort::Value,
+                Type::Record(vec![("Value".into(), Type::Any), ("Found".into(), Type::Bool)]),
+            )],
+        ),
+    );
+    m.insert(
+        "RemoveCustomProperty",
+        entity_exec(
+            "RemoveCustomProperty",
+            gc::ENTITY_REMOVE_CUSTOM_PROPERTY,
+            vec![
+                CallParam::req("entity", WirePort::Entity, Type::Entity),
+                CallParam::req("key", WirePort::Key, Type::String),
+            ],
+            vec![CallOutput::plain(WirePort::BFound, Type::Bool)],
+        ),
+    );
+    // Replaces the entity's custom properties with a copy of `source`'s.
+    m.insert(
+        "CopyCustomProperties",
+        entity_exec(
+            "CopyCustomProperties",
+            gc::ENTITY_COPY_CUSTOM_PROPERTIES,
+            vec![
+                CallParam::req("entity", WirePort::Entity, Type::Entity),
+                CallParam::req("source", WirePort::Source, Type::Entity),
             ],
             vec![],
         ),
@@ -359,6 +427,93 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             receiver: None,
         },
     );
+    // The program's own microchip brick: a var holding a brick reference,
+    // baked at emit (`emit/handles.rs`), so it has no gate of its own.
+    m.insert(
+        "GetMicrochipBrick",
+        CallSpec {
+            name: "GetMicrochipBrick",
+            gate_class: gc::VAR,
+            params: vec![],
+            exec: false,
+            outputs: vec![CallOutput::plain(WirePort::Value, Type::Brick)],
+            receiver: None,
+        },
+    );
+    // ---- Brick properties ----------------------------------------------
+    // Read or write one setting of a referenced brick. `property` is a
+    // constant `BrickProperty` member baked into the gate; the value's type
+    // follows it (`bool` for Visible and the collision flags, `color` for
+    // Color). Typecheck types the read and checks the write from the member
+    // (`typecheck::sig::brick_property_type`), and lowering pins the read's
+    // `T` from that result.
+    m.insert(
+        "GetBrickProperty",
+        CallSpec {
+            name: "GetBrickProperty",
+            gate_class: gc::GET_BRICK_PROPERTY,
+            params: vec![
+                CallParam::req("brick", WirePort::Brick, Type::Brick),
+                CallParam::req("property", WirePort::Property, Type::Int),
+            ],
+            exec: true,
+            outputs: vec![CallOutput::plain(WirePort::Value, Type::Param("T".into()))],
+            receiver: Some(Type::Brick),
+        },
+    );
+    m.insert(
+        "SetBrickProperty",
+        CallSpec {
+            name: "SetBrickProperty",
+            gate_class: gc::SET_BRICK_PROPERTY,
+            params: vec![
+                CallParam::req("brick", WirePort::Brick, Type::Brick),
+                CallParam::req("property", WirePort::Property, Type::Int),
+                CallParam::req("value", WirePort::Value, Type::Any),
+            ],
+            exec: true,
+            outputs: vec![],
+            receiver: Some(Type::Brick),
+        },
+    );
+    // ---- Components ----------------------------------------------------
+    // `brick.GetComponent($Component/PointLight)` gives a reference typed by
+    // the component type it names (`Component<PointLight>`, typed in
+    // `typecheck::call`); `AddComponent` adds one first if the brick has none.
+    // The `$Component/...` is a constant baked into the gate's Component Type.
+    for (name, gate) in [("GetComponent", gc::GET_COMPONENT), ("AddComponent", gc::ADD_COMPONENT)] {
+        m.insert(
+            name,
+            CallSpec {
+                name,
+                gate_class: gate,
+                params: vec![
+                    CallParam::req("brick", WirePort::Brick, Type::Brick),
+                    CallParam::req("componentType", WirePort::ComponentType, Type::Component(String::new())),
+                ],
+                exec: true,
+                outputs: vec![CallOutput::plain(WirePort::Component, Type::Param("T".into()))],
+                receiver: Some(Type::Brick),
+            },
+        );
+    }
+    // Removes the brick's component of that type after the current update,
+    // unless an `AddComponent` of its type runs first. The gate takes the
+    // brick, not a component reference, and no gate gives a reference's brick.
+    m.insert(
+        "RemoveComponent",
+        CallSpec {
+            name: "RemoveComponent",
+            gate_class: gc::REMOVE_COMPONENT,
+            params: vec![
+                CallParam::req("brick", WirePort::Brick, Type::Brick),
+                CallParam::req("componentType", WirePort::ComponentType, Type::Component(String::new())),
+            ],
+            exec: true,
+            outputs: vec![],
+            receiver: Some(Type::Brick),
+        },
+    );
     m.insert(
         "SweepSimple",
         CallSpec {
@@ -392,6 +547,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                     ("HitLocation".into(), Type::Vector),
                     ("HitNormal".into(), Type::Vector),
                     ("HitColor".into(), Type::Color),
+                    ("HitBrick".into(), Type::Brick),
                     ("Hit".into(), Type::Exec),
                     ("Miss".into(), Type::Exec),
                 ]),

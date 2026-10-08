@@ -39,6 +39,8 @@ pub fn primitive(name: &str) -> Option<Type> {
         "zone" => Type::Zone,
         "teleport" => Type::Teleport,
         "prefab" => Type::PrefabRef,
+        // Any component reference; `Component<PointLight>` names one type.
+        "Component" => Type::Component(String::new()),
         "exec" => Type::Exec,
         // `any` (in annotation position) maps onto the *wildcard* type
         // (`Type::Opaque`, the same type `Opaque(...)` produces) rather than
@@ -351,12 +353,26 @@ fn resolve_type_at_depth(
                 ("Ref", [v]) => {
                     Type::Ref(Box::new(resolve_type_at_depth(v, cx, diags, depth, in_progress)))
                 }
+                // `Component<PointLight>`: a reference to a component of that type.
+                ("Component", [TypeExpr::Name { name: c, range: c_range }]) => {
+                    match crate::catalog::component_type(c) {
+                        Some(o) => Type::Component(o.class.to_string()),
+                        None => {
+                            diags.push(Diagnostic::error(
+                                "WS110",
+                                format!("`Component<{c}>`: `{c}` is not a component type the component gates take"),
+                                c_range.clone(),
+                            ));
+                            Type::Any
+                        }
+                    }
+                }
                 ("Map", [k, v]) => {
                     let key = resolve_type_at_depth(k, cx, diags, depth, in_progress);
                     let val = resolve_type_at_depth(v, cx, diags, depth, in_progress);
-                    // A map is keyed by a hashed slot, so only int, string, and
-                    // object (entity/character/controller) keys have a
-                    // representation. A generic param key (`Map<K, V>`) is
+                    // A map is keyed by a hashed slot, so only int, string,
+                    // object (entity/character/controller) and brick keys have
+                    // a representation. A generic param key (`Map<K, V>`) is
                     // validated per concrete instantiation; an already-errored
                     // `any` key is left alone.
                     if !matches!(
@@ -366,14 +382,15 @@ fn resolve_type_at_depth(
                             | Type::Entity
                             | Type::Character
                             | Type::Controller
+                            | Type::Brick
                             | Type::Any
                             | Type::Param(_)
                     ) {
                         diags.push(Diagnostic::error(
                             "WS039",
                             format!(
-                                "map key type must be int, string, or an object \
-                                 (entity/character/controller), got {key}"
+                                "map key type must be int, string, an object \
+                                 (entity/character/controller) or a brick, got {key}"
                             ),
                             k.range().clone(),
                         ));

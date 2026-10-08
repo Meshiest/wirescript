@@ -15,6 +15,7 @@ mod const_collections;
 mod const_if;
 mod const_init;
 mod const_params;
+mod container_methods;
 mod cse;
 pub(super) mod declaring_scope;
 mod enums;

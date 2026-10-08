@@ -4,14 +4,78 @@
 use super::*;
 use crate::types::mono::unwrap_ref;
 
+/// `on r.field` / `on !r.field` on a record value must name one of its fields.
+/// Lowering finds no such field and falls back to the record's value, wiring
+/// its first output as the trigger, so a misspelt or removed exec field (a
+/// dialog's old `NoClicked`) would compile to the wrong wire.
+fn check_field_trigger(ctx: &mut TypeCheckCtx, obj: &str, field: &str, range: &SourceRange) {
+    let Some(sym) = ctx.scope.lookup(obj) else { return };
+    if let Type::Record(fields) | Type::Outputs(fields) = unwrap_ref(&sym.ty)
+        && !fields.iter().any(|(k, _)| k == field)
+    {
+        let names = fields.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ");
+        ctx.emit(
+            "WS010",
+            format!("no field `{field}` on record (has: {names})"),
+            range.clone(),
+        );
+    }
+}
+
+/// A capture naming (or typed as) a data output the event no longer has would
+/// bind whatever slot now sits in its place.
+fn check_removed_bindings(
+    ctx: &mut TypeCheckCtx,
+    evt: &crate::catalog::events::EventSpec,
+    h: &Handler,
+) {
+    let removed = crate::catalog::events::removed_bindings(evt.surface_name);
+    if removed.is_empty() {
+        return;
+    }
+    let valid = evt.data.iter().map(|d| format!("`{}`", d.name)).collect::<Vec<_>>().join(", ");
+    for (i, pname) in h.params.iter().enumerate() {
+        let lower = pname.name.to_ascii_lowercase();
+        let annotated = match &pname.ty {
+            Some(TypeExpr::Name { name, .. }) => Some(name.as_str()),
+            _ => None,
+        };
+        let Some(rb) = removed
+            .iter()
+            .find(|rb| rb.aliases.contains(&lower.as_str()) || annotated == Some(rb.ty_name))
+        else {
+            continue;
+        };
+        ctx.emit(
+            "WS010",
+            format!(
+                "`{}` no longer outputs `{}` ({}), so `{}` would bind `{}`; capture {valid}",
+                evt.surface_name,
+                rb.name,
+                rb.reason,
+                pname.name,
+                evt.data.get(i).map_or("nothing", |d| d.name),
+            ),
+            pname.range.clone(),
+        );
+    }
+}
+
 pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
     let (name, range) = match &h.trigger {
         Trigger::Ident { name, range } => (name, range),
+        Trigger::Field { obj, field, range } => {
+            check_field_trigger(ctx, obj, field, range);
+            return;
+        }
         Trigger::Not { inner, range } => match inner.as_ref() {
             Trigger::Ident { name, range } => (name, range),
             // `on !obj.field` is a valid negated field trigger (lowering handles
-            // it); it binds no capture params here, so return without erroring.
-            Trigger::Field { .. } => return,
+            // it); it binds no capture params here.
+            Trigger::Field { obj, field, range } => {
+                check_field_trigger(ctx, obj, field, range);
+                return;
+            }
             // `on !(a | b)` (negated union) and `on !!x` (double negation) have
             // no lowering form — the whole handler was silently dropped with no
             // diagnostic. Reject rather than vanish.
@@ -26,6 +90,14 @@ pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
                 return;
             }
         },
+        Trigger::Union { parts, .. } => {
+            for part in parts {
+                if let Trigger::Field { obj, field, range } = part {
+                    check_field_trigger(ctx, obj, field, range);
+                }
+            }
+            return;
+        }
         _ => return,
     };
     {
@@ -170,6 +242,7 @@ pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
                 h.range.clone(),
             );
         }
+        check_removed_bindings(ctx, evt, h);
         for (i, pname) in h.params.iter().enumerate() {
             // A handler type annotation (`a: int` on Custom Event) overrides the
             // event's declared data type (which is `any` for such events).

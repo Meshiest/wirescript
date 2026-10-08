@@ -91,6 +91,11 @@ struct Parser<'a> {
     /// it, `0..n-1` groups as `(0..n) - 1` and the range never forms. Reset
     /// inside any bracketed sub-expression, where a `..` is unambiguous again.
     stop_at_dotdot: bool,
+    /// When true, a bare `as` terminates `parse_binary` rather than starting a
+    /// conversion. Set for a `for` source, so the retired `for .. as run` form
+    /// reaches a diagnostic instead of parsing as a conversion to a type
+    /// `run`. Reset inside any bracketed sub-expression, like `stop_at_dotdot`.
+    stop_at_as: bool,
     /// Token positions where [`Parser::split_closing_angle`] split a `>>` into
     /// two `>`s, newest last, so a speculative parse can put them back.
     angle_splits: Vec<usize>,
@@ -127,6 +132,7 @@ impl<'a> Parser<'a> {
             pending_stmts: Vec::new(),
             no_brace_construct: false,
             stop_at_dotdot: false,
+            stop_at_as: false,
             angle_splits: Vec::new(),
             depth: 0,
             depth_exceeded: false,

@@ -298,7 +298,7 @@ pub fn completions(
                 .chars()
                 .all(|c| c.is_alphanumeric() || c == '_' || c == '/')
             {
-                if let Some(slash) = frag.find('/') {
+                if let Some(slash) = frag.rfind('/') {
                     for name in wirescript::analysis::asset_names(&frag[..slash]) {
                         items.push(CompletionOut {
                             label: name.to_string(),
@@ -324,6 +324,17 @@ pub fn completions(
         }
     }
 
+    // `Environment.<env>.<property>`: environment names, then properties.
+    if !symbols.iter().any(|s| s.name == "Environment")
+        && let Some(items) = wirescript::analysis::environment_completions(source, line as usize, col as usize)
+    {
+        let items: Vec<CompletionOut> = items
+            .into_iter()
+            .map(|(label, detail)| CompletionOut { label, kind: "field", detail: Some(detail), insert_text: None })
+            .collect();
+        return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+    }
+
     // Member access `receiver.partial` — precise: the receiver identifier must
     // directly precede the dot, and only identifier chars may sit between the
     // dot and the cursor. A plain `Call(` boundary yields no receiver and falls
@@ -332,6 +343,22 @@ pub fn completions(
         wirescript::analysis::member_receiver_at(source, line as usize, col as usize)
     {
         let sym = symbols.iter().find(|s| s.name == var_name);
+        // A component reference: its properties and `Remove`.
+        if let Some(found) = sym
+            .and_then(|s| s.ty.as_deref())
+            .and_then(wirescript::analysis::component_member_completions)
+        {
+            let items: Vec<CompletionOut> = found
+                .into_iter()
+                .map(|(label, detail)| CompletionOut {
+                    kind: if label == "Remove" { "method" } else { "field" },
+                    label,
+                    detail: Some(detail),
+                    insert_text: None,
+                })
+                .collect();
+            return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+        }
         // Collection methods dispatch on the receiver's declared type (resolved
         // through type aliases): `Map<K, V>` -> map table, `T[]` / an `array` decl
         // -> array table. The tables are distinct (map-only `get`/`set`/`has`/

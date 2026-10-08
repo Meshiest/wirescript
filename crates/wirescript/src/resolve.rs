@@ -1461,6 +1461,10 @@ fn collect_idents_in_expr(e: &Expr, idents: &mut HashSet<String>) {
             collect_idents_in_expr(value, idents);
             collect_idents_in_expr(path, idents);
         }
+        Expr::As { value, ty, .. } => {
+            collect_idents_in_expr(value, idents);
+            collect_idents_in_type_expr(ty, idents);
+        }
         Expr::UnOp { operand, .. } => collect_idents_in_expr(operand, idents),
         Expr::Call { callee, args, .. } => {
             // A method call `v.dist(o)` names a `self` mod `dist`, recorded

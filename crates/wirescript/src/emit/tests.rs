@@ -938,3 +938,53 @@
         let ints = crate::ir::GateIO::var_write(Type::Int);
         assert_eq!(literal_to_wire_value_or_default(&Literal::Int(3), &ints, "Value"), WireValue::Int(3));
     }
+
+    /// A procedural gate (`PB_Gate_*`) is placed as a procedural brick at the
+    /// smallest variant showing every numbered port it uses: a queue carrying
+    /// five values needs the {7,5,2} brick, a function call with two arguments
+    /// fits the smallest. Built by hand because neither gate has a surface
+    /// form yet; the variant pass, layout and emit are the real ones.
+    #[test]
+    fn procedural_gates_are_sized_to_the_ports_they_use() {
+        use crate::ir::Wire;
+        use crate::ir::build::{AddNodeOpts, ModuleBuilder, port_ref};
+
+        let mut b = ModuleBuilder::new("variants");
+        let mut gate = |class: &'static str| {
+            b.add_gate(AddNodeOpts { gate_class: class, ..Default::default() })
+        };
+        let src = gate("BrickComponentType_Expr_MathAdd");
+        let sink = gate("BrickComponentType_Expr_MathAdd");
+        let queue = gate(gc::QUEUE_TICKS);
+        let call = gate(gc::FUNCTION_CALL);
+        let mut wire = |from: crate::ir::NodeId, out: &str, to: crate::ir::NodeId, inp: &str| {
+            b.module.wires.push(Wire { source: port_ref(from, out), target: port_ref(to, inp) });
+        };
+        for i in 1..=5 {
+            wire(src, "Output", queue, &format!("DataIn{i}"));
+        }
+        wire(queue, "DataOut5", sink, "InputA");
+        wire(src, "Output", call, "Input0");
+        wire(src, "Output", call, "Input1");
+
+        crate::lower::gate_variants::select_gate_variants(&mut b.module);
+        let lr = crate::layout::layout(&b.module);
+        let world = build_world(
+            &b.module,
+            &lr,
+            &EmitOptions::default(),
+            &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
+        )
+        .unwrap_or_else(|e| panic!("emit failed: {e:?}"));
+
+        let placed = |class: &str| -> Vec<BrickType> {
+            std::iter::once(&world.bricks)
+                .chain(world.grids.iter().map(|(_, bs)| bs))
+                .flatten()
+                .filter(|br| br.components.iter().any(|c| c.component_type_ref() == Some(class)))
+                .map(|br| br.asset.clone())
+                .collect()
+        };
+        assert_eq!(placed(gc::QUEUE_TICKS), vec![BrickType::from(("PB_Gate_QueueTicks", (7u16, 5u16, 2u16)))]);
+        assert_eq!(placed(gc::FUNCTION_CALL), vec![BrickType::from(("PB_Gate_FunctionCall", (5u16, 5u16, 2u16)))]);
+    }

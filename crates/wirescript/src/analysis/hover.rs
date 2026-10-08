@@ -506,6 +506,7 @@ pub fn hover_at(
         .or_else(|| hover_enum_discriminant_variant_path(source, ast, &word, line, col))
         .or_else(|| hover_enum_variant_path(source, ast, symbols, &word, line, col))
         .or_else(|| hover_enum_field_construction(source, ast, &word, line, col))
+        .or_else(|| hover_component_property(source, file, type_map, line, col, &word))
         .or_else(|| resolve_field_hover(source, file, type_map, symbols, line, col, &word))
         .or_else(|| hover_generic_call(source, file, ast, symbols, doc_comments, resource_estimates, type_map, &word, line, col))
         .or_else(|| hover_user_symbol(source, file, ast, symbols, doc_comments, var_read_contexts, resource_estimates, &word, line, col))
@@ -617,6 +618,9 @@ fn render_prefab_file_hover(path: &str, file: &str) -> String {
 
 /// Markdown hover for an external asset reference (`$Type/Name`).
 fn render_asset_hover(path: &str) -> String {
+    if let Some((super::assets::COMPONENT, name)) = path.split_once('/') {
+        return render_component_type_hover(name);
+    }
     let mut out = String::from(
         "**Asset reference**\n\nAn external Brickadia asset, inlined into the gate's data.\n\n",
     );
@@ -625,6 +629,38 @@ fn render_asset_hover(path: &str) -> String {
     } else {
         out += &format!("- Asset: `{path}`\n");
     }
+    out
+}
+
+/// Markdown hover for a `$Component/<name>` or `$Component/<name>/<property>`
+/// reference.
+fn render_component_type_hover(path: &str) -> String {
+    let (name, property) = match path.split_once('/') {
+        Some((n, p)) => (n, Some(p)),
+        None => (path, None),
+    };
+    let Some(o) = crate::catalog::component_type(name) else {
+        return format!("**Component type** `{name}`\n\nNot a component type the component gates take (WS110).");
+    };
+    if let Some(property) = property {
+        return match crate::catalog::component_properties(o.class).into_iter().find(|p| p.name == property) {
+            Some(p) => format!(
+                "**Component property** `{}.{}`: `{}`\n\nA property of the {} component. The list \
+                 comes from the save schema, so it may hold fields the game's own picker does \
+                 not offer (unverified).",
+                o.name, p.name, p.ty, o.display_name
+            ),
+            None => format!(
+                "**Component property** `{}.{property}`\n\nNot a property of {} (WS110).",
+                o.name, o.display_name
+            ),
+        };
+    }
+    let mut out = format!("**Component type** `{}`\n\n", o.display_name);
+    if !o.description.is_empty() {
+        out += &format!("{}\n\n", o.description);
+    }
+    out += &format!("- Class: `{}`\n", o.class);
     out
 }
 
@@ -2812,6 +2848,37 @@ pub(super) fn resolve_record_param_field_type(script: &crate::ast::Script, param
     record_fields.iter()
         .find(|f| f.name == field)
         .map(|f| super::types::type_expr_str(&f.typ))
+}
+
+/// A property read or written on a component reference, `light.Brightness`:
+/// the same hover as `$Component/PointLight/Brightness`. The object is the
+/// name before the `.`, or the call or index expression that ends there.
+fn hover_component_property(source: &str, file: &str, type_map: &TypeMap, line: usize, col: usize, field: &str) -> Option<String> {
+    let l = source.lines().nth(line)?;
+    let c = char_col_to_byte(l, col);
+    let start = word_start_at_byte(l, c);
+    if start == 0 || l.as_bytes()[start - 1] != b'.' {
+        return None;
+    }
+    let obj_end = start - 1;
+    let obj_start = word_start_at_byte(l, obj_end);
+    let lo = line_offset_at(source, line);
+    let f: std::sync::Arc<str> = file.into();
+    let named = (obj_start < obj_end).then(|| find_obj_type(type_map, &f, lo + obj_start, lo + obj_end)).flatten();
+    let obj_ty = named.or_else(|| {
+        type_map
+            .iter()
+            .filter(|((f2, _, e), _)| **f2 == *f && *e == lo + obj_end)
+            .max_by_key(|((_, s, _), _)| *s)
+            .map(|(_, t)| t.clone())
+    })?;
+    let Type::Component(class) = crate::types::mono::unwrap_ref(&obj_ty) else {
+        return None;
+    };
+    if class.is_empty() {
+        return None;
+    }
+    Some(render_component_type_hover(&format!("{}/{field}", crate::catalog::component_name(&class))))
 }
 
 fn resolve_field_hover(source: &str, file: &str, type_map: &TypeMap, symbols: &[SymbolDef], line: usize, col: usize, field: &str) -> Option<String> {

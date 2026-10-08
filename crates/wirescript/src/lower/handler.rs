@@ -328,8 +328,8 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
                         "WS043",
                         "this `on <call>` trigger's call exposes no exec output to trigger on - \
                          `on` fires on the call's completion exec (bind its data outputs with \
-                         `-> ...`, drive it with `exec = ...`). Use an event or a named `chip` \
-                         call; an inline `mod` does not yet surface a completion exec, so an \
+                         `-> ...`, drive it with `exec = ...`). Use an event, or a named `chip` \
+                         or `fn` call; an inline `mod` does not yet surface a completion exec, so an \
                          `exec = ...` on it has nothing to attach to"
                             .to_string(),
                         h.range.clone(),

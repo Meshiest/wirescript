@@ -114,20 +114,18 @@ on go {
 
 #[test]
 fn for_range_brace_binding_registers_named_slots() {
-    // `for { index, isLast } in 0..n` names the loop's own slots directly -
-    // there is no element to destructure on a range.
+    // `for { index } in 0..n` names the loop's own slots directly - there is
+    // no element to destructure on a range.
     let src = "\
 var n: int = 0
 in go: exec
 on go {
-  for { index, isLast } in 0..n {
+  for { index } in 0..n {
     let x = index
-    let y = isLast
   }
 }";
     let m = model(src);
     assert!(m.bindings.iter().any(|b| b.name == "index" && b.kind == "for"));
-    assert!(m.bindings.iter().any(|b| b.name == "isLast" && b.kind == "for"));
 }
 
 #[test]
@@ -150,7 +148,7 @@ on go {
 
 #[test]
 fn for_range_brace_binding_unknown_slot_registers_nothing() {
-    // `nope` names no slot of a range (index/ordinal/isFirst/isLast);
+    // `nope` names no slot of a range (only `index`);
     // typecheck alone reports WS076 for it, so scoped_refs binds nothing
     // rather than inventing a rename target for a name that never compiles.
     let src = "\
@@ -184,7 +182,7 @@ fn for_as_run_registers_a_value_binding_with_a_scope_extent() {
 var n: int = 0
 in go: exec
 on go {
-  for i in 0..n as run {
+  let run = for i in 0..n {
     let x = i
   }
   let ok = run.aborted
@@ -194,9 +192,9 @@ on go {
         .bindings
         .iter()
         .find(|b| b.name == "run")
-        .expect("`as run` registered as a value binding");
+        .expect("`let run = for` registered as a value binding");
     assert_eq!(b.ns, RefNs::Value);
-    assert!(b.scope.is_some(), "`as run` is block-local, not file scope");
+    assert!(b.scope.is_some(), "`let run = for` is block-local, not file scope");
 }
 
 // --- value-use collection + `references_at` -----------------------
@@ -438,12 +436,12 @@ on go {
 }
 
 #[test]
-fn for_as_run_resolves_after_the_loop_but_not_inside_it() {
+fn let_for_resolves_after_the_loop_but_not_inside_it() {
     let src = "\
 var n: int = 0
 in go: exec
 on go {
-  for i in 0..n as run {
+  let run = for i in 0..n {
     let bad = run
   }
   let ok = run.aborted
@@ -458,7 +456,7 @@ on go {
     );
     assert!(
         sites.iter().all(|(l, _)| *l != 4),
-        "`run` used inside the loop body must not resolve to the `as run` binding: {sites:?}"
+        "`run` used inside the loop body must not resolve to the `let run = for` binding: {sites:?}"
     );
 
     // The in-body use never resolved to anything, so it's a dead end for

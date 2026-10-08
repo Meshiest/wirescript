@@ -50,6 +50,12 @@ pub struct FnOrChipSig {
     /// the call-site inference path is gated on this being non-empty so
     /// non-generic calls are completely unaffected.
     pub type_params: Vec<(String, Vec<Type>)>,
+    /// How many leading params a call must give: the ones after these have a
+    /// default value (`y: int = 1`) and may be omitted.
+    pub required: usize,
+    /// A `fn`: each call is a Function Call gate, whose `Completed` exec an
+    /// `exec =` call exposes even when the `fn` returns nothing.
+    pub is_fn: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -858,12 +864,12 @@ impl<'a> TypeCheckCtx<'a> {
         }
     }
 
-    /// Record every positional argument of a container method whose type is a
-    /// container: the source of `append`, `copyFrom`, `slice`, `keys`,
-    /// `values` and `sortMultiple`.
+    /// Record every argument of a container method whose type is a container,
+    /// positional or named: the source of `append`, `copyFrom`, `slice`,
+    /// `keys`, `values` and `sortMultiple`.
     pub(crate) fn record_container_args(&mut self, args: &[CallArg]) {
         for a in args {
-            if let CallArg::Positional(e) = a {
+            if let CallArg::Positional(e) | CallArg::Named { value: e, .. } = a {
                 self.record_container_expr(e);
             }
         }

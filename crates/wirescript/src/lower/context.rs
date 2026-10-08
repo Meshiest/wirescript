@@ -844,6 +844,12 @@ pub(super) struct LowerCtx<'a> {
     /// cleared by the next statement that has a chain again. `lower_assign`'s
     /// WS058 reads it to name that emit as the cause.
     pub(super) exec_closed_by_buffer_emit: bool,
+    /// Each `fn` lowered so far, keyed by its declaration's (file, offset):
+    /// the one definition plane every call to it binds.
+    pub(super) fn_planes: HashMap<(std::sync::Arc<str>, usize), crate::lower::function::FnPlane>,
+    /// The `fn`s whose bodies are being lowered, innermost last: a call to
+    /// one of these is recursion, which the game does not run.
+    pub(super) fn_building: Vec<(std::sync::Arc<str>, usize)>,
 }
 
 /// Chain an exec-driven `Var_Get` onto the current exec chain: the gate reads
@@ -1062,6 +1068,8 @@ impl<'a> LowerCtx<'a> {
             import_behavior_lowered: crate::collections::HashSet::default(),
             dead_after_break: false,
             exec_closed_by_buffer_emit: false,
+            fn_planes: HashMap::default(),
+            fn_building: Vec::new(),
         }
     }
 
@@ -2381,7 +2389,8 @@ impl<'a> LowerCtx<'a> {
         let stores = match dst.port {
             WirePort::Value => matches!(
                 target.gate_class,
-                gc::VAR_SET
+                gc::FUNCTION_OUTPUT
+                    | gc::VAR_SET
                     | gc::ARRAY_PUSH
                     | gc::ARRAY_SET_AT_INDEX
                     | gc::ARRAY_INSERT
@@ -2813,6 +2822,12 @@ pub(super) fn type_expr_of(t: &Type, range: &SourceRange) -> crate::ast::TypeExp
     let name = |n: &str| TypeExpr::Name { name: n.to_string(), range: range.clone() };
     let boxed = |t: &Type| Box::new(type_expr_of(t, range));
     match t {
+        Type::Component(class) if class.is_empty() => name("Component"),
+        Type::Component(class) => TypeExpr::Generic {
+            name: "Component".into(),
+            args: vec![name(&crate::catalog::component_name(class))],
+            range: range.clone(),
+        },
         Type::Bool => name("bool"),
         Type::Int => name("int"),
         Type::Float => name("float"),

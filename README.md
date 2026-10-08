@@ -60,6 +60,9 @@ out doubled = count.Value * 2
 - `var` / `static var` / `let` / `buffer` (one-tick delay) bindings
 - Records, tuples, destructuring, and spread
 - `mod` macros with ref params and `chip` microchip grouping
+- `fn` functions compiled once into a function plane and run by a Function Call
+  gate at each call site; `mod` and `fn` parameters take default values
+- `GetMicrochipBrick()`: the program's own microchip brick, as a `brick`
 - Imports across files: named, namespace (`import * as u`), and transitive
 - `await`, `Sleep` / `SleepTicks`, local exec signals, and `emit`
 - Receiver method syntax: `entity.SetLocation(...)`, `a.Dot(b)`

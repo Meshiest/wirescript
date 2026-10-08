@@ -241,6 +241,7 @@ The following words are reserved and cannot be used as identifiers:
 | `array` | Array declaration |
 | `chip` | Chip declaration (anonymous or named) |
 | `mod` | Inline chip (expanded at call sites) |
+| `fn` | Function (compiled once, run by a Function Call at each call site) |
 | `on` | Event handler |
 | `in` | Input port declaration |
 | `out` | Output port binding |
@@ -375,6 +376,7 @@ The following forms are valid at the top level of a script:
 - `chip let name = expr`: Anonymous chip with let bindings
 - `chip on trigger { body }`: Anonymous chip with handler
 - `mod name(params) { body }`: Inline chip (macro-like)
+- `fn name(params) -> outputs { body }`: Function, compiled once into a function definition plane
 - `on trigger { body }`: Event handler
 - `let name = on trigger { body }`: Captured event with handler
 - `import "path"`: Import all declarations from file

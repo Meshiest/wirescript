@@ -303,9 +303,16 @@ fn container_receiver_type(ctx: &TypeCheckCtx, e: &Expr) -> Option<Type> {
 /// per type combination, and each check must infer the receiver afresh.
 fn method_receiver_type(ctx: &mut TypeCheckCtx, obj: &Expr) -> Option<Type> {
     let is_container = |t: &Type| matches!(t, Type::Array(_) | Type::Map(_, _));
+    // A name, or a field path from one, that names no container is not one. A
+    // field path from anything else (`m.get(k).Value`, `rows[0].x`) is a
+    // runtime value, typed by inferring it.
+    let mut root = obj;
+    while let Expr::FieldAccess { obj: base, .. } = root {
+        root = base;
+    }
     let ty = match container_receiver_type(ctx, obj) {
         Some(t) => t.container_ref_as_value(),
-        None if matches!(obj, Expr::Ident { .. } | Expr::FieldAccess { .. }) => return None,
+        None if matches!(root, Expr::Ident { .. }) => return None,
         None => {
             let mark = ctx.diagnostics.len();
             let t = infer(ctx, obj).container_ref_as_value();
@@ -961,7 +968,7 @@ fn expr_has_direct_exec(
             expr_has_direct_exec(ctx, obj, locals, edges)
         }
         Expr::Unsafe { inner, .. } => expr_has_direct_exec(ctx, inner, locals, edges),
-        Expr::Is { value, .. } => expr_has_direct_exec(ctx, value, locals, edges),
+        Expr::Is { value, .. } | Expr::As { value, .. } => expr_has_direct_exec(ctx, value, locals, edges),
         Expr::UnOp { operand, .. } | Expr::Deref { operand, .. } | Expr::RefOf { operand, .. } => {
             expr_has_direct_exec(ctx, operand, locals, edges)
         }
@@ -2215,6 +2222,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     match e {
         Expr::Unsafe { inner, range } => infer_unsafe_access(ctx, inner, range),
         Expr::Is { value, path, range } => infer_variant_test(ctx, value, path, range),
+        Expr::As { value, ty, range } => super::convert::infer_as(ctx, value, ty, range),
         Expr::IntLit { .. } => Type::Int,
         Expr::AtomLit { .. } => Type::Int,
         Expr::FloatLit { .. } => Type::Float,
@@ -2254,12 +2262,25 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             }
             Type::String
         }
-        Expr::AssetRef { .. } => {
+        Expr::AssetRef { asset_type, asset_name, range } => {
+            if asset_type == crate::analysis::assets::COMPONENT {
+                if let Some(why) = component_ref_problem(asset_name) {
+                    ctx.emit("WS110", format!("`${asset_type}/{asset_name}` {why}"), range.clone());
+                    return Type::Any;
+                }
+                // `$Component/PointLight` is that component type; the property
+                // form names a property and has no value of its own.
+                return match crate::catalog::component_type(asset_name) {
+                    Some(o) => Type::Component(o.class.to_string()),
+                    None => Type::Any,
+                };
+            }
             // An external asset reference (`$Type/Name`) is an object/class
             // reference — typed `entity` so it can be compared against entity
             // values (e.g. `weapon == $BRItemBase/Weapon_Pickaxe`) and passed
             // into object/class gate ports (which accept `any`/entity anyway).
-            // Validation against the asset catalog happens in analysis.
+            // Validation against the asset catalog happens in analysis, except
+            // a component type's, checked above.
             Type::Entity
         }
         Expr::PrefabRef { path, range } => {
@@ -2681,6 +2702,12 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             }
         }
         Expr::FieldAccess { obj, field, range } => {
+            if let Some(t) = super::props::infer_environment_read(ctx, e) {
+                return t;
+            }
+            if super::props::environment_without_property(ctx, e) {
+                return Type::Any;
+            }
             ctx.reserve_check(field, range);
             // A namespace that TRAVELED in privately (a pulled-in module's own
             // `import * as`) is not nameable from this file — reading through it
@@ -2768,6 +2795,9 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 }
             }
             let ot = infer(ctx, obj);
+            if let Type::Component(class) = unwrap_ref(&ot) {
+                return super::props::infer_component_read(ctx, &class, field, range);
+            }
             // `<enum value>.Discriminant` (an enum-typed value, or a variant
             // path such as `Shape.Circle`, itself typed `Type::Enum` by the
             // block just above) always projects to its integer
@@ -3684,21 +3714,42 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     // has no value to watch — the detector observes the reference,
                     // which never "changes" — so `Change(m)` / `Changed(zone)`
                     // type-checked as `any` and lowered to an invalid, dead gate.
-                    if (c.gate_class.contains("ChangeDetector")
+                    if c.gate_class == crate::ir::gate_class::CONTAINER_CHANGE_DETECTOR {
+                        // The container detector is the one that DOES watch a
+                        // container, and only a container: its input is the
+                        // array or map's reference.
+                        if let Some(CallArg::Positional(arg)) = args.first() {
+                            let at = unwrap_ref(&infer(ctx, arg));
+                            if !matches!(at, Type::Map(_, _) | Type::Array(_) | Type::Any) {
+                                ctx.emit(
+                                    "WS003",
+                                    format!(
+                                        "`{name}` watches an array or map, got {}",
+                                        crate::analysis::types::type_str(&at)
+                                    ),
+                                    arg.range().clone(),
+                                );
+                            }
+                        }
+                    } else if (c.gate_class.contains("ChangeDetector")
                         || c.gate_class.contains("EdgeDetector"))
                         && let Some(CallArg::Positional(arg)) = args.first()
                     {
                         let at = infer(ctx, arg);
-                        if is_reference_type(&at)
-                            || matches!(unwrap_ref(&at), Type::Map(_, _) | Type::Array(_))
-                        {
+                        let container = matches!(unwrap_ref(&at), Type::Map(_, _) | Type::Array(_));
+                        if is_reference_type(&at) || container {
                             ctx.emit(
                                 "WS059",
                                 format!(
                                     "`{name}` can't watch a {}: a change/edge detector \
                                      observes a single wire value, and a reference or container \
-                                     (map, array, `*T`, zone, teleport) has none",
-                                    crate::analysis::types::type_str(&unwrap_ref(&at))
+                                     (map, array, `*T`, zone, teleport) has none{}",
+                                    crate::analysis::types::type_str(&unwrap_ref(&at)),
+                                    if container {
+                                        "; `ContainerChange(...)` fires when its contents change"
+                                    } else {
+                                        ""
+                                    }
                                 ),
                                 range.clone(),
                             );
@@ -3905,6 +3956,28 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // `resolve_variant_for_construction` would otherwise emit WS060 for
             // the non-variant name `FromInt`. Takes exactly one int argument;
             // result types as the enum.
+            // The Remove Component gate takes a brick and a constant component
+            // type, and no gate gives a component reference's brick.
+            if let Expr::FieldAccess { obj, field, range: fa_range } = callee.as_ref()
+                && field == "Remove"
+                && find_call(field).is_none()
+                && let Type::Component(class) = unwrap_ref(&infer(ctx, obj))
+            {
+                let name = crate::catalog::component_types()
+                    .iter()
+                    .find(|o| o.class == class)
+                    .map_or("<type>", |o| o.name.as_str());
+                ctx.emit(
+                    "WS110",
+                    format!(
+                        "a component reference has no `Remove()`: the game removes a component by its \
+                         brick and type, so call `brick.RemoveComponent($Component/{name})` on the brick \
+                         that holds it"
+                    ),
+                    fa_range.clone(),
+                );
+                return Type::Any;
+            }
             if let Expr::FieldAccess { obj, field, range: fa_range } = callee.as_ref()
                 && field == "FromInt"
                 && let Some(enum_name) = enum_head(ctx, obj)
@@ -5489,4 +5562,41 @@ fn infer_record_lit(
         }
     }
     Type::Record(rec_fields)
+}
+
+/// Why `$Component/<name>[/<property>]` names nothing the component gates
+/// take, or `None` when it is a component type they offer (and, if given, one
+/// of its properties).
+fn component_ref_problem(path: &str) -> Option<String> {
+    let (name, property) = match path.split_once('/') {
+        Some((n, p)) => (n, Some(p)),
+        None => (path, None),
+    };
+    let Some(component) = crate::catalog::component_type(name) else {
+        // The same component under another spelling: its class, or its
+        // display name.
+        let squash = |s: &str| s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>();
+        let found = crate::catalog::default_catalog()
+            .entries()
+            .iter()
+            .find(|g| g.component.class == name || squash(&g.component.display_name) == name);
+        return Some(match found {
+            Some(g) if crate::catalog::component_types().iter().any(|o| o.class == g.component.class) => {
+                let o = crate::catalog::component_types().iter().find(|o| o.class == g.component.class)?;
+                format!("names a component by its class; write `$Component/{}`", o.name)
+            }
+            Some(g) if !g.component.player_spawnable => {
+                "is not a component type the component gates take: a player can't add it to a brick".to_string()
+            }
+            Some(_) => "is not a component type the component gates take: their Component Type setting doesn't offer it".to_string(),
+            None => "is not a component type the component gates take: no component has that name".to_string(),
+        });
+    };
+    let property = property?;
+    let props = crate::catalog::component_properties(component.class);
+    if props.iter().any(|p| p.name == property) {
+        return None;
+    }
+    let names: Vec<&str> = props.iter().map(|p| p.name).collect();
+    Some(format!("names no property of {}: it has {}", component.name, names.join(", ")))
 }

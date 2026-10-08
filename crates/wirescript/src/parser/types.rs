@@ -14,6 +14,19 @@ impl<'a> Parser<'a> {
         ty
     }
 
+    /// The target of `value as T`: a type without `|` alternatives, so the
+    /// bitwise or in `x as int | mask` stays an operator.
+    pub(super) fn parse_cast_type(&mut self) -> TypeExpr {
+        if !self.enter_nesting() {
+            self.leave_nesting(1);
+            let t = self.peek().clone();
+            return TypeExpr::Name { name: String::new(), range: self.make_range(t.start, t.end) };
+        }
+        let ty = self.parse_type_postfix();
+        self.leave_nesting(1);
+        ty
+    }
+
     fn parse_type_inner(&mut self) -> TypeExpr {
         let mut first = self.parse_type_postfix();
         // `A | B | C`

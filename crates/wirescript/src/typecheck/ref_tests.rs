@@ -97,6 +97,8 @@ fn refs_bricks_and_nested_containers_are_storable() {
         "Map<string, *color>",
         "Map<string, int[]>",
         "Map<int, brick>",
+        // The game keys a map by the brick it names.
+        "Map<brick, int>",
         "int[][][]",
     ] {
         let src = format!("var c: {ty}\nin go: exec\non go {{ }}\n");
@@ -113,7 +115,6 @@ fn what_has_no_single_ref_stays_unstorable() {
         ("exec[][]", "WS025"),
         ("(*int[])[]", "WS025"),
         ("Map<*int, int>", "WS025"),
-        ("Map<brick, int>", "WS025"),
         ("Map<int[], int>", "WS025"),
     ] {
         let src = format!("var c: {ty}\nin go: exec\non go {{ }}\n");

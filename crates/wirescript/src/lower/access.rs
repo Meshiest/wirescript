@@ -1,5 +1,6 @@
 use super::*;
 use crate::lower::ordered::lower_in_order;
+use crate::catalog::methods::{ArgKind, Lowering, MethodArg};
 use crate::typecheck::ContainerKind;
 
 /// Walk a chain of `Ident` / `FieldAccess` nodes, resolving through
@@ -422,6 +423,12 @@ pub(super) fn lower_field_access(
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
+    if let Some(port) = crate::lower::props::lower_environment_read(ctx, e) {
+        return port;
+    }
+    if let Some(port) = crate::lower::props::lower_component_read(ctx, obj, field, e) {
+        return port;
+    }
     // A call's one enum output, named (`f(c).r` on `-> (r: Hue)`), is the
     // call's own value, as a scalar output is: read it, or a field after it,
     // off the call.
@@ -762,6 +769,19 @@ pub(super) fn lower_field_access(
                      callee sets it (with `return` or `emit {field} = ...`) where this \
                      call can see it"
                 ),
+                range,
+            );
+            return synthesise_unsupported_no_warn(ctx, range);
+        }
+        // A call that took no step on an exec chain (an inline `mod` whose
+        // body is all values) has no completion for `.exec` to name.
+        if field == "exec" {
+            ctx.error(
+                "WS043",
+                "this call exposes no exec output for `.exec` to name: it runs no exec step. \
+                 `.exec` names the completion of a `fn` call, a `chip` call, or a `mod` whose \
+                 body runs exec statements"
+                    .to_string(),
                 range,
             );
             return synthesise_unsupported_no_warn(ctx, range);
@@ -1208,14 +1228,13 @@ pub(super) fn array_exec_op(
     node_id.port(ret)
 }
 
-/// Resolve a positional argument that names another array to its ref port (for
+/// Resolve an argument that names another array to its ref port (for
 /// the dual-array ops append/copyFrom/slice, a map's keys/values destination and
 /// sortMultiple's parallel arrays). The argument resolves through typecheck's
 /// recorded kind like every other receiver, and a constant array argument
 /// (a `const`, a `let` of one, an array literal) resolves to its
 /// materialized gate.
-pub(super) fn resolve_array_ref_arg(ctx: &mut LowerCtx, arg: Option<&CallArg>) -> Option<PortRef> {
-    let Some(CallArg::Positional(e)) = arg else { return None };
+pub(super) fn resolve_array_ref_arg(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
     materialize_const_container(ctx, e);
     if let Some(rec) = materialize_literal_container(ctx, e, "literal") {
         return Some(rec.node_id.port(WirePort::ArrayVarRef));
@@ -1227,12 +1246,11 @@ pub(super) fn resolve_array_ref_arg(ctx: &mut LowerCtx, arg: Option<&CallArg>) -
     }
 }
 
-/// Resolve a positional argument that names another map to its ref port (for
+/// Resolve an argument that names another map to its ref port (for
 /// `copyFrom`). The argument resolves through typecheck's recorded kind like
 /// every other receiver, and a constant map argument resolves to its
 /// materialized gate.
-fn resolve_map_ref_arg(ctx: &mut LowerCtx, arg: Option<&CallArg>) -> Option<PortRef> {
-    let Some(CallArg::Positional(e)) = arg else { return None };
+fn resolve_map_ref_arg(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
     materialize_const_container(ctx, e);
     let kind @ ContainerKind::Map { .. } = ctx.container_kind(e)? else { return None };
     match container_ref(ctx, e, &kind)? {
@@ -1798,167 +1816,6 @@ pub(super) fn lower_record_map_method(
             synthesise_unsupported(ctx, e)
         }
     }
-}
-
-/// Lower `m.<method>(...)` for a `map` value. `map_type` is the whole
-/// `Type::Map(K, V)`. Mirrors [`lower_array_method`]; every method in
-/// [`crate::catalog::maps::MAP_METHODS`] must be handled here.
-pub(super) fn lower_map_method(
-    ctx: &mut LowerCtx,
-    map_ref: PortRef,
-    map_type: Type,
-    method: &str,
-    args: &[CallArg],
-    range: &SourceRange,
-    e: &Expr,
-) -> PortRef {
-    // The Key/Value ports MUST carry the map's concrete key/value types, not
-    // `any`: a port's declared type drives the baked DATA-field default in the
-    // component (the "last value"). A generic `any` Key bakes a float `0.0`,
-    // which for a string-keyed map is a type the game rejects at load — the
-    // whole component (and every wire into it, including Exec) fails to connect.
-    // Mirror how `Value` already keys off `value_ty`.
-    let (key_ty, value_ty) = match &map_type {
-        Type::Map(k, v) => (k.as_ref().clone(), v.as_ref().clone()),
-        _ => (Type::Any, Type::Any),
-    };
-
-    let mutates = crate::catalog::maps::map_method(method).is_some_and(|m| m.mutates);
-    if reject_const_container_mutation(
-        ctx,
-        map_ref.node_id,
-        mutates,
-        &format!("`.{method}()`"),
-        range,
-    ) {
-        return synthesise_unsupported(ctx, e);
-    }
-
-    // `exec = <trigger>` named arg: drive the op off an explicit trigger instead
-    // of the surrounding exec chain, so a read like
-    // `m.get(k, exec = Change(k).exec)` works in a PURE context (e.g. an output
-    // binding). Mirrors the array-method path. The op is a leaf then, so restore
-    // the caller's exec afterward rather than advancing it.
-    let exec_arg: Option<&Expr> = args.iter().find_map(|a| match a {
-        CallArg::Named { name, value, .. } if name == "exec" => Some(value),
-        _ => None,
-    });
-    let saved_exec = ctx.current_exec;
-    if let Some(exec_expr) = exec_arg {
-        let src = lower_expr(ctx, exec_expr);
-        ctx.current_exec = Some(src);
-    }
-
-    // Positional args only — the `exec =` named arg is handled above, so the key
-    // is the first POSITIONAL arg even when an `exec =` precedes it.
-    let pos_args: Vec<&CallArg> = args
-        .iter()
-        .filter(|a| matches!(a, CallArg::Positional(_)))
-        .collect();
-    let key_at = |ctx: &mut LowerCtx, i: usize| match pos_args.get(i).copied() {
-        Some(CallArg::Positional(k)) => Some(lower_expr(ctx, k)),
-        _ => None,
-    };
-
-    let method_result = match method {
-        "get" => match key_at(ctx, 0) {
-            Some(key) => map_exec_op(
-                ctx,
-                range,
-                map_ref,
-                gc::MAP_GET,
-                vec![(WirePort::Key, key_ty.clone(), key)],
-                vec![(WirePort::Value, value_ty), (WirePort::BFound, Type::Bool)],
-                WirePort::Value,
-            ),
-            None => synthesise_unsupported(ctx, e),
-        },
-        "set" => match (pos_args.first().copied(), pos_args.get(1).copied()) {
-            (Some(CallArg::Positional(k)), Some(CallArg::Positional(v))) => {
-                let ports = lower_in_order(ctx, &[k, v]);
-                map_exec_op(
-                    ctx,
-                    range,
-                    map_ref,
-                    gc::MAP_SET,
-                    vec![(WirePort::Key, key_ty.clone(), ports[0]), (WirePort::Value, value_ty, ports[1])],
-                    vec![],
-                    WirePort::ExecOut,
-                )
-            }
-            _ => synthesise_unsupported(ctx, e),
-        },
-        "has" | "remove" => match key_at(ctx, 0) {
-            Some(key) => {
-                let gate = if method == "has" { gc::MAP_HAS } else { gc::MAP_REMOVE };
-                map_exec_op(
-                    ctx,
-                    range,
-                    map_ref,
-                    gate,
-                    vec![(WirePort::Key, key_ty.clone(), key)],
-                    vec![(WirePort::BFound, Type::Bool)],
-                    WirePort::BFound,
-                )
-            }
-            None => synthesise_unsupported(ctx, e),
-        },
-        "clear" => map_exec_op(ctx, range, map_ref, gc::MAP_CLEAR, vec![], vec![], WirePort::ExecOut),
-        "length" => map_exec_op(
-            ctx,
-            range,
-            map_ref,
-            gc::MAP_GET_LENGTH,
-            vec![],
-            vec![(WirePort::Length, Type::Int)],
-            WirePort::Length,
-        ),
-        "copyFrom" => match resolve_map_ref_arg(ctx, pos_args.first().copied()) {
-            Some(src) => map_exec_op(
-                ctx,
-                range,
-                map_ref,
-                gc::MAP_COPY_FROM,
-                vec![(WirePort::SourceRef, Type::Ref(Box::new(Type::Any)), src)],
-                vec![],
-                WirePort::ExecOut,
-            ),
-            None => {
-                report_unresolved_container_arg(ctx, method, range);
-                synthesise_unsupported_no_warn(ctx, range)
-            }
-        },
-        "keys" | "values" => match resolve_array_ref_arg(ctx, pos_args.first().copied()) {
-            Some(dest) => {
-                // The destination array is refilled.
-                if reject_const_container_mutation(ctx, dest.node_id, true, &format!("`.{method}()`"), range) {
-                    return synthesise_unsupported_no_warn(ctx, range);
-                }
-                let gate = if method == "keys" { gc::MAP_GET_KEYS } else { gc::MAP_GET_VALUES };
-                map_exec_op(
-                    ctx,
-                    range,
-                    map_ref,
-                    gate,
-                    vec![(WirePort::ArrayVarRef, Type::Array(Box::new(Type::Any)), dest)],
-                    vec![],
-                    WirePort::ExecOut,
-                )
-            }
-            None => {
-                report_unresolved_container_arg(ctx, method, range);
-                synthesise_unsupported_no_warn(ctx, range)
-            }
-        },
-        _ => synthesise_unsupported(ctx, e),
-    };
-
-    // An explicit `exec =` trigger makes this op a leaf: restore the caller's exec
-    // context so the surrounding (possibly pure) lowering is unaffected.
-    if exec_arg.is_some() {
-        ctx.current_exec = saved_exec;
-    }
-    method_result
 }
 
 /// The leaf array-backed vars of a record container's field map, name-sorted for
@@ -2834,6 +2691,9 @@ fn record_array_pop(
     out
 }
 
+/// Lower `arr.<method>(...)` for an array value whose element type is
+/// `elem_ty`. Every method in [`crate::catalog::arrays::ARRAY_METHODS`] lowers
+/// through its entry's [`Lowering`].
 pub(super) fn lower_array_method(
     ctx: &mut LowerCtx,
     array_ref: PortRef,
@@ -2843,48 +2703,84 @@ pub(super) fn lower_array_method(
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
-    // `exec = <trigger>` makes the op a leaf, so the caller's exec context has
-    // to be restored on EVERY exit. Fourteen early returns sit between the
-    // method table's top and bottom, and one that skips the restore leaves
-    // every following statement wired onto the trigger instead of the
-    // surrounding chain; saving out here, around one call, cannot skip.
+    let kind = ContainerKind::Array { elem: elem_ty };
+    lower_container_method(ctx, array_ref, &kind, method, args, range, e)
+}
+
+/// Lower `m.<method>(...)` for a `map` value. `map_type` is the whole
+/// `Type::Map(K, V)`. Every method in [`crate::catalog::maps::MAP_METHODS`]
+/// lowers through its entry's [`Lowering`].
+pub(super) fn lower_map_method(
+    ctx: &mut LowerCtx,
+    map_ref: PortRef,
+    map_type: Type,
+    method: &str,
+    args: &[CallArg],
+    range: &SourceRange,
+    e: &Expr,
+) -> PortRef {
+    let kind = match ContainerKind::of(&map_type) {
+        Some(k @ ContainerKind::Map { .. }) => k,
+        _ => ContainerKind::Map { key: Type::Any, value: Type::Any },
+    };
+    lower_container_method(ctx, map_ref, &kind, method, args, range, e)
+}
+
+/// The table entry for `method` on a receiver of `kind`: its gate, whether it
+/// changes the receiver, and how it lowers.
+fn container_method_entry(kind: &ContainerKind, method: &str) -> Option<(&'static str, bool, &'static Lowering)> {
+    match kind {
+        ContainerKind::Array { .. } => {
+            crate::catalog::arrays::array_method(method).map(|m| (m.gate, m.mutates, &m.lowering))
+        }
+        ContainerKind::Map { .. } => {
+            crate::catalog::maps::map_method(method).map(|m| (m.gate, m.mutates, &m.lowering))
+        }
+    }
+}
+
+fn lower_container_method(
+    ctx: &mut LowerCtx,
+    recv: PortRef,
+    kind: &ContainerKind,
+    method: &str,
+    args: &[CallArg],
+    range: &SourceRange,
+    e: &Expr,
+) -> PortRef {
+    // `exec = <trigger>` makes the op a leaf, so the caller's exec context is
+    // restored on every exit; saving around one call means no early return can
+    // leave the following statements wired onto the trigger.
     let uses_exec_arg = args
         .iter()
         .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
     let saved_exec = ctx.current_exec;
-    let result = lower_array_method_inner(ctx, array_ref, elem_ty, method, args, range, e);
+    let result = lower_container_method_inner(ctx, recv, kind, method, args, range, e);
     if uses_exec_arg {
         ctx.current_exec = saved_exec;
     }
     result
 }
 
-fn lower_array_method_inner(
+fn lower_container_method_inner(
     ctx: &mut LowerCtx,
-    array_ref: PortRef,
-    elem_ty: Type,
+    recv: PortRef,
+    kind: &ContainerKind,
     method: &str,
     args: &[CallArg],
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
-    let mutates = crate::catalog::arrays::array_method(method).is_some_and(|m| m.mutates);
-    if reject_const_container_mutation(
-        ctx,
-        array_ref.node_id,
-        mutates,
-        &format!("`.{method}()`"),
-        range,
-    ) {
+    let Some((gate, mutates, lowering)) = container_method_entry(kind, method) else {
+        return synthesise_unsupported(ctx, e);
+    };
+    if reject_const_container_mutation(ctx, recv.node_id, mutates, &format!("`.{method}()`"), range) {
         return synthesise_unsupported(ctx, e);
     }
     // `exec = <trigger>` named arg: drive the op off an explicit trigger instead
     // of the surrounding exec chain, so a read like `lut.get(i, exec = i + 1)`
-    // works in a PURE context (e.g. an output binding). The get self-fires
-    // whenever the index changes (i + 1 is never the no-fire value 0). The op is
-    // a leaf in that case; the caller restores the exec context around this
-    // whole function, so every exit below restores it.
-    let exec_arg: Option<&Expr> = args.iter().find_map(|a| match a {
+    // works in a PURE context (e.g. an output binding).
+    let exec_arg = args.iter().find_map(|a| match a {
         CallArg::Named { name, value, .. } if name == "exec" => Some(value),
         _ => None,
     });
@@ -2892,508 +2788,225 @@ fn lower_array_method_inner(
         let src = lower_expr(ctx, exec_expr);
         ctx.current_exec = Some(src);
     }
-    // Positional args only, mirroring `lower_map_method`: the `exec =` named
-    // arg is consumed above, so an `exec =` written BEFORE the value must not
-    // shift every index that follows it.
-    let pos_args: Vec<&CallArg> = args
+    // An array op with no exec chain has nothing to run on; a map op reports
+    // that itself (`map_exec_op`).
+    if matches!(kind, ContainerKind::Array { .. }) && ctx.current_exec.is_none() {
+        return synthesise_unsupported(ctx, e);
+    }
+    let specs = match lowering {
+        Lowering::Generic { args: specs, .. } => *specs,
+        Lowering::Custom => {
+            return match method {
+                "sortMultiple" => lower_sort_multiple(ctx, recv, args, range),
+                _ => synthesise_unsupported(ctx, e),
+            };
+        }
+    };
+    let Some(bound) = bind_method_args(specs, args) else {
+        return synthesise_unsupported(ctx, e);
+    };
+    let mut inputs: Vec<(WirePort, PortRef)> = Vec::new();
+    // Container arguments resolve to their refs first, so an unresolved one
+    // reports before any value is lowered.
+    for &(i, arg) in &bound {
+        let spec = &specs[i];
+        let resolved = match spec.kind {
+            ArgKind::Value(_) => continue,
+            ArgKind::ArrayRef(_) | ArgKind::DestArray(_) => resolve_array_ref_arg(ctx, arg),
+            ArgKind::MapRef => resolve_map_ref_arg(ctx, arg),
+        };
+        let Some(port) = resolved else {
+            report_unresolved_container_arg(ctx, method, range);
+            return synthesise_unsupported_no_warn(ctx, range);
+        };
+        // A destination array is refilled.
+        if matches!(spec.kind, ArgKind::DestArray(_))
+            && reject_const_container_mutation(ctx, port.node_id, true, &format!("`.{method}()`"), range)
+        {
+            return synthesise_unsupported_no_warn(ctx, range);
+        }
+        inputs.push((spec.port, port));
+    }
+    let values: Vec<(usize, &Expr)> = bound
         .iter()
-        .filter(|a| matches!(a, CallArg::Positional(_)))
+        .copied()
+        .filter(|&(i, _)| matches!(specs[i].kind, ArgKind::Value(_)))
         .collect();
-    let current_exec = match ctx.current_exec {
-        Some(e) => e,
-        None => return synthesise_unsupported(ctx, e),
+    let exprs: Vec<&Expr> = values.iter().map(|&(_, x)| x).collect();
+    let ports = lower_in_order(ctx, &exprs);
+    inputs.extend(values.iter().zip(ports).map(|(&(i, _), port)| (specs[i].port, port)));
+    emit_container_op(ctx, range, recv, kind, gate, lowering, inputs)
+}
+
+/// Bind a call's arguments to a method's `specs`: positional arguments in
+/// order, then named ones by name (`exec =` is the trigger, not an argument).
+/// Returns `(spec index, expr)` in source order, or `None` when a required
+/// argument is missing.
+fn bind_method_args<'a>(specs: &[MethodArg], args: &'a [CallArg]) -> Option<Vec<(usize, &'a Expr)>> {
+    let mut taken = vec![false; specs.len()];
+    let mut bound = Vec::new();
+    let mut next = 0;
+    for a in args {
+        let slot = match a {
+            CallArg::Positional(_) => {
+                next += 1;
+                Some(next - 1).filter(|&i| i < specs.len())
+            }
+            CallArg::Named { name, .. } => specs.iter().position(|s| s.name == name.as_str()),
+            _ => None,
+        };
+        let value = match a {
+            CallArg::Positional(x) => x,
+            CallArg::Named { value, .. } => value,
+            _ => continue,
+        };
+        if let Some(i) = slot
+            && !taken[i]
+        {
+            taken[i] = true;
+            bound.push((i, value));
+        }
+    }
+    specs
+        .iter()
+        .zip(&taken)
+        .all(|(s, &t)| t || s.optional)
+        .then_some(bound)
+}
+
+/// Build the gate of a `Generic` container method on `recv` from already
+/// lowered `inputs` (gate input, source). Inputs are declared with the type
+/// their argument gives them, outputs with the type the gate catalog gives
+/// them, either overridden by the entry's `port_types`. Advances the exec chain
+/// and returns the entry's result port.
+pub(super) fn emit_container_op(
+    ctx: &mut LowerCtx,
+    range: &SourceRange,
+    recv: PortRef,
+    kind: &ContainerKind,
+    gate: &'static str,
+    lowering: &Lowering,
+    mut inputs: Vec<(WirePort, PortRef)>,
+) -> PortRef {
+    let Lowering::Generic { args: specs, result, port_types } = lowering else {
+        unreachable!("a Custom container method has no generic gate")
     };
-    // Every method handled here must also appear in the canonical
-    // `catalog::arrays::ARRAY_METHODS` table (which drives editor completion /
-    // hover); the `every_canonical_array_method_lowers` test enforces it.
-    let method_result = match method {
-        "push" => {
-            let val = match pos_args.first().copied() {
-                Some(CallArg::Positional(v)) => lower_expr(ctx, v),
-                _ => return synthesise_unsupported(ctx, e),
-            };
-            let exec_in = ctx.current_exec.unwrap_or(current_exec);
-            let node_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::ARRAY_PUSH,
-                source_range: range.clone(),
-                ports: GateIO {
-                    inputs: vec![
-                        PortSpec::exec(*sym::EXEC),
-                        PortSpec::new(*sym::ARRAY_VAR_REF, Type::Array(Box::new(Type::Any))),
-                        PortSpec::new(*sym::VALUE, Type::Any),
-                    ],
-                    outputs: vec![
-                        PortSpec::exec(*sym::EXEC_OUT),
-                    ],
-                },
-                ..Default::default()
-            });
-            ctx.connect(exec_in, node_id.port(WirePort::Exec));
-            ctx.connect(array_ref, node_id.port(WirePort::ArrayVarRef));
-            ctx.connect(val, node_id.port(WirePort::Value));
-            ctx.current_exec = Some(node_id.port(WirePort::ExecOut));
-            node_id.port(WirePort::ExecOut)
+    let spec_index = |port: WirePort| specs.iter().position(|s| s.port == port).unwrap_or(usize::MAX);
+    inputs.sort_by_key(|&(port, _)| spec_index(port));
+    let declared = |port: WirePort| -> Type {
+        if let Some((_, t)) = port_types.iter().find(|(p, _)| *p == port) {
+            return t.clone();
         }
-        // Result is a record { Value, IsEmpty } accessed via `.Value` /
-        // `.IsEmpty`, or used bare as the popped element (its default). Both
-        // outputs MUST be declared - otherwise `.IsEmpty` silently falls back
-        // to the `Value` port, and the emitted gate's `Value` output binds to
-        // the wrong schema slot (returning bIsEmpty = 0 for a non-empty pop).
-        "pop" => array_exec_op(
-            ctx,
-            range,
-            array_ref,
-            gc::ARRAY_POP,
-            vec![],
-            vec![
-                (WirePort::Value, elem_ty.clone()),
-                (WirePort::BIsEmpty, Type::Bool),
-            ],
-            WirePort::Value,
-        ),
-        // `arr[i]` gives the element and drops the bounds flag. `get` exposes
-        // both as a record { Value, OutOfBounds }, so a read can be checked
-        // rather than silently reading 0 past the end. Bare use is the element,
-        // matching `pop`.
-        "get" => {
-            let index = match pos_args.first().copied() {
-                Some(CallArg::Positional(v)) => lower_expr(ctx, v),
-                _ => return synthesise_unsupported(ctx, e),
-            };
-            array_exec_op(
-                ctx,
-                range,
-                array_ref,
-                gc::ARRAY_GET,
-                vec![(WirePort::Index, Type::Int, index)],
-                vec![
-                    (WirePort::Value, elem_ty.clone()),
-                    (WirePort::BOutOfBounds, Type::Bool),
-                ],
-                WirePort::Value,
-            )
-        }
-        "clear" | "shuffle" => {
-            let exec_in = ctx.current_exec.unwrap_or(current_exec);
-            let gate_class = if method == "clear" {
-                gc::ARRAY_CLEAR
-            } else {
-                gc::ARRAY_SHUFFLE
-            };
-            let _base = if method == "clear" {
-                "arrClear"
-            } else {
-                "arrShuffle"
-            };
-            let node_id = ctx.add_gate(AddNodeOpts {
-                gate_class,
-                source_range: range.clone(),
-                ports: GateIO {
-                    inputs: vec![
-                        PortSpec::exec(*sym::EXEC),
-                        PortSpec::new(*sym::ARRAY_VAR_REF, Type::Array(Box::new(Type::Any))),
-                    ],
-                    outputs: vec![
-                        PortSpec::exec(*sym::EXEC_OUT),
-                    ],
-                },
-                ..Default::default()
-            });
-            ctx.connect(exec_in, node_id.port(WirePort::Exec));
-            ctx.connect(array_ref, node_id.port(WirePort::ArrayVarRef));
-            ctx.current_exec = Some(node_id.port(WirePort::ExecOut));
-            node_id.port(WirePort::ExecOut)
-        }
-        "remove" => {
-            let idx = match pos_args.first().copied() {
-                Some(CallArg::Positional(v)) => lower_expr(ctx, v),
-                _ => return synthesise_unsupported(ctx, e),
-            };
-            let exec_in = ctx.current_exec.unwrap_or(current_exec);
-            let node_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::ARRAY_REMOVE_AT_INDEX,
-                source_range: range.clone(),
-                ports: GateIO {
-                    inputs: vec![
-                        PortSpec::exec(*sym::EXEC),
-                        PortSpec::new(*sym::ARRAY_VAR_REF, Type::Array(Box::new(Type::Any))),
-                        PortSpec::new(*sym::INDEX, Type::Int),
-                    ],
-                    outputs: vec![
-                        PortSpec::new(*sym::B_OUT_OF_BOUNDS, Type::Bool),
-                        PortSpec::exec(*sym::EXEC_OUT),
-                    ],
-                },
-                ..Default::default()
-            });
-            ctx.connect(exec_in, node_id.port(WirePort::Exec));
-            ctx.connect(array_ref, node_id.port(WirePort::ArrayVarRef));
-            ctx.connect(idx, node_id.port(WirePort::Index));
-            ctx.current_exec = Some(node_id.port(WirePort::ExecOut));
-            node_id.port(WirePort::ExecOut)
-        }
-        "length" => {
-            let exec_in = ctx.current_exec.unwrap_or(current_exec);
-            let node_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::ARRAY_GET_LENGTH,
-                source_range: range.clone(),
-                ports: GateIO {
-                    inputs: vec![
-                        PortSpec::exec(*sym::EXEC),
-                        PortSpec::new(*sym::ARRAY_VAR_REF, Type::Array(Box::new(Type::Any))),
-                    ],
-                    outputs: vec![
-                        PortSpec::new(intern_static("Length"), Type::Int),
-                        PortSpec::exec(*sym::EXEC_OUT),
-                    ],
-                },
-                ..Default::default()
-            });
-            ctx.connect(exec_in, node_id.port(WirePort::Exec));
-            ctx.connect(array_ref, node_id.port(WirePort::ArrayVarRef));
-            ctx.current_exec = Some(node_id.port(WirePort::ExecOut));
-            node_id.port(WirePort::Length)
-        }
-        "insert" => {
-            let (idx, val) = match (pos_args.first().copied(), pos_args.get(1).copied()) {
-                (Some(CallArg::Positional(i)), Some(CallArg::Positional(v))) => {
-                    lower_pair(ctx, i, v)
-                }
-                _ => return synthesise_unsupported(ctx, e),
-            };
-            array_exec_op(
-                ctx,
-                range,
-                array_ref,
-                gc::ARRAY_INSERT,
-                vec![
-                    (WirePort::Value, Type::Any, val),
-                    (WirePort::Index, Type::Int, idx),
-                ],
-                vec![(WirePort::BOutOfBounds, Type::Bool)],
-                WirePort::ExecOut,
-            )
-        }
-        "find" => {
-            let val = match pos_args.first().copied() {
-                Some(CallArg::Positional(v)) => lower_expr(ctx, v),
-                _ => return synthesise_unsupported(ctx, e),
-            };
-            // Result is a record { Index, Found } accessed via `.Index` /
-            // `.Found`, or used bare as the index (its default). The gate's
-            // `Value` output is the search arg passed through, so it isn't
-            // exposed (it would collide with the `Value` input wire).
-            array_exec_op(
-                ctx,
-                range,
-                array_ref,
-                gc::ARRAY_FIND,
-                vec![(WirePort::Value, Type::Any, val)],
-                vec![(WirePort::Index, Type::Int), (WirePort::BFound, Type::Bool)],
-                WirePort::Index,
-            )
-        }
-        "sort" => {
-            // `descending` is the parameter's declared name, so typecheck
-            // accepts the named form; reading only `args.first()` as a
-            // positional dropped it, and an optional argument that goes missing
-            // is not an arity error, so `xs.sort(descending = true)` sorted
-            // ascending with no diagnostic at all. Scanned (rather than indexed)
-            // so an `exec =` ahead of the flag doesn't hide it either, the same
-            // treatment `sortMultiple` below already gives its own copy.
-            let descending = args.iter().find_map(|a| match a {
-                CallArg::Named { name, value, .. } if name == "descending" => Some(value),
-                CallArg::Positional(d) => Some(d),
-                _ => None,
-            });
-            let mut extra = vec![];
-            if let Some(d) = descending {
-                extra.push((WirePort::BDescending, Type::Bool, lower_expr(ctx, d)));
-            }
-            array_exec_op(ctx, range, array_ref, gc::ARRAY_SORT, extra, vec![], WirePort::ExecOut)
-        }
-        "reverse" => {
-            array_exec_op(ctx, range, array_ref, gc::ARRAY_REVERSE, vec![], vec![], WirePort::ExecOut)
-        }
-        "sum" => array_exec_op(
-            ctx,
-            range,
-            array_ref,
-            gc::ARRAY_SUM,
-            vec![],
-            vec![(WirePort::Value, elem_ty.clone())],
-            WirePort::Value,
-        ),
-        "min" | "max" => array_exec_op(
-            ctx,
-            range,
-            array_ref,
-            if method == "min" { gc::ARRAY_MIN } else { gc::ARRAY_MAX },
-            vec![],
-            vec![
-                (WirePort::Value, elem_ty.clone()),
-                (WirePort::BIsEmpty, Type::Bool),
-            ],
-            WirePort::Value,
-        ),
-        "average" => array_exec_op(
-            ctx,
-            range,
-            array_ref,
-            gc::ARRAY_AVERAGE,
-            vec![],
-            vec![(WirePort::Value, Type::Float), (WirePort::BIsEmpty, Type::Bool)],
-            WirePort::Value,
-        ),
-        "swap" => {
-            let (a, b) = match (pos_args.first().copied(), pos_args.get(1).copied()) {
-                (Some(CallArg::Positional(a)), Some(CallArg::Positional(b))) => {
-                    lower_pair(ctx, a, b)
-                }
-                _ => return synthesise_unsupported(ctx, e),
-            };
-            array_exec_op(
-                ctx,
-                range,
-                array_ref,
-                gc::ARRAY_SWAP,
-                vec![
-                    (WirePort::IndexA, Type::Int, a),
-                    (WirePort::IndexB, Type::Int, b),
-                ],
-                vec![(WirePort::BOutOfBounds, Type::Bool)],
-                WirePort::ExecOut,
-            )
-        }
-        "fill" => {
-            let val = match pos_args.first().copied() {
-                Some(CallArg::Positional(v)) => lower_expr(ctx, v),
-                _ => return synthesise_unsupported(ctx, e),
-            };
-            array_exec_op(
-                ctx,
-                range,
-                array_ref,
-                gc::ARRAY_FILL,
-                vec![(WirePort::Value, Type::Any, val)],
-                vec![],
-                WirePort::ExecOut,
-            )
-        }
-        "resize" => {
-            let (size, val) = match (pos_args.first().copied(), pos_args.get(1).copied()) {
-                (Some(CallArg::Positional(s)), Some(CallArg::Positional(v))) => {
-                    lower_pair(ctx, s, v)
-                }
-                _ => return synthesise_unsupported(ctx, e),
-            };
-            array_exec_op(
-                ctx,
-                range,
-                array_ref,
-                gc::ARRAY_RESIZE,
-                vec![
-                    (WirePort::Value, Type::Any, val),
-                    (WirePort::Size, Type::Int, size),
-                ],
-                vec![],
-                WirePort::ExecOut,
-            )
-        }
-        "append" | "copyFrom" => {
-            let Some(src) = resolve_array_ref_arg(ctx, pos_args.first().copied()) else {
-                report_unresolved_container_arg(ctx, method, range);
-                return synthesise_unsupported_no_warn(ctx, range);
-            };
-            let gate = if method == "append" { gc::ARRAY_APPEND } else { gc::ARRAY_COPY_FROM };
-            array_exec_op(
-                ctx,
-                range,
-                array_ref,
-                gate,
-                vec![(WirePort::SourceRef, Type::Array(Box::new(Type::Any)), src)],
-                vec![],
-                WirePort::ExecOut,
-            )
-        }
-        "fillFromPlayers" => array_exec_op(
-            ctx,
-            range,
-            array_ref,
-            gc::GAMEMODE_FILL_FROM_PLAYERS,
-            vec![],
-            vec![],
-            WirePort::ExecOut,
-        ),
-        "fillFromTeam" => {
-            let team = match pos_args.first().copied() {
-                Some(CallArg::Positional(t)) => lower_expr(ctx, t),
-                _ => return synthesise_unsupported(ctx, e),
-            };
-            array_exec_op(
-                ctx,
-                range,
-                array_ref,
-                gc::GAMEMODE_FILL_FROM_TEAM,
-                vec![(WirePort::Team, Type::Entity, team)],
-                vec![],
-                WirePort::ExecOut,
-            )
-        }
-        "slice" => {
-            // dest.slice(source, start, count): copy source[start..start+count]
-            // into this array.
-            let Some(src) = resolve_array_ref_arg(ctx, pos_args.first().copied()) else {
-                report_unresolved_container_arg(ctx, method, range);
-                return synthesise_unsupported_no_warn(ctx, range);
-            };
-            let (start, count) = match (pos_args.get(1).copied(), pos_args.get(2).copied()) {
-                (Some(CallArg::Positional(s)), Some(CallArg::Positional(c))) => {
-                    lower_pair(ctx, s, c)
-                }
-                _ => return synthesise_unsupported(ctx, e),
-            };
-            array_exec_op(
-                ctx,
-                range,
-                array_ref,
-                gc::ARRAY_SLICE,
-                vec![
-                    (WirePort::Start, Type::Int, start),
-                    (WirePort::Count, Type::Int, count),
-                    (WirePort::SourceRef, Type::Array(Box::new(Type::Any)), src),
-                ],
-                vec![(WirePort::BOutOfBounds, Type::Bool)],
-                WirePort::ExecOut,
-            )
-        }
-        "fillFromZoneEntities" | "fillFromZonePlayers" => {
-            let gate = if method == "fillFromZoneEntities" {
-                gc::ZONE_GET_ENTITIES
-            } else {
-                gc::ZONE_GET_PLAYERS
-            };
-            let zone = match pos_args.first().copied() {
-                Some(CallArg::Positional(z)) => lower_expr(ctx, z),
-                _ => return synthesise_unsupported(ctx, e),
-            };
-            let mut extra = vec![(WirePort::Zone, Type::Entity, zone)];
-            // Optional tag filter: `tagFilter = <v>` or a second positional arg.
-            let tag = args
-                .iter()
-                .find_map(|a| match a {
-                    CallArg::Named { name, value, .. } if name == "tagFilter" => Some(value),
-                    _ => None,
-                })
-                .or_else(|| match pos_args.get(1).copied() {
-                    Some(CallArg::Positional(t)) => Some(t),
-                    _ => None,
-                });
-            if let Some(t) = tag {
-                let tp = lower_expr(ctx, t);
-                extra.push((WirePort::TagFilter, Type::Any, tp));
-            }
-            array_exec_op(ctx, range, array_ref, gate, extra, vec![], WirePort::ExecOut)
-        }
-        "sortMultiple" => {
-            // Parallel arrays fill ArrayVarRef2..8 (this array is the sort key);
-            // a `descending` bool (named or a trailing non-array positional) sets
-            // bDescending.
-            const REFS: [WirePort; 7] = [
-                WirePort::ArrayVarRef2,
-                WirePort::ArrayVarRef3,
-                WirePort::ArrayVarRef4,
-                WirePort::ArrayVarRef5,
-                WirePort::ArrayVarRef6,
-                WirePort::ArrayVarRef7,
-                WirePort::ArrayVarRef8,
-            ];
-            let mut ports: Vec<PortRef> = Vec::new();
-            let mut array_args = 0;
-            let mut descending: Option<&Expr> = None;
-            let positional = args.iter().filter(|a| matches!(a, CallArg::Positional(_))).count();
-            let mut seen = 0;
-            for a in args {
-                match a {
-                    CallArg::Named { name, value, .. } if name == "descending" => {
-                        descending = Some(value);
-                    }
-                    CallArg::Positional(expr) => {
-                        seen += 1;
-                        // Only a trailing bool is `descending` (typecheck's rule);
-                        // every other positional is a parallel array.
-                        if seen == positional && matches!(unwrap_ref(&ctx.type_of(expr)), Type::Bool) {
-                            descending = Some(expr);
-                            continue;
-                        }
-                        // A record array is sorted along as every one of its columns.
-                        let arg_ports: Vec<PortRef> = match resolve_array_ref_arg(ctx, Some(a)) {
-                            Some(port) => vec![port],
-                            None => resolve_record_array(ctx, expr)
-                                .map(|fields| {
-                                    leaf_arrays(&fields)
-                                        .iter()
-                                        .map(|v| v.node_id.port(WirePort::ArrayVarRef))
-                                        .collect()
-                                })
-                                .unwrap_or_default(),
-                        };
-                        if arg_ports.is_empty() {
-                            report_unresolved_container_arg(ctx, method, expr.range());
-                            return synthesise_unsupported_no_warn(ctx, range);
-                        }
-                        // The gate reorders every parallel array along with the key.
-                        for port in &arg_ports {
-                            if reject_const_container_mutation(ctx, port.node_id, true, "`.sortMultiple()`", expr.range()) {
-                                return synthesise_unsupported_no_warn(ctx, range);
-                            }
-                        }
-                        array_args += 1;
-                        ports.extend(arg_ports);
-                    }
-                    _ => {}
-                }
-            }
-            // Typecheck counts each argument as one array (WS011 past seven), so
-            // only record-array columns can overflow the gate here.
-            if ports.len() > REFS.len() {
-                if array_args <= REFS.len() {
-                    ctx.error(
-                        "WS011",
-                        format!(
-                            "'sortMultiple' sorts at most {} parallel arrays along with this one, \
-                             and these arguments are {} columns (a record array counts one per \
-                             field)",
-                            REFS.len(),
-                            ports.len()
-                        ),
-                        range,
-                    );
-                }
-                return synthesise_unsupported_no_warn(ctx, range);
-            }
-            let mut extra: Vec<(WirePort, Type, PortRef)> = ports
-                .into_iter()
-                .zip(REFS)
-                .map(|(port, slot)| (slot, Type::Array(Box::new(Type::Any)), port))
-                .collect();
-            if let Some(d) = descending {
-                let dp = lower_expr(ctx, d);
-                extra.push((WirePort::BDescending, Type::Bool, dp));
-            }
-            array_exec_op(
-                ctx,
-                range,
-                array_ref,
-                gc::ARRAY_SORT_MULTIPLE,
-                extra,
-                vec![(WirePort::BSuccess, Type::Bool)],
-                WirePort::ExecOut,
-            )
-        }
-        _ => synthesise_unsupported(ctx, e),
+        specs
+            .iter()
+            .find(|s| s.port == port)
+            .map_or(Type::Any, |s| s.port_type(kind))
     };
-    method_result
+    let extra_in: Vec<(WirePort, Type, PortRef)> =
+        inputs.into_iter().map(|(port, src)| (port, declared(port), src)).collect();
+    let extra_out = crate::catalog::methods::gate_outputs(gate, kind, *result, port_types);
+    match kind {
+        ContainerKind::Array { .. } => array_exec_op(ctx, range, recv, gate, extra_in, extra_out, *result),
+        ContainerKind::Map { .. } => map_exec_op(ctx, range, recv, gate, extra_in, extra_out, *result),
+    }
+}
+
+/// `arr.sortMultiple(other, ..., descending?)`: parallel arrays fill
+/// `ArrayVarRef2..8` (this array is the sort key); a `descending` bool (named,
+/// or a trailing bool positional) sets `bDescending`. A record array argument
+/// is sorted along as every one of its columns. Variadic, so it has no
+/// argument list in the table.
+fn lower_sort_multiple(ctx: &mut LowerCtx, array_ref: PortRef, args: &[CallArg], range: &SourceRange) -> PortRef {
+    const REFS: [WirePort; 7] = [
+        WirePort::ArrayVarRef2,
+        WirePort::ArrayVarRef3,
+        WirePort::ArrayVarRef4,
+        WirePort::ArrayVarRef5,
+        WirePort::ArrayVarRef6,
+        WirePort::ArrayVarRef7,
+        WirePort::ArrayVarRef8,
+    ];
+    let mut ports: Vec<PortRef> = Vec::new();
+    let mut array_args = 0;
+    let mut descending: Option<&Expr> = None;
+    let positional = args.iter().filter(|a| matches!(a, CallArg::Positional(_))).count();
+    let mut seen = 0;
+    for a in args {
+        match a {
+            CallArg::Named { name, value, .. } if name == "descending" => {
+                descending = Some(value);
+            }
+            CallArg::Positional(expr) => {
+                seen += 1;
+                // Only a trailing bool is `descending` (typecheck's rule);
+                // every other positional is a parallel array.
+                if seen == positional && matches!(unwrap_ref(&ctx.type_of(expr)), Type::Bool) {
+                    descending = Some(expr);
+                    continue;
+                }
+                let arg_ports: Vec<PortRef> = match resolve_array_ref_arg(ctx, expr) {
+                    Some(port) => vec![port],
+                    None => resolve_record_array(ctx, expr)
+                        .map(|fields| {
+                            leaf_arrays(&fields)
+                                .iter()
+                                .map(|v| v.node_id.port(WirePort::ArrayVarRef))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                };
+                if arg_ports.is_empty() {
+                    report_unresolved_container_arg(ctx, "sortMultiple", expr.range());
+                    return synthesise_unsupported_no_warn(ctx, range);
+                }
+                // The gate reorders every parallel array along with the key.
+                for port in &arg_ports {
+                    if reject_const_container_mutation(ctx, port.node_id, true, "`.sortMultiple()`", expr.range()) {
+                        return synthesise_unsupported_no_warn(ctx, range);
+                    }
+                }
+                array_args += 1;
+                ports.extend(arg_ports);
+            }
+            _ => {}
+        }
+    }
+    // Typecheck counts each argument as one array (WS011 past seven), so
+    // only record-array columns can overflow the gate here.
+    if ports.len() > REFS.len() {
+        if array_args <= REFS.len() {
+            ctx.error(
+                "WS011",
+                format!(
+                    "'sortMultiple' sorts at most {} parallel arrays along with this one, \
+                     and these arguments are {} columns (a record array counts one per \
+                     field)",
+                    REFS.len(),
+                    ports.len()
+                ),
+                range,
+            );
+        }
+        return synthesise_unsupported_no_warn(ctx, range);
+    }
+    let mut extra: Vec<(WirePort, Type, PortRef)> = ports
+        .into_iter()
+        .zip(REFS)
+        .map(|(port, slot)| (slot, Type::Array(Box::new(Type::Any)), port))
+        .collect();
+    if let Some(d) = descending {
+        let dp = lower_expr(ctx, d);
+        extra.push((WirePort::BDescending, Type::Bool, dp));
+    }
+    array_exec_op(
+        ctx,
+        range,
+        array_ref,
+        gc::ARRAY_SORT_MULTIPLE,
+        extra,
+        vec![(WirePort::BSuccess, Type::Bool)],
+        WirePort::ExecOut,
+    )
 }
 
 pub(super) fn lower_array_set(

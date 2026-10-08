@@ -499,6 +499,7 @@ pub(super) fn var_storable(t: &Type) -> bool {
             | Type::Character
             | Type::Controller
             | Type::Brick
+            | Type::Component(_)
     ) || matches!(t, Type::Ref(inner) if inner.is_ref_target())
 }
 
@@ -629,9 +630,10 @@ fn nested(what: &str) -> bool {
     what == "an array's element type" || what == "a map's value type"
 }
 
-/// A map key is hashed by value, and a ref or brick has none to hash.
+/// A map key is hashed by value, and a var, array or map ref has none to hash.
+/// A brick is the exception: the game keys a map by the brick it names.
 pub(super) fn reject_ref_key(ctx: &mut TypeCheckCtx, key: &Type, range: SourceRange) {
-    if key.ref_kind().is_some() {
+    if key.ref_kind().is_some_and(|k| k != crate::ir::RefKind::Brick) {
         let n = crate::analysis::types::type_str(key);
         ctx.emit(
             "WS025",

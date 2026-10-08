@@ -1,0 +1,1727 @@
+{
+  "source": {
+    "schema": "../brdb/crates/brdb/schemas/BRSavedComponentChunkSoA_max.schema"
+  },
+  "environments": [
+    {
+      "presetGroup": "ambience",
+      "properties": [
+        {
+          "name": "SelectedAmbienceType",
+          "type": "class",
+          "source": "preset+class"
+        },
+        {
+          "name": "AmbienceVolume",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "ReverbEffect",
+          "type": "enum",
+          "enum": "EBRReverbEffect",
+          "source": "preset+class"
+        }
+      ],
+      "option": "Ambience",
+      "label": "Ambience",
+      "class": "BRAmbienceEnvironment"
+    },
+    {
+      "presetGroup": "groundPlate",
+      "properties": [
+        {
+          "name": "Variance",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "VarianceBrickSize",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "GroundColor",
+          "type": "color",
+          "struct": "LinearColor",
+          "source": "preset+class"
+        },
+        {
+          "name": "GroundAccentColor",
+          "type": "color",
+          "struct": "LinearColor",
+          "source": "preset+class"
+        },
+        {
+          "name": "IsVisible",
+          "type": "bool",
+          "source": "preset+class"
+        },
+        {
+          "name": "bUseStudTexture",
+          "type": "bool",
+          "source": "preset+class"
+        }
+      ],
+      "option": "GroundPlate",
+      "label": "Ground",
+      "class": "BRGroundEnvironment"
+    },
+    {
+      "presetGroup": "sky",
+      "properties": [
+        {
+          "name": "TimeOfDay",
+          "type": "float",
+          "source": "preset"
+        },
+        {
+          "name": "AnimateTimeOfDay",
+          "type": "bool",
+          "source": "preset"
+        },
+        {
+          "name": "DayLength",
+          "type": "float",
+          "source": "preset"
+        },
+        {
+          "name": "NightLength",
+          "type": "float",
+          "source": "preset"
+        },
+        {
+          "name": "SunAngle",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "SunScale",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "SunHorizonScaleMultiplier",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "SunlightColor",
+          "type": "color",
+          "struct": "LinearColor",
+          "source": "preset+class"
+        },
+        {
+          "name": "SkyIntensity",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "SkyColor",
+          "type": "color",
+          "struct": "LinearColor",
+          "source": "preset+class"
+        },
+        {
+          "name": "MoonPhase",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "MoonScale",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "MoonlightIntensity",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "MoonlightColor",
+          "type": "color",
+          "struct": "LinearColor",
+          "source": "preset+class"
+        },
+        {
+          "name": "StarsIntensity",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "StarsColor",
+          "type": "color",
+          "struct": "LinearColor",
+          "source": "preset+class"
+        },
+        {
+          "name": "AuroraIntensity",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "CloudCoverage",
+          "type": "float",
+          "source": "preset"
+        },
+        {
+          "name": "Rain",
+          "type": "float",
+          "source": "preset"
+        },
+        {
+          "name": "Snow",
+          "type": "float",
+          "source": "preset"
+        },
+        {
+          "name": "Dust",
+          "type": "float",
+          "source": "preset"
+        },
+        {
+          "name": "Thunder",
+          "type": "float",
+          "source": "preset"
+        },
+        {
+          "name": "Wind",
+          "type": "float",
+          "source": "preset"
+        },
+        {
+          "name": "WindDirection",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "bCloseLightning",
+          "type": "bool",
+          "source": "preset+class"
+        },
+        {
+          "name": "RainVolume",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "CloseThunderVolume",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "DistantThunderVolume",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "WindVolume",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "ClearFogDensity",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "CloudyFogDensity",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "ClearFogHeightFalloff",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "CloudyFogHeightFalloff",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "FogColor",
+          "type": "color",
+          "struct": "LinearColor",
+          "source": "preset+class"
+        }
+      ],
+      "option": "Sky",
+      "label": "Sky",
+      "class": "BRSkyEnvironment"
+    },
+    {
+      "presetGroup": null,
+      "properties": [
+        {
+          "name": "Scenarios",
+          "type": "array",
+          "inner": "StrProperty",
+          "source": "class"
+        }
+      ],
+      "option": "Studio",
+      "label": "Lighting",
+      "class": "BRStudioEnvironment"
+    },
+    {
+      "presetGroup": null,
+      "properties": [
+        {
+          "name": "UniverseRotation",
+          "type": "rotator",
+          "source": "class"
+        },
+        {
+          "name": "UniverseLightColor",
+          "type": "color",
+          "struct": "LinearColor",
+          "source": "class"
+        },
+        {
+          "name": "UniverseLightIntensity",
+          "type": "float",
+          "source": "class"
+        },
+        {
+          "name": "UniverseAmbientColor",
+          "type": "color",
+          "struct": "LinearColor",
+          "source": "class"
+        },
+        {
+          "name": "UniverseAmbientIntensity",
+          "type": "float",
+          "source": "class"
+        },
+        {
+          "name": "UniverseGravityScale",
+          "type": "float",
+          "source": "class"
+        },
+        {
+          "name": "bUniverseFloorEnabled",
+          "type": "bool",
+          "source": "class"
+        },
+        {
+          "name": "NebulaTexture",
+          "type": "object",
+          "source": "class"
+        },
+        {
+          "name": "NebulaColor",
+          "type": "color",
+          "struct": "LinearColor",
+          "source": "class"
+        },
+        {
+          "name": "NebulaRedBlueSwap",
+          "type": "float",
+          "source": "class"
+        },
+        {
+          "name": "NebulaSaturation",
+          "type": "float",
+          "source": "class"
+        },
+        {
+          "name": "NebulaPower",
+          "type": "float",
+          "source": "class"
+        },
+        {
+          "name": "NebulaBrightness",
+          "type": "float",
+          "source": "class"
+        },
+        {
+          "name": "NearStarsTexture",
+          "type": "object",
+          "source": "class"
+        },
+        {
+          "name": "NearStarsPower",
+          "type": "float",
+          "source": "class"
+        },
+        {
+          "name": "NearStarsBrightness",
+          "type": "float",
+          "source": "class"
+        },
+        {
+          "name": "FarStarsTexture",
+          "type": "object",
+          "source": "class"
+        },
+        {
+          "name": "FarStarsPower",
+          "type": "float",
+          "source": "class"
+        },
+        {
+          "name": "FarStarsBrightness",
+          "type": "float",
+          "source": "class"
+        }
+      ],
+      "option": "Universe",
+      "label": "Universe",
+      "class": "BRSpaceEnvironment"
+    },
+    {
+      "presetGroup": "water",
+      "properties": [
+        {
+          "name": "WaterHeight",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "WaterAbsorption",
+          "type": "vector",
+          "source": "preset+class"
+        },
+        {
+          "name": "WaterScattering",
+          "type": "vector",
+          "source": "preset+class"
+        },
+        {
+          "name": "WaterFogIntensity",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "WaterFogAmbientColor",
+          "type": "color",
+          "struct": "LinearColor",
+          "source": "preset+class"
+        },
+        {
+          "name": "WaterFogAmbientScale",
+          "type": "float",
+          "source": "preset+class"
+        },
+        {
+          "name": "WaterFogScatteringColor",
+          "type": "color",
+          "struct": "LinearColor",
+          "source": "preset+class"
+        },
+        {
+          "name": "WaterFogScatteringScale",
+          "type": "float",
+          "source": "preset+class"
+        }
+      ],
+      "option": "Water",
+      "label": "Water",
+      "class": "BRWaterEnvironment"
+    }
+  ],
+  "components": [
+    {
+      "option": "Component_Internal_AttachedZone",
+      "label": "Attached Zone",
+      "struct": "BrickComponentData_Internal_AttachedZone",
+      "properties": [
+        {
+          "name": "ZoneStartDistance",
+          "type": "int"
+        },
+        {
+          "name": "ZoneEndDistance",
+          "type": "int"
+        },
+        {
+          "name": "bIsBuildingZone",
+          "type": "bool"
+        },
+        {
+          "name": "bIsLooseZone",
+          "type": "bool"
+        },
+        {
+          "name": "bIsShareZone",
+          "type": "bool"
+        },
+        {
+          "name": "bWater",
+          "type": "bool"
+        },
+        {
+          "name": "WaterScattering",
+          "type": "vector"
+        },
+        {
+          "name": "WaterAbsorption",
+          "type": "vector"
+        },
+        {
+          "name": "WaterFogIntensity",
+          "type": "float"
+        },
+        {
+          "name": "WaterFogScatteringColor",
+          "type": "color",
+          "struct": "LinearColor"
+        },
+        {
+          "name": "WaterFogAmbientColor",
+          "type": "color",
+          "struct": "LinearColor"
+        },
+        {
+          "name": "WaterFogScatteringScale",
+          "type": "float"
+        },
+        {
+          "name": "WaterFogAmbientScale",
+          "type": "float"
+        },
+        {
+          "name": "bDetectPlayers",
+          "type": "bool"
+        },
+        {
+          "name": "bDetectPlayers1",
+          "type": "bool"
+        },
+        {
+          "name": "bDetectPlayers2",
+          "type": "bool"
+        },
+        {
+          "name": "bDetectPlayers3",
+          "type": "bool"
+        },
+        {
+          "name": "bDetectEntities",
+          "type": "bool"
+        },
+        {
+          "name": "bDetectProjectiles",
+          "type": "bool"
+        },
+        {
+          "name": "TagFilter",
+          "type": "string"
+        },
+        {
+          "name": "ZoneWindForce",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "option": "Component_AudioEmitter",
+      "label": "Audio",
+      "struct": "BrickComponentData_AudioEmitter",
+      "properties": [
+        {
+          "name": "bEnabled",
+          "type": "bool"
+        },
+        {
+          "name": "AudioDescriptor",
+          "type": "object"
+        },
+        {
+          "name": "VolumeMultiplier",
+          "type": "float"
+        },
+        {
+          "name": "PitchMultiplier",
+          "type": "float"
+        },
+        {
+          "name": "InnerRadius",
+          "type": "float"
+        },
+        {
+          "name": "MaxDistance",
+          "type": "float"
+        },
+        {
+          "name": "bSpatialization",
+          "type": "bool"
+        },
+        {
+          "name": "FocusAzimuth",
+          "type": "float"
+        },
+        {
+          "name": "NonFocusAzimuth",
+          "type": "float"
+        },
+        {
+          "name": "NonFocusVolumeAttenuation",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "option": "Component_BotSpawn",
+      "label": "Bot Spawn",
+      "struct": "BrickComponentData_BotSpawn",
+      "properties": [
+        {
+          "name": "RespawnTime",
+          "type": "float"
+        },
+        {
+          "name": "CorpseTimeout",
+          "type": "float"
+        },
+        {
+          "name": "GunSkill",
+          "type": "float"
+        },
+        {
+          "name": "Agression",
+          "type": "float"
+        },
+        {
+          "name": "ReactionTime",
+          "type": "float"
+        },
+        {
+          "name": "MovementRandomness",
+          "type": "float"
+        },
+        {
+          "name": "RunSpeed",
+          "type": "float"
+        },
+        {
+          "name": "HealthMultiplier",
+          "type": "float"
+        },
+        {
+          "name": "Jumpyness",
+          "type": "float"
+        },
+        {
+          "name": "MovementAmount",
+          "type": "float"
+        },
+        {
+          "name": "AttackMovementAmount",
+          "type": "float"
+        },
+        {
+          "name": "AggroRange",
+          "type": "float"
+        },
+        {
+          "name": "AttackDamageMultiplier",
+          "type": "float"
+        },
+        {
+          "name": "bCanJump",
+          "type": "bool"
+        },
+        {
+          "name": "bBackVision",
+          "type": "bool"
+        },
+        {
+          "name": "bVisionRaycasting",
+          "type": "bool"
+        },
+        {
+          "name": "bCanTargetPlayers",
+          "type": "bool"
+        },
+        {
+          "name": "bCanTargetBots",
+          "type": "bool"
+        },
+        {
+          "name": "bActiveBot",
+          "type": "bool"
+        },
+        {
+          "name": "bSpawnEnable",
+          "type": "bool"
+        },
+        {
+          "name": "bDeleteBot",
+          "type": "bool"
+        },
+        {
+          "name": "MoveTarget",
+          "type": "vector"
+        },
+        {
+          "name": "MovementGoalDummy",
+          "type": "struct",
+          "struct": "BrickComponentWirePortControl_TeleportDestination"
+        },
+        {
+          "name": "BotName",
+          "type": "string"
+        },
+        {
+          "name": "Skin",
+          "type": "struct",
+          "struct": "BRPlayerAvatarCustomizationV3"
+        },
+        {
+          "name": "bColorsAreLinear",
+          "type": "bool"
+        },
+        {
+          "name": "TeamCollisionChannel",
+          "type": "enum",
+          "enum": "EBRPawnCollisionChannel"
+        },
+        {
+          "name": "bTeamCollision",
+          "type": "bool"
+        },
+        {
+          "name": "bTeamCollision1",
+          "type": "bool"
+        },
+        {
+          "name": "bTeamCollision2",
+          "type": "bool"
+        },
+        {
+          "name": "bTeamCollision3",
+          "type": "bool"
+        },
+        {
+          "name": "BotWeapon",
+          "type": "class"
+        }
+      ]
+    },
+    {
+      "option": "Component_BrickPropertyChanger",
+      "label": "Brick Property Changer",
+      "struct": "BrickComponentData_BrickPropertyChanger",
+      "properties": [
+        {
+          "name": "bVisibility",
+          "type": "bool"
+        },
+        {
+          "name": "bCollisionEnabled",
+          "type": "bool"
+        },
+        {
+          "name": "bCollisionEnabled_Player",
+          "type": "bool"
+        },
+        {
+          "name": "bCollisionEnabled_Player1",
+          "type": "bool"
+        },
+        {
+          "name": "bCollisionEnabled_Player2",
+          "type": "bool"
+        },
+        {
+          "name": "bCollisionEnabled_Player3",
+          "type": "bool"
+        },
+        {
+          "name": "bCollisionEnabled_Weapon",
+          "type": "bool"
+        },
+        {
+          "name": "bCollisionEnabled_Interaction",
+          "type": "bool"
+        },
+        {
+          "name": "bCollisionEnabled_Physics",
+          "type": "bool"
+        },
+        {
+          "name": "Color",
+          "type": "color",
+          "struct": "Color"
+        },
+        {
+          "name": "MaterialAlpha",
+          "type": "int"
+        },
+        {
+          "name": "Material",
+          "type": "enum",
+          "enum": "EBrickMaterial"
+        }
+      ]
+    },
+    {
+      "option": "Component_Button",
+      "label": "Button",
+      "struct": "BrickComponentData_Button",
+      "properties": [
+        {
+          "name": "PressSound",
+          "type": "object"
+        },
+        {
+          "name": "ReleaseSound",
+          "type": "object"
+        },
+        {
+          "name": "bAllowNearbyInteraction",
+          "type": "bool"
+        },
+        {
+          "name": "bHiddenInteraction",
+          "type": "bool"
+        },
+        {
+          "name": "PromptCustomLabel",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "option": "Component_CheckPoint",
+      "label": "Check Point",
+      "struct": "BrickComponentData_CheckPoint",
+      "properties": [
+        {
+          "name": "bRotatePlayerGravityOnSpawn",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "option": "Component_Damage",
+      "label": "Damage",
+      "struct": "BrickComponentData_Damage",
+      "properties": [
+        {
+          "name": "Damage",
+          "type": "float"
+        },
+        {
+          "name": "RepeatDelay",
+          "type": "float"
+        },
+        {
+          "name": "Message",
+          "type": "string"
+        },
+        {
+          "name": "ConsoleTag",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "option": "BrickComponentType_AerodynamicSurface",
+      "label": "Directional Aerodynamic Surface",
+      "struct": "BrickComponentData_AerodynamicSurface_Directional",
+      "properties": [
+        {
+          "name": "AerodynamicDirection",
+          "type": "enum",
+          "enum": "EBrickDirection"
+        },
+        {
+          "name": "bEnabled",
+          "type": "bool"
+        },
+        {
+          "name": "bDiscoverable",
+          "type": "bool"
+        },
+        {
+          "name": "Control_DriveAndSteer",
+          "type": "struct",
+          "struct": "BrickComponentWireControl_DriveAndSteer"
+        },
+        {
+          "name": "Role",
+          "type": "enum",
+          "enum": "EBrickAerodynamicSurfaceRole"
+        },
+        {
+          "name": "LiftCoefficient",
+          "type": "float"
+        },
+        {
+          "name": "LiftMultiplier",
+          "type": "float"
+        },
+        {
+          "name": "ForceApplication",
+          "type": "enum",
+          "enum": "EBrickAerodynamicForceApplication"
+        },
+        {
+          "name": "DragCoefficient",
+          "type": "float"
+        },
+        {
+          "name": "StallAngle",
+          "type": "float"
+        },
+        {
+          "name": "MaxDeflection",
+          "type": "float"
+        },
+        {
+          "name": "Deflection",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "option": "BrickComponentType_ExplosionSpawner",
+      "label": "Explosion Spawner",
+      "struct": "BrickComponentData_ExplosionSpawner",
+      "properties": [
+        {
+          "name": "ProjectileType",
+          "type": "class"
+        },
+        {
+          "name": "SpawnOffset",
+          "type": "vector"
+        },
+        {
+          "name": "ScaleMultiplier",
+          "type": "float"
+        },
+        {
+          "name": "DamageMultiplier",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "option": "Component_GoalPoint",
+      "label": "Goal Point",
+      "struct": "BCSComponentDataBase",
+      "properties": []
+    },
+    {
+      "option": "Component_Internal_Gyroscope",
+      "label": "Gyroscope",
+      "struct": "BrickComponentData_Gyroscope",
+      "properties": [
+        {
+          "name": "bEnabled",
+          "type": "bool"
+        },
+        {
+          "name": "bDiscoverable",
+          "type": "bool"
+        },
+        {
+          "name": "Strength",
+          "type": "float"
+        },
+        {
+          "name": "Damping",
+          "type": "float"
+        },
+        {
+          "name": "MaxForce",
+          "type": "float"
+        },
+        {
+          "name": "TargetAxis",
+          "type": "vector"
+        },
+        {
+          "name": "Control_DriveAndSteer",
+          "type": "struct",
+          "struct": "BrickComponentWireControl_DriveAndSteer"
+        }
+      ]
+    },
+    {
+      "option": "Component_Interact",
+      "label": "Interactable",
+      "struct": "BrickComponentData_Interact",
+      "properties": [
+        {
+          "name": "InteractSound",
+          "type": "object"
+        },
+        {
+          "name": "Message",
+          "type": "string"
+        },
+        {
+          "name": "ConsoleTag",
+          "type": "string"
+        },
+        {
+          "name": "bAllowNearbyInteraction",
+          "type": "bool"
+        },
+        {
+          "name": "bHiddenInteraction",
+          "type": "bool"
+        },
+        {
+          "name": "PromptCustomLabel",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "option": "Component_ItemSpawn",
+      "label": "Item Spawn",
+      "struct": "BrickComponentData_ItemSpawn",
+      "properties": [
+        {
+          "name": "PickupClass",
+          "type": "class"
+        },
+        {
+          "name": "bPickupEnabled",
+          "type": "bool"
+        },
+        {
+          "name": "bPickupRespawnOnMinigameReset",
+          "type": "bool"
+        },
+        {
+          "name": "PickupMinigameResetRespawnDelay",
+          "type": "float"
+        },
+        {
+          "name": "bPickupAutoDisableOnPickup",
+          "type": "bool"
+        },
+        {
+          "name": "PickupRespawnTime",
+          "type": "float"
+        },
+        {
+          "name": "bRenderTranslucentWhenDisabled",
+          "type": "bool"
+        },
+        {
+          "name": "DamageMultiplier",
+          "type": "float"
+        },
+        {
+          "name": "WeaponSpeedMultiplier",
+          "type": "float"
+        },
+        {
+          "name": "ItemNameOverride",
+          "type": "string"
+        },
+        {
+          "name": "ProjectileOverride",
+          "type": "class"
+        },
+        {
+          "name": "WeaponAmmoOverride",
+          "type": "struct",
+          "struct": "BRInventoryEntryWeaponAmmoOverride"
+        },
+        {
+          "name": "PickupOffsetDirection",
+          "type": "enum",
+          "enum": "EBrickDirection"
+        },
+        {
+          "name": "PickupOffsetDistance",
+          "type": "float"
+        },
+        {
+          "name": "PickupRotation",
+          "type": "struct",
+          "struct": "Rotator3f"
+        },
+        {
+          "name": "PickupScale",
+          "type": "float"
+        },
+        {
+          "name": "bOverridePickupColors",
+          "type": "bool"
+        },
+        {
+          "name": "PickupMeshColors",
+          "type": "array",
+          "inner": {
+            "type": "color",
+            "struct": "Color"
+          }
+        },
+        {
+          "name": "bPickupAnimationEnabled",
+          "type": "bool"
+        },
+        {
+          "name": "PickupAnimationAxis",
+          "type": "enum",
+          "enum": "EBrickAxis"
+        },
+        {
+          "name": "bPickupAnimationAxisLocal",
+          "type": "bool"
+        },
+        {
+          "name": "PickupSpinSpeed",
+          "type": "float"
+        },
+        {
+          "name": "PickupBobSpeed",
+          "type": "float"
+        },
+        {
+          "name": "PickupBobHeight",
+          "type": "float"
+        },
+        {
+          "name": "PickupAnimationPhase",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "option": "Component_OneShotAudioEmitter",
+      "label": "One Shot Audio Player",
+      "struct": "BrickComponentData_OneShotAudioEmitter",
+      "properties": [
+        {
+          "name": "AudioDescriptor",
+          "type": "object"
+        },
+        {
+          "name": "VolumeMultiplier",
+          "type": "float"
+        },
+        {
+          "name": "PitchMultiplier",
+          "type": "float"
+        },
+        {
+          "name": "InnerRadius",
+          "type": "float"
+        },
+        {
+          "name": "MaxDistance",
+          "type": "float"
+        },
+        {
+          "name": "bSpatialization",
+          "type": "bool"
+        },
+        {
+          "name": "bEnableRepeat",
+          "type": "bool"
+        },
+        {
+          "name": "RepeatTime",
+          "type": "float"
+        },
+        {
+          "name": "RepeatVariance",
+          "type": "float"
+        },
+        {
+          "name": "RepeatCount",
+          "type": "int"
+        }
+      ]
+    },
+    {
+      "option": "Component_PointLight",
+      "label": "Point Light",
+      "struct": "BrickComponentData_PointLight",
+      "properties": [
+        {
+          "name": "bMatchBrickShape",
+          "type": "bool"
+        },
+        {
+          "name": "bEnabled",
+          "type": "bool"
+        },
+        {
+          "name": "Brightness",
+          "type": "float"
+        },
+        {
+          "name": "Radius",
+          "type": "float"
+        },
+        {
+          "name": "Color",
+          "type": "color",
+          "struct": "Color"
+        },
+        {
+          "name": "bUseBrickColor",
+          "type": "bool"
+        },
+        {
+          "name": "bCastShadows",
+          "type": "bool"
+        },
+        {
+          "name": "RayTracingVisibility",
+          "type": "enum",
+          "enum": "EBrickLightRayTracingVisibility"
+        }
+      ]
+    },
+    {
+      "option": "BrickComponentType_PrefabSpawn",
+      "label": "Prefab Spawn",
+      "struct": "BrickComponentData_PrefabSpawn",
+      "properties": [
+        {
+          "name": "Prefab",
+          "type": "string"
+        },
+        {
+          "name": "SpawnOffset",
+          "type": "vector"
+        },
+        {
+          "name": "SpawnOffsetRotation",
+          "type": "rotator"
+        },
+        {
+          "name": "SpawnVelocity",
+          "type": "vector"
+        },
+        {
+          "name": "bSpawnEnable",
+          "type": "bool"
+        },
+        {
+          "name": "RespawnTime",
+          "type": "float"
+        },
+        {
+          "name": "SpawnedEntityIds",
+          "type": "array",
+          "inner": {
+            "type": "int"
+          }
+        }
+      ]
+    },
+    {
+      "option": "Component_ProjectileSpawner",
+      "label": "Projectile Spawner",
+      "struct": "BrickComponentData_ProjectileSpawner",
+      "properties": [
+        {
+          "name": "ProjectileClass",
+          "type": "class"
+        },
+        {
+          "name": "FireSound",
+          "type": "object"
+        },
+        {
+          "name": "Direction",
+          "type": "enum",
+          "enum": "EBrickDirection"
+        },
+        {
+          "name": "SpawnLocation",
+          "type": "enum",
+          "enum": "EProjectileSpawnLocation"
+        },
+        {
+          "name": "SpawnMargin",
+          "type": "float"
+        },
+        {
+          "name": "SpawnOffsetBias",
+          "type": "float"
+        },
+        {
+          "name": "bEnabled",
+          "type": "bool"
+        },
+        {
+          "name": "NumberOfShots",
+          "type": "int"
+        },
+        {
+          "name": "SpreadConeAngle",
+          "type": "float"
+        },
+        {
+          "name": "bSpreadBiasedTowardsCenter",
+          "type": "bool"
+        },
+        {
+          "name": "FireRate",
+          "type": "float"
+        },
+        {
+          "name": "bEnforceFireRate",
+          "type": "bool"
+        },
+        {
+          "name": "DamageMultiplier",
+          "type": "float"
+        },
+        {
+          "name": "SpeedMultiplier",
+          "type": "float"
+        },
+        {
+          "name": "ScaleMultiplier",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "option": "Component_Internal_Seat",
+      "label": "Seat",
+      "struct": "BrickComponentData_Seat_V2",
+      "properties": [
+        {
+          "name": "bIsOccupied",
+          "type": "bool"
+        },
+        {
+          "name": "ExitOffset",
+          "type": "struct",
+          "struct": "IntVector"
+        },
+        {
+          "name": "bRollCameraInThirdPerson",
+          "type": "bool"
+        },
+        {
+          "name": "CameraOrigin",
+          "type": "enum",
+          "enum": "EBrickSeatCameraOrigin"
+        },
+        {
+          "name": "CameraOriginOffset",
+          "type": "vector"
+        },
+        {
+          "name": "bScaleCameraOriginOffsetWithZoom",
+          "type": "bool"
+        },
+        {
+          "name": "ThirdPersonStartingZoom",
+          "type": "float"
+        },
+        {
+          "name": "ThirdPersonCameraRotation",
+          "type": "rotator"
+        },
+        {
+          "name": "SeatMode",
+          "type": "enum",
+          "enum": "EBrickSeatMode"
+        },
+        {
+          "name": "bStickyPlaneThrottle",
+          "type": "bool"
+        },
+        {
+          "name": "bFlyingGroundControls",
+          "type": "bool"
+        },
+        {
+          "name": "AirStrafeControl",
+          "type": "enum",
+          "enum": "EBrickSeatAirStrafeControl"
+        },
+        {
+          "name": "FlightInvertXOverride",
+          "type": "enum",
+          "enum": "EBrickSeatFlightInvertOverride"
+        },
+        {
+          "name": "FlightInvertYOverride",
+          "type": "enum",
+          "enum": "EBrickSeatFlightInvertOverride"
+        },
+        {
+          "name": "bAllowHeldItems",
+          "type": "bool"
+        },
+        {
+          "name": "bAllowNearbyInteraction",
+          "type": "bool"
+        },
+        {
+          "name": "bHiddenInteraction",
+          "type": "bool"
+        },
+        {
+          "name": "PromptCustomLabel",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "option": "Component_SpawnPoint",
+      "label": "Spawn Point",
+      "struct": "BrickComponentData_SpawnPoint",
+      "properties": [
+        {
+          "name": "bRotatePlayerGravityOnSpawn",
+          "type": "bool"
+        },
+        {
+          "name": "bEnable",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "option": "Component_SpotLight",
+      "label": "Spot Light",
+      "struct": "BrickComponentData_SpotLight",
+      "properties": [
+        {
+          "name": "Rotation",
+          "type": "struct",
+          "struct": "Rotator3f"
+        },
+        {
+          "name": "InnerConeAngle",
+          "type": "float"
+        },
+        {
+          "name": "OuterConeAngle",
+          "type": "float"
+        },
+        {
+          "name": "bEnabled",
+          "type": "bool"
+        },
+        {
+          "name": "Brightness",
+          "type": "float"
+        },
+        {
+          "name": "Radius",
+          "type": "float"
+        },
+        {
+          "name": "Color",
+          "type": "color",
+          "struct": "Color"
+        },
+        {
+          "name": "bUseBrickColor",
+          "type": "bool"
+        },
+        {
+          "name": "bCastShadows",
+          "type": "bool"
+        },
+        {
+          "name": "RayTracingVisibility",
+          "type": "enum",
+          "enum": "EBrickLightRayTracingVisibility"
+        }
+      ]
+    },
+    {
+      "option": "Component_Switch",
+      "label": "Switch",
+      "struct": "BrickComponentData_Switch",
+      "properties": [
+        {
+          "name": "bEnabled",
+          "type": "bool"
+        },
+        {
+          "name": "InteractSound",
+          "type": "object"
+        },
+        {
+          "name": "bAllowNearbyInteraction",
+          "type": "bool"
+        },
+        {
+          "name": "bHiddenInteraction",
+          "type": "bool"
+        },
+        {
+          "name": "PromptCustomLabel",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "option": "Component_Target",
+      "label": "Target",
+      "struct": "BrickComponentData_Target",
+      "properties": [
+        {
+          "name": "OnTime",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "option": "BrickComponentType_Internal_TeleportDestination",
+      "label": "Teleport Destination",
+      "struct": "BrickComponentData_TeleportDestination",
+      "properties": []
+    },
+    {
+      "option": "Component_TextDisplay",
+      "label": "Text Decal",
+      "struct": "BrickComponentData_TextDisplay",
+      "properties": [
+        {
+          "name": "Text",
+          "type": "string"
+        },
+        {
+          "name": "Font",
+          "type": "object"
+        },
+        {
+          "name": "Rotation",
+          "type": "float"
+        },
+        {
+          "name": "Skew",
+          "type": "float"
+        },
+        {
+          "name": "Kerning",
+          "type": "float"
+        },
+        {
+          "name": "LineHeight",
+          "type": "float"
+        },
+        {
+          "name": "WidthScale",
+          "type": "float"
+        },
+        {
+          "name": "LineOffset",
+          "type": "float"
+        },
+        {
+          "name": "Anchor",
+          "type": "struct",
+          "struct": "Vector2f"
+        },
+        {
+          "name": "Offset",
+          "type": "struct",
+          "struct": "Vector3f"
+        },
+        {
+          "name": "Color",
+          "type": "color",
+          "struct": "Color"
+        },
+        {
+          "name": "MaterialSlider",
+          "type": "int"
+        },
+        {
+          "name": "ShadingWidth",
+          "type": "float"
+        },
+        {
+          "name": "OutlineColor",
+          "type": "color",
+          "struct": "Color"
+        },
+        {
+          "name": "OutlineWidth",
+          "type": "float"
+        },
+        {
+          "name": "ScuffWidth",
+          "type": "float"
+        },
+        {
+          "name": "GraffitiDepthLimit",
+          "type": "float"
+        },
+        {
+          "name": "GraffitiAngleLimit",
+          "type": "float"
+        },
+        {
+          "name": "GraffitiLayer",
+          "type": "int"
+        },
+        {
+          "name": "bEnabled",
+          "type": "bool"
+        },
+        {
+          "name": "Face",
+          "type": "enum",
+          "enum": "EBrickDirection"
+        },
+        {
+          "name": "bAlignToWedge",
+          "type": "bool"
+        },
+        {
+          "name": "bOverrideColor",
+          "type": "bool"
+        },
+        {
+          "name": "Typeface",
+          "type": "enum",
+          "enum": "EBRTextTypeface"
+        },
+        {
+          "name": "Billboard",
+          "type": "enum",
+          "enum": "EBRTextFacing"
+        },
+        {
+          "name": "Material",
+          "type": "enum",
+          "enum": "EBRTextMaterial"
+        },
+        {
+          "name": "Shading",
+          "type": "enum",
+          "enum": "EBRTextShading"
+        },
+        {
+          "name": "bFlipShading",
+          "type": "bool"
+        },
+        {
+          "name": "Outline",
+          "type": "enum",
+          "enum": "EBRTextOutline"
+        },
+        {
+          "name": "bSharpCorners",
+          "type": "bool"
+        },
+        {
+          "name": "bSharpOutlines",
+          "type": "bool"
+        },
+        {
+          "name": "bOverrideOutlineColor",
+          "type": "bool"
+        },
+        {
+          "name": "bForeground",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "option": "Component_Internal_Thruster",
+      "label": "Thruster",
+      "struct": "BrickComponentData_Thruster",
+      "properties": [
+        {
+          "name": "bEnabled",
+          "type": "bool"
+        },
+        {
+          "name": "bDiscoverable",
+          "type": "bool"
+        },
+        {
+          "name": "Force",
+          "type": "float"
+        },
+        {
+          "name": "ForceApplication",
+          "type": "enum",
+          "enum": "EBrickThrusterForceApplication"
+        },
+        {
+          "name": "Throttle",
+          "type": "float"
+        },
+        {
+          "name": "Control_DriveAndSteer",
+          "type": "struct",
+          "struct": "BrickComponentWireControl_DriveAndSteer"
+        },
+        {
+          "name": "Pitch",
+          "type": "float"
+        },
+        {
+          "name": "Yaw",
+          "type": "float"
+        },
+        {
+          "name": "bSpawnLight",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "option": "Component_Touch",
+      "label": "Touch",
+      "struct": "BrickComponentData_Touch",
+      "properties": [
+        {
+          "name": "BeginTouchSound",
+          "type": "object"
+        },
+        {
+          "name": "EndTouchSound",
+          "type": "object"
+        },
+        {
+          "name": "bCollisionEnabled_Player",
+          "type": "bool"
+        },
+        {
+          "name": "bCollisionEnabled_Player1",
+          "type": "bool"
+        },
+        {
+          "name": "bCollisionEnabled_Player2",
+          "type": "bool"
+        },
+        {
+          "name": "bCollisionEnabled_Player3",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "option": "Component_Internal_WeightBrick",
+      "label": "Weight",
+      "struct": "BrickComponentData_WeightBrick",
+      "properties": [
+        {
+          "name": "Mass",
+          "type": "float"
+        },
+        {
+          "name": "MassSize",
+          "type": "struct",
+          "struct": "IntVector"
+        },
+        {
+          "name": "MassOffset",
+          "type": "struct",
+          "struct": "IntVector"
+        }
+      ]
+    }
+  ]
+}

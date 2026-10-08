@@ -8,7 +8,8 @@
 //!
 //! The box is the one `layout/code/tests.rs::assert_no_overlap` adjudicates
 //! with, moved to the emitted side: the compiler's OWN catalog half_size per
-//! gate class, the procedural half-extent for a label carrier, and a
+//! gate class, the procedural half-extent for a label carrier or a
+//! procedural gate (`PB_Gate_*`, sized per variant), and a
 //! quarter-turn x/y swap — the same swap `emit/module.rs` applies when it
 //! centres the brick. `brdb::Brick::local_bounds()` is NOT usable here: it
 //! ignores rotation (`brdb .../brick.rs:142`) and its asset table does not
@@ -19,7 +20,16 @@ use super::*;
 /// Half-extent as the COMPILER believes it, in grid units.
 fn half_extent(catalog: &crate::catalog::Catalog, b: &brdb::Brick) -> [i32; 3] {
     let mut half = match &b.asset {
-        BrickType::Procedural { size, .. } => [size.x as i32, size.y as i32, size.z as i32],
+        // A procedural brick's size is its own: a label carrier, or a
+        // procedural gate placed at the variant layout reserved (which the
+        // catalog's default half-size below would understate).
+        BrickType::Procedural { size, .. } => {
+            let h = [size.x as i32, size.y as i32, size.z as i32];
+            return match b.rotation {
+                brdb::Rotation::Deg90 | brdb::Rotation::Deg270 => [h[1], h[0], h[2]],
+                _ => h,
+            };
+        }
         BrickType::Basic(_) => {
             let (lo, hi) = b.local_bounds();
             [(hi.x - lo.x) / 2, (hi.y - lo.y) / 2, (hi.z - lo.z) / 2]

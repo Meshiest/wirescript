@@ -1204,23 +1204,20 @@ fn for_each_map_bindings_hover_as_key_and_value_types() {
 }
 
 #[test]
-fn for_range_brace_binding_hovers_with_each_slots_own_type() {
-    let src = "var n: int = 0\nin go: exec\non go {\n  for { index, isLast } in 0..n {\n    let a = index\n  }\n}";
+fn for_range_brace_binding_hovers_with_its_slots_type() {
+    let src = "var n: int = 0\nin go: exec\non go {\n  for { index } in 0..n {\n    let a = index\n  }\n}";
     let coli = src.lines().nth(3).unwrap().find("index").unwrap();
-    let coll = src.lines().nth(3).unwrap().find("isLast").unwrap();
     let hi = hover_for(src, 3, coli).expect("`index` slot should hover");
-    let hl = hover_for(src, 3, coll).expect("`isLast` slot should hover");
     assert!(hi.contains("let index: int"), "got: {hi}");
-    assert!(hl.contains("let isLast: bool"), "got: {hl}");
 }
 
 #[test]
-fn for_as_run_hovers_as_the_outcome_record() {
-    let src = "var n: int = 0\nin go: exec\non go {\n  for i in 0..n as run {\n  }\n  let ok = run.aborted\n}";
+fn let_for_hovers_as_the_outcome_record() {
+    let src = "var n: int = 0\nin go: exec\non go {\n  let run = for i in 0..n {\n  }\n  let ok = run.aborted\n}";
     let col = src.lines().nth(5).unwrap().find("run").unwrap();
-    let h = hover_for(src, 5, col).expect("`as run` should hover after the loop");
+    let h = hover_for(src, 5, col).expect("`let run = for` should hover after the loop");
     assert!(
-        h.contains("aborted: bool") && h.contains("abortCode: int") && h.contains("iterations: int"),
+        h.contains("aborted: bool") && h.contains("iterations: int") && !h.contains("abortCode"),
         "got: {h}"
     );
 }
@@ -1305,4 +1302,39 @@ fn a_const_reading_a_name_that_hides_a_constant_shows_no_value() {
     }
     let h = at_q("const K = 4\nmod g(a: int) -> int {\n  const q = K + 1\n  return q + a\n}\n");
     assert!(h.contains("= 5"), "the constant itself: {h}");
+}
+
+#[test]
+fn a_component_type_ref_hovers_with_its_name_and_class() {
+    let src = "let t = $Component/PointLight\n";
+    let col = src.find("Point").unwrap();
+    let h = hover_for(src, 0, col).expect("a component type ref hovers");
+    assert!(h.contains("Point Light") && h.contains("Component_PointLight"), "got: {h}");
+    // The dump's category is not the one the game shows.
+    assert!(!h.contains("Category"), "got: {h}");
+}
+
+/// A property on a component reference hovers like its `$Component/...` form,
+/// on a stored var and on a call result alike.
+#[test]
+fn a_property_on_a_component_reference_hovers_with_its_type() {
+    let src = "in go: exec\nin target: brick\nvar light: Component<PointLight>\non go {\n  light = target.AddComponent($Component/PointLight)\n  let a = light.Brightness\n  let b = target.GetComponent($Component/PointLight).Radius\n}\n";
+    let at = |needle: &str, word: &str| {
+        let line = src.lines().position(|l| l.contains(needle)).unwrap();
+        (line, src.lines().nth(line).unwrap().find(word).unwrap())
+    };
+    let (l, c) = at("let a", "Brightness");
+    let h = hover_for(src, l, c).expect("light.Brightness hovers");
+    assert!(h.contains("PointLight.Brightness") && h.contains("float"), "got: {h}");
+    let (l, c) = at("let b", "Radius");
+    let h = hover_for(src, l, c).expect("a call result's property hovers");
+    assert!(h.contains("PointLight.Radius"), "got: {h}");
+}
+
+#[test]
+fn a_component_property_ref_hovers_with_its_type() {
+    let src = "let t = $Component/PointLight/Brightness\n";
+    let col = src.find("Bright").unwrap();
+    let h = hover_for(src, 0, col).expect("a component property ref hovers");
+    assert!(h.contains("PointLight.Brightness") && h.contains("float") && h.contains("unverified"), "got: {h}");
 }

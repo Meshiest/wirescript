@@ -104,16 +104,30 @@ impl EnumRegistry {
     /// variant's, or a `match` whose arms name variants alone); `None` when
     /// none does or several do.
     fn declaring_variants(&self, variants: &[&str]) -> Option<&EnumDef> {
-        let mut found: Option<&EnumDef> = None;
-        for def in self.defs.values() {
-            if variants.iter().all(|name| def.variants.iter().any(|v| v.name == *name)) {
-                if found.is_some() {
-                    return None;
+        // A prelude or user enum declaring the names wins over a game enum:
+        // game enums come from the catalog, and a new build adding a member
+        // named `None` must not take `None` from `Option`. Within either
+        // group, two declaring enums make the name ambiguous.
+        let declaring = |game: bool| {
+            let mut found: Option<&EnumDef> = None;
+            for def in self.defs.values() {
+                if (crate::catalog::game_enum_schema_type(&def.name).is_some()) != game {
+                    continue;
                 }
-                found = Some(def);
+                if variants.iter().all(|name| def.variants.iter().any(|v| v.name == *name)) {
+                    if found.is_some() {
+                        return Err(());
+                    }
+                    found = Some(def);
+                }
             }
+            Ok(found)
+        };
+        match declaring(false) {
+            Ok(Some(def)) => Some(def),
+            Ok(None) => declaring(true).ok().flatten(),
+            Err(()) => None,
         }
-        found
     }
 
     /// Every enum's name and every variant's.
@@ -500,12 +514,17 @@ fn namespaced_enums(decls: &[TopDecl]) -> Vec<(&NamespaceDecl, &EnumDecl)> {
 /// Returns the owning enum's name only on a UNIQUE match; no match, or more
 /// than one (two enums sharing a variant name), yields `None` - an ambiguous
 /// bare name never auto-resolves.
+///
+/// A builtin call name is never a bare variant either. Game enums are derived
+/// from the catalog, so a new game build can add a member that spells a
+/// builtin: `EBRBrickProperty::Color` turned `Color(1.0, 0.5, 0.0)` into the
+/// integer 1.
 pub fn resolve_bare_variant_enum<'d>(
     enum_defs: &'d EnumRegistry,
     name: &str,
     is_shadowed: impl Fn(&str) -> bool,
 ) -> Option<&'d EnumDef> {
-    if is_shadowed(name) {
+    if is_shadowed(name) || crate::catalog::calls::find_call(name).is_some() {
         return None;
     }
     enum_defs.declaring_variants(&[name])

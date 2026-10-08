@@ -1015,6 +1015,9 @@ pub(super) fn value_record_fields(
         let lit = ctx.type_of(value);
         return Some(lower_record_lit(ctx, fields, Slots::Of(&lit)));
     }
+    if let Expr::As { value: inner, .. } = value {
+        return crate::lower::convert::as_record_fields(ctx, inner, value);
+    }
     // `f(c).r` on `-> (r: Hue)` is the value of `f(c)`.
     if let Some(call) = crate::lower::access::named_enum_output_call(ctx, value) {
         return value_record_fields(ctx, call);
@@ -1575,6 +1578,9 @@ pub(super) fn copy_container(ctx: &mut LowerCtx, tvar: &VarRecord, src: &Binding
 }
 
 pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
+    if crate::lower::props::lower_environment_write(ctx, s) || crate::lower::props::lower_component_write(ctx, s) {
+        return;
+    }
     let with_map_literals;
     let s = match ctx.with_map_literals(&s.value) {
         std::borrow::Cow::Owned(value) => {

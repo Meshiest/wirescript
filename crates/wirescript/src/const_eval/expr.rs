@@ -597,6 +597,18 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
             let compare = Expr::variant_test_desugared(value, path, range);
             return eval_expr(&compare, cx, budget);
         }
+        Expr::As { value, ty, range } => {
+            let lit = eval_expr(value, cx, budget)?;
+            let folded = match ty {
+                crate::ast::TypeExpr::Name { name, .. } => crate::types::resolve::primitive(name)
+                    .and_then(|t| crate::typecheck::convert::fold_as(&lit, &t)),
+                _ => None,
+            };
+            return folded.ok_or_else(|| ConstError {
+                reason: ConstReason::Unsupported("this `as` conversion at compile time"),
+                range: range.clone(),
+            });
+        }
         Expr::BinOp {
             op,
             left,

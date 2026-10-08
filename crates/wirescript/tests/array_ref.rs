@@ -6,6 +6,8 @@ use wirescript::template_cache::TemplateCache;
 use wirescript::typecheck::{typecheck, CeSlotMap};
 use wirescript::{compile, resolve, CompileInput, FsLoader, FoldMode, Severity};
 
+mod common;
+
 fn compiles(src: &str) -> bool {
     compile(CompileInput { source: src, file: "test", module_name: None, fold_mode: FoldMode::Auto }).is_ok()
 }
@@ -162,4 +164,25 @@ on go {
          fixed, INVERT this assertion to `== 2` and update the WSP001 assertion \
          above to expect no warning."
     );
+}
+
+/// A method on a container read out of a map (`m.get(k).Value.push(v)`) acts
+/// on that container: the map read's value is the method gate's ref. A field
+/// path from a call or index is a runtime value, not a name to resolve.
+#[test]
+fn method_on_a_container_read_from_a_map() {
+    let src = "var row: int[]\nvar m: Map<string, int[]>\nvar mm: Map<string, Map<int, int>>\nvar inner: Map<int, int>\nin go: exec\nvar n: int = 0\non go {\n  m.set(\"a\", row)\n  m.get(\"a\").Value.push(9)\n  n = m.get(\"a\").Value.length()\n  mm.set(\"b\", inner)\n  mm.get(\"b\").Value.set(1, 2)\n}\n";
+    let (_, tc, lowered) = common::run_stages(src, "test", FoldMode::Auto);
+    assert!(tc.diagnostics.is_empty(), "{:?}", tc.diagnostics);
+    assert!(lowered.diagnostics.iter().all(|d| d.severity != Severity::Error), "{:?}", lowered.diagnostics);
+    let m = lowered.module;
+    let class = |id| m.nodes[&id].gate_class;
+    let fed_by_map_read = |gate: &str, port: &str| {
+        m.wires.iter().any(|w| {
+            class(w.target.node_id) == gate && w.target.port.as_str() == port && class(w.source.node_id) == gate_class::MAP_GET
+        })
+    };
+    assert!(fed_by_map_read("BrickComponentType_Exec_ArrayVar_Push", "ArrayVarRef"));
+    assert!(fed_by_map_read("BrickComponentType_Exec_ArrayVar_GetLength", "ArrayVarRef"));
+    assert!(fed_by_map_read(gate_class::MAP_SET, "MapVarRef"));
 }

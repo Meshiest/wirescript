@@ -77,6 +77,11 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         // and the gate outputs it as an `entity` wire. Assets can't be inlined
         // into arbitrary wire-variant ports (Compare `InputB`), so this wire is
         // how they reach such consumers. Typed `entity` (see typecheck).
+        // No gate takes a component type until the component surface exists.
+        // A save stores one as the external asset `BrickComponentTypeBase/<class>`.
+        Expr::AssetRef { asset_type, range, .. } if asset_type == crate::analysis::assets::COMPONENT => {
+            synthesise_unsupported_range(ctx, "a component type reference, which no gate takes yet", range)
+        }
         Expr::AssetRef { asset_type, asset_name, range } => {
             let mut props = HashMap::default();
             props.insert(
@@ -175,6 +180,7 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             let compare = Expr::variant_test_desugared(value, path, range);
             lower_expr(ctx, &compare)
         }
+        Expr::As { value, .. } => crate::lower::convert::lower_as(ctx, value, e),
         Expr::FieldAccess { obj, field, range } => lower_field_access(ctx, obj, field, range, e),
         Expr::IndexAccess { obj, index, range } => lower_index_access(ctx, obj, index, range, e),
         Expr::IfExpr {

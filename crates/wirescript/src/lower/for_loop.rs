@@ -12,7 +12,7 @@
 use super::*;
 use crate::ast::{Expr, RangeExtent, RangeSource};
 use crate::ir::plane::{
-    ForSlot, LoopKind, PlaneSpec, SHELL_OUTPUTS, for_slots, plane_spec, slot_types,
+    ForSlot, LoopKind, PlaneSpec, RUN_ACROSS_TICKS, SHELL_OUTPUTS, for_slots, plane_spec, slot_types,
 };
 use crate::typecheck::ContainerKind;
 
@@ -235,10 +235,15 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
         }
     };
 
+    let mut shell_props = HashMap::default();
+    if s.sliced {
+        shell_props.insert(crate::intern::intern(RUN_ACROSS_TICKS), Literal::Bool(true));
+    }
     let shell = ctx.add_gate(AddNodeOpts {
         gate_class: spec.shell_class,
         source_range: s.range.clone(),
         ports: shell_io(kind, &elem),
+        properties: shell_props,
         ..Default::default()
     });
     // A grid host, not a gate: this is what gives partition a child module to
@@ -329,9 +334,9 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
     ctx.pop_scope();
     ctx.current_anon_chip = saved_chip;
 
-    // `as run` binds on the outer grid, in the scope the `for` sits in, so it
-    // is readable after the loop.
-    if let Some(name) = &s.result {
+    // `let run = for ...` binds on the outer grid, in the scope the `for` sits
+    // in, so it is readable after the loop.
+    if let Some((name, _)) = &s.result {
         bind_loop_result(ctx, name, shell);
     }
 
@@ -407,7 +412,7 @@ fn collection_driver_port(kind: LoopKind) -> WirePort {
 }
 
 /// The shell's declared ports: `Exec` plus this kind's driver inputs, and the
-/// four status outputs every loop kind shares.
+/// status outputs every loop kind shares.
 fn shell_io(kind: LoopKind, elem: &[Type]) -> GateIO {
     let spec = plane_spec(kind);
     let mut inputs = vec![PortSpec::exec(*sym::EXEC)];
@@ -421,7 +426,7 @@ fn shell_io(kind: LoopKind, elem: &[Type]) -> GateIO {
             let port = WirePort::from_name(name);
             match port {
                 WirePort::Completed => PortSpec::exec(port.sym()),
-                WirePort::BAborted => PortSpec::new(port.sym(), Type::Bool),
+                WirePort::BAborted | WirePort::BRunning => PortSpec::new(port.sym(), Type::Bool),
                 _ => PortSpec::new(port.sym(), Type::Int),
             }
         })
@@ -455,7 +460,7 @@ fn entry_io(spec: &'static PlaneSpec, slot_tys: &[Type]) -> GateIO {
 }
 
 /// Bind a `{ }` pattern that names a counted loop's own slots, as in
-/// `for { index, isLast } in 0..n`.
+/// `for { index } in 0..n`.
 ///
 /// The field name resolves against `spec.slot_labels` and the port then comes
 /// from `spec.entry_slots` at that index, by name. Typecheck already reported
@@ -497,7 +502,7 @@ fn bind_slot(ctx: &mut LowerCtx, pat: &ForPat, port: PortRef) {
     }
 }
 
-/// Bind `as run` to a record over the shell's status outputs, on the outer
+/// Bind `let run = for` to a record over the shell's status outputs, on the outer
 /// grid. One port per field, so `run.aborted` resolves straight to the
 /// shell's `bAborted` pin with no storage in between.
 fn bind_loop_result(ctx: &mut LowerCtx, name: &str, shell: NodeId) {

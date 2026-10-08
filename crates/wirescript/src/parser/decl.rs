@@ -29,6 +29,13 @@ impl<'a> Parser<'a> {
         let t = self.peek().clone();
         if t.kind == TokenKind::Annotation {
             let anns = self.parse_annotations();
+            if let Some(r) = &anns.sliced {
+                self.error(
+                    "@sliced must be followed by a `for` loop inside a handler".to_string(),
+                    r.start,
+                    r.end,
+                );
+            }
             let t2 = self.peek().clone();
             let kw = |k: &str| t2.kind == TokenKind::Kw && t2.text == k;
             if kw("in") || kw("out") {
@@ -1066,6 +1073,7 @@ impl<'a> Parser<'a> {
             closed,
             no_fold,
             is_const: false,
+            is_fn: false,
         })
     }
 
@@ -1152,7 +1160,12 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn parse_mod_decl(&mut self, is_const: bool) -> TopDecl {
-        let start = self.expect(TokenKind::Kw, Some("mod")).start;
+        self.parse_mod_or_fn_decl(is_const, false)
+    }
+
+    /// `mod name<T>(params) -> outputs { body }`, or the same after `fn`.
+    fn parse_mod_or_fn_decl(&mut self, is_const: bool, is_fn: bool) -> TopDecl {
+        let start = self.expect(TokenKind::Kw, Some(if is_fn { "fn" } else { "mod" })).start;
         let name = self.expect(TokenKind::Ident, None).text;
         let type_params = self.parse_type_params();
         let (mut inputs, rest) = self.parse_param_list();
@@ -1184,6 +1197,7 @@ impl<'a> Parser<'a> {
             closed: false,
             no_fold: false,
             is_const,
+            is_fn,
         })
     }
 
@@ -1245,6 +1259,7 @@ impl<'a> Parser<'a> {
                     typ,
                     pattern: Some(ParamPattern::Record { fields, rest }),
                     is_const: false,
+                    default: None,
                     range: self.make_range(pstart, pend),
                 });
                 if self.match_tok(TokenKind::Comma, None).is_none() {
@@ -1287,6 +1302,7 @@ impl<'a> Parser<'a> {
                     typ,
                     pattern: Some(ParamPattern::Tuple { names, rest }),
                     is_const: false,
+                    default: None,
                     range: self.make_range(pstart, pend),
                 });
                 if self.match_tok(TokenKind::Comma, None).is_none() {
@@ -1305,12 +1321,18 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::Colon, None);
             let is_const = self.match_tok(TokenKind::Kw, Some("const")).is_some();
             let typ = self.parse_type();
+            let default = if self.match_tok(TokenKind::Op, Some("=")).is_some() {
+                Some(self.parse_expr())
+            } else {
+                None
+            };
             let pend = self.peek().start;
             params.push(Param {
                 name: pname,
                 typ,
                 pattern: None,
                 is_const,
+                default,
                 range: self.make_range(pstart, pend),
             });
             if self.match_tok(TokenKind::Comma, None).is_none() {
@@ -1363,35 +1385,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // `fn name(params) [-> ReturnType] = expr` — REMOVED.
+    /// `fn name(params) -> outputs { body }`: a function, compiled once into a
+    /// callable plane. Same grammar as `mod`.
     fn parse_fn_decl(&mut self) -> TopDecl {
-        let kw = self.expect(TokenKind::Kw, Some("fn"));
-        let start = kw.start;
-        // The `fn` declaration form has been removed — use a `mod` with a return
-        // value. Reject, but keep parsing the rest so a stray `fn` doesn't derail
-        // the whole file (mirrors the removed `array`/`map` decl keywords).
-        self.error(
-            "`fn` declarations have been removed; use `mod NAME(params) -> T { return <expr> }` instead",
-            kw.start,
-            kw.end,
-        );
-        let name = self.expect(TokenKind::Ident, None).text;
-        let (params, _rest) = self.parse_param_list();
-        let return_type = if self.match_tok(TokenKind::Arrow, None).is_some() {
-            Some(self.parse_type())
-        } else {
-            None
-        };
-        self.expect(TokenKind::Op, Some("="));
-        let body = self.parse_expr();
-        let end = body.range().end;
-        self.eat_stmt_end();
-        TopDecl::Fn(FnDecl {
-            name,
-            params,
-            return_type,
-            body,
-            range: self.make_range(start, end),
-        })
+        self.parse_mod_or_fn_decl(false, true)
     }
 }

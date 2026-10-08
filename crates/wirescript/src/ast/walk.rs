@@ -285,7 +285,7 @@ pub fn stmt_children<'a>(s: &'a Stmt, f: &mut dyn FnMut(Node<'a>, Flow)) {
         Stmt::AnonChip(ac) => anon_chip_children(ac, f),
         Stmt::ChipDecl(c) => chip_children(c, f),
         Stmt::Return { value, range: _ } => opt(value, Flow::Seq, f),
-        Stmt::For(ForStmt { bindings: _, source, result: _, body, range: _ }) => {
+        Stmt::For(ForStmt { bindings: _, source, result: _, sliced: _, body, range: _ }) => {
             match source {
                 ForSource::Range(RangeSource { extent, step, reversed: _, range: _ }) => {
                     match extent {
@@ -392,6 +392,7 @@ fn expr_children_in<'a>(e: &'a Expr, exits: Exits, f: &mut dyn FnMut(Node<'a>, F
             f(Node::Expr(value), Flow::Seq);
             f(Node::Expr(path), Flow::Seq);
         }
+        Expr::As { value, .. } => f(Node::Expr(value), Flow::Seq),
     }
 }
 
@@ -552,6 +553,7 @@ fn chip_children<'a>(c: &'a ChipDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
         closed: _,
         no_fold: _,
         is_const: _,
+        is_fn: _,
     } = c;
     opt(label_expr, Flow::Seq, f);
     f(Node::Block(body), Flow::Decl);

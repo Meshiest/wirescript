@@ -611,6 +611,8 @@ The `mod` keyword declares a chip that is always **inlined** at call sites. Inst
 
 Only the gates are expanded into the caller. Every name in the body resolves where the `mod` is declared, exactly as a `chip` body's does: a `var`, `let`, parameter or nested `mod` the caller declares under the same name is never the one the body reads, writes or calls.
 
+A `fn` takes the same signature but compiles once, into a function definition plane that every call runs through a Function Call gate. Use a `fn` when one body is called from many places; use a `mod` when the call should cost no extra gate, needs type parameters, or must run in a pure context. A `for` loop is the third kind of plane: compiled once per loop, swept once per iteration. See [`fn`](statements.md#fn----function).
+
 ```wirescript ignore
 mod Name(params) {
   // body -- no output

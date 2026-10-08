@@ -1,6 +1,8 @@
 //! Completeness guard: every builtin's `CallSpec` must expose ALL of its gate's
-//! (non-exec) input and output ports — as a param, a spec output, or a record
-//! field. Catches a gate that gained ports in a game update but whose builtin
+//! input and output ports — as a param, a spec output, or a record field. The
+//! exec pins a call chains through (`Exec`/`ExecIn` in, `ExecOut` out) are the
+//! only exemption; any other exec pin (`Sweep.Hit`, a dialog's `OkClicked`) is
+//! a branch the program must be able to reach. Catches a gate that gained ports in a game update but whose builtin
 //! wasn't updated to surface them.
 //!
 //! Matching is case-insensitive on the cleaned port name, so vector/color
@@ -17,7 +19,13 @@ use wirescript::ir::Type;
 
 /// `builtin.PORT` pairs intentionally not surfaced (with the reason in-line).
 const ALLOWED_GAPS: &[&str] = &[
-    // (none — every catalog input/output is currently exposed)
+    // Cycle's reverse direction is a second exec entry with its own
+    // continuation; the call form is one exec chain, which steps up.
+    "Cycle.ExecDown",
+    "Cycle.ExecOutDown",
+    // `GetMicrochipBrick()` is a var holding a baked brick ref; the brick is its
+    // value, and a ref to the var itself is not what it is for.
+    "GetMicrochipBrick.VarRef",
 ];
 
 fn clean_lower(s: &str) -> String {
@@ -39,6 +47,11 @@ fn alias_lower(f: &str) -> String {
     .to_string()
 }
 
+/// The exec pin a call is chained through, rather than a branch it exposes.
+fn is_chained_exec(p: &wirescript::catalog::Port) -> bool {
+    p.ty == RawPortType::Exec && matches!(p.name.as_str(), "Exec" | "ExecIn" | "ExecOut")
+}
+
 #[test]
 fn every_builtin_exposes_all_gate_ports() {
     let cat = default_catalog();
@@ -55,7 +68,7 @@ fn every_builtin_exposes_all_gate_ports() {
 
         let covered_in: HashSet<String> =
             spec.params.iter().map(|p| clean_lower(p.port.as_str())).collect();
-        for p in gate.component.inputs.iter().filter(|p| p.ty != RawPortType::Exec) {
+        for p in gate.component.inputs.iter().filter(|p| !is_chained_exec(p)) {
             let pair = format!("{name}.{}", p.name);
             if covered_in.contains(&clean_lower(&p.name)) || allowed.contains(pair.as_str()) {
                 continue;
@@ -85,7 +98,7 @@ fn every_builtin_exposes_all_gate_ports() {
                 }
             }
         }
-        for p in gate.component.outputs.iter().filter(|p| p.ty != RawPortType::Exec) {
+        for p in gate.component.outputs.iter().filter(|p| !is_chained_exec(p)) {
             let pair = format!("{name}.{}", p.name);
             if !covered_out.contains(&clean_lower(&p.name)) && !allowed.contains(pair.as_str()) {
                 gaps.push(format!("{pair}  (output {:?})", p.ty));
@@ -106,16 +119,6 @@ fn every_builtin_exposes_all_gate_ports() {
 const EVENT_ALLOWED_GAPS: &[&str] = &[
     // The join/left/chat gates expose UserId; events bind it as `userId` where
     // useful. Nothing else is dropped.
-    //
-    // The Clock gate's sole output `Pulse` is its exec trigger (the handler body
-    // chains from it via the event's `exec_out`), not a data payload — the dump
-    // types it `any` rather than `exec`, so it needs an explicit allowance here.
-    "Clock.Pulse",
-    // The whole-grid gates have no `ExecOut`; their trigger output doubles as the
-    // exec (the event's `exec_out`). `WholeGridInteracted` fires from `Character`
-    // which is also bound as data (so no gap needed); `WholeGridTargeted` fires
-    // from `Targeted` (typed `any`), which is exec-only.
-    "WholeGridTargeted.Targeted",
 ];
 
 #[test]

@@ -60,6 +60,21 @@ function ueScalar(ue) {
   }
 }
 
+// Struct name (the dump's `structType` for a StructProperty port) -> simple type. Only
+// structs with a fixed meaning; WireValue / BCSComponentHandle / control structs stay to
+// the curated type or the name heuristic.
+const STRUCT_TYPE = {
+  BrickHandle: "brick",
+  LinearColor: "color",
+  Color: "color",
+  Vector: "vector",
+  Vector3f: "vector",
+  Rotator: "rotator",
+  Rotator3f: "rotator",
+  WireGraphExec: "exec",
+  WireGraphString: "string",
+};
+
 // Index-ish wire ports the dump reports as opaque variants but are really ints.
 const INT_PORT_NAMES = new Set([
   "Index", "IndexA", "IndexB", "Start", "Count", "Size", "Length", "Capacity",
@@ -184,6 +199,8 @@ function buildPorts(portDict, curatedByName) {
         type = curatedType; // curated precision wins
       } else if (scalar) {
         type = scalar; // enrich from the dump's concrete UE type
+      } else if (STRUCT_TYPE[meta.structType]) {
+        type = STRUCT_TYPE[meta.structType]; // a StructProperty the dump names (BrickHandle, ...)
       } else {
         type = heuristicType(name, displayName, ue);
       }
@@ -228,6 +245,23 @@ function buildConfig(dict) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// Size variants of a ProceduralGateBrick (brickAsset PB_Gate_*). The brick is placed as a
+// PROCEDURAL brick whose size is one variant's halfSize (no other size is accepted); each
+// size exposes a different set of PHYSICAL ports, smallest first. Ports not listed for a
+// variant are still logical ports of the component (reachable through the omniport).
+function buildVariants(variants, comp) {
+  const ins = new Set(Object.keys(comp.wireInputPorts ?? {}));
+  const outs = new Set(Object.keys(comp.wireOutputPorts ?? {}));
+  return variants.map((v) => {
+    const names = (v.physicalPorts ?? []).map((p) => p.name);
+    return {
+      halfSize: { X: v.halfSize?.X ?? 0, Y: v.halfSize?.Y ?? 0, Z: v.halfSize?.Z ?? 0 },
+      inputs: names.filter((n) => ins.has(n)),
+      outputs: names.filter((n) => outs.has(n)),
+    };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -267,6 +301,11 @@ for (const r of records) {
       displayName: comp.componentDisplayName ?? "",
       description: comp.componentDescription ?? "",
       searchTags: comp.componentSearchTags ?? "",
+      // The game's own grouping, and whether a player can add the component
+      // with the applicator (CDO bPlayerSpawnable). Together they give the set
+      // the component gates' Component Type dropdown offers.
+      ...(comp.componentCategory ? { category: comp.componentCategory } : {}),
+      ...(comp.bPlayerSpawnable ? { playerSpawnable: true } : {}),
       kind: deriveKind(cls) ?? cur?.component.kind ?? "?",
       // Reuse curated family for known classes; derive for new ones.
       family: cur ? cur.component.family : deriveFamily(cls),
@@ -274,6 +313,7 @@ for (const r of records) {
       outputs: buildPorts(comp.wireOutputPorts ?? {}, curOut),
       config: buildConfig(comp.configProperties ?? {}),
     },
+    ...(r.gateVariants ? { variants: buildVariants(r.gateVariants, comp) } : {}),
   });
 }
 // Carry over curated entries whose class is absent from this dump snapshot.

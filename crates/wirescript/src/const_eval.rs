@@ -455,6 +455,15 @@ impl DeclaredTypes {
             // A declaration of the program's own named like a builtin generic
             // (`type Map<K, V> = ..`) is what the name means, as in typecheck.
             TypeExpr::Generic { name, args, .. } => {
+                // `Component<PointLight>` names its argument as a component, not a type.
+                if name == "Component"
+                    && !self.aliases.contains_key(name)
+                    && let [TypeExpr::Name { name: c, .. }] = args.as_slice()
+                {
+                    return crate::catalog::component_type(c)
+                        .map(|o| Type::Component(o.class.to_string()))
+                        .unwrap_or(Type::Any);
+                }
                 let args = each(args);
                 match self.aliases.get(name) {
                     Some((params, body)) if params.len() == args.len() => {

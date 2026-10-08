@@ -407,6 +407,10 @@ pub struct Param {
     /// inside the body the parameter reads as one. Set on every parameter of a
     /// `const mod`.
     pub is_const: bool,
+    /// `name: T = expr`: the value a call that omits this argument passes. A
+    /// compile-time constant; only trailing parameters of a `mod` or `fn` may
+    /// have one.
+    pub default: Option<Expr>,
     pub range: SourceRange,
 }
 
@@ -473,6 +477,10 @@ pub struct ChipDecl {
     /// gates; whether a CALL to it evaluates at compile time is decided by
     /// attempting evaluation (see `const_eval::interp`).
     pub is_const: bool,
+    /// `fn f(…)`: compiled once into a function definition plane and run
+    /// through a Function Call gate at each call site, where a `mod` is
+    /// inlined. Shares the `mod` grammar and `inline: true`.
+    pub is_fn: bool,
 }
 
 impl ChipDecl {
@@ -512,8 +520,11 @@ pub struct ForStmt {
     /// Slot patterns, left to right. Never empty.
     pub bindings: Vec<ForPat>,
     pub source: ForSource,
-    /// `as run` - binds `{ aborted, abortCode, iterations }` after the loop.
-    pub result: Option<String>,
+    /// `let run = for ...` - binds `{ aborted, iterations, running }` after
+    /// the loop, with the name's own range.
+    pub result: Option<(String, SourceRange)>,
+    /// `@sliced for ...` - sets the shell's `bRunAcrossTicks`.
+    pub sliced: bool,
     pub body: Block,
     pub range: SourceRange,
 }
@@ -1245,6 +1256,13 @@ pub enum Expr {
         path: Box<Expr>,
         range: SourceRange,
     },
+    /// `value as T`: the value converted to `T` (a Convert gate per scalar
+    /// that changes type; a record or tuple converts field by field).
+    As {
+        value: Box<Expr>,
+        ty: TypeExpr,
+        range: SourceRange,
+    },
 }
 
 /// An element of an array literal: a single value or a `...spread` of another
@@ -1317,7 +1335,8 @@ impl Expr {
             | Expr::MapLit { range, .. }
             | Expr::VariantCtor { range, .. }
             | Expr::Unsafe { range, .. }
-            | Expr::Is { range, .. } => range,
+            | Expr::Is { range, .. }
+            | Expr::As { range, .. } => range,
         }
     }
 

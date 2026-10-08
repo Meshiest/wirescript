@@ -201,6 +201,11 @@ pub enum Type {
     /// `Option<int>`'s `[Int]`) are pairwise equal. Never coerces/widens to a
     /// different enum, even a structurally identical one.
     Enum { name: String, args: Vec<Type> },
+    /// A reference to one component on a brick, of the component type it
+    /// names (`Component_PointLight`): what Get/Add Component give. Its
+    /// properties read and write as fields (`light.Brightness`). Like a brick
+    /// it is wired, not stored.
+    Component(String),
 }
 
 /// What a reference value names. Refs compare only within one kind.
@@ -357,6 +362,8 @@ impl Type {
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Type::Component(class) if class.is_empty() => f.write_str("Component"),
+            Type::Component(class) => write!(f, "Component<{}>", crate::catalog::component_name(class)),
             Type::Bool => f.write_str("bool"),
             Type::Int => f.write_str("int"),
             Type::Float => f.write_str("float"),

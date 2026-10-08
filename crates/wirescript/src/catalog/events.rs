@@ -224,16 +224,17 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         mk(
             "ControllerLeft",
             "BrickComponentType_Event_Gamemode_ControllerLeft",
+            // No player reference: the player is already gone, so the event
+            // carries only who they were.
             vec![
-                controller("controller", "PlayerState"),
                 string("userId", "UserId"),
                 string("userName", "UserName"),
             ],
         ),
         // Team join/leave: like ControllerJoined/Left, but fired when a player
         // joins/leaves a team, and additionally exposing the `team` entity. The
-        // PlayerState is entity-typed here, unlike the plain join/leave events
-        // above.
+        // PlayerState is entity-typed here, unlike ControllerJoined above, and on
+        // ControllerLeftTeam it is empty when the player left the server.
         mk(
             "ControllerJoinedTeam",
             "BrickComponentType_Event_Gamemode_ControllerJoinedTeam",
@@ -379,9 +380,8 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         // as the exec (like Clock's `Pulse`): `WholeGridInteracted` fires from
         // `Character` (the interacting character) — which is ALSO bound as the
         // `character` data param — exposing `held` (`bHeld`, true while held);
-        // `WholeGridTargeted` fires from `Targeted` (typed `any` in the dump,
-        // semantically the exec) exposing the hit character/damage/weapon. The
-        // exec-only port (`WholeGridTargeted.Targeted`) is in EVENT_ALLOWED_GAPS.
+        // `WholeGridTargeted` fires from its `Targeted` exec output, exposing the
+        // hit character/damage/weapon.
         (
             "WholeGridInteracted",
             EventSpec {
@@ -515,6 +515,35 @@ pub fn events() -> &'static HashMap<&'static str, EventSpec> {
 
 pub fn find_event(surface_name: &str) -> Option<&'static EventSpec> {
     events().get(surface_name)
+}
+
+/// A data output an event used to bind and no longer does.
+pub struct RemovedBinding {
+    pub name: &'static str,
+    /// Capture names (lowercase) that read as this binding.
+    pub aliases: &'static [&'static str],
+    /// The type it had, as written in an annotation (`p: controller`).
+    pub ty_name: &'static str,
+    pub reason: &'static str,
+}
+
+/// Event captures bind by slot, so a handler written against an older shape
+/// (`on ControllerLeft() -> (controller, userId)`) would compile with every
+/// name shifted onto the slot after it. Typecheck rejects a capture that still
+/// names one of these.
+pub fn removed_bindings(surface_name: &str) -> &'static [RemovedBinding] {
+    static CONTROLLER_LEFT: OnceLock<Vec<RemovedBinding>> = OnceLock::new();
+    match surface_name {
+        "ControllerLeft" => CONTROLLER_LEFT.get_or_init(|| {
+            vec![RemovedBinding {
+                name: "controller",
+                aliases: &["controller", "ctrl", "c", "pc", "player", "playerstate", "ps"],
+                ty_name: "controller",
+                reason: "the player has already left",
+            }]
+        }),
+        _ => &[],
+    }
 }
 
 #[cfg(test)]

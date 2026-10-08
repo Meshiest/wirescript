@@ -1146,7 +1146,7 @@ impl<'a> Walker<'a> {
     }
 
     /// Registers a `for` loop's slot bindings scoped to its body, then
-    /// registers `as run` scoped to the enclosing block AFTER the loop,
+    /// registers `let run = for` scoped to the enclosing block AFTER the loop,
     /// never inside it.
     fn register_for(&mut self, f: &ForStmt, outer_scope: Option<SourceRange>) {
         // This pass has no types, so a collection asks with the wider of the
@@ -1188,7 +1188,7 @@ impl<'a> Walker<'a> {
 
         self.walk_block(&f.body);
 
-        if let Some(name) = &f.result {
+        if let Some((name, name_range)) = &f.result {
             // Scope containment is a pure range test with no ordering, so
             // scoping `run` to the whole enclosing block would let a body
             // reference resolve to it. Start the scope at the loop's own closing brace instead.
@@ -1197,7 +1197,7 @@ impl<'a> Walker<'a> {
                 start: f.range.end,
                 end: s.end,
             });
-            self.push(name.clone(), RefNs::Value, f.range.clone(), after_loop, "for", false, true);
+            self.push(name.clone(), RefNs::Value, name_range.clone(), after_loop, "for", false, false);
         }
     }
 
@@ -1284,6 +1284,10 @@ impl<'a> Walker<'a> {
             Expr::Is { value, path, .. } => {
                 self.walk_expr(value);
                 self.walk_expr(path);
+            }
+            Expr::As { value, ty, .. } => {
+                self.walk_expr(value);
+                self.walk_type_expr(ty);
             }
             Expr::IndexAccess { obj, index, .. } => {
                 self.walk_expr(obj);

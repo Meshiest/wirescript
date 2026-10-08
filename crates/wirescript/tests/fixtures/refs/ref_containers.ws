@@ -46,6 +46,7 @@ on ReadBrickGrid() {
   *r += 40
   assert(42, b, "a map value writes through")
   assert(42, *byName["b"], "a map value reads through")
+  assert(1, 0 + (byName["b"] == &b), "a map value equals the ref it holds")
 
   BroadcastChatMessage("ref containers: ${pass}/${total}")
 }

@@ -17,7 +17,7 @@ pub(super) fn deref_arg(arg: &Expr) -> &Expr {
 /// How a call argument binds a `*T` or container (`T[]`, `Map<K, V>`)
 /// parameter. Shared by the inline binder, the chip capture pass and the chip
 /// pin wiring, so the three cannot disagree about which arguments name storage.
-pub(super) enum RefArg {
+pub(in crate::lower) enum RefArg {
     /// The argument names the caller's own storage (`x`, `&x`, `arr`, a record
     /// field): the parameter aliases it at compile time.
     Static(VarRecord),
@@ -35,7 +35,7 @@ pub(super) enum RefArg {
     Unbound,
 }
 
-pub(super) fn classify_ref_arg(ctx: &LowerCtx, param_storage: Option<VarStorage>, arg: &Expr) -> RefArg {
+pub(in crate::lower) fn classify_ref_arg(ctx: &LowerCtx, param_storage: Option<VarStorage>, arg: &Expr) -> RefArg {
     // `&x` always names x's own storage.
     if let Expr::RefOf { operand, .. } = arg {
         return classify_named(ctx, param_storage, operand).unwrap_or_else(|| ref_value(ctx, arg));

@@ -22,6 +22,7 @@ Expressions compute values. In Wirescript, expressions map to wire graph gates: 
 - [Tuple Pick](#tuple-pick)
 - [Function Calls](#function-calls)
 - [Ref and Deref](#ref-and-deref)
+- [Type Conversion (`as`)](#type-conversion-as)
 - [Parenthesized Expressions](#parenthesized-expressions)
 - [Gotchas](#gotchas)
 - [Asset References](#asset-references)
@@ -45,6 +46,7 @@ Operators are listed from **lowest** (loosest binding) to **highest** (tightest 
 | 10 | `+` `-` `..` | Left | Addition, subtraction, string concat |
 | 11 | `*` `/` `%` | Left | Multiplication, division, modulo |
 | 12 | `**` | **Right** | Exponentiation |
+| 13 | `as` | Left | Type conversion (`x as float`) |
 | -- | `-` `!` `~` `*` `ref` | -- | Unary prefix operators |
 | -- | `.field` `[i]` `(args)` | Left | Postfix: field access, index, call |
 
@@ -689,6 +691,55 @@ on tick {
 | `x` (bare) | Pure | `.Value` port | The same read as `x.Value`; an unannotated `out` of it is `WS017` |
 | `&x` | Pure or Exec | `VarRef` port | `x`'s ref, as a value |
 
+## Type Conversion (`as`)
+
+`value as T` converts a value to another type with the game's Convert gate. It
+binds tighter than every binary operator: `a + b as float` converts `b`, and
+`-x as int` converts `-x`.
+
+```wirescript
+in count: int
+out ratio = count as float / 3.0
+out shown = count as string
+```
+
+Converts `bool`, `int`, `float` and `string` into one another; a number into a
+`vector`, `rotator` or `color` (it fills every channel, a color's clamped to
+0..1); a `rotator` into a `quat` and back; and a `vector`, `rotator`, `quat` or
+`color` into a `string` (`X=1.000 Y=2.000 Z=3.000`, `FFBC00FF`). An `any` value
+converts to any type. These are the conversions measured in game; every other
+pair (a vector as a number or a color, a string as a vector, anything to or
+from an object) comes out of the gate as the target type's default, so it is
+`WS109`.
+
+A float converts to an `int` by truncating toward zero (`-2.7 as int` is `-2`),
+a number is `true` when it is not zero, and a string reads as its leading
+number (`"42abc" as int` is `42`, `"1e3" as int` is `1`, `"abc"` is `0`). A
+constant whose result is known this way is converted at compile time, so
+`const half = 3 as float` works and costs no gate.
+
+A record or tuple converts field by field, and both sides need the same fields.
+A field already of its target type is not converted, and a conversion nothing
+reads costs nothing, so `(a, b) as (bool, int)` is one gate while `b` is an
+`int`, and none when the result goes unread.
+
+```wirescript
+type Cell = { x: int, y: int }
+type Pos = { x: float, y: float }
+in at: int
+var last: Pos = { x: 0.0, y: 0.0 }
+in go: exec
+on go {
+  let c: Cell = { x: at, y: 2 }
+  last = c as Pos
+}
+```
+
+A conversion `as` cannot make yet (an array or map, an enum, a ref, `exec`,
+records whose fields differ) is warning `WS109`, and the value keeps its own
+type. Inside a `for` source, put a conversion in parentheses:
+`for i in 0..(n as int)`.
+
 ## Parenthesized Expressions
 
 Parentheses group expressions to override precedence:
@@ -730,6 +781,30 @@ The editor completes asset references: typing `$` offers the asset types, and
 `$Type/` offers that type's asset names (from the embedded asset catalog). An
 asset reference is meant to be passed to a gate that takes an asset (e.g. an
 inventory or audio gate).
+
+### Components
+
+`$Component/<name>` names a component type: the setting of the Add Component,
+Get Component and Get/Set Component Property gates. The name is the
+component's display name without its spaces, and the editor completes it
+after `$Component/`. `$Component/<name>/<property>` names one of that
+component's properties as well, completed after the second `/`:
+
+```
+$Component/PointLight
+$Component/OneShotAudioPlayer
+$Component/PointLight/Brightness
+```
+
+Only the types the gates' Component Type setting offers are accepted: the
+components a player can add to a brick (lights, audio, buttons, spawners,
+zones and the like). A logic gate, Input Splitter, a component's class name,
+a misspelled name or a property the component does not have is `WS110`.
+Property names come from the component's fields in the save schema, so the
+list may hold fields the game's own picker does not offer (unverified). The
+type goes to `GetComponent` and `AddComponent` (see
+[Components](builtins.md#components)); it is a constant setting, not a value
+a program can hold.
 
 ## Prefab References
 

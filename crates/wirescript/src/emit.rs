@@ -85,6 +85,7 @@ mod module;
 use module::*;
 mod overlap;
 use overlap::check_no_overlap;
+mod handles;
 
 /// IR + placements → in-memory `brdb::World`. The core build step; the two
 /// public `emit_*` functions wrap this and serialise to their respective
@@ -228,6 +229,9 @@ pub fn build_world(
     world.make_prefab();
 
     check_no_overlap(&world)?;
+    // Last: a handle names its target by the address the writer will give it,
+    // which only the finished world fixes.
+    handles::bake_handles(&mut world, &ctx, module)?;
     Ok(world)
 }
 

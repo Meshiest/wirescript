@@ -114,10 +114,10 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("scale", WirePort::ItemScale, Type::Float),
                 CallParam::opt("itemName", WirePort::ItemNameOverride, Type::String),
                 CallParam::opt("projectile", WirePort::ProjectileOverride, Type::Entity),
-                // Config-only (settings menu, not wire inputs). `meshColors` is
-                // a color array (`Color[]`); `ammoOverride` is the
-                // WeaponAmmoOverride nested struct — both constant-only.
                 CallParam::opt("overrideColors", WirePort::BOverrideColors, Type::Bool),
+                // Config-only (settings menu, not wire inputs): `meshColors` is
+                // a color array (`Color[]`), `ammoOverride` the
+                // WeaponAmmoOverride nested struct. Both are constant-only.
                 CallParam::opt("meshColors", WirePort::MeshColors, mesh_colors_type()),
                 CallParam::opt("ammoOverride", WirePort::WeaponAmmoOverride, ammo_override_type()),
             ],
@@ -138,10 +138,10 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("scale", WirePort::ItemScale, Type::Float),
                 CallParam::opt("itemName", WirePort::ItemNameOverride, Type::String),
                 CallParam::opt("projectile", WirePort::ProjectileOverride, Type::Entity),
-                // Config-only (settings menu, not wire inputs). `meshColors` is
-                // a color array (`Color[]`); `ammoOverride` is the
-                // WeaponAmmoOverride nested struct — both constant-only.
                 CallParam::opt("overrideColors", WirePort::BOverrideColors, Type::Bool),
+                // Config-only (settings menu, not wire inputs): `meshColors` is
+                // a color array (`Color[]`), `ammoOverride` the
+                // WeaponAmmoOverride nested struct. Both are constant-only.
                 CallParam::opt("meshColors", WirePort::MeshColors, mesh_colors_type()),
                 CallParam::opt("ammoOverride", WirePort::WeaponAmmoOverride, ammo_override_type()),
             ],

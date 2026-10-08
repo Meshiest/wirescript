@@ -3258,11 +3258,9 @@ impl Gen {
                         trigger = format!("ControllerJoined({c}, {u})");
                     }
                     _ => {
-                        let c = self.fresh("ct");
                         let u = self.fresh("uid");
-                        sc.objs.push((c.clone(), Obj::Controller));
                         sc.scalars.push(Sca { name: u.clone(), ty: Ty::Str, acc: Acc::Direct });
-                        trigger = format!("ControllerLeft({c}, {u})");
+                        trigger = format!("ControllerLeft({u})");
                     }
                 }
             }
