@@ -1,7 +1,7 @@
 //! `value as T`: one Convert gate per scalar that changes type, none for a
 //! field already of its target type, and none for a conversion nothing reads.
 
-use wirescript::compile::{CompileInput, FoldMode, compile};
+use wirescript::compile::{FoldMode, compile};
 
 mod common;
 
@@ -15,10 +15,9 @@ fn converts(src: &str) -> usize {
         tc.diagnostics
     );
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
-    fn count(m: &wirescript::ir::Module) -> usize {
-        m.nodes.values().filter(|n| n.gate_class == CONVERT).count() + m.chips.values().map(count).sum::<usize>()
-    }
-    count(&lowered.module)
+    let mut n = 0;
+    lowered.module.walk(&mut |_, m| n += m.nodes.values().filter(|x| x.gate_class == CONVERT).count());
+    n
 }
 
 #[test]
@@ -47,12 +46,7 @@ fn a_value_already_of_the_type_is_not_converted() {
 /// that variant is what picks the output.
 #[test]
 fn the_target_type_is_baked_as_a_value_of_that_type() {
-    let brz = compile(CompileInput {
-        source: "in a: int\nout s = a as string\n",
-        file: "as_convert.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let brz = compile(common::input("in a: int\nout s = a as string\n", "as_convert.ws"))
     .expect("should compile")
     .brz;
     let target = common::world_components(&brz)

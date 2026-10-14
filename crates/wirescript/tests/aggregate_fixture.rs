@@ -6,17 +6,14 @@
 //! the aggregate feature exists to remove. A record op that regresses to a
 //! placeholder shows up here even though the program still "compiles".
 
-use wirescript::{compile, CompileInput, FoldMode};
+use wirescript::compile;
+
+mod common;
 
 #[test]
 fn aggregate_fixture_compiles_without_placeholders() {
     let src = include_str!("fixtures/records/aggregate.ws");
-    let r = compile(CompileInput {
-        source: src,
-        file: "aggregate",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let r = compile(common::input(src, "aggregate"))
     .expect("aggregate.ws must compile without errors");
     assert!(
         r.diagnostics.iter().all(|d| d.code != "WSP001"),

@@ -1,4 +1,4 @@
-//! The one canonical `TypeExpr → Type` resolver.
+//! The one canonical `TypeExpr -> Type` resolver.
 //!
 //! [`primitive`] is the single primitive-name table, and [`resolve_type`] is
 //! the single structural resolver; every other resolver in the crate either
@@ -12,7 +12,7 @@
 use crate::collections::HashMap;
 
 use crate::ast::TypeExpr;
-use crate::diagnostic::Diagnostic;
+use crate::diagnostic::{Diagnostic, SourceRange};
 use crate::ir::Type;
 
 /// Maps a primitive type's source spelling to its [`Type`].
@@ -23,36 +23,38 @@ use crate::ir::Type;
 /// both are short of this one, so a type that resolves here may still not be
 /// offered in the editor. Adding a primitive means editing those too.
 pub fn primitive(name: &str) -> Option<Type> {
-    Some(match name {
-        "bool" => Type::Bool,
-        "int" => Type::Int,
-        "float" => Type::Float,
-        "string" => Type::String,
-        "vector" => Type::Vector,
-        "rotator" => Type::Rotator,
-        "quat" => Type::Quat,
-        "color" => Type::Color,
-        "entity" => Type::Entity,
-        "character" => Type::Character,
-        "controller" => Type::Controller,
-        "brick" => Type::Brick,
-        "zone" => Type::Zone,
-        "teleport" => Type::Teleport,
-        "prefab" => Type::PrefabRef,
-        // Any component reference; `Component<PointLight>` names one type.
-        "Component" => Type::Component(String::new()),
-        "exec" => Type::Exec,
-        // `any` (in annotation position) maps onto the *wildcard* type
-        // (`Type::Opaque`, the same type `Opaque(...)` produces) rather than
-        // the internal `Type::Any` error-fallback: an `any`-typed value must
-        // resolve operator overloads (`catalog::operators::type_kind_matches`
-        // wildcards `Opaque`) and act as a permanent fold barrier, which only
-        // `Opaque` does.
-        "any" => Type::Opaque,
-        "never" => Type::Never,
-        _ => return None,
-    })
+    PRIMITIVES.iter().find(|(n, _)| *n == name).map(|(_, t)| t.clone())
 }
+
+/// Each primitive type's source spelling and its [`Type`] (see [`primitive`]).
+pub const PRIMITIVES: &[(&str, Type)] = &[
+    ("bool", Type::Bool),
+    ("int", Type::Int),
+    ("float", Type::Float),
+    ("string", Type::String),
+    ("vector", Type::Vector),
+    ("rotator", Type::Rotator),
+    ("quat", Type::Quat),
+    ("color", Type::Color),
+    ("entity", Type::Entity),
+    ("character", Type::Character),
+    ("controller", Type::Controller),
+    ("brick", Type::Brick),
+    ("zone", Type::Zone),
+    ("teleport", Type::Teleport),
+    ("prefab", Type::PrefabRef),
+    // Any component reference; `Component<PointLight>` names one type.
+    ("Component", Type::Component(String::new())),
+    ("exec", Type::Exec),
+    // `any` (in annotation position) maps onto the *wildcard* type
+    // (`Type::Opaque`, the same type `Opaque(...)` produces) rather than
+    // the internal `Type::Any` error-fallback: an `any`-typed value must
+    // resolve operator overloads (`catalog::operators::type_kind_matches`
+    // wildcards `Opaque`) and act as a permanent fold barrier, which only
+    // `Opaque` does.
+    ("any", Type::Opaque),
+    ("never", Type::Never),
+];
 
 /// A generic type alias's template — its declared parameter names and the
 /// (still parametric) `TypeExpr` body, substituted at each `Name<Args>` use
@@ -76,11 +78,11 @@ pub struct ResolveCtx<'a> {
     /// In-scope generic type-parameter names (a `Name` matching one resolves
     /// to `Type::Param`).
     pub params: &'a [String],
-    /// Type aliases visible to the caller (name → resolved type). Empty for
+    /// Type aliases visible to the caller (name -> resolved type). Empty for
     /// the lowering-side callers; typecheck fills it from its scope so
     /// `type X = …` names still resolve.
     pub type_aliases: &'a HashMap<String, Type>,
-    /// Generic type aliases visible to the caller (name → param list + raw
+    /// Generic type aliases visible to the caller (name -> param list + raw
     /// `TypeExpr` body), instantiated by substitution when used as
     /// `Name<Args>`. Empty for lowering-side callers and any context that
     /// doesn't need generic-alias resolution — typecheck's
@@ -166,11 +168,134 @@ pub fn instantiate_generic_alias(
     Some(substitute_type_expr(&alias.body, &subst))
 }
 
+/// What an alias name means where a type is written (see
+/// [`TypeNames::alias`]).
+pub enum AliasDef<'a> {
+    /// A type already resolved.
+    Resolved(Type),
+    /// A non-generic alias's body, read where the alias is declared.
+    Body(&'a TypeExpr),
+    /// A generic alias: its parameters and its body.
+    Generic(&'a [String], &'a TypeExpr),
+}
+
+/// What the names a type is written with mean where it is written: the
+/// table [`resolve_with`] reads them against.
+pub trait TypeNames {
+    /// The type the type parameter `name`, written at `range`, stands for.
+    fn param(&self, name: &str, range: &SourceRange) -> Option<Type>;
+    /// The alias `name`.
+    fn alias(&self, name: &str) -> Option<AliasDef<'_>>;
+    /// The enum `name` applied to `args`.
+    fn enum_named(&self, name: &str, args: Vec<Type>) -> Option<Type>;
+    /// The names the body of an alias read here reads: those where the alias
+    /// is declared, with `bindings` for its parameters `params`.
+    fn body_scope<'s>(&'s self, bindings: &'s HashMap<String, Type>, params: &'s [String]) -> Box<dyn TypeNames + 's>;
+}
+
+impl TypeNames for ResolveCtx<'_> {
+    fn param(&self, name: &str, _: &SourceRange) -> Option<Type> {
+        self.params.iter().any(|p| p == name).then(|| Type::Param(name.to_string()))
+    }
+
+    fn alias(&self, name: &str) -> Option<AliasDef<'_>> {
+        if let Some(g) = self.generic_aliases.get(name) {
+            return Some(AliasDef::Generic(&g.params, &g.body));
+        }
+        self.type_aliases.get(name).map(|t| AliasDef::Resolved(t.clone()))
+    }
+
+    fn enum_named(&self, _: &str, _: Vec<Type>) -> Option<Type> {
+        None
+    }
+
+    fn body_scope<'s>(&'s self, bindings: &'s HashMap<String, Type>, params: &'s [String]) -> Box<dyn TypeNames + 's> {
+        // A body reads the aliases where it is declared, with none of the
+        // use site's type parameters, when typecheck says where that is;
+        // otherwise this scope's, less the parameters the alias binds.
+        let parent: Box<dyn TypeNames + 's> = match self.declaring_aliases {
+            Some(declaring) => Box::new(ResolveCtx {
+                params: &[],
+                type_aliases: declaring,
+                generic_aliases: self.generic_aliases,
+                declaring_aliases: self.declaring_aliases,
+            }),
+            None => Box::new(ResolveCtx { ..*self }),
+        };
+        Box::new(BoundAliases { parent, bindings, shadowed: params, declaring: self.declaring_aliases.is_some() })
+    }
+}
+
+/// A generic alias's body as typecheck reads it: its parameters bound like
+/// aliases, after the primitives and any generic alias of the same name.
+struct BoundAliases<'s> {
+    parent: Box<dyn TypeNames + 's>,
+    bindings: &'s HashMap<String, Type>,
+    /// The alias's own parameters, which hide a use-site parameter.
+    shadowed: &'s [String],
+    /// Whether the body reads the declaring scope rather than the use site's.
+    declaring: bool,
+}
+
+impl TypeNames for BoundAliases<'_> {
+    fn param(&self, name: &str, range: &SourceRange) -> Option<Type> {
+        if self.shadowed.iter().any(|p| p == name) {
+            return None;
+        }
+        self.parent.param(name, range)
+    }
+
+    fn alias(&self, name: &str) -> Option<AliasDef<'_>> {
+        match self.parent.alias(name) {
+            generic @ Some(AliasDef::Generic(..)) => generic,
+            other => self.bindings.get(name).map(|t| AliasDef::Resolved(t.clone())).or(other),
+        }
+    }
+
+    fn enum_named(&self, name: &str, args: Vec<Type>) -> Option<Type> {
+        self.parent.enum_named(name, args)
+    }
+
+    fn body_scope<'s>(&'s self, bindings: &'s HashMap<String, Type>, params: &'s [String]) -> Box<dyn TypeNames + 's> {
+        if self.declaring {
+            self.parent.body_scope(bindings, params)
+        } else {
+            Box::new(BoundAliases { parent: Box::new(Borrowed(self)), bindings, shadowed: params, declaring: false })
+        }
+    }
+}
+
+/// A scope borrowed where an owned one is expected.
+struct Borrowed<'a>(&'a dyn TypeNames);
+
+impl TypeNames for Borrowed<'_> {
+    fn param(&self, name: &str, range: &SourceRange) -> Option<Type> {
+        self.0.param(name, range)
+    }
+
+    fn alias(&self, name: &str) -> Option<AliasDef<'_>> {
+        self.0.alias(name)
+    }
+
+    fn enum_named(&self, name: &str, args: Vec<Type>) -> Option<Type> {
+        self.0.enum_named(name, args)
+    }
+
+    fn body_scope<'s>(&'s self, bindings: &'s HashMap<String, Type>, params: &'s [String]) -> Box<dyn TypeNames + 's> {
+        self.0.body_scope(bindings, params)
+    }
+}
+
 /// Resolve a `TypeExpr` to a `Type`. Pushes a diagnostic into `diags` for an
 /// unknown type name (so typecheck can surface WS002); lowering callers pass
 /// a throwaway `&mut Vec::new()` and ignore it — typecheck has already
 /// flagged unresolvable names by the time lowering runs.
 pub fn resolve_type(te: &TypeExpr, cx: &ResolveCtx, diags: &mut Vec<Diagnostic>) -> Type {
+    resolve_with(te, cx, diags)
+}
+
+/// Resolve `te` against `names`, reporting into `diags`.
+pub fn resolve_with(te: &TypeExpr, names: &dyn TypeNames, diags: &mut Vec<Diagnostic>) -> Type {
     // `in_progress` is a path stack of `(alias_name, resolved_arg_types)`
     // currently being expanded. A body that references its own instantiation
     // (`type Tree<T> = { l: Tree<T>, r: Tree<T> }`) re-enters the same key and
@@ -178,7 +303,7 @@ pub fn resolve_type(te: &TypeExpr, cx: &ResolveCtx, diags: &mut Vec<Diagnostic>)
     // chain, so a doubly-self-referencing alias re-expands each occurrence and
     // blows up exponentially (2^depth) before the depth cap ever trips.
     let mut in_progress: Vec<(String, Vec<Type>)> = Vec::new();
-    resolve_type_at_depth(te, cx, diags, 0, &mut in_progress)
+    resolve_type_at_depth(te, names, diags, 0, &mut in_progress)
 }
 
 /// `*T` on a RECORD or TUPLE distributes over its fields: `*{ a: A, b: B }`
@@ -205,15 +330,15 @@ pub(crate) fn distribute_ref(t: Type) -> Type {
 
 fn resolve_type_at_depth(
     te: &TypeExpr,
-    cx: &ResolveCtx,
+    cx: &dyn TypeNames,
     diags: &mut Vec<Diagnostic>,
     depth: u32,
     in_progress: &mut Vec<(String, Vec<Type>)>,
 ) -> Type {
     match te {
         TypeExpr::Name { name, range } => {
-            if cx.params.iter().any(|p| p == name) {
-                return Type::Param(name.clone());
+            if let Some(t) = cx.param(name, range) {
+                return t;
             }
             if let Some(prim) = primitive(name) {
                 return prim;
@@ -224,16 +349,29 @@ fn resolve_type_at_depth(
             // gets a targeted message instead of silently resolving through
             // `cx.type_aliases`' placeholder entry (see `typecheck.rs`'s
             // registration of a generic alias's scope symbol).
-            if cx.generic_aliases.contains_key(name) {
-                diags.push(Diagnostic::error(
-                    "WS002",
-                    format!("'{name}' is a generic type; write '{name}<...>'"),
-                    range.clone(),
-                ));
-                return Type::Any;
+            match cx.alias(name) {
+                Some(AliasDef::Generic(..)) => {
+                    diags.push(Diagnostic::error(
+                        "WS002",
+                        format!("'{name}' is a generic type; write '{name}<...>'"),
+                        range.clone(),
+                    ));
+                    return Type::Any;
+                }
+                Some(AliasDef::Resolved(t)) => return t,
+                Some(AliasDef::Body(body)) => {
+                    if depth >= MAX_ALIAS_DEPTH {
+                        diags.push(Diagnostic::error("WS002", format!("recursive type alias '{name}'"), range.clone()));
+                        return Type::Any;
+                    }
+                    let none = HashMap::default();
+                    let scope = cx.body_scope(&none, &[]);
+                    return resolve_type_at_depth(body, scope.as_ref(), diags, depth + 1, in_progress);
+                }
+                None => {}
             }
-            if let Some(t) = cx.type_aliases.get(name) {
-                return t.clone();
+            if let Some(t) = cx.enum_named(name, Vec::new()) {
+                return t;
             }
             diags.push(Diagnostic::error(
                 "WS002",
@@ -278,13 +416,13 @@ fn resolve_type_at_depth(
                 .collect(),
         ),
         TypeExpr::Generic { name, args, range } => {
-            if let Some(alias) = cx.generic_aliases.get(name) {
-                if args.len() != alias.params.len() {
+            if let Some(AliasDef::Generic(params, body)) = cx.alias(name) {
+                if args.len() != params.len() {
                     diags.push(Diagnostic::error(
                         "WS002",
                         format!(
                             "'{name}' expects {} type argument(s), got {}",
-                            alias.params.len(),
+                            params.len(),
                             args.len()
                         ),
                         range.clone(),
@@ -302,7 +440,7 @@ fn resolve_type_at_depth(
                     .map(|a| resolve_type_at_depth(a, cx, diags, depth, in_progress))
                     .collect();
                 // Cycle guard: this exact instantiation is already expanding
-                // higher on the path → self-referential, stop. Handles both a
+                // higher on the path -> self-referential, stop. Handles both a
                 // single self-ref (`L<T> = { tail: L<T> }`) and, crucially, a
                 // doubly-self-referencing body (`Tree<T> = { l: Tree<T>, r:
                 // Tree<T> }`) which a depth counter alone lets blow up
@@ -321,30 +459,17 @@ fn resolve_type_at_depth(
                     return Type::Any;
                 }
                 // Bind each param to its resolved arg and resolve the alias
-                // body in a child ctx carrying those bindings. A `Name` in the
-                // body matching a param resolves through this child alias map
-                // (params are filtered out of the child's `params` list so they
-                // can't win the `Type::Param` fast-path ahead of the
-                // substitution).
-                let mut child_aliases = cx.declaring_aliases.unwrap_or(cx.type_aliases).clone();
-                for (p, resolved_arg) in alias.params.iter().zip(resolved_args.iter()) {
-                    child_aliases.insert(p.clone(), resolved_arg.clone());
-                }
-                let filtered_params: Vec<String> = match cx.declaring_aliases {
-                    Some(_) => Vec::new(),
-                    None => cx.params.iter().filter(|p| !alias.params.contains(p)).cloned().collect(),
-                };
-                let child_cx = ResolveCtx {
-                    params: &filtered_params,
-                    type_aliases: &child_aliases,
-                    generic_aliases: cx.generic_aliases,
-                    declaring_aliases: cx.declaring_aliases,
-                };
+                // body in the scope the alias is declared in, where those
+                // bindings stand for its parameters.
+                let bindings: HashMap<String, Type> = params.iter().cloned().zip(resolved_args.iter().cloned()).collect();
+                let scope = cx.body_scope(&bindings, params);
                 in_progress.push((name.clone(), resolved_args));
-                let result =
-                    resolve_type_at_depth(&alias.body, &child_cx, diags, depth + 1, in_progress);
+                let result = resolve_type_at_depth(body, scope.as_ref(), diags, depth + 1, in_progress);
                 in_progress.pop();
                 return result;
+            }
+            if let Some(t) = enum_args(cx, name, args, diags, depth, in_progress) {
+                return t;
             }
             match (name.as_str(), args.as_slice()) {
                 ("Array", [v]) => {
@@ -411,6 +536,21 @@ fn resolve_type_at_depth(
             }
         }
     }
+}
+
+/// The enum `name` applied to `args`, when the table names one: its
+/// arguments resolved only then.
+fn enum_args(
+    cx: &dyn TypeNames,
+    name: &str,
+    args: &[TypeExpr],
+    diags: &mut Vec<Diagnostic>,
+    depth: u32,
+    in_progress: &mut Vec<(String, Vec<Type>)>,
+) -> Option<Type> {
+    cx.enum_named(name, Vec::new())?;
+    let args = args.iter().map(|a| resolve_type_at_depth(a, cx, diags, depth, in_progress)).collect();
+    cx.enum_named(name, args)
 }
 
 #[cfg(test)]

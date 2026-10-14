@@ -9,6 +9,7 @@
 - [Statements](statements.md)
 - [Chips & Mods](chips.md)
 - [Built-in Functions](builtins.md)
+- [Environment Settings](environment.md)
 - [Game Knowledge](game-knowledge.md)
 - [Execution Context](exec-context.md)
 - [Best Practices](best-practices.md)

@@ -377,7 +377,7 @@ let I = Init(exec = go)",
     );
     assert_no_errors(&r);
     // No `_Unsupported` anywhere — including inside the chip body, where the
-    // pushed const value used to lower to an unsupported placeholder (→ 0).
+    // pushed const value used to lower to an unsupported placeholder (-> 0).
     let mut unsupported = r
         .module
         .nodes
@@ -724,9 +724,9 @@ on tick {
     let lr = crate::layout::layout(&r.module);
     let brz = crate::emit::emit_brz(
         &r.module,
+        &Default::default(),
         &lr,
         &Default::default(),
-        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
     );
     assert!(brz.is_ok(), "should compile to brz: {:?}", brz.err());
 }
@@ -830,6 +830,27 @@ on tick {
         "read after record field write should produce fresh Var_Get (got {})",
         get_count
     );
+}
+
+/// A var a record also holds keeps its read across an `if` that writes neither:
+/// the join must not drop it because the record's copy of the binding never
+/// read it.
+#[test]
+fn a_var_held_by_a_record_keeps_its_read_across_an_unwriting_if() {
+    let r = compile(
+        "type S = { val: *int }
+var x: int = 0
+var y: int = 0
+let s: S = { val: x }
+in tick: exec
+on tick {
+  y = x
+  if y > 3 { y = 1 }
+  y = x + 1
+}",
+    );
+    assert_no_errors(&r);
+    assert_eq!(gate_count(&r, "BrickComponentType_Exec_Var_Get"), 2, "one read of x, one of y in the condition");
 }
 
 /// Regression: `let prev = rec.field` must capture a snapshot, not alias.
@@ -1516,13 +1537,10 @@ fn nested_record_chip_param_explodes_recursively() {
          in n: int\nout total = Sink({ inr: { a: n, b: 2 }, c: 3 })",
     );
     assert_no_errors(&r);
-    fn any_gate(m: &crate::ir::Module, class: &str) -> bool {
-        m.nodes.values().any(|n| n.gate_class == class) || m.chips.values().any(|c| any_gate(c, class))
-    }
-    assert!(!any_gate(&r.module, "_Unsupported"), "nested record chip param must bind");
+    assert!(count_class(&r.module, "_Unsupported") == 0, "nested record chip param must bind");
     assert!(
-        !any_gate(&r.module, "BrickComponentType_Expr_SplitColor")
-            && !any_gate(&r.module, "BrickComponentType_Expr_SplitVector"),
+        count_class(&r.module, "BrickComponentType_Expr_SplitColor") == 0
+            && count_class(&r.module, "BrickComponentType_Expr_SplitVector") == 0,
         "o.inr.a must read its own leaf pin, not SplitColor the first input"
     );
     // The caller's `n` arg must wire into the chip (before the fix the nested
@@ -1553,10 +1571,7 @@ fn chip_tuple_param_pattern_binds() {
          in x: int\nout r = adder((x, 1))",
     );
     assert_no_errors(&r);
-    fn any_gate(m: &crate::ir::Module, class: &str) -> bool {
-        m.nodes.values().any(|n| n.gate_class == class) || m.chips.values().any(|c| any_gate(c, class))
-    }
-    assert!(!any_gate(&r.module, "_Unsupported"), "chip tuple param names must bind");
+    assert!(count_class(&r.module, "_Unsupported") == 0, "chip tuple param names must bind");
     let add = r
         .module
         .chips
@@ -3547,24 +3562,8 @@ fn an_exec_where_a_bool_goes_compiles_and_where_a_value_goes_is_ws094() {
 
 /// Every wire of every grid of a save, as text, sorted: the save's wiring.
 fn save_wires(brz: &[u8]) -> Vec<String> {
-    use brdb::IntoReader;
-    let brz = brdb::Brz::read_slice(brz).expect("read brz");
-    let folders = &brz.index_data.folder_names;
-    let grids: Vec<usize> = folders
-        .iter()
-        .zip(&brz.index_data.folder_parent_ids)
-        .filter(|(_, parent)| usize::try_from(**parent).is_ok_and(|p| folders.get(p).is_some_and(|n| n == "Grids")))
-        .filter_map(|(name, _)| name.parse().ok())
-        .collect();
-    let reader = brz.into_reader();
-    let mut out = Vec::new();
-    for gid in grids {
-        for chunk in reader.brick_chunk_index(gid).expect("chunk index") {
-            if chunk.num_wires > 0 {
-                out.push(reader.wire_chunk_soa(gid, chunk.index).expect("wires").to_string());
-            }
-        }
-    }
+    let mut out: Vec<String> =
+        wirescript_ir::readback::Save::read(brz).wires().into_iter().map(|(_, _, soa)| soa.to_string()).collect();
     out.sort();
     out
 }
@@ -3683,7 +3682,7 @@ fn every_example_and_fixture_holds_the_wiring_invariant() {
             file: &file,
             module_name: None,
             fold_mode: crate::FoldMode::Auto,
-        });
+        }, &crate::resolve::FsLoader);
         assert!(
             !diags.iter().any(|d| d.message.contains(crate::diagnostic::EXEC_INTO_VALUE)),
             "{file}: {diags:?}"

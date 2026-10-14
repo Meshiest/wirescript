@@ -53,6 +53,7 @@ cp playground/sdk/check.mjs _sdk/wirescript-sdk/
 cp playground/sdk/compile.mjs _sdk/wirescript-sdk/
 cp playground/sdk/format.mjs _sdk/wirescript-sdk/
 cp playground/sdk/hover.mjs _sdk/wirescript-sdk/
+cp playground/sdk/lib.mjs _sdk/wirescript-sdk/
 cp playground/sdk/CLAUDE.md _sdk/wirescript-sdk/
 cp playground/sdk/README.md _sdk/wirescript-sdk/
 cp playground/docs.js _sdk/wirescript-sdk/
@@ -78,6 +79,9 @@ node playground/build-search-index.mjs _sdk/wirescript-sdk/playground/docs _sdk/
 
 mkdir -p _sdk/wirescript-sdk/vscode/syntaxes _sdk/wirescript-sdk/vscode/pkg
 cp playground/sdk/vscode/extension.js _sdk/wirescript-sdk/vscode/
+# The SDK extension shares the language extension's clipboard code, compiled.
+(cd ../../editors/vscode && npm ci --no-audit --no-fund && npm run build)
+cp ../../editors/vscode/out/clipboard.js _sdk/wirescript-sdk/vscode/
 cp playground/sdk/vscode/package.json _sdk/wirescript-sdk/vscode/
 cp ../../editors/vscode/language-configuration.json _sdk/wirescript-sdk/vscode/
 cp ../../editors/vscode/syntaxes/wirescript.tmLanguage.json _sdk/wirescript-sdk/vscode/syntaxes/

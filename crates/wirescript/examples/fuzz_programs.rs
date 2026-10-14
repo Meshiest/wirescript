@@ -53,11 +53,9 @@ use wirescript::layout::layout;
 // gate-class strings), NOT a dynamic/JS-style code-execution `eval` — no
 // user input, code, or expression string ever reaches it.
 use wirescript::lower::fold::eval::{self, Value as FoldValue};
-use wirescript::lower::{FoldMode, LowerInput, lower};
-use wirescript::resolve::{FsLoader, MemLoader, ResolveResult, resolve};
-use wirescript::template_cache::TemplateCache;
-use wirescript::typecheck::{TypeCheckResult, typecheck};
-use wirescript::{EmitOptions, build_world};
+use wirescript::lower::FoldMode;
+use wirescript::resolve::{FsLoader, MemLoader};
+use wirescript::{EmitOptions, FrontEnd, FrontEndStage, build_world, front_end_staged};
 
 // ─────────────────────────── PRNG (xorshift64*) ───────────────────────────
 
@@ -119,7 +117,7 @@ fn panic_msg(p: Box<dyn std::any::Any + Send>) -> String {
     format!("{} @ {}", norm_msg(&msg), loc.unwrap_or_default())
 }
 
-/// Normalize a message for bucketing: digits → '#', truncate.
+/// Normalize a message for bucketing: digits -> '#', truncate.
 fn norm_msg(s: &str) -> String {
     let mut out = String::new();
     let mut last_hash = false;
@@ -1159,65 +1157,35 @@ fn run_pipeline_inner(src: &str) -> Outcome {
         }
     };
 
-    // resolve - single-file programs keep the FsLoader path; bundles resolve
-    // their sections in-memory (the same MemLoader pattern the crate's own
-    // `compile_multi` tests use).
-    let resolved = match catch_unwind(AssertUnwindSafe(|| {
-        if is_bundle {
-            let mut loader = MemLoader { files: Default::default() };
-            for (name, text) in &bundle.files {
-                loader.files.insert(format!("{name}.ws"), text.clone());
+    // Single-file programs keep the FsLoader path; bundles resolve their
+    // sections in-memory (the same MemLoader pattern the crate's own
+    // `compile_multi` tests use). Unfolded on purpose: the general fuzz mode
+    // hunts crashes in resolve/typecheck/lower itself; `--fold-diff` below is
+    // the dedicated differential mode that exercises fold on/off agreement.
+    let mut loader = MemLoader { files: Default::default() };
+    for (name, text) in &bundle.files {
+        loader.files.insert(format!("{name}.ws"), text.clone());
+    }
+    let loader: &dyn wirescript::resolve::FileLoader = if is_bundle { &loader } else { &FsLoader };
+    let mut stage = "resolve";
+    let fe = match catch_unwind(AssertUnwindSafe(|| {
+        front_end_staged(&bundle.entry, file, None, FoldMode::ForceOff, loader, &mut |s| {
+            stage = match s {
+                FrontEndStage::Resolve => "resolve",
+                FrontEndStage::Typecheck => "typecheck",
+                FrontEndStage::Lower(_) => "lower",
             }
-            resolve(&bundle.entry, file, &loader)
-        } else {
-            resolve(&bundle.entry, file, &FsLoader)
-        }
-    })) {
-        Ok(r) => r,
-        Err(p) => {
-            out.panic = Some(("resolve".into(), panic_msg(p)));
-            return out;
-        }
-    };
-    record_diags(&mut out, &resolved.diagnostics);
-
-    // typecheck
-    let tc = match catch_unwind(AssertUnwindSafe(|| typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default()))) {
-        Ok(r) => r,
-        Err(p) => {
-            out.panic = Some(("typecheck".into(), panic_msg(p)));
-            return out;
-        }
-    };
-    record_diags(&mut out, &tc.diagnostics);
-
-    // lower
-    let cache = Arc::new(TemplateCache::new());
-    let cache2 = cache.clone();
-    let lowered = match catch_unwind(AssertUnwindSafe(|| {
-        lower(LowerInput {
-            ast: &resolved.ast,
-            type_of_expr: &tc.type_of_expr,
-            op_resolutions: &tc.op_resolutions,
-            resolutions: &tc.resolutions,
-            file,
-            module_name: None,
-            template_cache: cache2,
-            doc_comments: &resolved.doc_comments,
-            // Unfolded on purpose: the general fuzz mode hunts crashes in
-            // resolve/typecheck/lower itself; `--fold-diff` below is the
-            // dedicated differential mode that exercises fold on/off
-            // agreement.
-            fold_mode: FoldMode::ForceOff,
-            ce_slots: &wirescript::typecheck::CeSlotMap::default(),
         })
     })) {
-        Ok(r) => r,
+        Ok(fe) => fe,
         Err(p) => {
-            out.panic = Some(("lower".into(), panic_msg(p)));
+            out.panic = Some((stage.into(), panic_msg(p)));
             return out;
         }
     };
+    let FrontEnd { resolved, typecheck: tc, lowered, .. } = fe;
+    record_diags(&mut out, &resolved.diagnostics);
+    record_diags(&mut out, &tc.diagnostics);
     record_diags(&mut out, &lowered.diagnostics);
 
     // analyze
@@ -1264,7 +1232,7 @@ fn run_pipeline_inner(src: &str) -> Outcome {
         };
         let opts = EmitOptions::default();
         match catch_unwind(AssertUnwindSafe(|| {
-            build_world(&lowered.module, &lr, &opts, &cache)
+            build_world(&lowered.module, &Default::default(), &lr, &opts)
         })) {
             Ok(Ok(_world)) => {}
             Ok(Err(e)) => out.emit_err = Some(format!("{e:?}")),
@@ -1282,7 +1250,7 @@ fn run_pipeline_inner(src: &str) -> Outcome {
 
 const KEYWORDS: &[&str] = &[
     "if", "then", "else", "let", "var", "on", "out", "in", "emit", "await", "chip", "mod",
-    "return", "buffer", "static", "type", "true", "false", "exec", "ref", "open", "int", "float",
+    "return", "buffer", "static", "type", "true", "false", "exec", "ref", "int", "float",
     "bool", "string", "vector", "entity", "controller", "character", "array", "import", "from",
     "as", "event",
 ];
@@ -1309,8 +1277,8 @@ fn coarse_shape(norm: &str) -> String {
     s
 }
 
-/// Structure-preserving normalization: user identifiers → `I`, numbers → `N`,
-/// strings → `S`; keywords/builtins/punctuation kept. Groups findings that
+/// Structure-preserving normalization: user identifiers -> `I`, numbers -> `N`,
+/// strings -> `S`; keywords/builtins/punctuation kept. Groups findings that
 /// differ only in names/values.
 fn norm_snippet(s: &str) -> String {
     let mut out = String::new();
@@ -4987,65 +4955,44 @@ fn prepare_diff(src: &str) -> DiffPrep {
     })
 }
 
-fn lower_variant(
-    resolved: &ResolveResult,
-    tc: &TypeCheckResult,
-    file: &str,
-    fold_mode: FoldMode,
-) -> Result<Module, String> {
-    let cache = Arc::new(TemplateCache::new());
-    match catch_unwind(AssertUnwindSafe(|| {
-        lower(LowerInput {
-            ast: &resolved.ast,
-            type_of_expr: &tc.type_of_expr,
-            op_resolutions: &tc.op_resolutions,
-            resolutions: &tc.resolutions,
-            file,
-            module_name: None,
-            template_cache: cache,
-            doc_comments: &resolved.doc_comments,
-            fold_mode,
-            ce_slots: &wirescript::typecheck::CeSlotMap::default(),
-        })
-    })) {
-        Ok(r) => {
-            let errs: Vec<&str> = r
-                .diagnostics
-                .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .map(|d| d.message.as_str())
-                .collect();
-            if errs.is_empty() {
-                Ok(r.module)
-            } else {
-                Err(format!("lower(fold_mode={fold_mode:?}) diagnostics: {errs:?}"))
+/// `src` through the front end at `fold_mode`: its module, `Ok(None)` when
+/// resolve or typecheck rejects the program, or the lowering errors or panic.
+fn lower_variant(src: &str, file: &str, fold_mode: FoldMode) -> Result<Option<Module>, String> {
+    let mut stage = "resolve";
+    let fe = catch_unwind(AssertUnwindSafe(|| {
+        front_end_staged(src, file, None, fold_mode, &FsLoader, &mut |s| {
+            stage = match s {
+                FrontEndStage::Resolve => "resolve",
+                FrontEndStage::Typecheck => "typecheck",
+                FrontEndStage::Lower(_) => "lower",
             }
-        }
-        Err(p) => Err(format!("PANIC lower(fold_mode={fold_mode:?}): {}", panic_msg(p))),
+        })
+    }))
+    .map_err(|p| format!("PANIC {stage}(fold_mode={fold_mode:?}): {}", panic_msg(p)))?;
+    let rejected = |ds: &[wirescript::diagnostic::Diagnostic]| ds.iter().any(|d| d.severity == Severity::Error);
+    if rejected(&fe.resolved.diagnostics) || rejected(&fe.typecheck.diagnostics) {
+        return Ok(None);
+    }
+    let errs: Vec<&str> =
+        fe.lowered.diagnostics.iter().filter(|d| d.severity == Severity::Error).map(|d| d.message.as_str()).collect();
+    if errs.is_empty() {
+        Ok(Some(fe.lowered.module))
+    } else {
+        Err(format!("lower(fold_mode={fold_mode:?}) diagnostics: {errs:?}"))
     }
 }
 
 fn prepare_diff_inner(src: &str) -> DiffPrep {
     let file = "fold_diff.ws";
 
-    let resolved = match catch_unwind(AssertUnwindSafe(|| resolve(src, file, &FsLoader))) {
-        Ok(r) => r,
-        Err(p) => return DiffPrep { pair: None, panic: Some(format!("PANIC resolve: {}", panic_msg(p))) },
-    };
-    if resolved.diagnostics.iter().any(|d| d.severity == Severity::Error) {
+    let u = lower_variant(src, file, FoldMode::ForceOff);
+    let f = lower_variant(src, file, FoldMode::ForceOn);
+    // A program resolve or typecheck rejects is no finding (fold only touches
+    // lowering, so both variants see the same rejection).
+    if matches!(u, Ok(None)) || matches!(f, Ok(None)) {
         return DiffPrep { pair: None, panic: None };
     }
-
-    let tc = match catch_unwind(AssertUnwindSafe(|| typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default()))) {
-        Ok(r) => r,
-        Err(p) => return DiffPrep { pair: None, panic: Some(format!("PANIC typecheck: {}", panic_msg(p))) },
-    };
-    if tc.diagnostics.iter().any(|d| d.severity == Severity::Error) {
-        return DiffPrep { pair: None, panic: None };
-    }
-
-    let u = lower_variant(&resolved, &tc, file, FoldMode::ForceOff);
-    let f = lower_variant(&resolved, &tc, file, FoldMode::ForceOn);
+    let (u, f) = (u.map(Option::unwrap), f.map(Option::unwrap));
     match (u, f) {
         (Ok(um), Ok(fm)) => DiffPrep { pair: Some((um, fm)), panic: None },
         (u, f) => {

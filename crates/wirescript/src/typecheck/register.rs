@@ -12,7 +12,7 @@ fn ns_let_member(ty: Option<Type>, range: &SourceRange, name: &str) -> NsDeclInf
         params: Vec::new(),
         value_type: ty,
         let_decl: Some(super::let_binding::let_key(range, name)),
-        generic: None,
+        signature: None,
     }
 }
 
@@ -556,8 +556,8 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             );
         }
         TopDecl::In(d) => {
+            // A port cannot take a type parameter, so `any` here is no WS032.
             let t = resolve_type_expr(ctx, &d.typ);
-            warn_any_annotation(ctx, &t, type_expr_range(&d.typ));
             declare_or_dup(
                 ctx,
                 &d.name,
@@ -768,7 +768,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             // `lower_event_decl`, so its `out` bindings are top-level handler
             // bindings too - see `register_handler_outputs`. Lowering's pass
             // 1a (`lower/mod.rs`) walks this same field for the same reason.
-            if let Some(body) = &e.captured_body {
+            if let Some(body) = e.captured_body() {
                 register_handler_outputs(ctx, body);
             }
         }
@@ -988,7 +988,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 is_const: p.is_const,
                             })
                             .collect();
-                        let generic = has_type_params.then(|| {
+                        let signature = Some({
                             let sig = FnOrChipSig {
                                 required: c.inputs.iter().take_while(|p| p.default.is_none()).count(),
                                 params: params.clone(),
@@ -1023,7 +1023,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 params,
                                 value_type: None,
                                 let_decl: None,
-                                generic,
+                                signature,
                             },
                         );
                     }
@@ -1046,7 +1046,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 params,
                                 value_type: None,
                                 let_decl: None,
-                                generic: None,
+                                signature: None,
                             },
                         );
                     }
@@ -1074,7 +1074,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                     params: Vec::new(),
                                     value_type: ty,
                                     let_decl: Some(super::let_binding::let_key(range, name)),
-                                    generic: None,
+                                    signature: None,
                                 },
                             );
                         }
@@ -1120,7 +1120,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 params: Vec::new(),
                                 value_type: ty,
                                 let_decl: None,
-                                generic: None,
+                                signature: None,
                             },
                         );
                     }
@@ -1190,7 +1190,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 params: Vec::new(),
                                 value_type: Some(Type::Array(Box::new(inner))),
                                 let_decl: None,
-                                generic: None,
+                                signature: None,
                             },
                         );
                     }
@@ -1206,7 +1206,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 params: Vec::new(),
                                 value_type: Some(Type::Map(Box::new(key), Box::new(value))),
                                 let_decl: None,
-                                generic: None,
+                                signature: None,
                             },
                         );
                     }
@@ -1227,7 +1227,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 params: Vec::new(),
                                 value_type: ty,
                                 let_decl: None,
-                                generic: None,
+                                signature: None,
                             },
                         );
                     }
@@ -1242,7 +1242,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 params: Vec::new(),
                                 value_type: Some(ty),
                                 let_decl: None,
-                                generic: None,
+                                signature: None,
                             },
                         );
                     }
@@ -1257,7 +1257,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 params: Vec::new(),
                                 value_type: ty,
                                 let_decl: None,
-                                generic: None,
+                                signature: None,
                             },
                         );
                     }
@@ -1282,7 +1282,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                         params: Vec::new(),
                         value_type: ty,
                         let_decl: None,
-                        generic: None,
+                        signature: None,
                     });
                 }
             }

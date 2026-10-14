@@ -51,6 +51,18 @@ fn scrub_param_type(t: Type) -> Type {
     }
 }
 
+/// The value type an `abs`/`min`/`max`/`clamp`/`Dampen` call resolved to,
+/// which each of its math-variant ports carries.
+fn math_variant(ctx: &LowerCtx, spec: &crate::catalog::calls::CallSpec, e: &Expr) -> Option<Type> {
+    if !matches!(spec.gate_class, gc::MATH_ABS | gc::MATH_MIN | gc::MATH_MAX | gc::MATH_CLAMP | gc::DAMPEN) {
+        return None;
+    }
+    match ctx.type_at(e.range()).map(|t| unwrap_ref(&t)) {
+        Some(t @ (Type::Int | Type::Float | Type::Vector | Type::Rotator | Type::Quat | Type::Color)) => Some(t),
+        _ => Some(Type::Float),
+    }
+}
+
 /// Whether a `Type::Param` is left anywhere in `t`.
 fn has_param(t: &Type) -> bool {
     match t {
@@ -501,7 +513,11 @@ pub(in crate::lower) fn lower_builtin_call(
     // A type parameter no port pins is a compiler fault, not a program's: the
     // port would ship as `any` (the float variant) whatever the value is.
     let mut unpinned = false;
+    let variant = math_variant(ctx, spec, e);
     let mut concrete = |t: &Type| {
+        if let (Type::Union(_), Some(v)) = (t, &variant) {
+            return v.clone();
+        }
         let t = crate::types::mono::substitute(t, &param_subst);
         unpinned |= has_param(&t);
         scrub_param_type(t)
@@ -591,7 +607,7 @@ pub(in crate::lower) fn lower_builtin_call(
         source_range: range.clone(),
         ports,
         properties,
-        note: Some(spec.name.into()),
+        note: Some(spec.name),
         ..Default::default()
     });
 

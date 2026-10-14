@@ -1,5 +1,5 @@
 use super::*;
-use super::const_params::nodes_of;
+use super::nodes_of;
 
 #[test]
 fn return_in_mod_does_not_kill_caller_exec() {

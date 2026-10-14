@@ -1,18 +1,10 @@
 use super::*;
 use crate::ir::gate_class as gc;
 
-fn no_errors(r: &LowerResult) {
-    assert!(
-        r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
-}
-
 #[test]
 fn opaque_lowers_to_rerouter_and_blocks_literal_inline() {
     let r = compile("let a = Opaque(2)\nout y = a + 3");
-    no_errors(&r);
+    assert_no_errors(&r);
     let rerouters: Vec<_> = r.module.nodes.values()
         .filter(|n| n.gate_class == gc::REROUTER)
         .collect();
@@ -31,7 +23,7 @@ fn opaque_lowers_to_rerouter_and_blocks_literal_inline() {
 #[test]
 fn opaque_mixed_variant_compare_typechecks() {
     let r = compile("out y = Opaque(1) == Opaque(\"1\")");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert!(r.module.nodes.values().any(|n| n.gate_class == gc::COMPARE_EQUAL),
         "mixed-variant == through Opaque must lower to CompareEqual");
 }
@@ -40,7 +32,7 @@ fn opaque_mixed_variant_compare_typechecks() {
 fn opaque_not_pruned_when_consumed() {
     // Dead-gate pruning must not treat the rerouter as a pass-through to elide.
     let r = compile("in t: exec\nvar v: int = 0\non t { v = Opaque(7) }");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert!(r.module.nodes.values().any(|n| n.gate_class == gc::REROUTER));
 }
 
@@ -77,17 +69,16 @@ fn opaque_emits_to_world() {
     // End-to-end: a standalone rerouter node must survive layout + emit.
     let src = "let a = Opaque(2)\nout y = a + 3";
     let r = compile(src);
-    no_errors(&r);
+    assert_no_errors(&r);
     let lr = crate::layout::layout(&r.module);
     let opts = crate::EmitOptions::default();
-    let cache = std::sync::Arc::new(crate::template_cache::TemplateCache::new());
-    crate::build_world(&r.module, &lr, &opts, &cache).expect("emit must handle rerouter nodes");
+    crate::build_world(&r.module, &Default::default(), &lr, &opts).expect("emit must handle rerouter nodes");
 }
 
 #[test]
 fn nofold_marks_every_node_in_subtree() {
     let r = compile("@nofold let a = 1 + 2\nout y = a");
-    no_errors(&r);
+    assert_no_errors(&r);
     let marked = r.module.nodes.values()
         .filter(|n| n.properties.contains_key(&*crate::intern::sym::NO_FOLD))
         .count();
@@ -97,7 +88,7 @@ fn nofold_marks_every_node_in_subtree() {
 #[test]
 fn nofold_does_not_leak_to_siblings() {
     let r = compile("@nofold let a = 1 + 2\nlet b = 3 + 4\nout y = a + b");
-    no_errors(&r);
+    assert_no_errors(&r);
     // At least one unmarked node must exist (b's adder or the literals).
     assert!(r.module.nodes.values()
         .any(|n| !n.properties.contains_key(&*crate::intern::sym::NO_FOLD)));
@@ -106,19 +97,18 @@ fn nofold_does_not_leak_to_siblings() {
 #[test]
 fn nofold_allowed_on_handler_and_inside_chip() {
     let r = compile("in t: exec\nchip C() -> (z: int) {\n  @nofold let inner = 1 + 1\n  out z = inner\n}\nvar v: int = 0\n@nofold on t { v = 1 }\nlet c = C()\nout y = c");
-    no_errors(&r);
+    assert_no_errors(&r);
 }
 
 #[test]
 fn nofold_prop_never_reaches_brick_data() {
     let r = compile("@nofold let a = 1 + 2\nout y = a");
-    no_errors(&r);
+    assert_no_errors(&r);
     let lr = crate::layout::layout(&r.module);
     let opts = crate::EmitOptions::default();
-    let cache = std::sync::Arc::new(crate::template_cache::TemplateCache::new());
     // If emit tried to write `_nofold` as a component field it would error
     // (unknown schema field) or corrupt data; building cleanly is the gate.
-    crate::build_world(&r.module, &lr, &opts, &cache).expect("emit must skip _nofold");
+    crate::build_world(&r.module, &Default::default(), &lr, &opts).expect("emit must skip _nofold");
 }
 
 #[test]
@@ -170,7 +160,7 @@ fn nofold_captured_event_marks_nodes() {
     // asserts parse diagnostics are empty, so a clean compile also proves no
     // "@nofold has no effect" warning fired.
     let r = compile("@nofold let c = on RoundStart() { PrintToConsole(\"hi\") }");
-    no_errors(&r);
+    assert_no_errors(&r);
     let marked = r.module.nodes.values()
         .filter(|n| n.properties.contains_key(&*crate::intern::sym::NO_FOLD))
         .count();
@@ -194,7 +184,7 @@ fn nofold_await_binding_marks_nodes() {
                  PrintToConsole(\"${x}\")\n\
                }";
     let r = compile(src);
-    no_errors(&r);
+    assert_no_errors(&r);
     let marked = r.module.nodes.values()
         .filter(|n| n.properties.contains_key(&*crate::intern::sym::NO_FOLD))
         .count();
@@ -211,7 +201,7 @@ fn nofold_chip_boundary_ports_marked() {
     // MicrochipInput/MicrochipOutput boundary (rerouter) nodes never got
     // `_nofold` even though every gate in the chip's body did.
     let r = compile("@nofold chip C(a: int) -> (z: int) { out z = a }\nlet c = C(1)\nout y = c");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(r.module.chips.len(), 1, "expected exactly one chip child module");
     let child = r.module.chips.values().next().unwrap();
     let boundary: Vec<_> = child.inputs.iter().chain(child.outputs.iter()).collect();
@@ -232,7 +222,7 @@ fn unannotated_chip_boundary_ports_not_marked() {
     // Counterpart to `nofold_chip_boundary_ports_marked`: an ordinary chip's
     // boundary nodes must NOT pick up `_nofold` from nowhere.
     let r = compile("chip C(a: int) -> (z: int) { out z = a }\nlet c = C(1)\nout y = c");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(r.module.chips.len(), 1, "expected exactly one chip child module");
     let child = r.module.chips.values().next().unwrap();
     let boundary: Vec<_> = child.inputs.iter().chain(child.outputs.iter()).collect();
@@ -257,7 +247,7 @@ fn module_level_nofold_marks_everything() {
 var x: int = 0
 let b = 1 + 2
 out y = b");
-    no_errors(&r);
+    assert_no_errors(&r);
     let unmarked: Vec<_> = r.module.nodes.values()
         .filter(|n| !n.properties.contains_key(&*crate::intern::sym::NO_FOLD))
         .map(|n| n.gate_class)
@@ -272,7 +262,7 @@ fn attached_nofold_stays_decl_scoped() {
 let a = 1 + 2
 let b = 3 + 4
 out y = a + b");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert!(r.module.nodes.values()
         .any(|n| !n.properties.contains_key(&*crate::intern::sym::NO_FOLD)),
         "decl-scoped @nofold must not mark sibling decls");
@@ -289,7 +279,7 @@ fn nofold_var_marks_predeclared_gate() {
 in t: exec
 on t { x = 1 }
 out y: int = x");
-    no_errors(&r);
+    assert_no_errors(&r);
     let var_marked = r.module.nodes.values().any(|n| {
         n.gate_class == gc::VAR
             && n.properties.contains_key(&*crate::intern::sym::NO_FOLD)
@@ -319,7 +309,7 @@ chip C() -> (z: int) {
 let c = C()
 out y = c",
     );
-    no_errors(&r);
+    assert_no_errors(&r);
     assert!(marked_var(&r), "@nofold var inside a named chip body must stamp its Variable gate");
 
     let r = compile("in t: exec
@@ -327,7 +317,7 @@ chip {
   @nofold var w: int = 0
   on t { w = 1 }
 }");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert!(marked_var(&r), "@nofold var inside an anonymous chip must stamp its Variable gate");
 }
 
@@ -339,7 +329,7 @@ fn nofold_out_marks_port_node() {
 in t: exec
 on t { x = 1 }
 @nofold out y = x + 1");
-    no_errors(&r);
+    assert_no_errors(&r);
     let port_marked = r.module.nodes.values().any(|n| {
         n.gate_class.contains("MicrochipOutput")
             && n.properties.contains_key(&*crate::intern::sym::NO_FOLD)
@@ -362,7 +352,7 @@ fn opaque_scalar_inputs_materialize_as_constant_gates() {
         ("out y = Opaque(\"a\") == Opaque(\"A\")", "String_Concatenate"),
     ] {
         let r = compile(src);
-        no_errors(&r);
+        assert_no_errors(&r);
         let rerouter_ids: Vec<_> = r.module.nodes.values()
             .filter(|n| n.gate_class == gc::REROUTER)
             .map(|n| n.id)

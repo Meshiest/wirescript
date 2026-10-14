@@ -52,7 +52,8 @@
 //! for the LSP/WASM wiring layered on top of this module.
 
 use crate::ast::*;
-use crate::collections::HashSet;
+use crate::ast::walk;
+use crate::collections::{HashMap, HashSet};
 use crate::diagnostic::{Pos, SourceRange};
 use crate::ir::plane::{for_slots, plane_spec, ForSlot, LoopKind};
 use std::sync::OnceLock;
@@ -65,7 +66,7 @@ mod tests;
 /// value binding named `character` is invisible to a
 /// `TypeExpr::Name { name: "character", .. }` and vice versa (this
 /// separation is what makes a capture named after a type safe to rename).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RefNs {
     Value,
     Type,
@@ -158,7 +159,7 @@ pub(crate) struct Binding {
     /// (the field name `x` stays), the same shorthand rule record literals
     /// use, so the decl `RefSite` carries this onto `rename_edit_text`. False
     /// everywhere else, including an aliased `{ src: bound }` (that narrows to
-    /// the `bound` token and plain-replaces → `{ src: new }`).
+    /// the `bound` token and plain-replaces -> `{ src: new }`).
     pub(crate) is_shorthand: bool,
     /// `Some(original_export_name)` for a binding registered from a NAMED
     /// import specifier (`import { name }` / `import { orig as name }`) — the
@@ -266,14 +267,11 @@ fn name_prefix_span(name: &str, range: &SourceRange) -> SourceRange {
 /// into `TypeExpr::Array`/`Ref` at parse time; `Map` stays a `Generic`).
 /// None of these ever resolve to a user [`Binding`], so a `TypeExpr::Name`
 /// matching one is refused for rename rather than left dangling.
-pub(crate) const BUILTIN_TYPE_NAMES: &[&str] = &[
-    "int", "float", "bool", "string", "entity", "controller", "character", "vector", "rotator",
-    "color", "exec", "zone", "teleport", "brick", "Map", "Ref", "Array",
-];
-
 pub(crate) fn builtin_type_names() -> &'static HashSet<&'static str> {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| BUILTIN_TYPE_NAMES.iter().copied().collect())
+    SET.get_or_init(|| {
+        crate::types::resolve::PRIMITIVES.iter().map(|(n, _)| *n).chain(["Map", "Ref", "Array"]).collect()
+    })
 }
 
 /// Walk `script`'s whole AST, registering every value AND type binding
@@ -334,7 +332,7 @@ fn widen_hoisted_out_bindings(script: &Script, model: &mut ScopeModel) {
                 collect_anon_chip_outs(&h.body.stmts, Some(&h.body.range), &mut hoisted);
             }
             TopDecl::Event(e) => {
-                if let Some(b) = &e.captured_body {
+                if let Some(b) = e.captured_body() {
                     collect_hoisted_handler_outs(b, &mut hoisted);
                     collect_anon_chip_outs(&b.stmts, Some(&b.range), &mut hoisted);
                 }
@@ -563,7 +561,7 @@ impl<'a> Walker<'a> {
     }
 
     fn walk_script(&mut self, script: &Script) {
-        if let Some(e) = &script.module_label {
+        for e in [&script.module_label, &script.module_color, &script.module_material].into_iter().flatten() {
             self.walk_expr(e);
         }
         for d in &script.decls {
@@ -595,7 +593,7 @@ impl<'a> Walker<'a> {
                 if let Some(e) = &v.init {
                     self.walk_expr(e);
                 }
-                if let Some(e) = &v.label_expr {
+                for e in [&v.label_expr, &v.color_expr, &v.material_expr].into_iter().flatten() {
                     self.walk_expr(e);
                 }
             }
@@ -626,9 +624,9 @@ impl<'a> Walker<'a> {
             TopDecl::AnonChip(ac) => self.walk_anon_chip(ac, None, None),
             TopDecl::Event(e) => {
                 self.push(e.name.clone(), RefNs::Value, e.range.clone(), None, "event", true, true);
-                self.walk_expr(&e.source);
-                if let Some(b) = &e.captured_body {
-                    self.walk_block(b);
+                match &e.captured {
+                    Some(h) => self.register_handler(h),
+                    None => self.walk_expr(&e.source),
                 }
             }
             TopDecl::In(d) => {
@@ -730,7 +728,7 @@ impl<'a> Walker<'a> {
     /// they're visible from the input/output type annotations too, both of
     /// which precede the body in source order.
     fn register_chip(&mut self, c: &ChipDecl, scope: Option<SourceRange>, importable: bool) {
-        let kind = if c.inline { "mod" } else { "chip" };
+        let kind = c.kind_label();
         self.push(c.name.clone(), RefNs::Value, c.range.clone(), scope, kind, importable, true);
         for tp in &c.type_params {
             self.register_type_param(tp, c.range.clone());
@@ -742,7 +740,7 @@ impl<'a> Walker<'a> {
         for o in &c.outputs {
             self.walk_type_expr(&o.typ);
         }
-        if let Some(e) = &c.label_expr {
+        for e in [&c.label_expr, &c.color_expr, &c.material_expr].into_iter().flatten() {
             self.walk_expr(e);
         }
         self.walk_block(&c.body);
@@ -754,7 +752,7 @@ impl<'a> Walker<'a> {
     /// earlier one).
     fn register_type_alias(&mut self, t: &TypeAliasDecl) {
         // `TypeAliasDecl.range` spans the whole `type X = …` decl (no
-        // name-only span) → coarse.
+        // name-only span) -> coarse.
         self.push(t.name.clone(), RefNs::Type, t.range.clone(), None, "type", true, true);
         for tp in &t.type_params {
             self.register_type_param(tp, t.range.clone());
@@ -765,7 +763,7 @@ impl<'a> Walker<'a> {
     /// A generic type param (`T` or `T: Bound`) on a `chip`/`mod`/`type`
     /// decl. `TypeParam.range` spans the bound too when present (`parser.rs`:
     /// `make_range(name_tok.start, bound.range().end)`), so it's not reliably
-    /// name-only → always coarse. The bound itself is a type-position
+    /// name-only -> always coarse. The bound itself is a type-position
     /// reference (e.g. `Numeric`), not a binding, so it's walked as a use,
     /// not registered.
     fn register_type_param(&mut self, tp: &TypeParam, scope: SourceRange) {
@@ -784,13 +782,13 @@ impl<'a> Walker<'a> {
     fn register_param(&mut self, p: &Param, scope: SourceRange) {
         self.walk_type_expr(&p.typ);
         match &p.pattern {
-            // Plain param: `p.range` is the whole param span → coarse.
+            // Plain param: `p.range` is the whole param span -> coarse.
             None => self.push(p.name.clone(), RefNs::Value, p.range.clone(), Some(scope), "param", false, true),
             Some(ParamPattern::Record { fields, rest }) => {
                 for f in fields {
                     match f {
                         // `RecordDestructField::Named.range` spans `src: bound`
-                        // / `x ` (trailing), not the bound name alone → coarse
+                        // / `x ` (trailing), not the bound name alone -> coarse
                         // (narrowed to the bound name downstream). A non-alias
                         // `{ x }` is shorthand: rename expands to `{ x: new }`.
                         RecordDestructField::Named { name, alias, range } => {
@@ -798,19 +796,19 @@ impl<'a> Walker<'a> {
                             self.push(bound, RefNs::Value, range.clone(), Some(scope.clone()), "param", false, true);
                             self.mark_last_shorthand(alias.is_none());
                         }
-                        // `...rest` spans the `...` too → coarse, not shorthand.
+                        // `...rest` spans the `...` too -> coarse, not shorthand.
                         RecordDestructField::Rest { name, range } => {
                             self.push(name.clone(), RefNs::Value, range.clone(), Some(scope.clone()), "param", false, true);
                         }
                     }
                 }
                 // The pattern-level `...rest` binder has no name span of its
-                // own here, so it borrows the whole-param range → coarse.
+                // own here, so it borrows the whole-param range -> coarse.
                 if let Some(r) = rest {
                     self.push(r.clone(), RefNs::Value, p.range.clone(), Some(scope), "param", false, true);
                 }
             }
-            // Tuple param names all share the one whole-param range → coarse.
+            // Tuple param names all share the one whole-param range -> coarse.
             Some(ParamPattern::Tuple { names, rest }) => {
                 for n in names {
                     self.push(n.clone(), RefNs::Value, p.range.clone(), Some(scope.clone()), "param", false, true);
@@ -864,9 +862,12 @@ impl<'a> Walker<'a> {
     /// nesting.
     fn register_handler(&mut self, h: &Handler) {
         let scope = h.body.range.clone();
-        self.walk_trigger(&h.trigger);
+        match &h.alias {
+            Some((name, range)) => self.push_use(name.clone(), range.clone(), false, false),
+            None => self.walk_trigger(&h.trigger),
+        }
         for hp in &h.params {
-            // `HandlerParam.range` is the capture name token → precise.
+            // `HandlerParam.range` is the capture name token -> precise.
             self.push(hp.name.clone(), RefNs::Value, hp.range.clone(), Some(scope.clone()), "capture", false, false);
             // Optional explicit type annotation (`-> (a: int, b: float)`,
             // custom-event data outputs); `None` for events with fixed
@@ -899,7 +900,7 @@ impl<'a> Walker<'a> {
         }
         if let Some(fields) = &a.destructure {
             // Each destructured local borrows the whole `await` stmt range
-            // (no per-name span), so several can share it → coarse.
+            // (no per-name span), so several can share it -> coarse.
             for (_field, local) in fields {
                 self.push(local.clone(), RefNs::Value, a.range.clone(), scope.clone(), "await", false, true);
             }
@@ -918,12 +919,12 @@ impl<'a> Walker<'a> {
             self.walk_type_expr(t);
         }
         match &l.binding {
-            // `LetBinding::Ident.range` is the name token only → precise.
+            // `LetBinding::Ident.range` is the name token only -> precise.
             LetBinding::Ident { name, range } => {
                 self.push(name.clone(), RefNs::Value, range.clone(), scope, "let", importable, false)
             }
             // Tuple/record shorthand names all share the one container range
-            // → coarse (this is exactly the tie the cursor dispatch breaks).
+            // -> coarse (this is exactly the tie the cursor dispatch breaks).
             LetBinding::Tuple { names, rest, range } => {
                 for n in names {
                     self.push(n.clone(), RefNs::Value, range.clone(), scope.clone(), "let", importable, true);
@@ -938,9 +939,9 @@ impl<'a> Walker<'a> {
                 }
             }
             // `RecordDestructField::Named.range` spans `src: bound` / `x `
-            // (trailing), not the bound name alone → coarse (narrowed to the
+            // (trailing), not the bound name alone -> coarse (narrowed to the
             // bound name downstream). A non-alias `{ x }` is shorthand: rename
-            // expands to `{ x: new }`. `...rest` spans `...` too → coarse.
+            // expands to `{ x: new }`. `...rest` spans `...` too -> coarse.
             LetBinding::RecordDestruct { fields, .. } => {
                 for f in fields {
                     match f {
@@ -967,7 +968,7 @@ impl<'a> Walker<'a> {
     /// for a chip in a body, everywhere for one at the top level), whichever
     /// of its statements reads it.
     fn walk_anon_chip(&mut self, ac: &AnonChipDecl, scope: Option<SourceRange>, visible_from: Option<usize>) {
-        if let Some(e) = &ac.label_expr {
+        for e in [&ac.label_expr, &ac.color_expr, &ac.material_expr].into_iter().flatten() {
             self.walk_expr(e);
         }
         for s in &ac.body.stmts {
@@ -1000,6 +1001,17 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// Walk each direct child of `node`; a statement child belongs to
+    /// `scope`.
+    fn walk_children(&mut self, node: walk::Node, scope: &SourceRange) {
+        walk::children(node, &mut |child, _| match child {
+            walk::Node::Expr(e) => self.walk_expr(e),
+            walk::Node::Block(b) => self.walk_block(b),
+            walk::Node::Stmt(s) => self.walk_stmt(s, scope),
+            walk::Node::Decl(d) => self.walk_top_decl(d),
+        });
+    }
+
     fn walk_stmts(&mut self, stmts: &[Stmt], scope: SourceRange) {
         for s in stmts {
             self.walk_stmt(s, &scope);
@@ -1017,7 +1029,7 @@ impl<'a> Walker<'a> {
                 if let Some(e) = &v.init {
                     self.walk_expr(e);
                 }
-                if let Some(e) = &v.label_expr {
+                for e in [&v.label_expr, &v.color_expr, &v.material_expr].into_iter().flatten() {
                     self.walk_expr(e);
                 }
             }
@@ -1077,13 +1089,8 @@ impl<'a> Walker<'a> {
             Stmt::Handler(h) => self.register_handler(h),
             Stmt::AnonChip(ac) => self.walk_anon_chip(ac, Some(scope.clone()), Some(ac.range.start.offset)),
             Stmt::ChipDecl(c) => self.register_chip(c, Some(scope.clone()), false),
-            Stmt::If(i) => self.walk_if(&i.cond, &i.then_block, &i.else_block),
             Stmt::IfLet(i) => {
                 self.walk_if_let(&i.pattern, &i.scrutinee, &i.then_block, &i.else_block)
-            }
-            Stmt::Assign(a) => {
-                self.walk_expr(&a.target);
-                self.walk_expr(&a.value);
             }
             Stmt::Emit(e) => {
                 // `emit NAME = expr` writes the `out`/`var` named NAME — a
@@ -1091,25 +1098,9 @@ impl<'a> Walker<'a> {
                 // `Emit`, so the whole-stmt range stands in (coarse: true);
                 // the wiring layer narrows it to NAME via `find_name_range`.
                 self.push_use(e.name.clone(), e.range.clone(), false, true);
-                if let Some(v) = &e.value {
-                    self.walk_expr(v);
-                }
-                if let Some(b) = &e.buffer {
-                    if let Some(d) = &b.delay {
-                        self.walk_expr(d);
-                    }
-                    if let Some(h) = &b.hold {
-                        self.walk_expr(h);
-                    }
-                }
+                self.walk_children(walk::Node::Stmt(s), scope);
             }
             Stmt::Await(a) => self.register_await(a, Some(scope.clone())),
-            Stmt::ExprStmt(es) => self.walk_expr(&es.expr),
-            Stmt::Return { value, .. } => {
-                if let Some(e) = value {
-                    self.walk_expr(e);
-                }
-            }
             Stmt::For(f) => {
                 match &f.source {
                     ForSource::Range(r) => {
@@ -1133,7 +1124,9 @@ impl<'a> Walker<'a> {
                 }
                 self.register_for(f, Some(scope.clone()));
             }
-            Stmt::Break { .. } => {}
+            Stmt::If(_) | Stmt::Assign(_) | Stmt::ExprStmt(_) | Stmt::Return { .. } | Stmt::Break { .. } => {
+                self.walk_children(walk::Node::Stmt(s), scope)
+            }
         }
     }
 
@@ -1266,53 +1259,19 @@ impl<'a> Walker<'a> {
                     self.walk_type_expr(t);
                 }
             }
-            Expr::BinOp { left, right, .. } => {
-                self.walk_expr(left);
-                self.walk_expr(right);
-            }
-            Expr::UnOp { operand, .. } | Expr::Deref { operand, .. } | Expr::RefOf { operand, .. } => {
-                self.walk_expr(operand)
-            }
             Expr::FieldAccess { obj, field, range } => {
                 // The field half of `obj.field` is never a rename target
                 // (record fields are a deliberate deferral).
                 self.model.field_name_spans.push(field_suffix_span(field, range));
                 self.walk_expr(obj);
             }
-            Expr::TuplePick { obj, .. } => self.walk_expr(obj),
-            Expr::Unsafe { inner, .. } => self.walk_expr(inner),
-            Expr::Is { value, path, .. } => {
-                self.walk_expr(value);
-                self.walk_expr(path);
-            }
             Expr::As { value, ty, .. } => {
                 self.walk_expr(value);
                 self.walk_type_expr(ty);
             }
-            Expr::IndexAccess { obj, index, .. } => {
-                self.walk_expr(obj);
-                self.walk_expr(index);
-            }
-            Expr::IfExpr {
-                cond,
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                self.walk_expr(cond);
-                self.walk_expr(then_branch);
-                self.walk_expr(else_branch);
-            }
             Expr::BlockExpr { stmts, value, range } => {
                 self.walk_stmts(stmts, range.clone());
                 self.walk_expr(value);
-            }
-            Expr::InterpLit { parts, .. } => {
-                for p in parts {
-                    if let InterpPart::Expr(x) = p {
-                        self.walk_expr(x);
-                    }
-                }
             }
             Expr::RecordLit { fields, .. } => {
                 for f in fields {
@@ -1352,17 +1311,6 @@ impl<'a> Walker<'a> {
                     }
                 }
             }
-            Expr::Array { elements, .. } => {
-                for el in elements {
-                    self.walk_expr(el.expr());
-                }
-            }
-            Expr::MapLit { entries, .. } => {
-                for en in entries {
-                    self.walk_expr(&en.key);
-                    self.walk_expr(&en.value);
-                }
-            }
             // `path` is the `Enum.Variant` `FieldAccess`, walked generically
             // (its own arm above pushes the field-name span); the field list
             // mirrors `RecordLit`'s handling - the key is never a rename
@@ -1387,16 +1335,7 @@ impl<'a> Walker<'a> {
             // already reaches this arm for `helper` — no separate handling
             // needed for "callee position" vs. any other value position.
             Expr::Ident { name, range } => self.push_use(name.clone(), range.clone(), false, false),
-            Expr::IntLit { .. }
-            | Expr::AtomLit { .. }
-            | Expr::FloatLit { .. }
-            | Expr::StringLit { .. }
-            | Expr::BoolLit { .. }
-            | Expr::NullLit { .. }
-            | Expr::CurrentExec { .. }
-            | Expr::AssetRef { .. }
-            | Expr::PrefabRef { .. }
-            | Expr::NestedPrefab { .. } => {}
+            _ => self.walk_children(walk::Node::Expr(e), e.range()),
         }
     }
 
@@ -1485,6 +1424,30 @@ fn range_len(r: &SourceRange) -> usize {
 /// undefined global) is left `resolved: None` — not a rename target.
 fn resolve_uses(model: &mut ScopeModel) {
     let ScopeModel { bindings, uses, top, top_reads, .. } = model;
+    // Each name's bindings in each namespace, in binding order.
+    let mut named: HashMap<(RefNs, &str), Vec<usize>> = HashMap::default();
+    for (i, b) in bindings.iter().enumerate() {
+        named.entry((b.ns, b.name.as_str())).or_default().push(i);
+    }
+    // The top-level declaration a use is written in. Declarations do not
+    // nest and each read starts at most a byte before its declaration, so of
+    // the reads starting at or before the use only the last two can hold it;
+    // the earlier one is checked first, as a search in order would.
+    let in_order = top_reads.windows(2).all(|w| w[0].range.start.offset <= w[1].range.start.offset);
+    let read_around = |r: &SourceRange| {
+        let linear = || top_reads.iter().find(|t| crate::scope::top::within(&t.range, r));
+        if !in_order {
+            return linear();
+        }
+        let i = top_reads.partition_point(|t| t.range.start.offset <= r.start.offset);
+        let found = [i.checked_sub(2), i.checked_sub(1)]
+            .into_iter()
+            .flatten()
+            .map(|k| &top_reads[k])
+            .find(|t| crate::scope::top::within(&t.range, r));
+        debug_assert_eq!(found.map(|t| &t.range), linear().map(|t| &t.range), "top-level read for {r:?}");
+        found
+    };
     for u in uses.iter_mut() {
         // A type use naming a builtin (`character`, `int`, `Map`, …) never
         // resolves to a user binding, even if one happens to share the name
@@ -1512,15 +1475,9 @@ fn resolve_uses(model: &mut ScopeModel) {
         // The top-level declaration the use is written in, as the top level is
         // read from it: a `mod` or `chip` as a body, which names a top-level
         // `let` declared below it, anything else as code.
-        let read = top_reads
-            .iter()
-            .find(|r| crate::scope::top::within(&r.range, &u.range))
-            .cloned()
-            .unwrap_or_else(|| crate::scope::top::ReadAt::code(&u.range));
-        for b in bindings.iter() {
-            if b.ns != u.ns || b.name != u.name {
-                continue;
-            }
+        let read = read_around(&u.range).cloned().unwrap_or_else(|| crate::scope::top::ReadAt::code(&u.range));
+        let same_name = named.get(&(u.ns, u.name.as_str())).map(Vec::as_slice).unwrap_or_default();
+        for b in same_name.iter().map(|&i| &bindings[i]) {
             let hoisted = read.body && b.scope.is_none() && b.home.is_none();
             if !hoisted
                 && b.visible_from.is_some_and(|at| b.name_range.file == u.range.file && u.range.start.offset < at)
@@ -1553,10 +1510,8 @@ fn resolve_uses(model: &mut ScopeModel) {
             && bindings[id].home.is_none()
             && u.ns == RefNs::Value
             && let Some(Some(seen)) = top.visible_decl(&u.name, &read)
-            && let Some(b) = bindings.iter().find(|b| {
-                b.ns == u.ns
-                    && b.name == u.name
-                    && b.scope.is_none()
+            && let Some(b) = same_name.iter().map(|&i| &bindings[i]).find(|b| {
+                b.scope.is_none()
                     && b.home.is_none()
                     && crate::scope::top::within(&seen.range, &b.name_range)
             })
@@ -1869,8 +1824,8 @@ pub fn semantic_tokens(script: &Script) -> Vec<SemSpan> {
     let mut spans = Vec::new();
     let mut seen: HashSet<(u32, u32)> = HashSet::default();
 
-    // Type-position names → Type (incl. user `type` aliases the grammar's
-    // builtin list misses). Every USER value identifier → one uniform Variable
+    // Type-position names -> Type (incl. user `type` aliases the grammar's
+    // builtin list misses). Every USER value identifier -> one uniform Variable
     // token, so a value binding whose spelling collides with a type keyword
     // (`character`), a builtin function (`round`), or the grammar's "any
     // capitalized word is a type" rule reads as a plain, consistent identifier

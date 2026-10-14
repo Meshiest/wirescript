@@ -18,15 +18,7 @@ use crate::ast::TypeExpr;
 use crate::ir::Type;
 use crate::types::infer::{Constraint, Subst, solve};
 
-/// Strip a single leading `Ref` layer. A `*T` param resolves to
-/// `Ref(Param(T))`, but a var passed to it infers to its already-auto-derefed
-/// inner type, so the two are asymmetric — unwrap both before collecting.
-pub fn unwrap_ref(t: &Type) -> Type {
-    match t {
-        Type::Ref(inner) => inner.as_ref().clone(),
-        other => other.clone(),
-    }
-}
+pub use crate::ir::unwrap_ref;
 
 /// Walk `p` (a param's declared type, possibly containing `Type::Param`s) and
 /// `a` (the caller's inferred argument type) in lockstep, pushing an
@@ -170,7 +162,7 @@ pub fn mask_for_param(bound: Option<&TypeExpr>, resolve: &dyn Fn(&TypeExpr) -> T
 /// `Ref(Param(T))`, but a var passed to it infers to its already-auto-derefed
 /// inner type (`Int`, not `Ref(Int)`), so the Ref layers are asymmetric —
 /// [`unwrap_ref`] strips a leading Ref off BOTH so `*T` vs `int` collects as
-/// `Param(T)` vs `int` → `Eq(T, int)`, exactly like a value `T`.
+/// `Param(T)` vs `int` -> `Eq(T, int)`, exactly like a value `T`.
 pub fn call_constraints(param_types: &[Type], arg_types: &[Type]) -> Vec<Constraint> {
     let mut constraints = Vec::new();
     for (p, a) in param_types.iter().zip(arg_types.iter()) {

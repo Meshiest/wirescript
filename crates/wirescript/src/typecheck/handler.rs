@@ -61,6 +61,56 @@ fn check_removed_bindings(
     }
 }
 
+/// Whether `name` is something a handler can trigger on: a built-in event, a
+/// captured event, or an `in`, buffer, `let`, parameter or `var` whose value
+/// can fire it.
+fn trigger_is_known(ctx: &TypeCheckCtx, name: &str) -> bool {
+    if find_event(name).is_some() {
+        return true;
+    }
+    let sym = ctx.scope.lookup(name).cloned();
+    let known_capture = matches!(&sym, Some(s) if s.kind == SymbolKind::Event);
+    let known_input_trigger = matches!(
+        &sym,
+        Some(s) if s.kind == SymbolKind::In && (matches!(s.ty, Type::Exec) || crate::types::coerce::is_pulsing(&s.ty))
+    );
+    let known_buffer_trigger = matches!(
+        &sym,
+        Some(s)
+            if s.kind == SymbolKind::Buffer
+                && (matches!(s.ty, Type::Exec | Type::Any) || crate::types::coerce::is_pulsing(&s.ty))
+    );
+    let known_let_trigger = matches!(
+        &sym,
+        Some(s) if s.kind == SymbolKind::LetBinding
+    );
+    // A mod/chip param (`Param`) or an event data output bound by the
+    // enclosing handler (`EventParam`, e.g. `on CustomEvent("x") -> (p:
+    // character)`) can trigger a nested handler on its value/edge — `on p`
+    // / `on !p`.
+    // A `var`'s symbol type is a `Ref` to its stored type, and a `*T`
+    // param's likewise. The checks below are about what is STORED, so both
+    // look through it; matching the outer type makes the `var` arm
+    // unreachable and every `on x` / `on !x` a WS001.
+    let known_param_trigger = matches!(
+        &sym,
+        Some(s) if matches!(s.kind, SymbolKind::Param | SymbolKind::EventParam)
+            && (matches!(unwrap_ref(&s.ty), Type::Exec) || crate::types::coerce::is_pulsing(&unwrap_ref(&s.ty)))
+    );
+    // A `var` can trigger a handler on its value change — `on x` / `on !x`.
+    let known_var_trigger = matches!(
+        &sym,
+        Some(s) if s.kind == SymbolKind::Var
+            && crate::types::coerce::is_pulsing(&unwrap_ref(&s.ty))
+    );
+    known_capture
+        || known_input_trigger
+        || known_buffer_trigger
+        || known_let_trigger
+        || known_param_trigger
+        || known_var_trigger
+}
+
 pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
     let (name, range) = match &h.trigger {
         Trigger::Ident { name, range } => (name, range),
@@ -92,60 +142,25 @@ pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
         },
         Trigger::Union { parts, .. } => {
             for part in parts {
-                if let Trigger::Field { obj, field, range } = part {
-                    check_field_trigger(ctx, obj, field, range);
+                let part = match part {
+                    Trigger::Not { inner, .. } => inner.as_ref(),
+                    other => other,
+                };
+                match part {
+                    Trigger::Field { obj, field, range } => check_field_trigger(ctx, obj, field, range),
+                    Trigger::Ident { name, range } if !trigger_is_known(ctx, name) => {
+                        ctx.emit("WS001", format!("unknown event or trigger '{name}'"), range.clone());
+                    }
+                    _ => {}
                 }
             }
             return;
         }
-        _ => return,
     };
     {
         let evt = find_event(name);
         let sym = ctx.scope.lookup(name).cloned();
-        let known_event = evt.is_some();
-        let known_capture = matches!(&sym, Some(s) if s.kind == SymbolKind::Event);
-        let known_input_trigger = matches!(
-            &sym,
-            Some(s) if s.kind == SymbolKind::In && (matches!(s.ty, Type::Exec) || crate::types::coerce::is_pulsing(&s.ty))
-        );
-        let known_buffer_trigger = matches!(
-            &sym,
-            Some(s)
-                if s.kind == SymbolKind::Buffer
-                    && (matches!(s.ty, Type::Exec | Type::Any) || crate::types::coerce::is_pulsing(&s.ty))
-        );
-        let known_let_trigger = matches!(
-            &sym,
-            Some(s) if s.kind == SymbolKind::LetBinding
-        );
-        // A mod/chip param (`Param`) or an event data output bound by the
-        // enclosing handler (`EventParam`, e.g. `on CustomEvent("x") -> (p:
-        // character)`) can trigger a nested handler on its value/edge — `on p`
-        // / `on !p`.
-        // A `var`'s symbol type is a `Ref` to its stored type, and a `*T`
-        // param's likewise. The checks below are about what is STORED, so both
-        // look through it; matching the outer type makes the `var` arm
-        // unreachable and every `on x` / `on !x` a WS001.
-        let known_param_trigger = matches!(
-            &sym,
-            Some(s) if matches!(s.kind, SymbolKind::Param | SymbolKind::EventParam)
-                && (matches!(unwrap_ref(&s.ty), Type::Exec) || crate::types::coerce::is_pulsing(&unwrap_ref(&s.ty)))
-        );
-        // A `var` can trigger a handler on its value change — `on x` / `on !x`.
-        let known_var_trigger = matches!(
-            &sym,
-            Some(s) if s.kind == SymbolKind::Var
-                && crate::types::coerce::is_pulsing(&unwrap_ref(&s.ty))
-        );
-        if !known_event
-            && !known_capture
-            && !known_input_trigger
-            && !known_buffer_trigger
-            && !known_let_trigger
-            && !known_param_trigger
-            && !known_var_trigger
-        {
+        if !trigger_is_known(ctx, name) {
             ctx.emit(
                 "WS001",
                 format!("unknown event or trigger '{name}'"),

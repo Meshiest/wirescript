@@ -55,7 +55,6 @@
   "chip"
   "mod"
   "fn"
-  "open"
 ] @keyword
 
 [

@@ -39,3 +39,30 @@
             .collect();
         assert!(errors.is_empty(), "typecheck errors: {errors:?}");
     }
+
+    /// A name an imported declaration reads only in a handler's config or a
+    /// `buffer`'s initializer still travels with it.
+    #[test]
+    fn config_args_and_buffer_inits_pull_their_names() {
+        let loader = mem(&[(
+            "lib.ws",
+            "let TICK = 0.5
+             let START = 3
+             buffer prev = START
+             chip Blink(go: exec) -> (lit: bool) {
+  var b: bool = false
+  on Clock(interval = TICK) { b = !b }
+  out lit = b
+}
+",
+        )]);
+        let src = "import { Blink, prev } from \"lib\"
+in go: exec
+let r = Blink(go)
+out v = prev";
+        let r = resolve(src, "main.ws", &loader);
+        let names: Vec<String> = r.ast.decls.iter().flat_map(decl_names).collect();
+        for name in ["TICK", "START"] {
+            assert!(names.iter().any(|n| n == name), "{name} not pulled: {names:?}");
+        }
+    }

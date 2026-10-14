@@ -42,6 +42,7 @@ mod resolve;
 pub(crate) use resolve::*;
 mod labels;
 use labels::*;
+mod styles;
 mod parked_kick;
 use parked_kick::*;
 mod config;
@@ -245,6 +246,9 @@ fn typecheck_round(
     // now that every top-level symbol is declared (an undefined ref or a bad
     // type surfaces here). A constant label is skipped — it bakes statically.
     check_dynamic_var_labels(&mut ctx, script);
+    // `@color` / `@material` anywhere: the value's type, and a constant
+    // wherever a runtime one has no brick to wire into.
+    styles::check_style_exprs(&mut ctx, script);
 
     // Whole-program pass: `SendCustomEvent("name", …)` data whose wire types
     // disagree with the `on CustomEvent("name") -> (…)` receiver's declared
@@ -414,7 +418,7 @@ pub fn typecheck_with_inference(script: &Script, file: &str) -> (TypeCheckResult
     let pass1 = typecheck(script, file, &empty);
     let (map, infer_diags) = infer_custom_event_slots(script, &pass1.type_of_expr);
     if map.is_empty() {
-        return (pass1, map); // no unannotated custom-event slots → single pass
+        return (pass1, map); // no unannotated custom-event slots -> single pass
     }
     let mut pass2 = typecheck(script, file, &map);
     pass2.diagnostics.extend(infer_diags);

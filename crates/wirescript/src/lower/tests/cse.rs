@@ -1,13 +1,5 @@
 use super::*;
 
-fn count_class(m: &crate::ir::Module, class: &str) -> usize {
-    let mut n = m.nodes.values().filter(|x| x.gate_class == class).count();
-    for c in m.chips.values() {
-        n += count_class(c, class);
-    }
-    n
-}
-
 /// Every wire in the tree whose source is `node` (any output port) — the
 /// consumer count a merged gate must still feed.
 fn fanout(m: &crate::ir::Module, node: crate::ir::NodeId) -> usize {
@@ -124,7 +116,7 @@ fn commutative_gate_same_operand_order_merges() {
 
 #[test]
 fn duplicate_inline_mod_body_is_collapsed() {
-    // Two `dbl(x)` inline two identical `v * 2` bodies (same module) → merged.
+    // Two `dbl(x)` inline two identical `v * 2` bodies (same module) -> merged.
     let r = compile(
         "var x: int = 5\nmod dbl(v: int) -> int { return v * 2 }\nout y = dbl(x)\nout z = dbl(x)",
     );

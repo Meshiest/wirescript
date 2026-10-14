@@ -11,38 +11,10 @@
 mod common;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use wirescript::catalog::default_catalog;
 use wirescript::emit::EmitOptions;
 use wirescript::{CompileInput, FoldMode, compile_to_world};
-
-/// The gutter bus the code layout builds for `src` — the rerouter cells that
-/// carry no `NodeId` and so never appear in a `placements` map.
-///
-/// Re-derived through the same resolve → typecheck → lower → layout chain the
-/// compiler runs, so it describes the very build the assertions measure.
-fn bus_cells(src: &str, file: &str) -> Vec<(i32, i32, i32)> {
-    let resolved = wirescript::resolve::resolve(src, file, &wirescript::resolve::FsLoader);
-    let tc = wirescript::typecheck::typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default());
-    let lowered = wirescript::lower::lower(wirescript::lower::LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file,
-        module_name: None,
-        template_cache: Arc::new(wirescript::template_cache::TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: FoldMode::Auto,
-        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
-    });
-    let layout = wirescript::layout::layout_with_opts(
-        &lowered.module,
-        &wirescript::layout_options_for(&resolved.ast, Some(resolved.source_map.clone())),
-    );
-    layout.bus.nodes.iter().map(|n| (n.x, n.y, n.z)).collect()
-}
 
 /// `DisplayText` is a statement sink — it takes an exec input and nothing
 /// on its line reads its value back — so it is pinned to that line's
@@ -70,7 +42,7 @@ const SRC: &str = "@layout(\"code\")\n\
                      a = a + 2\n\
                    }\n";
 
-/// Brick asset → the catalog half-size the layout reserves for it. This is
+/// Brick asset -> the catalog half-size the layout reserves for it. This is
 /// the only footprint source that agrees with the layout; brdb's
 /// `local_bounds()` neither knows these sizes nor applies rotation.
 fn half_sizes_by_asset() -> HashMap<String, (i32, i32)> {
@@ -90,7 +62,7 @@ fn half_sizes_by_asset() -> HashMap<String, (i32, i32)> {
     out
 }
 
-/// Brick asset → half-size for the OVERLAP sweep: the catalog, plus the one
+/// Brick asset -> half-size for the OVERLAP sweep: the catalog, plus the one
 /// brick emit places that no gate catalog knows about.
 ///
 /// `PB_DefaultBrick` is the carrier under a comment annotation and under a
@@ -130,12 +102,7 @@ fn brick_half_size(brick: &brdb::Brick, sizes: &HashMap<String, (i32, i32)>) -> 
 #[test]
 fn leftmost_exec_bricks_are_emitted_rotated() {
     let r = compile_to_world(
-        CompileInput {
-            source: SRC,
-            file: "rotation.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input(SRC, "rotation.ws"),
         EmitOptions::default(),
     )
     .expect("should compile");
@@ -168,18 +135,13 @@ fn leftmost_exec_bricks_are_emitted_rotated() {
 #[test]
 fn emitted_brick_corners_match_the_cells_layout_reserved() {
     let r = compile_to_world(
-        CompileInput {
-            source: SRC,
-            file: "rotation.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input(SRC, "rotation.ws"),
         EmitOptions::default(),
     )
     .expect("should compile");
 
     let sizes = half_sizes_by_asset();
-    // `r.placements` is the root module's layout — the very map emit read.
+    // `r.layout.placements` is the root module's layout — the very map emit read.
     // A brick's min corner is its center minus its (possibly swapped)
     // half-extent, so recomputing it must reproduce the reserved cells. If
     // emit swapped when layout did not, or centered with the unswapped
@@ -194,9 +156,9 @@ fn emitted_brick_corners_match_the_cells_layout_reserved() {
     // their reserved cells come straight off the layout's bus, and they are
     // held to the same corner contract as every gate brick.
     let mut reserved: Vec<(i32, i32, i32)> =
-        r.placements.values().map(|p| (p.x, p.y, p.z)).collect();
+        r.layout.placements.values().map(|p| (p.x, p.y, p.z)).collect();
     assert!(!reserved.is_empty(), "fixture must place some gates");
-    reserved.extend(bus_cells(SRC, "rotation.ws"));
+    reserved.extend(r.layout.bus.nodes.iter().map(|n| (n.x, n.y, n.z)));
 
     // The fixture has no chips, so exactly one grid carries the root
     // module's gate bricks.
@@ -247,7 +209,7 @@ fn emitted_brick_corners_match_the_cells_layout_reserved() {
 fn a_rotated_gates_label_is_counter_rotated() {
     use brdb::schema::BrdbValue;
 
-    /// `(text, line height)` → the label rotations emitted for it.
+    /// `(text, line height)` -> the label rotations emitted for it.
     fn labels(src: &str, file: &str) -> Vec<(String, f32, f32)> {
         let cr = wirescript::compile::compile(CompileInput {
             source: src,
@@ -316,12 +278,7 @@ fn a_rotated_gates_label_is_counter_rotated() {
 #[test]
 fn no_emitted_bricks_overlap_with_rotation_aware_footprints() {
     let r = compile_to_world(
-        CompileInput {
-            source: SRC,
-            file: "rotation.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input(SRC, "rotation.ws"),
         EmitOptions::default(),
     )
     .expect("should compile");

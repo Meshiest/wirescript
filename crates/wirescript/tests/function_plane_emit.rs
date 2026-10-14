@@ -14,9 +14,9 @@ fn brz_of(b: &ModuleBuilder) -> Vec<u8> {
     let lr = wirescript::layout(&b.module);
     let world = wirescript::build_world(
         &b.module,
+        &Default::default(),
         &lr,
         &wirescript::EmitOptions::default(),
-        &std::sync::Arc::new(wirescript::template_cache::TemplateCache::new()),
     )
     .expect("emit");
     world.to_brz_vec().expect("encode")

@@ -3,7 +3,8 @@
 // in-game circuit that re-asserts every certified case with real gates.
 //   node scripts/gen_verifier.mjs [--table data/gate_semantics.json] [--out probes/verify_semantics.ws]
 import { readFileSync, writeFileSync } from 'fs';
-import { pathToFileURL, fileURLToPath } from 'url';
+import { isMain } from './lib.mjs';
+import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 // Defaults are anchored to this script's own directory (crates/wirescript/),
@@ -329,8 +330,7 @@ export function generateVerifier(table) {
   return out.join('\n') + '\n';
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) {
+if (isMain(import.meta.url)) {
   const args = process.argv.slice(2);
   const tablePath = args.includes('--table') ? args[args.indexOf('--table') + 1] : DEFAULT_TABLE;
   const outPath = args.includes('--out') ? args[args.indexOf('--out') + 1] : DEFAULT_VERIFIER_OUT;

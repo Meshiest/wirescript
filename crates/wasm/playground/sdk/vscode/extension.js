@@ -2,6 +2,9 @@
 const vscode = require("vscode");
 const path = require("path");
 const fs = require("fs");
+// Built from the language extension's `src/clipboard.ts` and shipped beside
+// this file.
+const { copyFileToClipboard } = require("./clipboard");
 
 let wasm = null;
 
@@ -43,6 +46,18 @@ function buildFileMap(excludeUri) {
     }
   } catch {}
   return JSON.stringify(map);
+}
+
+// The `.brz` prefabs `doc` embeds by a `$./` reference that names a file on
+// disk, as the registry the compiler reads: the reference to the file's bytes.
+function prefabsJson(doc) {
+  const base = path.dirname(doc.uri.fsPath);
+  const registry = {};
+  for (const [, ref] of doc.getText().matchAll(/\$(\.\/[A-Za-z0-9_./-]+\.brz)/g)) {
+    const full = path.join(base, ref);
+    if (fs.existsSync(full)) registry[ref] = Array.from(fs.readFileSync(full));
+  }
+  return JSON.stringify(registry);
 }
 
 async function activate(context) {
@@ -192,7 +207,7 @@ async function activate(context) {
       const os = require("os");
       const outPath = path.join(os.tmpdir(), `${baseName}.brz`);
       const filesJson = getFilesJson(doc);
-      const bytes = w.wirescript_compile(source, baseName, filesJson);
+      const bytes = w.wirescript_compile(source, baseName, filesJson, prefabsJson(doc));
       fs.writeFileSync(outPath, Buffer.from(bytes));
       if (copyFileToClipboard(outPath)) {
         vscode.window.showInformationMessage(`Compiled → ${baseName}.brz (copied to clipboard)`);
@@ -204,62 +219,6 @@ async function activate(context) {
       vscode.window.showErrorMessage(`Wirescript compile failed: ${e}`);
     }
   }));
-}
-
-// Put `filePath` on the clipboard as a file drop (uri-list) rather than as text,
-// returning false if no helper on this machine managed it.
-//
-// On Linux the tool depends on the display server: xclip is X11-only, so under
-// Wayland it either fails or copies into XWayland's clipboard where
-// wayland-native apps never see it. DISPLAY is usually set under Wayland too,
-// so WAYLAND_DISPLAY is what distinguishes them; each stays the other's
-// fallback since either may be the one installed.
-function copyFileToClipboard(filePath) {
-  const { execFileSync } = require("child_process");
-  const { pathToFileURL } = require("url");
-  let candidates;
-  if (process.platform === "win32") {
-    candidates = [
-      {
-        cmd: "powershell",
-        args: ["-NoProfile", "-Command", `Set-Clipboard -Path '${filePath.replace(/'/g, "''")}'`],
-        input: "",
-      },
-    ];
-  } else if (process.platform === "darwin") {
-    candidates = [
-      { cmd: "osascript", args: ["-e", `set the clipboard to POSIX file "${filePath}"`], input: "" },
-    ];
-  } else {
-    // RFC 2483: CRLF-terminated absolute URIs. pathToFileURL percent-encodes, so
-    // paths with spaces survive -- the old hand-built `file://${path}` did not.
-    const uri = pathToFileURL(filePath).href + "\r\n";
-    const wayland = { cmd: "wl-copy", args: ["--type", "text/uri-list"], input: uri };
-    const x11 = {
-      cmd: "xclip",
-      args: ["-selection", "clipboard", "-t", "text/uri-list", "-i"],
-      input: uri,
-    };
-    candidates = process.env.WAYLAND_DISPLAY ? [wayland, x11] : [x11, wayland];
-  }
-  for (const { cmd, args, input } of candidates) {
-    try {
-      execFileSync(cmd, args, {
-        input,
-        // xclip and wl-copy hand the selection to a forked background process
-        // that lives until another app claims the clipboard. It inherits our
-        // stdio, so a captured stdout/stderr pipe never reaches EOF and the
-        // call blocks long after the copy landed. Discard the child's output;
-        // the exit status still reports "not installed" / "no display".
-        stdio: ["pipe", "ignore", "ignore"],
-        timeout: 5000,
-      });
-      return true;
-    } catch {
-      // Try the next helper.
-    }
-  }
-  return false;
 }
 
 function deactivate() {}

@@ -46,7 +46,7 @@ fn main() {
     let resolved = wirescript::resolve::resolve(&source, &file, &wirescript::resolve::FsLoader);
     snap("resolve", &mut last);
 
-    let tc = wirescript::typecheck::typecheck(&resolved.ast, &file, &wirescript::typecheck::CeSlotMap::default());
+    let (tc, ce_slots) = wirescript::typecheck::typecheck_with_inference(&resolved.ast, &file);
     snap("typecheck", &mut last);
 
     let cache = std::sync::Arc::new(wirescript::template_cache::TemplateCache::new());
@@ -60,7 +60,7 @@ fn main() {
         template_cache: cache.clone(),
         doc_comments: &resolved.doc_comments,
         fold_mode: wirescript::lower::FoldMode::Auto,
-        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
+        ce_slots: &ce_slots,
     });
     snap("lower", &mut last);
 
@@ -72,7 +72,7 @@ fn main() {
 
     let mut opts = wirescript::EmitOptions::default();
     opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(&file, wirescript::lower::FoldMode::Auto));
-    let world = wirescript::build_world(&lowered.module, &lr, &opts, &cache).expect("emit");
+    let world = wirescript::build_world(&lowered.module, &Default::default(), &lr, &opts).expect("emit");
     snap("build_world", &mut last);
 
     let unsaved = world.to_unsaved().expect("to_unsaved");

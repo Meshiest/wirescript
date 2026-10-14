@@ -4,7 +4,7 @@
 //! signatures with `-> (...)` on a continuation line (a parse error — the
 //! param list doesn't eat newlines, so the arrow is never seen), and
 //! cursor.ws (open in the editor) imported it. The LSP analyze path is
-//! parse → resolve → typecheck → collect_estimates; the CLI checker stops
+//! parse -> resolve -> typecheck -> collect_estimates; the CLI checker stops
 //! after typecheck and terminated fine, so the suspect is the estimates /
 //! template-compilation stage on the malformed resolved AST.
 //!
@@ -649,20 +649,7 @@ on RoundStart() { Again(0) }
 
 fn lower_source(src: &str, file: &str) -> wirescript::lower::LowerResult {
     let loader = MemLoader { files: HashMap::default() };
-    let resolved = resolve(src, file, &loader);
-    let tc = typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default());
-    wirescript::lower::lower(wirescript::lower::LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file,
-        module_name: None,
-        template_cache: std::sync::Arc::new(wirescript::template_cache::TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: wirescript::lower::FoldMode::Auto,
-        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
-    })
+    wirescript::front_end(src, file, None, wirescript::lower::FoldMode::Auto, &loader).lowered
 }
 
 fn assert_recursion_error(label: &str, src: &str) {

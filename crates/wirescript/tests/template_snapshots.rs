@@ -39,15 +39,12 @@ fn compile_stats(src: &str) -> (usize, usize, usize, usize) {
     let (_resolved, _tc, lowered) = common::run_stages(src, "test.ws", FoldMode::ForceOff);
 
     fn count_recursive(module: &Module) -> (usize, usize, usize) {
-        let mut nodes = module.nodes.len();
-        let mut wires = module.wires.len();
-        let mut chips = module.chips.len();
-        for child_module in module.chips.values() {
-            let (cn, cw, cc) = count_recursive(child_module);
-            nodes += cn;
-            wires += cw;
-            chips += cc;
-        }
+        let (mut nodes, mut wires, mut chips) = (0, 0, 0);
+        module.walk(&mut |_, m| {
+            nodes += m.nodes.len();
+            wires += m.wires.len();
+            chips += m.chips.len();
+        });
         (nodes, wires, chips)
     }
 
@@ -77,8 +74,9 @@ fn assert_compiles_clean(src: &str, why: &str) {
         .collect();
     assert!(errors.is_empty(), "{why}: {errors:?}");
     fn placeholders(m: &Module) -> usize {
-        m.nodes.values().filter(|n| n.gate_class == "_Unsupported").count()
-            + m.chips.values().map(placeholders).sum::<usize>()
+        let mut n = 0;
+        m.walk(&mut |_, sub| n += sub.nodes.values().filter(|x| x.gate_class == "_Unsupported").count());
+        n
     }
     let (_resolved, _tc, lowered) = common::run_stages(src, "test.ws", FoldMode::ForceOff);
     assert_eq!(placeholders(&lowered.module), 0, "{why}: lowered to a placeholder gate");

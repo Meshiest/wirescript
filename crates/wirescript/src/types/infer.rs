@@ -11,7 +11,7 @@
 use crate::ir::Type;
 use std::collections::HashMap;
 
-/// A resolved substitution: type-variable name → concrete type.
+/// A resolved substitution: type-variable name -> concrete type.
 pub type Subst = HashMap<String, Type>;
 
 /// One inference constraint.
@@ -49,12 +49,12 @@ fn is_dynamic(ty: &Type) -> bool {
 ///  - For each var in `params`: fold all its surviving `Eq` constraint types
 ///    with [`crate::types::coerce::widening_join`] (least-upper-bound over
 ///    the widening-only lattice); if any fold step has no common widening
-///    (`widening_join` returns `None`) → `Conflict`. The var's resolved type
+///    (`widening_join` returns `None`) -> `Conflict`. The var's resolved type
 ///    is the final join (e.g. int + float folds to float).
-///  - A var with no surviving constraint → `Unpinnable`.
-///  - The resolved (joined) type must satisfy `mask_contains(mask, &ty)` →
+///  - A var with no surviving constraint -> `Unpinnable`.
+///  - The resolved (joined) type must satisfy `mask_contains(mask, &ty)` ->
 ///    else `OutOfMask`.
-///  - Success → a `Subst` mapping every var in `params` to its resolved type.
+///  - Success -> a `Subst` mapping every var in `params` to its resolved type.
 pub fn solve(
     constraints: &[Constraint],
     params: &[(String, Vec<Type>)],

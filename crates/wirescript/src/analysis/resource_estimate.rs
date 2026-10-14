@@ -2,7 +2,7 @@ use crate::collections::HashMap;
 use std::sync::Arc;
 
 use crate::ast::{Script, TopDecl, ChipDecl, AnonChipDecl, Handler, Stmt, Block, Expr, CallArg};
-use crate::ir::{Module, NodeKind, gate_class as gc};
+use crate::ir::{Module, NodeKind};
 use crate::lower::compile_chip_template;
 use crate::template_cache::TemplateCache;
 use crate::typecheck::TypeCheckResult;
@@ -15,6 +15,9 @@ pub struct ResourceEstimate {
     pub total_microchips: usize,
     /// True if this is an inline mod (no physical microchip per call).
     pub is_inline: bool,
+    /// True for a `fn`: its body is one function definition plane built once,
+    /// and each call is a single Function Call gate.
+    pub is_fn: bool,
     /// True for a `const mod`'s own estimate: a call to it in a
     /// const-required position is answered entirely by the compile-time
     /// interpreter and emits no gates at all, so `gates`/`wires`/
@@ -31,13 +34,7 @@ pub struct ResourceEstimate {
 }
 
 fn is_spawnable(kind: NodeKind, gate_class: &str) -> bool {
-    if gate_class == gc::LITERAL || gate_class == gc::UNSUPPORTED || gate_class.is_empty() {
-        return false;
-    }
-    matches!(
-        kind,
-        NodeKind::Gate | NodeKind::Event | NodeKind::Input | NodeKind::Output | NodeKind::Coerce
-    )
+    !gate_class.is_empty() && crate::emit::is_spawnable(kind, gate_class)
 }
 
 pub fn estimate_module(module: &Module) -> ResourceEstimate {
@@ -57,6 +54,7 @@ pub fn estimate_module(module: &Module) -> ResourceEstimate {
         nested_chips: module.chips.len(),
         total_microchips: 0,
         is_inline: false,
+        is_fn: false,
         is_const_eval: false,
     };
 
@@ -152,6 +150,10 @@ fn expand_estimate(
         stack.push(key.to_string());
         for callee in callees {
             let callee_est = expand_estimate(callee, base, call_graph, cache, stack);
+            if callee_est.is_fn {
+                est.gates += 1;
+                continue;
+            }
             est.gates += callee_est.gates;
             est.wires += callee_est.wires;
             est.total_microchips += callee_est.total_microchips;
@@ -304,6 +306,8 @@ fn estimate_handler(
             inline: false,
             label: None,
             label_expr: None,
+            color_expr: None,
+            material_expr: None,
             closed: false,
             no_fold: false,
             is_const: false,
@@ -328,108 +332,28 @@ fn estimate_handler(
     collect_from_block(&h.body, tc, file, cache, estimates, call_graph);
 }
 
-// Walk a block's AST to find all call sites to user-defined chips/mods.
-// Returns one entry per call (duplicates = multiple calls).
+/// Each call to a user `mod`/`chip` in `block`, nested bodies included: one
+/// entry per call (duplicates = multiple calls).
 fn collect_calls_in_block(block: &Block) -> Vec<String> {
     let mut calls = Vec::new();
-    for s in &block.stmts {
-        collect_calls_in_stmt(s, &mut calls);
-    }
+    crate::ast::walk::walk(crate::ast::walk::Node::Block(block), Default::default(), &mut |node, _| {
+        // Only USER mod/chip calls belong in the call graph. A builtin call
+        // is a single gate (already counted by the template/gate heuristic),
+        // NOT a microchip — the same distinction `count_gates_in_expr` makes.
+        // Without this guard, `expand_estimate` treats every builtin callee
+        // (absent from `base_estimates`, so its default `is_inline` is
+        // `false`) as a non-inline chip and fabricates one phantom microchip
+        // per call: a `mod` whose only call was `BroadcastChatMessage`
+        // reported "1 chip per call" for a gate that never was one.
+        if let crate::ast::walk::Node::Expr(Expr::Call { callee, .. }) = node
+            && let Expr::Ident { name, .. } = callee.as_ref()
+            && !crate::catalog::calls::calls().contains_key(name.as_str())
+        {
+            calls.push(name.clone());
+        }
+        true
+    });
     calls
-}
-
-fn collect_calls_in_stmt(stmt: &Stmt, calls: &mut Vec<String>) {
-    match stmt {
-        Stmt::ExprStmt(es) => collect_calls_in_expr(&es.expr, calls),
-        Stmt::Let(l) => collect_calls_in_expr(&l.value, calls),
-        Stmt::Var(v) => {
-            if let Some(ref init) = v.init {
-                collect_calls_in_expr(init, calls);
-            }
-        }
-        Stmt::Assign(a) => collect_calls_in_expr(&a.value, calls),
-        Stmt::If(i) => {
-            collect_calls_in_expr(&i.cond, calls);
-            for s in &i.then_block.stmts {
-                collect_calls_in_stmt(s, calls);
-            }
-            if let Some(ref else_block) = i.else_block {
-                for s in &else_block.stmts {
-                    collect_calls_in_stmt(s, calls);
-                }
-            }
-        }
-        Stmt::Handler(h) => {
-            for s in &h.body.stmts {
-                collect_calls_in_stmt(s, calls);
-            }
-        }
-        Stmt::Return { value, .. } => {
-            if let Some(v) = value {
-                collect_calls_in_expr(v, calls);
-            }
-        }
-        Stmt::AnonChip(ac) => {
-            for s in &ac.body.stmts {
-                collect_calls_in_stmt(s, calls);
-            }
-        }
-        Stmt::ChipDecl(c) => {
-            for s in &c.body.stmts {
-                collect_calls_in_stmt(s, calls);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_calls_in_expr(expr: &Expr, calls: &mut Vec<String>) {
-    match expr {
-        Expr::Call { callee, args, .. } => {
-            if let Expr::Ident { name, .. } = callee.as_ref() {
-                // Only USER mod/chip calls belong in the call graph. A builtin
-                // call is a single gate (already counted by the template/gate
-                // heuristic), NOT a microchip — the same distinction
-                // `count_gates_in_expr` makes. Without this guard,
-                // `expand_estimate` treats every builtin callee (absent from
-                // `base_estimates`, so its default `is_inline` is `false`) as a
-                // non-inline chip and fabricates one phantom microchip per call:
-                // a `mod` whose only call was `BroadcastChatMessage` reported
-                // "1 chip per call" for a gate that never was one.
-                if !crate::catalog::calls::calls().contains_key(name.as_str()) {
-                    calls.push(name.clone());
-                }
-            }
-            for arg in args {
-                match arg {
-                    CallArg::Positional(v) | CallArg::Spread(v) => collect_calls_in_expr(v, calls),
-                    CallArg::Named { value, .. } => collect_calls_in_expr(value, calls),
-                }
-            }
-        }
-        Expr::BinOp { left, right, .. } => {
-            collect_calls_in_expr(left, calls);
-            collect_calls_in_expr(right, calls);
-        }
-        Expr::UnOp { operand, .. } => collect_calls_in_expr(operand, calls),
-        Expr::FieldAccess { obj, .. } => collect_calls_in_expr(obj, calls),
-        Expr::IndexAccess { obj, index, .. } => {
-            collect_calls_in_expr(obj, calls);
-            collect_calls_in_expr(index, calls);
-        }
-        Expr::IfExpr { cond, then_branch, else_branch, .. } => {
-            collect_calls_in_expr(cond, calls);
-            collect_calls_in_expr(then_branch, calls);
-            collect_calls_in_expr(else_branch, calls);
-        }
-        Expr::BlockExpr { stmts, value, .. } => {
-            for s in stmts {
-                collect_calls_in_stmt(s, calls);
-            }
-            collect_calls_in_expr(value, calls);
-        }
-        _ => {}
-    }
 }
 
 fn count_gates_in_block(block: &Block) -> usize {
@@ -528,6 +452,7 @@ fn estimate_chip(
     if chip.is_const {
         estimates.insert(key, ResourceEstimate {
             is_inline: chip.inline,
+            is_fn: chip.is_fn,
             is_const_eval: true,
             ..Default::default()
         });
@@ -542,6 +467,7 @@ fn estimate_chip(
 
     let mut est = best_estimate(template_est, &chip.body);
     est.is_inline = chip.inline;
+    est.is_fn = chip.is_fn;
     if est.gates > 0 {
         estimates.insert(key, est);
     }
@@ -569,6 +495,8 @@ fn estimate_anon_chip(
         inline: false,
         label: None,
         label_expr: None,
+        color_expr: None,
+        material_expr: None,
         closed: false,
         no_fold: false,
         is_const: false,

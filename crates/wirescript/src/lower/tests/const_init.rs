@@ -621,7 +621,7 @@ out v: float = p.x
 
 #[test]
 fn a_constant_initializer_widens_to_the_declared_type() {
-    // The const-resolved literal goes through the same `bake_literal_for_type`
+    // The const-resolved literal goes through the same `const_eval::scalar_in_type`
     // as a spelled-out one, so `var h: float = K` with an INT constant still
     // builds a float variable rather than an integer one.
     let r = compile("const K: int = 3

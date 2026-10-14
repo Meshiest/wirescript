@@ -1,4 +1,4 @@
-//! Lowering: AST + typecheck annotations → IR Module.
+//! Lowering: AST + typecheck annotations -> IR Module.
 //!
 //! Strategy: walk each top-level declaration. Vars and I/O become IR
 //! nodes with deterministic names. Handlers become one event node feeding
@@ -67,9 +67,11 @@ use access::*;
 
 pub(crate) mod boundary_pins;
 pub(crate) mod flatten;
-pub(crate) mod gate_variants;
+pub(crate) use crate::ir::gate_variants;
 mod convert;
 mod props;
+mod style;
+pub(crate) use style::{MATERIAL_ENUM, material_arg, style_constant};
 
 // `for`-loop lowering, and the range normalisation it rests on: every range
 // spelling collapses onto the callable-loop shell's three driver pins.
@@ -242,7 +244,7 @@ pub(in crate::lower) fn output_write_counts(
             match d {
                 TopDecl::Handler(h) => count_emits_in_handler(h, false, counts),
                 TopDecl::AnonChip(ac) => count_emits_in_block(&ac.body, false, counts),
-                TopDecl::Event(EventDecl { captured_body: Some(b), .. }) => {
+                TopDecl::Event(EventDecl { captured: Some(Handler { body: b, .. }), .. }) => {
                     count_emits_in_block(b, false, counts)
                 }
                 _ => {}
@@ -418,10 +420,20 @@ impl<'a> Program<'a> {
                 });
             }
         }
+        // Each body's callers, in caller order: (caller, calls, any branched).
+        let mut callers: Vec<Vec<(usize, usize, bool)>> = vec![Vec::new(); n];
+        for (caller, calls) in inside.iter().enumerate() {
+            for (&callee, &(k, site_branched)) in calls {
+                callers[callee].push((caller, k, site_branched));
+            }
+        }
+        for c in &mut callers {
+            c.sort_unstable_by_key(|(caller, _, _)| *caller);
+        }
         fn instances(
             b: usize,
             top: &[(usize, bool)],
-            inside: &[HashMap<usize, (usize, bool)>],
+            callers: &[Vec<(usize, usize, bool)>],
             memo: &mut [Option<(usize, bool)>],
             open: &mut HashSet<usize>,
         ) -> (usize, bool) {
@@ -432,19 +444,17 @@ impl<'a> Program<'a> {
                 return (0, false);
             }
             let (mut n, mut branched) = top[b];
-            for (caller, calls) in inside.iter().enumerate() {
-                if let Some(&(k, site_branched)) = calls.get(&b) {
-                    let (m, caller_branched) = instances(caller, top, inside, memo, open);
-                    n += k * m;
-                    branched |= m > 0 && (site_branched || caller_branched);
-                }
+            for &(caller, k, site_branched) in &callers[b] {
+                let (m, caller_branched) = instances(caller, top, callers, memo, open);
+                n += k * m;
+                branched |= m > 0 && (site_branched || caller_branched);
             }
             open.remove(&b);
             memo[b] = Some((n, branched));
             (n, branched)
         }
         let mut memo = vec![None; n];
-        (0..n).map(|b| instances(b, &top, &inside, &mut memo, &mut HashSet::default())).collect()
+        (0..n).map(|b| instances(b, &top, &callers, &mut memo, &mut HashSet::default())).collect()
     }
 }
 
@@ -461,7 +471,8 @@ fn call_sites<'a>(
         on(e, cx.branch, reps);
     }
     let reps = match node {
-        walk::Node::Stmt(Stmt::Handler(h)) | walk::Node::Decl(TopDecl::Handler(h)) => {
+        walk::Node::Stmt(Stmt::Handler(h))
+        | walk::Node::Decl(TopDecl::Handler(h) | TopDecl::Event(EventDecl { captured: Some(h), .. })) => {
             reps * trigger_multiplicity(&h.trigger)
         }
         _ => reps,
@@ -483,21 +494,10 @@ pub(in crate::lower) fn create_output_backing_var(ctx: &mut LowerCtx, name: &str
         return;
     };
     let inner = out.ty.clone();
-    let var_id = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::VAR,
-        source_range: SourceRange::default(),
-        ports: GateIO::var_storage(inner.clone()),
-        note: Some("out_backing"),
-        ..Default::default()
-    });
+    let var_id = make_scalar_var_gate(ctx, &inner, HashMap::default(), &SourceRange::default(), Some("out_backing"));
     ctx.output_backing_vars.insert(
         name.to_string(),
-        VarRecord {
-            node_id: var_id,
-            inner_type: inner,
-            get_node_for_handler: None,
-            storage: VarStorage::Var,
-        },
+        VarRecord::new(var_id, inner, VarStorage::Var),
     );
 }
 
@@ -600,7 +600,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             // `lower_event_decl`, so its `out` bindings are top-level
             // handler bindings too.
             TopDecl::Event(e) => {
-                if let Some(body) = &e.captured_body {
+                if let Some(body) = e.captured_body() {
                     pre_declare_handler_outputs(&mut ctx, body, true);
                 }
             }
@@ -618,7 +618,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // (finalized just before `flush_pending_emits`). A SINGLE emit inside a
     // conditional also needs the backing var (so the write is gated by the
     // branch exec); only a single UNCONDITIONAL emit keeps the direct
-    // value→output wire.
+    // value->output wire.
     // Outputs with a default initializer (`out r = 0`). The default is a
     // persistent driver on the output rerouter, so ANY `emit r = …` adds a
     // second — a fan-in. Such an output also needs the backing var: the default
@@ -710,6 +710,10 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // A module-level `@label(<expr>)` labels the ROOT chip (same pass, so it may
     // forward-reference declarations below it).
     resolve_module_label(&mut ctx, input.ast.module_label.as_ref());
+    // Runtime `@color` / `@material` on top-level vars and the module, the
+    // same way and for the same reason.
+    style::resolve_dynamic_var_styles(&mut ctx, &input.ast.decls);
+    style::resolve_module_style(&mut ctx, input.ast.module_color.as_ref(), input.ast.module_material.as_ref());
 
     // Feed each multi-emit output's backing PseudoVar value into its
     // output rerouter — one wire, placed after every handler's Var_Set exists.
@@ -810,7 +814,10 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // Last: the wire set is final, and the brick size follows the ports in use.
     gate_variants::select_gate_variants(&mut module);
     check_no_exec_into_value(&module, &whole_file, &mut ctx.diagnostics);
-    crate::emit::check_native_settings(&module, &mut ctx.diagnostics);
+    crate::emit::check_native_settings(&module, &mut ctx.diagnostics, &|note, field| {
+        let spec = crate::catalog::calls::find_call(note)?;
+        spec.params.iter().find(|p| p.port.as_str() == field).map(|p| (spec.name, p.name))
+    });
     LowerResult {
         module,
         diagnostics: ctx.diagnostics,
@@ -883,6 +890,8 @@ fn check_wires_resolve(
                 .copied()
         };
         let range_of = |id: &NodeId| owner_of(id).and_then(|o| o.nodes.get(id)).map(|n| n.source_range.clone());
+        // Every pin of `m`'s child chips, gathered on the first wire that asks.
+        let pins: std::cell::OnceCell<HashSet<NodeId>> = std::cell::OnceCell::new();
         for w in &m.wires {
             let (src, dst) = (w.source.node_id, w.target.node_id);
             let wire = || {
@@ -901,7 +910,10 @@ fn check_wires_resolve(
                 let Some(end_owner) = owner_of(&end) else {
                     return Some((format!("{} references {end}, which no module holds", wire()), range_of(&other)));
                 };
-                let is_pin = || m.chips.values().any(|c| c.inputs.contains(&end) || c.outputs.contains(&end));
+                let is_pin = || {
+                    pins.get_or_init(|| m.chips.values().flat_map(|c| c.inputs.iter().chain(&c.outputs)).copied().collect())
+                        .contains(&end)
+                };
                 let definition = || {
                     owner_of(&src)
                         .and_then(|o| o.nodes.get(&src))
@@ -1090,8 +1102,8 @@ fn collect_let_names(ast: &Script) -> HashSet<String> {
 
 /// Collect every chip/mod name declared anywhere in the (import-merged) program
 /// — top-level and nested. Lets lowering tell a use-before-declaration call
-/// (a real chip/mod, just registered later → WS021) from a call to a name that
-/// is not a function at all (e.g. an unimplemented builtin → placeholder).
+/// (a real chip/mod, just registered later -> WS021) from a call to a name that
+/// is not a function at all (e.g. an unimplemented builtin -> placeholder).
 fn collect_fn_names(ast: &Script) -> HashSet<String> {
     fn walk_block(block: &Block, names: &mut HashSet<String>) {
         for s in &block.stmts {
@@ -1172,7 +1184,7 @@ fn expand_alias_bodies(
 }
 
 /// Collect every generic type alias (`type Pair<T> = { … }`, top-level and
-/// namespaced) into the `name → (params, body)` map lowering instantiates from.
+/// namespaced) into the `name -> (params, body)` map lowering instantiates from.
 /// Mirrors typecheck's `collect_generic_aliases` pre-pass so both layers agree
 /// on which aliases are generic (non-empty `type_params`).
 fn collect_generic_type_aliases(
@@ -1285,29 +1297,6 @@ impl ExternalWires {
 /// place, in the root. One copy per consuming module and anonymous chip; the
 /// original keeps only its own module's reads, and is pruned once it has none.
 fn localize_foreign_literals(root: &mut Module) {
-    fn index(
-        m: &Module,
-        path: &mut Vec<NodeId>,
-        paths: &mut Vec<Vec<NodeId>>,
-        owner: &mut HashMap<NodeId, usize>,
-        literals: &mut HashMap<NodeId, crate::ir::Node>,
-    ) {
-        let here = paths.len();
-        paths.push(path.clone());
-        for (id, n) in &m.nodes {
-            owner.insert(*id, here);
-            if n.gate_class == gc::LITERAL {
-                literals.insert(*id, n.clone());
-            }
-        }
-        let mut chips: Vec<NodeId> = m.chips.keys().copied().collect();
-        chips.sort_unstable();
-        for c in chips {
-            path.push(c);
-            index(&m.chips[&c], path, paths, owner, literals);
-            path.pop();
-        }
-    }
     fn extract(
         m: &mut Module,
         owner: &HashMap<NodeId, usize>,
@@ -1332,14 +1321,19 @@ fn localize_foreign_literals(root: &mut Module) {
             extract(child, owner, literals, moved);
         }
     }
-    fn module_at<'m>(root: &'m mut Module, path: &[NodeId]) -> &'m mut Module {
-        path.iter().fold(root, |m, c| m.chips.get_mut(c).expect("indexed chip module"))
-    }
-
-    let mut paths = Vec::new();
-    let mut owner = HashMap::default();
-    let mut literals = HashMap::default();
-    index(root, &mut Vec::new(), &mut paths, &mut owner, &mut literals);
+    let mut paths: Vec<Vec<NodeId>> = Vec::new();
+    let mut owner: HashMap<NodeId, usize> = HashMap::default();
+    let mut literals: HashMap<NodeId, crate::ir::Node> = HashMap::default();
+    root.walk(&mut |path, m| {
+        let here = paths.len();
+        paths.push(path.to_vec());
+        for (id, n) in &m.nodes {
+            owner.insert(*id, here);
+            if n.gate_class == gc::LITERAL {
+                literals.insert(*id, n.clone());
+            }
+        }
+    });
     if literals.is_empty() {
         return;
     }
@@ -1349,7 +1343,7 @@ fn localize_foreign_literals(root: &mut Module) {
 
     let mut copies: HashMap<(usize, Option<NodeId>, NodeId), NodeId> = HashMap::default();
     for (at, mut w) in moved {
-        let m = module_at(root, &paths[at]);
+        let m = root.at_mut(&paths[at]);
         let chip_id = m.nodes.get(&w.target.node_id).and_then(|n| n.chip_id);
         let lit = w.source.node_id;
         let copy = *copies.entry((at, chip_id, lit)).or_insert_with(|| {
@@ -1550,18 +1544,15 @@ fn materialize_unfoldable_constants(module: &mut Module) {
             // emit: each module's literal-inline scan walks only its OWN
             // wires, and `partition_anon_chips`' literal-clone arm only
             // covers nodes being moved into ANON chips — so a parent-literal
-            // → child-pin wire survives to emit, where its literal source
+            // -> child-pin wire survives to emit, where its literal source
             // makes it skipped, and the pin silently reads 0. Materialize
             // the carrier for cross-module targets too: a real parent-side
             // gate wired cross-grid into the pin, the same shape the
             // unfolded program emits for a computed argument.
-            let (target, cross_module) = match module.nodes.get(&w.target.node_id) {
-                Some(t) => (t, false),
-                None => match find_node_in_chips(module, &w.target.node_id) {
-                    Some(t) => (t, true),
-                    // Dangling wire — nothing anywhere to deliver to.
-                    None => continue,
-                },
+            let (target, cross_module) = match module.find_deep(w.target.node_id) {
+                Some(t) => (t, !module.nodes.contains_key(&w.target.node_id)),
+                // Dangling wire — nothing anywhere to deliver to.
+                None => continue,
             };
             // Inlining into the target's data only works same-module (see
             // above), so a cross-module target needs the carrier even when
@@ -1674,21 +1665,9 @@ fn materialize_unfoldable_constants(module: &mut Module) {
                 if no_fold {
                     properties.insert(*sym::NO_FOLD, Literal::Bool(true));
                 }
-                make_nodes.push(Node {
-                    id,
-                    kind: NodeKind::Gate,
-                    gate_class: const_class,
-                    properties: std::sync::Arc::new(properties),
-                    ports: std::sync::Arc::new(GateIO {
-                        inputs: vec![],
-                        outputs: vec![PortSpec::new(out_port_sym, ty.clone())],
-                    }),
-                    source_range: src.source_range.clone(),
-                    chip_id: src.chip_id,
-                    chain_id: src.chain_id,
-                    scope_id: src.scope_id,
-                    note: Some("materialized constant (dataless target)"),
-                });
+                let ports = GateIO { inputs: vec![], outputs: vec![PortSpec::new(out_port_sym, ty.clone())] };
+                let note = Some("materialized constant (dataless target)");
+                make_nodes.push(Node::new(id, NodeKind::Gate, const_class, ports, properties, Some(src), note));
                 id
             });
             rewires.push((i, const_id, out_port));
@@ -1712,18 +1691,8 @@ fn materialize_unfoldable_constants(module: &mut Module) {
                 .iter()
                 .map(|(port, lit)| (port.sym(), lit.clone()))
                 .collect();
-            make_nodes.push(Node {
-                id,
-                kind: NodeKind::Gate,
-                gate_class,
-                properties: std::sync::Arc::new(properties),
-                ports: std::sync::Arc::new(GateIO::source(out_ty.clone())),
-                source_range: src.source_range.clone(),
-                chip_id: src.chip_id,
-                chain_id: src.chain_id,
-                scope_id: src.scope_id,
-                note: Some("materialized constant"),
-            });
+            let ports = GateIO::source(out_ty.clone());
+            make_nodes.push(Node::new(id, NodeKind::Gate, gate_class, ports, properties, Some(src), Some("materialized constant")));
             id
         });
         rewires.push((i, make_id, WirePort::Output));
@@ -1760,25 +1729,6 @@ fn materialize_unfoldable_constants(module: &mut Module) {
     for child_module in module.chips.values_mut() {
         materialize_unfoldable_constants(child_module);
     }
-}
-
-/// Depth-first lookup of a node id across `module.chips` child modules
-/// (named chip instances exist as populated child modules throughout
-/// lowering, before `partition_anon_chips` runs). Node ids are globally
-/// unique, so map iteration order cannot affect the result.
-fn find_node_in_chips<'m>(
-    module: &'m Module,
-    id: &crate::ir::NodeId,
-) -> Option<&'m crate::ir::Node> {
-    for child in module.chips.values() {
-        if let Some(n) = child.nodes.get(id) {
-            return Some(n);
-        }
-        if let Some(n) = find_node_in_chips(child, id) {
-            return Some(n);
-        }
-    }
-    None
 }
 
 /// Fold standalone `_Literal` bricks whose value is only used once into a
@@ -1863,7 +1813,7 @@ fn inline_orphan_literals_in(module: &mut Module, external: &ExternalWires) {
                 Some(v) => v,
                 None => continue,
             };
-            // Convert PortIndex → Sym for use as a property key
+            // Convert PortIndex -> Sym for use as a property key
             let target_port_sym = target_port.sym();
             if let Some(target) = module.nodes.get_mut(&target_id) {
                 std::sync::Arc::make_mut(&mut target.properties)
@@ -2006,7 +1956,7 @@ fn dedup_constant_gates(root: &mut Module) {
         // emit module, so merging across `chip_id` tags would redirect a
         // consumer's wire to a keeper that lands in a DIFFERENT chip. Partition
         // keeps such a cross-chip data wire in the parent without cloning the
-        // literal into the child (only parent→chip literals are cloned), so
+        // literal into the child (only parent->chip literals are cloned), so
         // emit can't inline it and the operand silently reads its port default
         // (0). Deduping within a chip_id group keeps every keeper in the same
         // future module as its consumers.
@@ -2050,7 +2000,7 @@ fn dedup_constant_gates(root: &mut Module) {
 /// Rewrite the module tree after a set of gates has been merged: every wire
 /// sourced from a dropped dup now sources from its keeper, wires targeting a
 /// dropped dup (its own now-dead incoming feeds, or a Layout edge) are removed,
-/// collapsed source→target duplicates are deduped, and `scope_captures`
+/// collapsed source->target duplicates are deduped, and `scope_captures`
 /// referencing a dup become its keeper. Node ids are globally unique, so one
 /// `redirect` map applies across the whole tree. Shared by
 /// `dedup_constant_gates` (zero-incoming constants) and `cse_pure_gates`
@@ -2063,9 +2013,29 @@ fn apply_gate_redirect(module: &mut Module, redirect: &HashMap<NodeId, NodeId>) 
         }
         !redirect.contains_key(&w.target.node_id)
     });
-    // Redirection can collapse two wires onto the same source→target pair.
+    // Redirection can collapse two wires onto the same source->target pair.
     let mut seen: HashSet<(PortRef, PortRef)> = HashSet::default();
     module.wires.retain(|w| seen.insert((w.source, w.target)));
+    // A runtime `@label` / `@color` / `@material` source is a port reference,
+    // not a wire, so it follows its dup to the keeper here or emit finds it
+    // pointing at a node that no longer exists.
+    let follow = |p: &mut PortRef| {
+        if let Some(&keeper) = redirect.get(&p.node_id) {
+            p.node_id = keeper;
+        }
+    };
+    module
+        .dynamic_labels
+        .values_mut()
+        .chain(module.dynamic_colors.values_mut())
+        .chain(module.dynamic_materials.values_mut())
+        .chain(module.root_dynamic_label.iter_mut())
+        .for_each(follow);
+    for style in [&mut module.root_style.color, &mut module.root_style.material] {
+        if let Some(crate::ir::StyleValue::Wired(p)) = style {
+            follow(p);
+        }
+    }
     // A dropped dup referenced as an external capture becomes its keeper.
     if !module.scope_captures.is_empty() {
         let mut seen_caps = HashSet::default();
@@ -2629,23 +2599,13 @@ pub fn compile_chip_template(
                         },
                         _ => ft.clone(),
                     };
-                    Binding::Var(VarRecord {
-                        node_id,
-                        inner_type: inner,
-                        get_node_for_handler: None,
-                        storage: VarStorage::Array,
-                    })
+                    Binding::Var(VarRecord::new(node_id, inner, VarStorage::Array))
                 } else if is_ref {
                     let inner = match &ft {
                         Type::Ref(inner) => inner.as_ref().clone(),
                         _ => ft.clone(),
                     };
-                    Binding::Var(VarRecord {
-                        node_id,
-                        inner_type: inner,
-                        get_node_for_handler: None,
-                        storage: VarStorage::Var,
-                    })
+                    Binding::Var(VarRecord::new(node_id, inner, VarStorage::Var))
                 } else {
                     Binding::Input(NodeRecord {
                         node_id,
@@ -2666,16 +2626,11 @@ pub fn compile_chip_template(
             let node_id = ctx.add_input(&inp.name, t.clone(), chip_decl.range.clone());
             ctx.scope.insert(
                 &inp.name,
-                Binding::Var(VarRecord {
+                Binding::Var(VarRecord::new(
                     node_id,
-                    inner_type: inner,
-                    get_node_for_handler: None,
-                    storage: if is_array {
-                        VarStorage::Array
-                    } else {
-                        VarStorage::Var
-                    },
-                }),
+                    inner,
+                    if is_array { VarStorage::Array } else { VarStorage::Var },
+                )),
             );
         } else {
             let t = ctx.resolve_local_type(&inp.typ);

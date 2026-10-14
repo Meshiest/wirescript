@@ -10,18 +10,8 @@
 //! This is the test that could not be written before, and it is the reason the
 //! "never byte-diff compiler output" rule existed.
 
-use wirescript::{CompileInput, FoldMode, compile};
 
-fn brz(src: &str) -> Vec<u8> {
-    compile(CompileInput {
-        source: src,
-        file: "determinism.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
-    .expect("program should compile")
-    .brz
-}
+mod common;
 
 /// Programs chosen to exercise the id-minting paths that are not the plain
 /// `add_node` one: chip instantiation (which re-mints a template's ids),
@@ -57,9 +47,9 @@ fn many_chip_instances(n: usize) -> String {
 #[test]
 fn many_chip_instances_compile_the_same_way_twice() {
     let src = many_chip_instances(120);
-    let first = brz(&src);
+    let first = common::brz(&src, "determinism.ws");
     for round in 1..4 {
-        let again = brz(&src);
+        let again = common::brz(&src, "determinism.ws");
         assert_eq!(first.len(), again.len(), "round {round} changed the output size");
         assert!(again == first, "round {round} changed the output bytes");
     }
@@ -68,9 +58,9 @@ fn many_chip_instances_compile_the_same_way_twice() {
 #[test]
 fn repeated_compiles_in_one_process_are_byte_identical() {
     for src in PROGRAMS {
-        let first = brz(src);
+        let first = common::brz(src, "determinism.ws");
         for round in 1..4 {
-            let again = brz(src);
+            let again = common::brz(src, "determinism.ws");
             assert_eq!(
                 first.len(),
                 again.len(),
@@ -86,11 +76,11 @@ fn repeated_compiles_in_one_process_are_byte_identical() {
 #[test]
 fn an_interleaved_compile_does_not_change_the_next_one() {
     let target = PROGRAMS[1];
-    let alone = brz(target);
+    let alone = common::brz(target, "determinism.ws");
     for other in PROGRAMS {
-        let _ = brz(other);
+        let _ = common::brz(other, "determinism.ws");
         assert!(
-            brz(target) == alone,
+            common::brz(target, "determinism.ws") == alone,
             "compiling another program first changed the output of:\n{target}"
         );
     }

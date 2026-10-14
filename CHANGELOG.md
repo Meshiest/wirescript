@@ -1,58 +1,122 @@
 # Wirescript Changelog
 
-# 1.12.0
-- `for` loops compile to callable loop microchips, iterating a range, array or map within a single tick, or across ticks with `@sliced`; `let run = for` reads `run.aborted`, `run.iterations` and `run.running`.
-- `fn` declares a function compiled once into a function definition plane, with Function Output gates for its results, and run by a Function Call gate at each call site; its body reaches outer storage through handles baked inside the plane, and `mod`/`fn` parameters take default values (`WS111`-`WS115`); a `fn` cannot recurse (`WS020`).
-- `GetMicrochipBrick()` is the program's own microchip brick, as a `brick`.
-- A `fn` call takes `exec = trigger` outside a handler, and `on f(..., exec = t) -> (r) { }` runs when the call completes; `.exec` on a call that runs no exec step is now an error (`WS043`).
-- Component references can be stored in a `var`, an array or a map value.
-- Entity custom properties: `SetCustomProperty`, `GetCustomProperty`, `RemoveCustomProperty` and `CopyCustomProperties`, plus `GetValueType(x)`.
-- `brick.RemoveComponent($Component/...)` replaces `component.Remove()`, following the game's Remove Component gate, and `overrideColors` on the advanced inventory calls takes a runtime `bool`.
-- References are values: vars, arrays and maps hold `*T` refs (`&x` makes one, `*h` reads or writes through it), arrays nest (`int[][]`), refs travel as custom-event data, and a new `brick` type holds a brick set in the editor.
-- Player dialogs: `ShowOkCancelBox`, `ShowYesNoBox` and `ShowTextInputBox`, and `ShowMessageBox` now answers too, each with `ClickedBy`, an `OkClicked`/`YesClicked` exec field, and `Declined` for every other outcome.
-- `ControllerLeft` no longer binds `controller`; use `userId` and `userName`. A capture still naming it is `WS010`.
-- `entity.SetVisible(visible)` shows or hides a physics object or dynamic brick grid.
-- Bricks: `GetBrickProperty`/`SetBrickProperty` read and write a brick's color, visibility and collision, `Sweep`/`SweepSimple` give the `HitBrick`, maps take `brick` keys, and `keys(dest, includeDead)` lists keys whose brick is gone.
-- `ContainerChange(c)` fires when an array or map's contents change.
-- `Environment.Sky.TimeOfDay` reads and writes an environment setting, typed per property.
-- Components: `brick.GetComponent($Component/PointLight)` and `AddComponent` give a `Component<PointLight>` whose properties read and write as fields (`light.Brightness = 2.0`), and `light.Remove()` removes it; `$Component/<name>/<property>` names a property, all completed in the editor; an unknown name is `WS110`.
-- `value as T` converts a value with the game's Convert gate: one gate per value that changes type, field by field for records and tuples, none when the result goes unread, and none for a constant whose result is known (a float truncates toward zero); a conversion it cannot make yet is `WS109`.
-- Comparing a ref or brick with a non-ref is `WS084`, `*` on an array ref, map ref or brick is `WS085`, a ref to a ref is `WS086`, and an if-expression may select between refs and bricks (`WS031` no longer applies to them).
+# 2.0.0
+
+Functions, loops and references as values lead this release, with components, bricks and player dialogs from the latest game build.
+
+### Functions
+
+A `fn` is written like a `mod` but compiles once: its body becomes one function definition plane, and each call is a single Function Call gate, so ten calls cost ten small gates rather than ten copies of the body. The body reaches outer `var`s, arrays and maps through handles baked into the plane, and trailing parameters take default values (`mod` parameters do too).
+
+```wirescript
+var total: int = 0
+
+fn add(x: int, y: int = 1) -> int {
+  total += x
+  return x + y
+}
+
+in go: exec
+on go {
+  let a = add(3)    // y defaults to 1
+  BroadcastChatMessage("${a} ${total}")
+}
+```
+
+Outside a handler, a call fires on `exec = trigger`, and `on f(..., exec = t) -> (r) { }` runs when it completes. A `fn` cannot call itself (`WS020`); `WS111`-`WS115` cover its other limits.
+
+### Loops
+
+`for` iterates a range, an array or a map. Each loop is a callable loop microchip that finishes within the tick, or spreads across ticks with `@sliced`; `let run = for` reads `run.aborted`, `run.iterations` and `run.running` afterwards.
+
+```wirescript
+in go: exec
+var total: int = 0
+
+on go {
+  for i in (0..100).step(2) {
+    if i > 50 { break }
+    total = total + i
+  }
+}
+```
+
+### References as values
+
+A `*T` ref is a value: `&x` makes one, `*h` reads or writes through it, and vars, arrays (`(*int)[]`) and maps hold refs, which also travel as custom-event data. Arrays nest (`int[][]`). A `brick` holds a brick set in the editor, and `GetMicrochipBrick()` is the program's own microchip brick.
+
+```wirescript
+var a: int = 0
+var h: *int
+
+on ReadBrickGrid() {
+  h = &a
+  *h = 5    // a is now 5
+}
+```
+
+Comparing a ref or brick with a non-ref is `WS084`, `*` on an array ref, map ref or brick is `WS085`, and a ref to a ref is `WS086`; an if-expression may choose between refs and bricks.
+
+### Components and bricks
+
+`brick.GetComponent($Component/PointLight)` and `AddComponent` give a `Component<PointLight>` whose properties read and write as fields, and `brick.RemoveComponent(...)` removes one. A component reference can be stored in a `var`, array or map. `$Component/<name>/<property>` names a property, and the editor completes both; an unknown name is `WS110`.
+
+```wirescript
+in go: exec
+on go {
+  let r = SweepSimple(1000.0, detectBricks = true)
+  on r.Hit {
+    let light = r.HitBrick.AddComponent($Component/PointLight)
+    light.Brightness = light.Brightness * 2.0
+  }
+}
+```
+
+`GetBrickProperty`/`SetBrickProperty` read and write a brick's color, visibility and collision, `Sweep`/`SweepSimple` give the `HitBrick`, maps take `brick` keys, and `keys(dest, includeDead)` lists keys whose brick is gone.
+
+### Also new
+
+- Player dialogs: `ShowOkCancelBox`, `ShowYesNoBox` and `ShowTextInputBox`, and `ShowMessageBox` now answers too, each with `ClickedBy`, `OkClicked`/`YesClicked` and `Declined`.
+- `value as T` converts with the game's Convert gate, one gate per value that changes type (`WS109` for a conversion it cannot make yet).
+- Entity custom properties: `SetCustomProperty`, `GetCustomProperty`, `RemoveCustomProperty`, `CopyCustomProperties`, and `GetValueType(x)`.
+- `ContainerChange(c)` fires when an array or map changes, `entity.SetVisible(visible)` shows or hides a physics object or dynamic grid, and `Environment.Sky.TimeOfDay` reads and writes an environment setting.
+- `overrideColors` on the advanced inventory calls takes a runtime `bool`.
+- `projectileScale` on `AddInventoryItemAdv` and `SetInventoryItemAdv` scales the size of the weapon's projectiles.
+- `@color(c)` and `@material(m)` set the color and material of a chip's, a `var`'s or the root chip's brick: a constant on the brick itself, a runtime value wired live through a Brick Property Changer; `@material` takes the new built-in enum `BrickMaterial`.
+- `compile --dump-ir` prints the compiled program as `.wsir` text (`--emit-ir <path>` writes it to a file), and `wirescript assemble` builds the same save from it.
+
+### Changes
+
+These are breaking:
+
+- `ControllerLeft` no longer binds `controller`; use `userId` and `userName` (`WS010`).
+- A `var` initializer reads the names around it, as a `let`'s does, and a file uses only what it declares or imports (`WS002`, `WS036` for `x.f()`).
+- `WS003` for a read returned whole to outputs named partly like its own, a record where one value goes, an annotated `buffer`'s initializer, and a string method on a non-string.
+- `WS090` for a value-returning `mod` or `chip` with a path that ends before its outputs are set.
+- `WS004` for `mk().x + 1` on a `*T` field of a call's result (write `*mk().x`).
+- `WS107` for a `type` or `enum` named like a builtin type, or `Array`/`Ref` with one type parameter.
+- `WS028` for constants an `int` or a gate setting cannot hold.
+- An expression the compiler cannot build is a `WSP001` error that `ws-ignore` does not silence.
+- `open` is no longer a keyword; `open chip` is now just `chip`.
 
 ### Fixes
 
-- A method on a container read from a map or call (`m.get(k).Value.push(x)`) acts on that container instead of failing with `WS002`/`WS044`.
-- Array and map methods take named arguments (`a.insert(index = 0, value = 9)`, `m.keys(destArray = ks)`); they compiled to a placeholder before.
-- A Broadcast Chat Message gate is placed with a gap around it: the game dropped one placed touching another gate.
-- Order of evaluation: expression parts run in source order, each read before a later part changes it, and loop bounds, enum payloads and record-literal calls run once; a whole-record assignment is parallel (`WS087`, `WS089`), and `xs = [...xs, 1]` appends (`WS088`).
-- Name capture: a `mod` or `chip` body resolves names where it is declared, so a caller's `let`, `var`, parameter or nested mod no longer captures them (`WS091`, `WS021`), and a local named like an outer constant, alias or enum variant is its own value in every read (`WS046`).
-- Breaking: a `var` initializer reads the names around the declaration, as a `let`'s does (`var x = x + 1` with no outer `x` is `WS002`).
-- Breaking: a file uses only what it declares or imports; a library naming something only its importer declares, or an importer calling a library's private helper, is `WS002` (`WS036` for `x.f()`).
-- A name declared twice at the top level is read by position, values and constant-only settings alike, and warns `WS108` (storage counts as declared first, a `mod` body above both reads the first, a named import binds a library's last, an `import * as` module reads the last); an anonymous chip's own declarations are what its names mean inside it.
-- Editor: rename, find-references and hover follow the compiler's scope rules.
-- Multi-output reads give their first output wherever one value goes, choices between reads join output by output, and held reads and tuple patterns destructure by output; these were `WS003`, `WS004`, `WS033`, `WS066`, `WS071`, `WS094`, a stored exec wire or a dropped field.
-- Breaking: a read returned whole to outputs named partly like its own is `WS003` (it filled by position), and a record where one value goes (`return q`, `mk(a) + 1`) is `WS003`.
-- An exec pin wired into a non-bool value input, also through an `any` pin, is `WS094` instead of a gate that reads 0; a bool condition or logical operand reads it as true for the tick it fires.
-- Outputs, `emit` and `return`: an output set in several places, under a branch or loop, or beside a `return` takes the value from the path that ran, and one driven from several writes is driven once through stored values instead of failing to load with fan-in.
-- Breaking: a value-returning `mod` or `chip` with a path that ends before its outputs are set is `WS090`.
-- Misused `emit` and `return` that wired the exec into a value or dropped the write are errors (`WS057`, `WS007`, `WS013`, `WS095`).
-- An `if` or `match` expression arm that writes, sends or returns runs only when taken (`WS097`, `WS102`).
-- Arrays and maps behind record fields, namespaces, constants and literals behave as on a plain `var` (methods, indexing, `for`, columns, `{}`); misuse is `WS044`, `WS049` or `WS027`.
-- Lost initializers (enum arrays and fields, containers naming a constant, record `var`s from constants, generic enum payloads) are stored, and a handler-local record, tuple or enum `var` resets every run.
-- Enums are values everywhere (outputs, returns, `for`, `Select`, `.Discriminant`, `is`, array and map reads, ports as their tag, aliases, `ns.Name.Variant`); these were placeholders, `WS066`, `WS071` or `WS094`.
-- References: a `*T` output or record field keeps whether it carries a ref or names a var, and a line starting with `*` begins a statement (`WSP001`). Breaking: `mk().x + 1` on a `*T` field of a call's result is `WS004` (write `*mk().x`).
-- Generics keep each instantiation's types through nested generics, chips and mods, `import * as` calls and spreads; `WS096` caps the instantiations.
-- Type aliases bind as the type they name in every position and are read where declared. Breaking: a `type` or `enum` named like a builtin type, or `Array` or `Ref` with one type parameter, is `WS107`.
-- Integer constants are floats when they go directly into a `float` var, parameter, output, literal or alias, so division matches folded or not (`WS104` beyond 2^53), and `min`, `max`, `abs`, `sign` and the roundings of integers are integers.
-- Float constants in `int` places are truncated with `WS106` wherever they go, a negated written integer constant stays an integer, and a loop stride stays a float (`WS077` when it is not greater than zero). Breaking: ones no `int` holds, and constant gate settings their field cannot hold, are `WS028`.
-- Unannotated values take their joined or first-output type (`WS103`, `WS105`). Breaking: an annotated `buffer`'s initializer is type-checked (`WS003`).
-- Forms that compiled to placeholders are errors: an untyped empty `[]` or `{}` (`WS098`), `return <value>` at top level (`WS099`), a record type as a value (`WS100`), an initializer on `let s: exec` (`WS101`). Breaking: any expression the compiler cannot build is a `WSP001` error, and `ws-ignore` does not silence it.
-- Breaking: a string method on a non-string or on an unbounded type parameter is `WS003` (`vv.Length()` on a vector).
-- Custom events: sends in `for` loops, every receiver of a channel and typed `await CustomEvent` captures are checked (`WS030`).
-- Imports: `self` mods travel with a named import, and `WS014` no longer flags a `self` mod used as `x.f()` or an alias used only on an `out`.
-- Parsing: `>>` and `>=` close nested type arguments without a space, and `let s: Signal` declares a signal.
-- Diagnostics name what they refer to, follow-on errors are not repeated, and `WS028` and `WS106` quote a literal as written.
-- Compile output and time: `n -= d` compiles to one increment, and compile time no longer grows with the number of module constants times shadowing bindings.
+- **Evaluation:** expression parts run in source order, enum payloads and record-literal calls run once, a whole-record assignment is parallel, and `xs = [...xs, 1]` appends (`WS087`-`WS089`). An output set on several paths takes the value from the path that ran, and one written in several places no longer fails to load. An `if` or `match` arm that writes, sends or returns runs only when taken (`WS097`, `WS102`). Misused `emit` and `return`, and an exec pin wired into a value, are errors (`WS057`, `WS007`, `WS013`, `WS094`, `WS095`). A var also held in a record keeps its read across an `if` that does not write it.
+- **Control flow:** an `_` arm catches a tag that names no variant instead of being dropped (`WS061`), a statement after a `buffer emit` on its chain is a `WS058` warning and is not compiled, a back-edge loop inside an `if` re-arms when its signal is declared in that branch (`WS118` otherwise), and an enum or record returned from a `mod` branch outside a handler is `WS007`.
+- **Names and imports:** a `mod` or `chip` body resolves names where it is declared, and a local named like an outer constant, alias or variant is its own value (`WS091`, `WS021`, `WS046`). A name declared twice at the top level is read by position (`WS108`). A named argument to a `mod` binds its parameter instead of being dropped, and a namespaced call takes defaults and named arguments. Importing a declaration brings the names its handler settings and `buffer` initializers read, `self` mods travel with a named import, and an unknown handler trigger is reported once.
+- **Types and values:** multi-output reads, enums, generics (`WS096`) and type aliases keep their types through outputs, returns, joins, destructuring, imports and spreads. Integer constants are floats in `float` places (`WS104` beyond 2^53), float constants in `int` places truncate (`WS106`), and unannotated values take their joined type (`WS103`, `WS105`). Forms that compiled to placeholders are errors (`WS098`-`WS101`). A nonzero float in a `bool` array or map saves as `true`, `average()` always gives a `float`, and a `const mod` call takes parameter defaults and named arguments. `x == null` and `x != null` test for an unset object, brick or ref.
+- **Math:** `abs`, `min`, `max`, `clamp` and `Dampen` keep their argument's type (`max(3, 7)` is the `int` `7`, a `bool` reads as an `int`, vectors, rotators, quats and colors work per component), `Remap` takes lowercase `function =` and `direction =` as `Easing` does, and `f -= STEP` steps an `int` by an integer.
+- **Containers:** arrays and maps behind fields, calls, namespaces, constants and literals act as on a plain `var` (`WS044`, `WS049`, `WS027`), their methods take named arguments, lost initializers are stored, and a handler-local record `var` resets every run.
+- **Custom events:** every receiver of a channel and typed `await CustomEvent` captures are checked (`WS030`).
+- **Captured events:** `let x = on <trigger>` names any trigger, its config and `Union(...)` included. A captured event runs its body, applies its trigger's config and binds outputs with `->`, and a captured `CustomEvent` gets a handler's checks (`WS030`).
+- **Output:** `n -= d` compiles to a single increment. A `Fmt` with constant inputs that uses `{A}`-style inputs, `:` options or `|plural`/`|ordinal` stays a real gate instead of compiling to the wrong text. A number, bool, vector, color or player wired into a `string` pin, var or parameter goes through a Format Text gate, as the string coercion rule says. A chip's input and output gates stack in declaration order, matching its side pins.
+- **Diagnostics:** new warnings for `on a || b` with an object operand, which fires once and never again (`WS116`, use `on Union(a, b)`), and for a comparison used directly as an operand of `&`, `|` or `^` (`code & 4 == 4`, `WS117`); `any` on an `in`/`out` port no longer warns `WS032`, since a port cannot take a type parameter.
+- **Editor and tooling:** rename, references and hover follow the compiler's scope rules; hover, completion, inlay hints and gate estimates cover `rotator`/`quat` components, `eventName`, and `if let`, `let else` and `match` arms; the playground completes and inserts like the language server, and highlighting knows every keyword, type and event; an edit is no longer skipped when another file is edited right after; `>>` and `>=` close nested type arguments; the VS Code extension removes its temporary server copy and Compile and Copy handles quotes on macOS; the SDK compiles prefab references and subfolder imports; the tree-sitter grammar reads any expression as an annotation argument, so `@label(name)`, `@color(...)` and `@material(...)` parse.
+
+### Performance
+
+- Compile and editor time no longer grow quadratically with program size, in lowering, layout, emit, type checking and editor requests (a 36x speedup for rename on an 8k-line file).
+- `just scale-bench` and `just editor-scale` fail a stage or request that grows faster than linear.
 
 ## 1.11.1
 

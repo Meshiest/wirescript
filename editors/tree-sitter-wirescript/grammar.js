@@ -96,11 +96,13 @@ module.exports = grammar({
     // ------------------------------------------------------------- annotations
 
     // The lexer emits `@word` as a single token, so `@` and the word must be
-    // adjacent. `@label` additionally takes a parenthesised string.
+    // adjacent. An annotation may take one parenthesised argument: a string
+    // (`@label("text")`, `@layout("code")`) or any expression (`@label(name)`,
+    // `@color(Color(1.0, 0.0, 0.0))`, `@material(Glow)`).
     annotation: ($) =>
       seq(
         field('name', $.annotation_name),
-        optional(seq('(', optional(field('argument', $.string)), ')')),
+        optional(seq('(', optional(field('argument', $._expression)), ')')),
       ),
 
     annotation_name: (_$) => token(seq('@', /[a-zA-Z_][a-zA-Z0-9_]*/)),
@@ -259,7 +261,6 @@ module.exports = grammar({
     chip_declaration: ($) =>
       seq(
         optional($._annotations),
-        optional('open'),
         'chip',
         choice(
           seq(

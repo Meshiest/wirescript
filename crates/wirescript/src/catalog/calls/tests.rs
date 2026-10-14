@@ -65,6 +65,8 @@
         "GiveWeapon.weapon -> ItemTypeIfItem",
         "HasPermission.permission -> PermissionName",
         "HasRole.role -> RoleName",
+        "Remap.direction -> Direction",
+        "Remap.function -> Function",
         "RemoveComponent.componentType -> ComponentType",
         "SendCustomEvent.eventName -> EventName",
         "SendGlobalCustomEvent.eventName -> EventName",
@@ -189,7 +191,7 @@
     /// must name a real field on that struct in the live brdb schema, and any
     /// enum-typed config param must resolve to a real schema enum with members.
     /// Guards against game-update drift (a renamed/removed config field, or a
-    /// field that changed type). Gates absent from the component→struct pair
+    /// field that changed type). Gates absent from the component->struct pair
     /// table (pseudo/internal, or fields nested inside an emit-built sub-struct
     /// like GiveWeapon's) have no top-level struct here and are skipped.
     #[test]

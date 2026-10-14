@@ -12,7 +12,6 @@ use wirescript::{
     emit_brz,
     ir::{GateIO, Module, Node, NodeId, NodeKind, PortRef, PortSpec, SourceRange, Type, Wire},
     layout::IntVec3,
-    template_cache::TemplateCache,
 };
 
 fn rerouter_ports() -> GateIO {
@@ -26,8 +25,7 @@ fn rerouter_ports() -> GateIO {
 fn empty_module_produces_nonzero_brz_bytes() {
     let module = Module::new("phase1_empty");
     let lr = wirescript::layout::LayoutResult::default();
-    let template_cache = Arc::new(TemplateCache::new());
-    let bytes = emit_brz(&module, &lr, &EmitOptions::default(), &template_cache)
+    let bytes = emit_brz(&module, &Default::default(), &lr, &EmitOptions::default())
         .expect("empty module should still produce a valid brz (just the outer chip)");
     assert!(bytes.len() > 32, "brz bytes should be well over a header");
     // `.brz` files start with a `BRZ\0` magic then a zstd-compressed payload.
@@ -60,9 +58,8 @@ fn single_reroute_gate_inside_chip() {
         ..Default::default()
     };
 
-    let template_cache = Arc::new(TemplateCache::new());
     let bytes =
-        emit_brz(&module, &lr, &EmitOptions::default(), &template_cache).expect("emit succeeds");
+        emit_brz(&module, &Default::default(), &lr, &EmitOptions::default()).expect("emit succeeds");
     assert!(
         bytes.len() > 100,
         "one-gate brz should be at least a few hundred bytes, got {}",
@@ -117,8 +114,7 @@ fn wire_between_two_gates_produces_connection() {
         ..Default::default()
     };
 
-    let template_cache = Arc::new(TemplateCache::new());
     let bytes =
-        emit_brz(&module, &lr, &EmitOptions::default(), &template_cache).expect("emit succeeds");
+        emit_brz(&module, &Default::default(), &lr, &EmitOptions::default()).expect("emit succeeds");
     assert!(!bytes.is_empty());
 }

@@ -17,7 +17,7 @@ pub enum CeNamespace {
 
 impl CeNamespace {
     /// The namespace for an event surface name, or `None` if it is not a custom
-    /// event (`"CustomEvent"` → Personal, `"GlobalCustomEvent"` → Global).
+    /// event (`"CustomEvent"` -> Personal, `"GlobalCustomEvent"` -> Global).
     pub fn from_event_name(name: &str) -> Option<Self> {
         match name {
             "CustomEvent" => Some(CeNamespace::Personal),
@@ -492,7 +492,7 @@ pub(super) fn infer_custom_event_slots(
     ast: &Script,
     tmap: &HashMap<(Arc<str>, usize, usize), Type>,
 ) -> (CeSlotMap, Vec<Diagnostic>) {
-    // 1. Collect senders → channel → slot → first concrete wire-typed value.
+    // 1. Collect senders -> channel -> slot -> first concrete wire-typed value.
     //    (personal vs global namespaces, mirroring check_custom_event_types.)
     let mut personal: HashMap<String, HashMap<usize, Type>> = HashMap::default();
     let mut global: HashMap<String, HashMap<usize, Type>> = HashMap::default();

@@ -7,7 +7,7 @@ use wirescript::{
 
 mod analysis;
 
-fn make_loader(files_json: &str) -> MemLoader {
+pub(crate) fn make_loader(files_json: &str) -> MemLoader {
     let files: wirescript::collections::HashMap<String, String> =
         serde_json::from_str(files_json).unwrap_or_default();
     MemLoader { files }
@@ -131,12 +131,7 @@ fn compile_source_to_brz(
     .map_err(|e| match e {
         wirescript::CompileError::HasErrors(diags) => diags
             .iter()
-            .map(|d| {
-                format!(
-                    "[{}] {} ({}:{}:{})",
-                    d.code, d.message, d.range.file, d.range.start.line, d.range.start.col
-                )
-            })
+            .map(|d| d.to_string())
             .collect::<Vec<_>>()
             .join("\n"),
         other => other.to_string(),

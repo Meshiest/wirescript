@@ -184,7 +184,7 @@ pub fn user_receiver_methods(
     let recv_prim = type_from_name(type_name);
     let mut out = Vec::new();
     for sym in symbols {
-        if sym.kind != "mod" && sym.kind != "chip" {
+        if !matches!(sym.kind, "mod" | "chip" | "fn") {
             continue;
         }
         // Namespaced members (`ns.name`) are never receiver-method calls.

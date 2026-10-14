@@ -20,14 +20,14 @@ pub struct EventSpec {
     pub surface_name: &'static str,
     pub gate_class: &'static str,
     pub data: Vec<EventDataBinding>,
-    /// Positional config args (`on E("a", "b")`) → gate data-struct field
+    /// Positional config args (`on E("a", "b")`) -> gate data-struct field
     /// names, in order. Empty for events that take no config.
     pub config_positional: Vec<&'static str>,
-    /// Named config args (`on E(Name = v)`, matched case-insensitively) → gate
+    /// Named config args (`on E(Name = v)`, matched case-insensitively) -> gate
     /// data-struct field name.
     pub config_named: Vec<(&'static str, &'static str)>,
     /// Named args (`on E(name = value)`, matched case-insensitively) whose value
-    /// is WIRED into a gate INPUT port (surface name → gate input port name →
+    /// is WIRED into a gate INPUT port (surface name -> gate input port name ->
     /// the value's expected type). e.g. `zone = zoneBrick` on the zone events
     /// wires a `zone` reference into the `Zone` port. Empty for most events.
     pub input_named: Vec<(&'static str, &'static str, Type)>,

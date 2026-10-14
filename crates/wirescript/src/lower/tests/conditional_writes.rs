@@ -16,35 +16,6 @@ fn backed(m: &crate::ir::Module, name: &str) -> bool {
     drivers.len() == 1 && m.nodes[&drivers[0].source.node_id].note == Some("out_backing")
 }
 
-fn exec_reaches(m: &crate::ir::Module, from: crate::ir::NodeId, to: crate::ir::NodeId) -> bool {
-    let mut seen = crate::collections::HashSet::default();
-    let mut stack = vec![from];
-    while let Some(n) = stack.pop() {
-        if n == to {
-            return true;
-        }
-        if seen.insert(n) {
-            for w in &m.wires {
-                if w.source.node_id == n && w.target.port.as_str().starts_with("Exec") {
-                    stack.push(w.target.node_id);
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Whether store `id` writes the integer `v`, held inline or wired from a
-/// literal.
-fn stores_value(m: &crate::ir::Module, id: crate::ir::NodeId, v: i64) -> bool {
-    let is_v = |n: &crate::ir::Node| matches!(n.properties.get(&*crate::intern::sym::VALUE), Some(crate::ir::Literal::Int(x)) if *x == v);
-    is_v(&m.nodes[&id])
-        || m.wires
-            .iter()
-            .filter(|w| w.target.node_id == id && w.target.port == WirePort::Value)
-            .any(|w| m.nodes.get(&w.source.node_id).is_some_and(|n| n.gate_class == gc::LITERAL && is_v(n)))
-}
-
 /// The gate an exec output of `from` starts.
 fn chain_start(m: &crate::ir::Module, from: crate::ir::NodeId, port: WirePort) -> crate::ir::NodeId {
     m.wires

@@ -1,26 +1,15 @@
 //! `Environment.<env>.<property>`: reads and writes of an environment setting
 //! through the Get/Set Environment Property gates, typed from the property map.
 
-use wirescript::compile::{CompileInput, FoldMode, compile};
+use wirescript::compile::{FoldMode, compile};
 use wirescript::ir::{Literal, Module, Node, Type};
 
 mod common;
-
-fn lowered(src: &str) -> Module {
-    let (_, tc, lowered) = common::run_stages(src, "property_access.ws", FoldMode::Auto);
-    assert!(tc.diagnostics.is_empty(), "{:?}", tc.diagnostics);
-    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
-    lowered.module
-}
 
 fn nodes<'m>(m: &'m Module, class: &str) -> Vec<&'m Node> {
     let mut v: Vec<&Node> = m.nodes.values().filter(|n| n.gate_class == class).collect();
     v.sort_by_key(|n| n.id.0);
     v
-}
-
-fn prop(n: &Node, name: &str) -> Option<Literal> {
-    n.properties.get(&wirescript::intern::intern(name)).cloned()
 }
 
 fn handler(body: &str) -> String {
@@ -34,16 +23,16 @@ const SET: &str = "BrickComponentType_Exec_SetEnvironmentProperty";
 /// int), and its gate carries the environment and property as settings.
 #[test]
 fn environment_reads_are_typed_by_the_property() {
-    let m = lowered(&handler(
+    let m = common::lowered(&handler(
         "  f = Environment.Sky.TimeOfDay\n  c = Environment.Sky.SkyColor\n  b = Environment.Ground.IsVisible\n  i = Environment.Ambience.ReverbEffect",
-    ));
+    ), "property_access.ws");
     let gets = nodes(&m, GET);
     assert_eq!(gets.len(), 4);
     let typed: Vec<(Option<Literal>, Option<Literal>, Type)> = gets
         .iter()
         .map(|n| {
             let value = n.ports.outputs.iter().find(|p| wirescript::intern::resolve(p.name) == "Value").unwrap();
-            (prop(n, "Environment"), prop(n, "PropertyName"), value.ty.clone())
+            (common::prop(n, "Environment"), common::prop(n, "PropertyName"), value.ty.clone())
         })
         .collect();
     let s = |v: &str| Some(Literal::String(v.into()));
@@ -76,17 +65,17 @@ fn environment_reads_are_typed_by_the_property() {
 /// property's enum is written as its number.
 #[test]
 fn environment_writes_wire_their_value() {
-    let m = lowered(&handler(
+    let m = common::lowered(&handler(
         "  Environment.Sky.TimeOfDay = f + 1.0\n  Environment.Sky.SkyColor = Color(1.0, 0.5, 0.0)\n  Environment.Ambience.ReverbEffect = ReverbEffect.LongHallway",
-    ));
+    ), "property_access.ws");
     let sets = nodes(&m, SET);
     assert_eq!(sets.len(), 3);
     let fed = |n: &Node| m.wires.iter().any(|w| w.target.node_id == n.id && w.target.port.as_str() == "Value");
     assert!(fed(sets[0]), "the computed time is wired in");
     let reverb = sets[2];
     let into_value = m.wires.iter().find(|w| w.target.node_id == reverb.id && w.target.port.as_str() == "Value");
-    let baked = prop(reverb, "Value");
-    let from_literal = into_value.and_then(|w| m.nodes.get(&w.source.node_id)).and_then(|s| prop(s, "Value"));
+    let baked = common::prop(reverb, "Value");
+    let from_literal = into_value.and_then(|w| m.nodes.get(&w.source.node_id)).and_then(|s| common::prop(s, "Value"));
     assert!(
         baked == Some(Literal::Int(2)) || from_literal == Some(Literal::Int(2)),
         "LongHallway is 2: baked {baked:?}, wired {from_literal:?}"
@@ -96,12 +85,7 @@ fn environment_writes_wire_their_value() {
 /// The settings reach the save as the gate's own data.
 #[test]
 fn environment_settings_are_baked_into_the_gate() {
-    let brz = compile(CompileInput {
-        source: &handler("  Environment.Water.WaterHeight = 120.0"),
-        file: "property_access.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let brz = compile(common::input(&handler("  Environment.Water.WaterHeight = 120.0"), "property_access.ws"))
     .expect("should compile")
     .brz;
     let comps = common::world_components(&brz);
@@ -139,9 +123,9 @@ fn on_hit(body: &str) -> String {
 /// property gate fed the reference.
 #[test]
 fn component_properties_read_and_write_typed() {
-    let m = lowered(&on_hit(
+    let m = common::lowered(&on_hit(
         "    let light = r.HitBrick.AddComponent($Component/PointLight)\n    f = light.Brightness\n    light.Brightness = f * 2.0\n    light.Color = Color(1.0, 0.5, 0.0)\n    r.HitBrick.RemoveComponent($Component/PointLight)",
-    ));
+    ), "property_access.ws");
     let add = nodes(&m, "BrickComponentType_Exec_AddComponent");
     assert_eq!(add.len(), 1);
     let fed_by_add = |n: &Node| {
@@ -161,22 +145,17 @@ fn component_properties_read_and_write_typed() {
     let value_ty = get[0].ports.outputs.iter().find(|p| wirescript::intern::resolve(p.name) == "Value").map(|p| p.ty.clone());
     assert_eq!(value_ty, Some(Type::Float));
     let light = Some(Literal::Asset { asset_type: "BrickComponentTypeBase".into(), asset_name: "Component_PointLight".into() });
-    assert_eq!(prop(get[0], "ComponentType"), light);
-    assert_eq!(prop(get[0], "PropertyName"), Some(Literal::String("Brightness".into())));
-    assert_eq!(prop(add[0], "ComponentType"), light);
-    assert_eq!(prop(remove[0], "ComponentType"), light);
+    assert_eq!(common::prop(get[0], "ComponentType"), light);
+    assert_eq!(common::prop(get[0], "PropertyName"), Some(Literal::String("Brightness".into())));
+    assert_eq!(common::prop(add[0], "ComponentType"), light);
+    assert_eq!(common::prop(remove[0], "ComponentType"), light);
 }
 
 /// The component type and property reach the save the way the game stores
 /// them: the asset `BrickComponentTypeBase/Component_PointLight` and a string.
 #[test]
 fn component_settings_are_baked_as_the_game_stores_them() {
-    let brz = compile(CompileInput {
-        source: &on_hit("    let light = r.HitBrick.GetComponent($Component/PointLight)\n    light.Radius = 400.0"),
-        file: "property_access.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let brz = compile(common::input(&on_hit("    let light = r.HitBrick.GetComponent($Component/PointLight)\n    light.Radius = 400.0"), "property_access.ws"))
     .expect("should compile")
     .brz;
     let comps = common::world_components(&brz);
@@ -188,10 +167,10 @@ fn component_settings_are_baked_as_the_game_stores_them() {
 /// A reference passes to a `mod` taking `Component<PointLight>`.
 #[test]
 fn a_component_reference_passes_to_an_annotated_mod() {
-    lowered(&format!(
+    common::lowered(&format!(
         "mod brighten(l: Component<PointLight>) {{ l.Brightness = 5.0 }}\n{}",
         on_hit("    brighten(r.HitBrick.GetComponent($Component/PointLight))")
-    ));
+    ), "property_access.ws");
 }
 
 #[test]
@@ -224,11 +203,11 @@ fn a_component_reference_is_stored_as_a_component_handle() {
         "on go {",
         "var light: Component<PointLight>\nvar lights: Component<PointLight>[]\nvar byName: Map<string, Component<PointLight>>\non go {",
     );
-    let m = lowered(&src);
+    let m = common::lowered(&src, "property_access.ws");
     assert_eq!(nodes(&m, "BrickComponentType_Exec_SetComponentProperty").len(), 1);
     assert_eq!(nodes(&m, "BrickComponentType_Exec_GetComponentProperty").len(), 1);
 
-    let brz = compile(CompileInput { source: &src, file: "property_access.ws", module_name: None, fold_mode: FoldMode::Auto })
+    let brz = compile(common::input(&src, "property_access.ws"))
         .expect("should compile")
         .brz;
     let comps = common::world_components(&brz);
@@ -249,22 +228,17 @@ fn component_types_are_typed_not_any() {
     assert_eq!(param.ty, Type::Component(String::new()));
     assert_eq!(param.ty.to_string(), "Component");
     assert_eq!(Type::Component("Component_PointLight".into()).to_string(), "Component<PointLight>");
-    lowered(&format!(
+    common::lowered(&format!(
         "var held: Component[]\nmod keep(c: Component) {{ held.push(c) }}\n{}",
         on_hit("    keep(r.HitBrick.GetComponent($Component/SpotLight))")
-    ));
+    ), "property_access.ws");
 }
 
 /// Remove Component saves as the shared brick-component struct, with the
 /// component type set and nothing wired into a `Component` pin.
 #[test]
 fn remove_component_saves_its_type() {
-    let brz = compile(CompileInput {
-        source: &on_hit("    r.HitBrick.RemoveComponent($Component/PointLight)"),
-        file: "property_access.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let brz = compile(common::input(&on_hit("    r.HitBrick.RemoveComponent($Component/PointLight)"), "property_access.ws"))
     .expect("should compile")
     .brz;
     let comps = common::world_components(&brz);
@@ -297,10 +271,10 @@ fn a_component_reference_has_no_remove() {
 /// the read runs before the write on the exec chain.
 #[test]
 fn compound_assignment_reads_then_writes_a_property() {
-    let m = lowered(&format!(
+    let m = common::lowered(&format!(
         "{}",
         on_hit("    Environment.Sky.TimeOfDay += 1.0\n    let light = r.HitBrick.GetComponent($Component/PointLight)\n    light.Brightness *= 2.0")
-    ));
+    ), "property_access.ws");
     for (get, set, math) in [
         (GET, SET, "BrickComponentType_Expr_MathAdd"),
         (

@@ -1,13 +1,5 @@
 use super::*;
 
-fn count_class(m: &crate::ir::Module, class: &str) -> usize {
-    let mut n = m.nodes.values().filter(|x| x.gate_class == class).count();
-    for c in m.chips.values() {
-        n += count_class(c, class);
-    }
-    n
-}
-
 const VAR_GET: &str = "BrickComponentType_Exec_Var_Get";
 
 // In each program `v` is read for `w = v`, `w` once for the condition, and `v`

@@ -4,7 +4,7 @@
 //! through `const_eval::eval_expr` so a `const mod` call per element also
 //! qualifies, not just literals and named constants.
 use super::*;
-use super::const_params::{lower_ok, nodes_of};
+use super::const_params::lower_ok;
 
 /// A test using plain named constants (`[N, N * 2]`) would not discriminate
 /// this path — `array_elem_literal` already routes those through
@@ -259,30 +259,14 @@ fn a_plain_literal_array_still_bakes_exactly_as_before() {
 fn typecheck_never_accepts_an_initializer_that_lowering_silently_drops() {
     let src = "var t: int[] = [size(1)]\n\
                const mod size(n: int) -> int { return n * 10 }";
-    let resolved = crate::resolve(src, "test", &crate::FsLoader);
-    let tc = crate::typecheck::typecheck(
-        &resolved.ast,
-        "test",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let crate::compile::FrontEnd { resolved, typecheck: tc, lowered: out, .. } =
+        crate::compile::front_end(src, "test", None, crate::lower::FoldMode::ForceOff, &crate::FsLoader);
     let rejected = resolved
         .diagnostics
         .iter()
         .chain(tc.diagnostics.iter())
         .any(|d| d.severity == crate::diagnostic::Severity::Error);
 
-    let out = crate::lower::lower(crate::lower::LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test",
-        module_name: None,
-        template_cache: std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: crate::lower::FoldMode::ForceOff,
-        ce_slots: &crate::typecheck::CeSlotMap::default(),
-    });
     let baked = nodes_of(&out.module, crate::ir::gate_class::ARRAY_VAR)
         .first()
         .and_then(|n| n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned());

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/cli", "crates/lsp", "crates/wasm", "crates/wirescript"]
+members = ["crates/cli", "crates/lsp", "crates/wasm", "crates/wirescript", "crates/wirescript-ir"]
 resolver = "3"
 
 [profile.release]
@@ -28,3 +28,4 @@ thiserror = "2.0.12"
 brdb = { path = "../brdb/crates/brdb", default-features = false }
 # brdb = { version = "0.11.0", default-features = false }
 wirescript = { path = "crates/wirescript" }
+wirescript-ir = { path = "crates/wirescript-ir", default-features = false }

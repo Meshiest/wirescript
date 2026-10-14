@@ -46,6 +46,13 @@ pub struct Script {
     /// expression may forward-reference declarations below it (resolved in a
     /// post-declaration pass), so `@label(x)` above `var x` is valid.
     pub module_label: Option<Expr>,
+    /// A `@color(<expr>)` at the top of the file (same placement rule as
+    /// `module_label`): a Brick Property Changer on the ROOT microchip brick
+    /// sets its color, baked when constant and wired when not.
+    pub module_color: Option<Expr>,
+    /// A `@material(<expr>)` at the top of the file, as `module_color` for
+    /// the root brick's material (a `BrickMaterial`).
+    pub module_material: Option<Expr>,
     /// Which imported declarations each file named by its own imports. Filled
     /// by `resolve`; empty for a script that was only parsed.
     pub imports: std::sync::Arc<ImportScope>,
@@ -138,52 +145,16 @@ impl LayoutName {
     }
 }
 
-/// Lexical facts about one source file that survive parsing: how far each
-/// line is indented, and where its `//` comments are. The code-shaped
-/// layout reproduces the source's own shape, so it needs the text's
-/// geometry rather than the AST's.
-#[derive(Clone, Debug, Default)]
-pub struct SourceMap {
-    /// The file this map describes, spelled the way
-    /// [`SourceRange::file`] spells it. Every line number below is in this
-    /// file's numbering, so a consumer holding nodes from another file must
-    /// compare `file` before indexing anything here.
-    pub file: std::sync::Arc<str>,
-    /// Per line (0-based index): the 0-based column of the line's first
-    /// non-whitespace character. Blank and whitespace-only lines hold 0.
-    /// A 1-based [`crate::diagnostic::Pos`] line indexes this as `line - 1`.
-    pub line_indent: Vec<u32>,
-    /// `//` line comments in source order.
-    pub comments: Vec<SourceComment>,
-}
+/// The code layout's view of a source file, carried on the lowered program.
+pub use crate::ir::{SourceComment, SourceMap};
 
-/// One `//` line comment. `line`/`col` are 1-based like
-/// [`crate::diagnostic::Pos`] and point at the leading `/`.
-#[derive(Clone, Debug)]
-pub struct SourceComment {
-    pub line: u32,
-    pub col: u32,
-    /// Comment body with the `//`, one optional following space, and any
-    /// trailing whitespace removed.
-    pub text: String,
-    /// True when the comment is the only thing on its line.
-    pub own_line: bool,
-    /// True when the comment sits inside an unclosed `[` — an array literal
-    /// or a multi-line data table. These are the repetitive ones: a note per
-    /// row of a table costs a brick per row and says the same thing each
-    /// time, so the code layout leaves them out of the plane.
-    pub in_array: bool,
-}
-
-impl SourceMap {
-    /// Build the source map for `source` as if it were `file`, by running
-    /// the lexer and keeping only its map. Compilation gets its map from
-    /// the parse it already ran ([`crate::parser::ParseResult::source_map`],
-    /// carried on through [`crate::resolve::ResolveResult`]); this is the
-    /// shortcut for callers holding text and no parse, and it re-lexes.
-    pub fn from_source(source: &str, file: &str) -> SourceMap {
-        crate::lexer::lex(source, file).source_map
-    }
+/// Build the source map for `source` as if it were `file`, by running the
+/// lexer and keeping only its map. Compilation gets its map from the parse it
+/// already ran ([`crate::parser::ParseResult::source_map`], carried on through
+/// [`crate::resolve::ResolveResult`]); this is the shortcut for callers
+/// holding text and no parse, and it re-lexes.
+pub fn source_map_from_source(source: &str, file: &str) -> SourceMap {
+    crate::lexer::lex(source, file).source_map
 }
 
 // ---------- top-level declarations ----------
@@ -339,6 +310,12 @@ pub struct VarDecl {
     /// above; folded to text at lowering. At most one of `label` /
     /// `label_expr` is ever set.
     pub label_expr: Option<Expr>,
+    /// `@color(expr)`: the color of the var's storage gate bricks, set by a
+    /// Brick Property Changer. Runtime on a top-level `var`, constant
+    /// elsewhere (as `label_expr`).
+    pub color_expr: Option<Expr>,
+    /// `@material(expr)`: as `color_expr`, for the bricks' material.
+    pub material_expr: Option<Expr>,
     pub range: SourceRange,
 }
 
@@ -468,6 +445,11 @@ pub struct ChipDecl {
     /// above; folded to text at lowering. At most one of `label` /
     /// `label_expr` is ever set.
     pub label_expr: Option<Expr>,
+    /// `@color(expr)`: the color of each instance's microchip brick, a
+    /// compile-time constant. Never set on a `mod` or `fn`.
+    pub color_expr: Option<Expr>,
+    /// `@material(expr)`: as `color_expr`, for the brick's material.
+    pub material_expr: Option<Expr>,
     /// `@closed`: emit this chip's inner grid collapsed.
     pub closed: bool,
     /// `@nofold`: every IR node lowered from this declaration's subtree
@@ -484,6 +466,17 @@ pub struct ChipDecl {
 }
 
 impl ChipDecl {
+    /// The declaring keyword: `fn`, `mod` or `chip`.
+    pub fn kind_label(&self) -> &'static str {
+        if self.is_fn {
+            "fn"
+        } else if self.inline {
+            "mod"
+        } else {
+            "chip"
+        }
+    }
+
     /// True when the first parameter is the receiver marker `self`, making this
     /// mod/chip callable with method syntax: `v.method(args)` desugars to
     /// `method(v, args)`. `self` is otherwise an ordinary parameter of its
@@ -501,7 +494,6 @@ impl ChipDecl {
 /// declarations inside the body for explicit I/O ports.
 #[derive(Clone, Debug)]
 pub struct AnonChipDecl {
-    pub open: bool,
     pub body: Block,
     pub range: SourceRange,
     /// `@label("…")` display-text override for the chip's labels and header.
@@ -510,6 +502,11 @@ pub struct AnonChipDecl {
     /// above; folded to text at lowering. At most one of `label` /
     /// `label_expr` is ever set.
     pub label_expr: Option<Expr>,
+    /// `@color(expr)`: the color of the chip's microchip brick, a
+    /// compile-time constant.
+    pub color_expr: Option<Expr>,
+    /// `@material(expr)`: as `color_expr`, for the brick's material.
+    pub material_expr: Option<Expr>,
     /// `@closed`: emit this chip's inner grid collapsed.
     pub closed: bool,
 }
@@ -525,6 +522,11 @@ pub struct ForStmt {
     pub result: Option<(String, SourceRange)>,
     /// `@sliced for ...` - sets the shell's `bRunAcrossTicks`.
     pub sliced: bool,
+    /// `@label("…")` names the loop's microchip, as a `chip`'s.
+    pub label: Option<String>,
+    /// `@label(expr)`, the constant-expression form of `label`; at most one
+    /// of the two is set.
+    pub label_expr: Option<Expr>,
     pub body: Block,
     pub range: SourceRange,
 }
@@ -549,6 +551,12 @@ impl ForPat {
             ForPat::Name(_, r) | ForPat::Ignore(r) => r,
             ForPat::Record { range, .. } => range,
         }
+    }
+}
+
+impl crate::ir::plane::ForBinding for ForPat {
+    fn is_record(&self) -> bool {
+        matches!(self, ForPat::Record { .. })
     }
 }
 
@@ -591,11 +599,20 @@ pub struct RangeSource {
 pub struct EventDecl {
     pub name: String,
     pub source: Expr,
-    pub captured_body: Option<Block>,
+    /// A captured event's body, as the `on` handler it runs: its trigger,
+    /// config args, `->` output captures and body. `None` for an alias.
+    pub captured: Option<Handler>,
     /// `@nofold`: every IR node lowered from this declaration's subtree
     /// carries the `_nofold` pseudo-property (the fold pass skips it).
     pub no_fold: bool,
     pub range: SourceRange,
+}
+
+impl EventDecl {
+    /// A captured event's body. `None` for an alias.
+    pub fn captured_body(&self) -> Option<&Block> {
+        self.captured.as_ref().map(|h| &h.body)
+    }
 }
 
 /// Side of the compiled microchip that a port's outer rerouter is placed on
@@ -767,6 +784,9 @@ pub struct Handler {
     /// `false` for plain triggers and for expr triggers with no `exec =` arg
     /// (a bare `on <call> { }` value-change trigger, left untouched).
     pub expr_trigger_has_exec_arg: bool,
+    /// The `let name = on <trigger>` alias the handler was written with, and
+    /// where: `trigger` and `config` are then the alias's own.
+    pub alias: Option<(String, SourceRange)>,
     pub range: SourceRange,
 }
 

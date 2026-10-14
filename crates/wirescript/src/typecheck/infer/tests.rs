@@ -129,12 +129,12 @@ fn binop_records_op_resolution() {
 
 #[test]
 fn bad_operator_overload_diagnoses() {
-    // string + int has no arithmetic overload → WS004.
+    // string + int has no arithmetic overload -> WS004.
     let p = parse("let x = \"a\" + 1", "test");
     let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(r.diagnostics.iter().any(|d| d.code == "WS004"));
     // `&` (bitwise) has rules for int/float/bool operands only — a vector
-    // operand has no overload → WS011.
+    // operand has no overload -> WS011.
     let p2 = parse("let y = Vec(0.0, 0.0, 0.0) & 2", "test");
     let r2 = crate::typecheck::typecheck(&p2.ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(r2.diagnostics.iter().any(|d| d.code == "WS011"));

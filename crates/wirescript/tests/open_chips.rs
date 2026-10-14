@@ -15,14 +15,9 @@ out result = f.r\n";
 #[test]
 fn label_overrides_reach_the_serialized_labels() {
     use brdb::schema::BrdbValue;
-    use wirescript::{CompileInput, FoldMode};
+    
 
-    let cr = wirescript::compile::compile(CompileInput {
-        source: SRC,
-        file: "open_chips.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let cr = wirescript::compile::compile(common::input(SRC, "open_chips.ws"))
     .expect("should compile to brz");
     let mut texts: Vec<String> = Vec::new();
     for c in common::world_components(&cr.brz) {

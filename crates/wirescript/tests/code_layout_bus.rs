@@ -5,35 +5,20 @@
 //! emit contract is pinned on its own. The last test is the other half: the
 //! bus the allocator really builds, carried through emit into a world.
 
-use std::sync::Arc;
-
 use wirescript::ir::Module;
 use wirescript::layout::LayoutResult;
-use wirescript::template_cache::TemplateCache;
 
 const FILE: &str = "code_layout_bus.ws";
 /// Component instance name on a rerouter brick.
 const REROUTER: &str = "Component_Internal_Rerouter";
 
-/// resolve → typecheck → lower → layout, mirroring `examples/check_overlaps.rs`.
+/// The compiler's front end, then its layout.
 fn lowered_and_laid_out(src: &str) -> (Module, LayoutResult) {
-    let resolved = wirescript::resolve::resolve(src, FILE, &wirescript::resolve::FsLoader);
-    let tc = wirescript::typecheck::typecheck(&resolved.ast, FILE, &wirescript::typecheck::CeSlotMap::default());
-    let lowered = wirescript::lower::lower(wirescript::lower::LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: FILE,
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: wirescript::lower::FoldMode::Auto,
-        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
-    });
+    let wirescript::FrontEnd { resolved, lowered, .. } =
+        wirescript::front_end(src, FILE, None, wirescript::lower::FoldMode::Auto, &wirescript::resolve::FsLoader);
     let layout = wirescript::layout::layout_with_opts(
         &lowered.module,
-        &wirescript::layout_options_for(&resolved.ast, Some(resolved.source_map.clone())),
+        &wirescript::LayoutOptions::for_program(&wirescript::program_settings(&resolved, FILE)),
     );
     (lowered.module, layout)
 }
@@ -41,9 +26,9 @@ fn lowered_and_laid_out(src: &str) -> (Module, LayoutResult) {
 fn build(module: &Module, layout: &LayoutResult) -> brdb::World {
     wirescript::build_world(
         module,
+        &Default::default(),
         layout,
         &wirescript::EmitOptions::default(),
-        &Arc::new(TemplateCache::new()),
     )
     .expect("emit")
 }
@@ -207,9 +192,9 @@ fn an_unresolvable_bus_wire_fails_the_build() {
 
     let built = wirescript::build_world(
         &module,
+        &Default::default(),
         &layout,
         &wirescript::EmitOptions::default(),
-        &Arc::new(TemplateCache::new()),
     );
     let Err(err) = built else {
         panic!("an unresolvable bus wire must fail the build, not return Ok");
@@ -295,41 +280,13 @@ fn suppression_leaves_var_tag_lookup_intact() {
 /// line height (2.4 = element name, 1.2 = variable tag). Read back through a
 /// serialized `.brz` because component data is opaque in memory.
 fn label_texts(world: &brdb::World) -> Vec<(String, f32)> {
-    use brdb::IntoReader;
     use brdb::schema::BrdbValue;
 
-    // One scratch file per CALL, not per process: the tests in this file run
-    // on separate threads of one process, so a pid-keyed name has two of them
-    // writing and reading the same bytes and whichever reads mid-write sees a
-    // truncated archive.
-    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "ws_code_layout_bus_tags_{}_{}.brz",
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    std::fs::write(&path, world.to_brz_vec().expect("to brz")).expect("write brz");
-    let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
-
+    let save = wirescript_ir::readback::Save::read(&world.to_brz_vec().expect("to brz"));
     let mut out = Vec::new();
-    for gid in 1..32 {
-        let Ok(chunks) = reader.brick_chunk_index(gid) else {
-            break;
-        };
-        for chunk in chunks {
-            if chunk.num_components == 0 {
-                continue;
-            }
-            let (_soa, comps) = reader
-                .component_chunk_soa(gid, chunk.index)
-                .expect("read components");
-            for c in comps {
-                if let (Some(BrdbValue::String(text)), Some(BrdbValue::F32(line_height))) =
-                    (c.get("Text"), c.get("LineHeight"))
-                {
-                    out.push((text.clone(), *line_height));
-                }
-            }
+    for c in save.components() {
+        if let (Some(BrdbValue::String(text)), Some(BrdbValue::F32(line_height))) = (c.get("Text"), c.get("LineHeight")) {
+            out.push((text.clone(), *line_height));
         }
     }
     out

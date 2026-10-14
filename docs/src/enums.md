@@ -1,10 +1,10 @@
 # Enums
 
 An `enum` is a named type with a fixed set of **variants**. Each variant can be
-a bare unit (like a C enum member), or it can carry a payload -- turning the
+a bare unit (like a C enum member), or it can carry a payload, which turns the
 type into a tagged union. A value of an enum type always knows which variant
-it currently is; `match`, `if let`, and `let ... else` are how you branch on
-that and pull the payload back out.
+it currently is. Use `match`, `if let`, and `let ... else` to branch on the
+variant and pull the payload back out.
 
 Unlike [`type` aliases](types.md#record-types), which are structural, `enum`
 is **nominal**: two enums with identically-shaped variants are still different
@@ -31,7 +31,7 @@ types.
 ## Declaration
 
 Discriminants (the integer tag backing each variant) auto-number from `0`. An
-explicit `= N` resets the counter -- the next unannotated variant continues
+explicit `= N` resets the counter, so the next unannotated variant continues
 from `N + 1`. Two variants that resolve to the same value are a
 [`WS064`](diagnostics.md) error.
 
@@ -49,7 +49,7 @@ enum Shape {
 
 A single enum can freely mix unit, positional, and named variants. Whichever
 shape a variant is declared with is the shape it must be constructed and
-matched with -- see [Construction](#construction) below.
+matched with (see [Construction](#construction) below).
 
 ## Construction
 
@@ -66,15 +66,15 @@ let s = Shape.Circle(5.0)
 let b = Shape.Box { w: 1.0, h: 2.0 }
 ```
 
-Using the wrong bracket form for a variant's declared shape --
-`Shape.Circle { }` for a positional variant, or `Shape.Box(1.0, 2.0)` for a
-named one -- is a [`WS065`](diagnostics.md) error, so a variant's shape stays
+Using the wrong bracket form for a variant's declared shape, such as
+`Shape.Circle { }` for a positional variant or `Shape.Box(1.0, 2.0)` for a
+named one, is a [`WS065`](diagnostics.md) error. This keeps a variant's shape
 unambiguous for exhaustiveness checking and the LSP's fill action.
 
 ### The prelude variants
 
 `Some`, `None`, `Ok`, and `Err` (the built-in [`Option`/`Result`](#built-in-option-and-result)
-variants) are available **bare** -- no `Option.` / `Result.` qualifier needed:
+variants) are available **bare**, with no `Option.` / `Result.` qualifier:
 
 ```wirescript
 let o = Some(42)                     // T inferred = int
@@ -90,7 +90,7 @@ error.
 
 `.Discriminant` yields the variant's tag as an `int`. On a **variant path**
 (`Enum.Variant.Discriminant`) it's a compile-time constant that costs no
-gates; on a **value** it reads the tag currently stored in that value:
+gates. On a **value** it reads the tag currently stored in that value:
 
 ```wirescript
 enum Shape { Empty, Circle(float), Rect(float, float) }
@@ -111,8 +111,7 @@ out matches = s.Discriminant == Shape.Rect.Discriminant   // runtime read vs con
 ## `is`
 
 `value is Enum.Variant` asks whether the value currently holds that variant and
-yields a `bool`. It is the discriminant comparison above, spelled the way it
-reads:
+yields a `bool`. It is shorthand for the discriminant comparison above:
 
 ```wirescript
 enum Shape { Empty, Circle(float), Rect(float, float) }
@@ -129,9 +128,9 @@ An enum has no `==`: comparing two values would have to compare every payload
 slot too, so `s == Shape.Empty` is a [`WS004`](diagnostics.md) error. Test the
 variant with `is`, or compare `.Discriminant`s.
 
-The test compares tags, so a payload variant answers on its tag alone and binds
-nothing; [`match`](#match) and [`if let`](#if-let--let-else) are how a payload
-comes back out. The right side must name a variant of the same enum: `s is v`
+The test compares tags only, so a payload variant is tested by its tag and binds
+nothing. Use [`match`](#match) or [`if let`](#if-let--let-else) to get a payload
+back out. The right side must name a variant of the same enum: `s is v`
 (two values) and `s is Other.Empty` (a different enum) are errors.
 
 A test whose two sides are both compile-time constants folds away, so testing
@@ -174,22 +173,22 @@ out kind = match rebuilt {
 ```
 
 `EnumToInt(value)` and `IntToEnum(value, wrap?)` are the **gate-backed
-twins** of `.ToInt()` and `Enum.FromInt(n)`, for routing through the game's
+equivalents** of `.ToInt()` and `Enum.FromInt(n)`, for routing through the game's
 "Enum to Integer" / "Integer to Enum" gates.
 
 `EnumToInt(value)` **requires an enum argument** (an `int` or any non-enum
 is a type error) and yields an `int`. When `value` is a compile-time-known enum
 (a variant literal, or a `const` value) it **folds to the discriminant literal**
-and emits no gate; a runtime enum value instead routes through the real
+and emits no gate. A runtime enum value instead routes through the real
 `EnumToInt` gate, fed by the value's tag. For Wirescript's record enums the
-runtime gate is just reading the tag, but it is emitted so game/native enums go
+runtime gate only reads the tag, but it is emitted so game/native enums go
 through the real gate.
 
 `IntToEnum(value)` is the reverse. Its result is an enum whose **concrete
-type comes from the use site** (the annotated target or output type), exactly
-like `FromInt` and `null`; with no enum-typed context it can't tell which enum
-the integer names, which is an error. A constant `value` folds to the enum
-record directly; a runtime `value` routes through the real `IntToEnum` gate.
+type comes from the use site** (the annotated target or output type), the same
+as `FromInt` and `null`. With no enum-typed context it can't tell which enum
+the integer names, and that is an error. A constant `value` folds to the enum
+record directly, and a runtime `value` routes through the real `IntToEnum` gate.
 The optional `wrap` clamps an out-of-range tag into range.
 
 ```wirescript
@@ -198,12 +197,12 @@ enum Shape { Empty, Circle(float), Rect(float, float) }
 in tag: int
 static var s: Shape = Shape.Rect(1.0, 2.0)
 
-// EnumToInt is the gate-backed twin of ToInt / Discriminant.
+// EnumToInt is the gate-backed equivalent of ToInt / Discriminant.
 out folded = EnumToInt(Shape.Circle(1.0)) // compile-time: folds to 1, no gate
 out live = EnumToInt(s)                    // runtime: routes through the gate
 
-// IntToEnum is the gate-backed twin of FromInt; the result's enum type
-// comes from the annotated target.
+// IntToEnum is the gate-backed equivalent of FromInt. The result's enum
+// type comes from the annotated target.
 let back: Shape = IntToEnum(tag)           // runtime int -> Shape via the gate
 out kind = match back {
   Empty => 0,
@@ -217,8 +216,8 @@ out kind = match back {
 `match` branches on an enum value's variant, binding any payload as it goes.
 It works both as an **expression** (arms are values, comma-separated, and it
 compiles to a `Select` tree) and as a **statement** (arms are blocks, and it
-compiles to a `Branch`/`Union` tree). Arm patterns use bare variant names --
-the scrutinee's enum type is already known, so there's no `Enum.` qualifier.
+compiles to a `Branch`/`Union` tree). Arm patterns use bare variant names.
+The scrutinee's enum type is already known, so there's no `Enum.` qualifier.
 
 ### Expression form
 
@@ -238,8 +237,8 @@ out area = match s {
 The arms' result types follow the same
 [widening join](types.md#widening-inference) as an `if`-then-else expression.
 An arm can also be a block that ends in `return` (`A => { return 0 }`), which
-leaves the enclosing `mod` or handler instead of giving the `match` a value; a
-block arm that can end any other way is `WS095`, and so is a block arm of a value
+leaves the enclosing `mod` or handler instead of giving the `match` a value. A
+block arm that can end any other way is `WS095`. So is a block arm of a value
 `match` outside an exec context (a top-level `out` or `let`), where it never runs.
 
 An arm may be a record literal, which chooses a record per field:
@@ -268,7 +267,7 @@ on ReadBrickGrid() {
 
 A `match` must cover every variant of the scrutinee's enum, or be capped with
 a `_` wildcard arm. An uncovered variant is a [`WS054`](diagnostics.md) error
-that names the missing pattern(s) in its message; an arm that can never run
+that names the missing pattern(s) in its message. An arm that can never run
 because an earlier arm already covers everything it would match is a
 [`WS061`](diagnostics.md) warning.
 
@@ -308,8 +307,8 @@ A named-payload pattern can ignore the fields it doesn't need with `..`:
 
 An enum value is its tag plus a slot per payload field, and a port pin carries a
 single wire. So only an enum with **no payloads** crosses a port, and only a
-top-level `in` or `out` port: it travels as its tag (the `.Discriminant`), and
-the name on the other side is the enum value again, ready to `match`, compare
+top-level `in` or `out` port. It travels as its tag (the `.Discriminant`), and
+on the other side the name is the enum value again, ready to `match`, compare
 with `is`, or store. A built-in game enum has no payloads, so it crosses the same
 way. An array or map of such an enum crosses a top-level port as one column of
 tags, and each element reads back as the enum. An `out` of one is set like any
@@ -361,16 +360,17 @@ out area = match s {
 To send an enum with payloads out, expose a derived scalar, such as
 `.Discriminant` or a `match` result.
 
-A `match` scrutinee can be any enum value in storage, and a `let` that aliases
-one: an array element, a map value, and a record field all match directly
-(`match arr[i] { .. }`, or `let e = h.shape` first). The one spelling that does not is `m.get(k)`: that
-method returns a `{Value, Found}` result record rather than the value, which is
-the [`WS066`](diagnostics.md) "requires an enum scrutinee" error naming that
-shape. Subscript it (`m[k]`) or read the member (`m.get(k).Value`).
+A `match` scrutinee can be any enum value in storage, or a `let` that aliases
+one. An array element, a map value, and a record field all match directly
+(`match arr[i] { .. }`, or `let e = h.shape` first). The one spelling that
+does not is `m.get(k)`. That method returns a `{Value, Found}` result record
+rather than the value, so matching it is the [`WS066`](diagnostics.md)
+"requires an enum scrutinee" error, which names that shape. Subscript it
+(`m[k]`) or read the member (`m.get(k).Value`).
 
 ## `if let` / `let else`
 
-These are single-variant refutable binds -- shorthand for a `match` with one
+These are single-variant refutable binds, shorthand for a `match` with one
 real arm.
 
 `if let PATTERN = scrutinee { ... }` runs the `then` block (with the pattern's
@@ -393,10 +393,9 @@ on ReadBrickGrid() {
 ```
 
 `let PATTERN = scrutinee else { ... }` binds into the surrounding scope
-instead of a nested block, which is why its `else` is **required to
-diverge** -- it must end in `return` / `emit`, or be an `if`/`match` whose
-arms all diverge. That's what guarantees the binding is always available
-after the statement. A non-diverging `else` is a [`WS062`](diagnostics.md)
+instead of a nested block, so its `else` is **required to diverge**: it
+must end in `return` / `emit`, or be an `if`/`match` whose arms all diverge.
+This guarantees the binding is always available after the statement. A non-diverging `else` is a [`WS062`](diagnostics.md)
 error.
 
 ```wirescript
@@ -459,8 +458,8 @@ on go {
 The write costs one `Var_Set` per scalar field, and one per leaf for a
 record-typed field, so `track` above costs two, one for `origin` and one for
 `direction`. That is the same price as writing a record var. Because the
-assignment sits inside the arm, it only runs when the value really is that
-variant, which is what makes an in-place payload write safe.
+assignment sits inside the arm, it only runs when the value is that variant,
+which makes an in-place payload write safe.
 
 The scrutinee has to be **writable storage** for this: a `var`, a `static var`,
 a `*T` parameter, or a `var`-backed record field. Captures off a `let`, a
@@ -521,15 +520,15 @@ enum Loadout {
 ```
 
 A payload slot is a single storage gate, and it is filled by **constructing**
-the variant. There is no way to construct a container into one: a declaration
-initializer bakes an initial value, and an array has none, while a runtime
+the variant. There is no way to construct a container into one. A declaration
+initializer bakes an initial value, and an array has none. A runtime
 `Loadout.Carrying { items: [1, 2, 3] }` has no gate that assigns a whole array.
 The slot would still be allocated, so a captured `items.push(...)` compiled to a
 real gate writing storage that nothing ever filled, and the value read back
-empty. Rejecting the declaration stops that at the source.
+empty. Rejecting the declaration prevents that.
 
 The same applies to a generic enum instantiated with a container, when the
-parameter is one a variant actually stores, so `Option<int[]>` is a `WS069` at
+parameter is one a variant stores, so `Option<int[]>` is a `WS069` at
 the annotation. A parameter no variant stores is unaffected.
 
 Keep the container in its own `var` and put something scalar in the payload
@@ -585,8 +584,8 @@ The tag is asserted, never tested and never written:
   fills `Running`'s slot while `job` stays `Idle`, and a later `match` still
   takes the `Idle` arm.
 
-Prefer a destructure, which tests the tag first; reach for `unsafe` when you
-have already established the variant.
+Prefer a destructure, which tests the tag first. Use `unsafe` when you have
+already established the variant.
 
 `unsafe` is contextual, so a variable, parameter, or mod named `unsafe` keeps
 working. (The tree-sitter grammar cannot express that and treats the word as a
@@ -594,7 +593,7 @@ keyword, so an editor using it flags such a name even though it compiles.)
 
 ## Generic enums
 
-An enum can take type parameters, instantiated per use exactly like a
+An enum can take type parameters, instantiated per use the same way as a
 [generic type alias](types.md#generic-type-aliases):
 
 ```wirescript
@@ -610,8 +609,8 @@ out val = match b {
 
 ## Built-in `Option` and `Result`
 
-Wirescript ships `Option<T>` and `Result<T, E>` as prelude enums -- no
-declaration needed, and their variants are usable bare (`Some`/`None`/`Ok`/`Err`,
+Wirescript ships `Option<T>` and `Result<T, E>` as prelude enums. They need no
+declaration, and their variants are usable bare (`Some`/`None`/`Ok`/`Err`,
 see [Construction](#construction) above). They're built in as if declared:
 
 ```text
@@ -619,7 +618,7 @@ enum Option<T> { Some(T), None }
 enum Result<T, E> { Ok(T), Err(E) }
 ```
 
-Don't redeclare them yourself -- the prelude already registers both names, so
+Don't redeclare them. The prelude already registers both names, so
 an `enum Option<T> { ... }` of your own is a [`WS013`](diagnostics.md)
 duplicate-declaration error.
 
@@ -659,12 +658,12 @@ static var mode: EasingFunction = EasingFunction.Bounce
 out disc = mode.Discriminant
 ```
 
-The enum value is the default representation; `.Discriminant` gives back the
-integer the game's own schema assigns that member. That is the one place a
-built-in game enum differs from a user-declared one: a user enum's
+The enum value is the default representation, and `.Discriminant` gives back
+the integer the game's own schema assigns that member. This is the only way a
+built-in game enum differs from a user-declared one. A user enum's
 discriminants auto-number from 0, but a built-in game enum's discriminant is
-the real schema value, since it round-trips through saved component data and
-a renumbered tag would write the wrong value to the game.
+the real schema value. It round-trips through saved component data, and a
+renumbered tag would write the wrong value to the game.
 
 A built-in enum value also passes directly as the matching
 [gate config argument](builtins.md#gate-config-properties):

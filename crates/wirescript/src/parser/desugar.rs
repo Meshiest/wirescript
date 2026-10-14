@@ -3,7 +3,7 @@
 use super::*;
 
 /// Rewrite an EXPRESSION-form gate builtin into its method-call / read form:
-/// `GetVariable(v)` → `v`; `GetMapElement(m, k)` → `m.get(k)`. The container is
+/// `GetVariable(v)` -> `v`; `GetMapElement(m, k)` -> `m.get(k)`. The container is
 /// the first positional argument (resolved by name to its ref downstream, like a
 /// method receiver). Returns the original `Call` unchanged for non-builtins or a
 /// malformed shape (leaving the normal call path to diagnose it).
@@ -45,8 +45,8 @@ pub(super) fn desugar_gate_call(
 }
 
 /// Rewrite a STATEMENT-form gate builtin into the equivalent assignment:
-/// `SetVariable(v, x)` → `v = x`; `SetArrayElement(a, i, x)` → `a[i] = x`;
-/// `IncrementVariable(v, x)` → `v = v + x`. Returns `None` for anything else.
+/// `SetVariable(v, x)` -> `v = x`; `SetArrayElement(a, i, x)` -> `a[i] = x`;
+/// `IncrementVariable(v, x)` -> `v = v + x`. Returns `None` for anything else.
 pub(super) fn gate_builtin_assign(e: &Expr) -> Option<Assign> {
     use crate::catalog::gate_builtins as gb;
     let Expr::Call { callee, args, range, type_args } = e else { return None };

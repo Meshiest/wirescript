@@ -30,7 +30,7 @@ var names = ["a", "b"]       // unchanged: a string[]
 
 A generic body is checked for every type its parameter may be, and an
 unbounded `T` may be a `bool`, so `v.Length()` on a `v: T` is `WS003` even
-when every call passes a string; it compiled before. Bound the parameter:
+when every call passes a string. It compiled before. Bound the parameter:
 
 ```wirescript ignore
 mod size<T>(v: T) -> int { return v.Length() }          // before
@@ -66,8 +66,8 @@ mod scale(v: float) -> float { return v.hook() }   // after: the library's own
 ### A record or tuple written to an output with no type
 
 An output with no type is one pin, so a record or tuple written to it drove
-nothing; it is now `WS105`. Annotate the output with the record's type, which
-the message spells:
+nothing. It is now `WS105`. Annotate the output with the record's type, which
+the message spells out:
 
 ```wirescript ignore
 on go { out z = pv }       // before: an undriven pin
@@ -78,33 +78,34 @@ on go { out z: P = pv }    // after: a pin per field
 
 An expression the type check accepts but lowering cannot build compiled to a
 gate that computes nothing, with a `WSP001` warning. In a program with no other
-error it is now a `WSP001` error naming the expression and how to rewrite it,
-even when only a variable nothing reads holds it, and neither
-`// ws-ignore-line` nor `// ws-ignore-file` silences it. The message says how
-to rewrite it: a method the value's type does not list (`k.nosuch()`,
-`a.ToString()`) is replaced by one this reference lists for the type (a number
-becomes text through an interpolation, `"${a}"`).
+error it is now a `WSP001` error that names the expression and how to rewrite
+it. This applies even when the only thing holding it is a variable nothing
+reads, and neither `// ws-ignore-line` nor `// ws-ignore-file` silences it. For
+a method the value's type does not list (`k.nosuch()`, `a.ToString()`), the
+message suggests one this reference lists for the type (a number becomes text
+through an interpolation, `"${a}"`).
 
 A record or tuple held by a `var` with no type (`var v = (a, 1)`,
 `var r = m.get(k)` on a map of records) is held as its type, field by field,
-as the annotated `var` is; it was a placeholder or read its fields as a
-vector's.
+the same as in an annotated `var`. Before, it was a placeholder or read its
+fields as a vector's.
 
 ### A name declared twice at the top level is read by position
 
 A file's top level may declare a name again (`const ch = "a"`, later
-`const ch = "b"`, or a `let` beside a `var` of the name); `WS108` warns at the
-later one. Every read now names the declaration written before it, for values
-and for constant-only settings alike: a `mod`, `chip` or `const mod` body as
-read where it is declared, the first declaration when it is above all of them,
-and storage, which is declared ahead of everything, above every declaration. A
-library imported flat or by name reads its own duplicates so too, however the
-program reaches it; one imported `import * as` reads its last declaration
-everywhere (`WS108` says so). A `var` initializer reads the declaration before
-the `var`, so `let k = 5` then `var k: int = k` starts the var at 5 again. A constant-only setting (an event name, a
-`Sleep` delay, a folded `if`) and another constant's initializer read the FIRST
-declaration before, while a value read the latest, so one handler could store
-`"b"` and send on `"a"`.
+`const ch = "b"`, or a `let` beside a `var` of the name), and `WS108` warns at
+the later one. Every read now names the declaration written before it, for
+values and for constant-only settings alike. This covers a `mod`, `chip` or
+`const mod` body (read as if where it is declared, so it gets the first
+declaration when it is above all of them) and storage (declared ahead of
+everything, so read as if above every declaration). A library imported flat or
+by name reads its own duplicates the same way, however the program reaches it.
+A library imported with `import * as` reads its last declaration everywhere
+(`WS108` says so). A `var` initializer reads the declaration before the `var`,
+so `let k = 5` then `var k: int = k` starts the var at 5 again. Before, a
+constant-only setting (an event name, a `Sleep` delay, a folded `if`) and
+another constant's initializer read the first declaration, while a value read
+the latest, so one handler could store `"b"` and send on `"a"`.
 
 ```wirescript ignore
 const ch = "a"
@@ -116,11 +117,11 @@ on go { s = ch
 ### Constants that read as integers
 
 A negated integer constant (`--2`, `-(-K)`, `-K`) is an integer in both fold
-modes; with folding on it was stored as a float
+modes. With folding on it was stored as a float
 (`MathNegate` gives a float). Negating the least `int` is `WS028`.
 A float constant used as an array or string index, a range bound or a `count`
 is the integer it truncates to (`WS106`, or `WS028` when no `int` holds it), as
-in every other `int` place; `0..2.5` ran three times. A `.step` stride keeps a
+in every other `int` place. Before, `0..2.5` ran three times. A `.step` stride keeps a
 float value, and one that is not greater than zero, integer or float, is
 `WS077`. An integer literal given to a `bool` parameter is the bool it names,
 and a bool literal given to an `int` parameter the integer.
@@ -143,8 +144,8 @@ A signal is declared with `let s: exec`, which also accepts an alias of `exec`
 (`let s: Signal` for `type Signal = exec`). An initializer on it is `WS101`:
 it was dropped, so `s` fired only on `emit s` and never when the signal it
 named did. To run code when another signal fires, write `on <signal> { .. }`.
-`const s: exec` is one `WSP001` asking for a value (it was `WS046`): a `const`
-is a value known while compiling, never a signal.
+`const s: exec` is a single `WSP001` asking for a value (it was `WS046`). A
+`const` is a value known while compiling, never a signal.
 
 ```wirescript ignore
 let done: exec = go2     // before: `= go2` was dropped
@@ -154,17 +155,18 @@ let done: exec           // after
 ### A `var` initializer reads the names around it
 
 A `var` initializer is evaluated before the variable exists, as a `let`'s is.
-`var K = K + 1` reads the outer `K`; it read the variable being declared, and
-the reads after it saw the value from before the initializer ran. With no outer
-name of its own, `var x = x + 1` is `WS002`, saying the initializer cannot read
-the variable it declares: declare it without one (`var x: int`), or initialize
-it from another value. In a `mod` or `chip` body a read above a `var` of the
-same name, and its own initializer, read what the name means there (an outer
-binding, a constant, an enum or a bare variant), as the type check always did,
-where they read the body's own `var`: `var Blue: int = EnumToInt(Blue) + p`
-reads the variant `Blue`. The idiom `static var z: int = z`, whose initializer
-read the variable being declared, is `WS002` the same way: write
-`static var z: int`, which keeps its value across calls with no initializer.
+`var K = K + 1` reads the outer `K`. It used to read the variable being
+declared, and the reads after it saw the value from before the initializer ran.
+With no outer name of its own, `var x = x + 1` is `WS002`, which says the
+initializer cannot read the variable it declares. Declare it without one
+(`var x: int`), or initialize it from another value. In a `mod` or `chip` body,
+a read above a `var` of the same name, and that `var`'s own initializer, read
+what the name means there (an outer binding, a constant, an enum or a bare
+variant), as the type check always did. They used to read the body's own
+`var`. For example, `var Blue: int = EnumToInt(Blue) + p` reads the variant
+`Blue`. The idiom `static var z: int = z`, whose initializer read the variable
+being declared, is `WS002` the same way. Write `static var z: int` instead,
+which keeps its value across calls with no initializer.
 
 ```wirescript ignore
 const K = 4
@@ -177,24 +179,24 @@ static var z: int              // after
 
 A record of the program's own (a record literal, or a parameter, `var`, field,
 element or call of a record type) written where one value goes is `WS003`,
-naming a field to read: a `return`, `emit` or `out` of one value, an
-assignment, an argument, an operand, a comparison, a condition or an
-interpolated part. It compiled: a `return` or `emit` to a mod's `int` output
-stored the exec wire, `mk(a) + 1` and `"${mk(a)}"` read the exec wire too,
-`m.get(k) + 1` on a map of records read one field, and other places were
-placeholders. A multi-output read (`x = Edge(b)`, `n = fs.max()`, a call of a
-`mod` or `chip` with several outputs, flat, through `import * as` or as a
-method) is not a record of the program's own: where one value goes it gives
-its first output, converted as a value of that output's type is, whether it
-is written inline or held in a `let`, a record field or a tuple
-(`let t = { m: fs.max() }` then `f = t.m`), returned, sent or chosen. One
-whose first output is itself a record (`-> (p: R, q: int)`) is `WS003` there
-too: the first output is read once, never a field of it. A generic body is
-checked for every member of its bound, so one that reads such a value as an
-operand (`m.get(k) + 1` in `mod f<T: R | int>(m: Map<string, T>)`) is `WS003`
-at its definition even if no call uses the record member: narrow the bound.
-A tuple pattern takes
-a multi-output read's outputs in the order they are declared
+and the message names a field to read. This covers a `return`, `emit` or `out`
+of one value, an assignment, an argument, an operand, a comparison, a
+condition or an interpolated part. It used to compile. A `return` or `emit` to
+a mod's `int` output stored the exec wire, `mk(a) + 1` and `"${mk(a)}"` read
+the exec wire too, `m.get(k) + 1` on a map of records read one field, and
+other places were placeholders. A multi-output read (`x = Edge(b)`,
+`n = fs.max()`, a call of a `mod` or `chip` with several outputs, flat,
+through `import * as` or as a method) is not a record of the program's own.
+Where one value goes, it gives its first output, converted as a value of that
+output's type is. This holds whether it is written inline or held in a `let`,
+a record field or a tuple (`let t = { m: fs.max() }` then `f = t.m`),
+returned, sent or chosen. One whose first output is itself a record
+(`-> (p: R, q: int)`) is `WS003` there too, because the first output is read
+once, never a field of it. A generic body is checked for every member of its
+bound, so one that reads such a value as an operand (`m.get(k) + 1` in
+`mod f<T: R | int>(m: Map<string, T>)`) is `WS003` at its definition even if
+no call uses the record member. Narrow the bound. A tuple pattern takes a
+multi-output read's outputs in the order they are declared
 (`let (v, e) = fs.pop()` binds `Value` then `IsEmpty`).
 
 ```wirescript ignore
@@ -238,7 +240,7 @@ Each of these compiled before, to something other than what the source says:
   `*E`, or pass the tag and payload as plain values.
 - `WS004`: arithmetic on a `*T` field of a call's result or of a record an
   `if`/`match` chooses (`mk().x + 1`), which read the var the field names.
-  The field is a ref there, as everywhere: read through it with `*mk().x`.
+  The field is a ref there, as it is everywhere. Read through it with `*mk().x`.
 - `WS090`: a `mod` or `chip` with a value output and a path that ends before
   the output has a value (`if c { return a }` with nothing after), which gave
   the value another path or the previous call set. Return a value on every
@@ -277,19 +279,19 @@ Each of these compiled before, to something other than what the source says:
   fill them in order.
 
 A float constant that is the whole value of an `int` place is the integer it
-truncates to, in a `const` and a `let` as in a `var`, with a `WS106` warning:
+truncates to, in a `const` and a `let` as in a `var`, with a `WS106` warning.
 `const K: int = 2.5` reads 2, and `n = 2.5` for an `int` var writes 2. Both
 kept 2.5 before. The constant is an integer wherever it then goes (`var u = K`
-is an `int`), and a chip argument, a field of a record or tuple literal and
-a field of a record or tuple literal truncate the same way (a record or tuple
+is an `int`), and a chip argument and a field of a record or tuple literal
+truncate the same way (a record or tuple
 literal with such a field was `WS003`). The data of a custom event is not such
-a place: a value is sent as the type it has, and a receiver that declares the
-other number type still warns `WS030`. A constant gate setting stored as another value than written
-(`SleepTicks(_, delay = 0.999)` waits 0 ticks) now warns `WS106` too. Write the
-stored value to silence either.
+a place. A value is sent as the type it has, and a receiver that declares the
+other number type still warns `WS030`. A constant gate setting stored as a
+different value than the one written (`SleepTicks(_, delay = 0.999)` waits 0
+ticks) now warns `WS106` too. Write the stored value to silence either.
 
-A line that starts with `*` begins a new statement, a deref: `n = a` followed
-by a line `*h` was `n = a * h`. A deref nothing uses warns (`WSP001`). To
+A line that starts with `*` begins a new statement (a deref). Before, `n = a`
+followed by a line `*h` was `n = a * h`. A deref nothing uses warns (`WSP001`). To
 multiply across lines, end the first line with `*`.
 
 A `mod` or `chip` body uses the names where it is declared: a caller's own
@@ -298,14 +300,14 @@ uses the outer `var`, and the local gets a `WS091` warning. Rename the local,
 or pass it to the call.
 
 A failed compile on the command line now ends each error with where it is,
-`(file.ws:line:col)`; a script reading the output sees that suffix.
+`(file.ws:line:col)`. A script reading the output sees that suffix.
 
 ## 1.1.0
 
 ### Event handlers bind outputs with `->`
 
 An event's data outputs are captured in a trailing `-> (…)` (tuple, positional;
-the cleanest form) or `-> { … }` (record, by field name), **not** inside the
+the cleanest form) or `-> { … }` (record, by field name), not inside the
 event call. The event call's parens now hold **config/inputs only** (a
 custom-event channel, `isObject`, `zone`, `interval`, a `ChatCommand` name/help).
 Binding outputs inside the call is an error.

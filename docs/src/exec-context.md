@@ -1,6 +1,6 @@
 # Execution Context
 
-Understanding exec vs pure context is fundamental to writing correct Wirescript. This distinction reflects how Brickadia's wire graph engine actually executes: some gates define continuous signal relationships (pure), while others execute imperatively in response to events (exec).
+Understanding exec vs pure context is fundamental to writing correct Wirescript. This distinction reflects how Brickadia's wire graph engine executes: some gates define continuous signal relationships (pure), while others execute imperatively in response to events (exec).
 
 <!-- toc -->
 ## Contents
@@ -75,7 +75,7 @@ The typechecker emits error **WS007** when any of these appear outside exec cont
 
 ```wirescript
 var n: int = 0
-n = 1              // ERROR: WS007 -- var write 'n' outside an exec context
+n = 1              // WS007 error: var write 'n' outside an exec context
 ```
 
 ## How to Enter Exec Context
@@ -107,7 +107,7 @@ on CharacterDied() -> (c) {
   count = count + 1
 }
 
-// This code runs in exec context -- after EITHER handler fires,
+// This code runs in exec context. After either handler fires,
 // the exec chain continues here:
 if count > 10 {
   // ...
@@ -138,14 +138,14 @@ let r = Random(0, 10, exec = myTrigger)
 
 This wires `myTrigger` as the exec input of the Random gate.
 
-The same convention works for **any** exec gate, array and map methods
-included. Because the trigger, not the surrounding chain, drives the gate, the
-call becomes a *leaf* and is legal in a **pure** sink. A per-index,
+The same convention works for any exec gate, including array and map methods.
+The trigger drives the gate instead of the surrounding chain, so the call
+becomes a *leaf* and is legal in a pure sink. A per-index,
 always-nonzero trigger like `i + 1` turns an array/map read into a single-gate
 lookup wired straight from an `out` binding:
 
 ```wirescript
-out c: color = lut.get(i, exec = i + 1).Value   // pure — no handler needed
+out c: color = lut.get(i, exec = i + 1).Value   // pure, no handler needed
 let v = scores.get(k, exec = Change(k).exec)     // re-reads when k changes
 ```
 
@@ -156,7 +156,7 @@ field on the result record, so callers can `await r.exec` or `on r.exec { }`,
 or write `on f(args, exec = trigger) -> (results) { }` directly. A `fn` call's
 completion is its Function Call's `Completed`, so it is there even when the
 `fn` returns nothing. See [Exec Chips](chips.md#exec-chips) and
-[`fn`](statements.md#fn----function).
+[`fn`](statements.md#fn-function).
 
 ## Reading Variables: Exec vs Pure
 
@@ -181,7 +181,7 @@ You can also use `*x` as an **explicit deref**. It compiles to the same `Var_Get
 ```wirescript
 on tick {
   let a = x    // implicit deref via Var_Get
-  let b = *x   // explicit deref — identical result
+  let b = *x   // explicit deref, identical result
 }
 ```
 
@@ -189,9 +189,9 @@ on tick {
 
 ### In Pure Context
 
-In pure context, a bare name `x` reads the var's value directly, from the
-PseudoVar's `Value` port, the same value `.Value` and `.prev` read (see the
-note above). `&x` is `x`'s ref as a value. An unannotated `out` fed a bare
+In pure context, a bare name `x` reads the var's value directly from the
+PseudoVar's `Value` port. This is the same value `.Value` and `.prev` read
+(see the note above). `&x` is `x`'s ref as a value. An unannotated `out` fed a bare
 variable name is flagged (`WS017`): annotate it `T` for the value, or write
 `out h: *T = &x` for the ref. A `*T` output carries a ref, so a bare `x` there
 is a type mismatch (`WS003`). See [Reference values](types.md#reference-values).
@@ -275,8 +275,8 @@ the call has finished. Reading `.exec` off the call instead binds the call's own
 exec output as an `exec` value and leaves the chain where it was, so the call
 runs as a branch and the following statement runs right away.
 
-`emit` in value position is the other half. It names the exec chain point the
-handler has reached, typed `exec`, which is what a branch forks from.
+`emit` in value position names the exec chain point the handler has reached,
+as a value of type `exec`. A branch forks from that point.
 
 ```wirescript
 var m: int = 0
@@ -333,7 +333,7 @@ call still runs.
 whose body runs exec statements. A `mod` whose body is all values has no
 completion to name, and `.exec` on it is `WS043`.
 
-`emit` as a value is meaningful in exec context alone. Pure context has no chain
+`emit` as a value is meaningful only in exec context. Pure context has no chain
 point to name, so it reports WS007 rather than resolving to nothing.
 
 ## Exec Context in Conditional Expressions vs Statements
@@ -345,7 +345,7 @@ There are two different `if` constructs with different context requirements:
 The `if-then-else` expression is pure: it selects between two values based on a condition and produces a value. No exec context needed.
 
 ```wirescript
-// Pure -- works anywhere
+// Pure, works anywhere
 let abs = if x < 0 then -x else x
 let label = if count == 1 then "item" else "items"
 ```
@@ -355,7 +355,7 @@ let label = if count == 1 then "item" else "items"
 The `if` statement conditionally executes a block. It requires exec context.
 
 ```wirescript
-// Exec -- must be inside a handler or after one
+// Exec: must be inside a handler or after one
 on trigger {
   if score > highScore {
     highScore = score
@@ -385,7 +385,7 @@ on trigger {
 
 ## Await
 
-`await` suspends the current exec chain and resumes when the awaited expression fires. It rewires `ctx.current_exec`: no state machine, just exec redirection.
+`await` suspends the current exec chain and resumes when the awaited expression fires. It rewires `ctx.current_exec`. There is no state machine, only exec redirection.
 
 ```wirescript
 on start {
@@ -443,7 +443,7 @@ An `emit` after an `await` of the same signal is a loop back-edge. It must be
 buffered, with `buffer emit` (1 tick) or `buffer(N)` / `buffer(0.5s)`, because
 every wire-graph cycle must cross a tick barrier (**WS005**). Each iteration
 then advances one buffer period. Loop state lives in `var`s (persist across
-iterations, reset per call) or rides the signal as a ferried payload
+iterations, reset per call) or is carried on the signal as a ferried payload
 (`emit loop = { ... }` / `let { ... } = await loop`). See
 [statements: Loops](statements.md#loops) for the full pattern and its
 per-gate cost.
@@ -460,13 +460,13 @@ if index < arr.length() {
 }
 ```
 
-**The entry kick must be buffered too, not just the back edge.** `emit` fires
-immediately, while the `await` on the next line is what ARMS the resume, so a
-plain `emit loop` is gone before anything is listening: the chain parks at the
-await, neither branch is ever reached, and no completion signal is emitted.
-There is no diagnostic, and the statements before the await still run, so it
-reads as half-working rather than stopped. `buffer emit` lands on the following
-tick, after the await has armed.
+**The `emit` that starts the loop must be buffered as well as the back edge.**
+`emit` fires immediately, and the `await` on the next line is what arms the
+resume. A plain `emit loop` therefore fires before anything is listening. The
+chain parks at the await, neither branch is ever reached, and no completion
+signal is emitted. There is no diagnostic, and the statements before the await
+still run, so the program looks half-working instead of stopped. `buffer emit`
+lands on the following tick, after the await has armed.
 
 ### Sleep / SleepTicks
 
@@ -489,7 +489,7 @@ on start {
 ### Important Notes
 
 - `await` only works in exec context, because it modifies the exec chain.
-- `await` works inside `if` blocks naturally.
+- `await` works inside `if` blocks.
 - Each `await` creates an armed flag (static bool) that guards the continuation. The continuation fires exactly once per arming.
 - `_` inside `await` is typed as `bool` (the armed flag). It is only valid inside `await` expressions.
 - `let foo = await 1` is valid but dangerous: the pure value pulses once, so the continuation runs immediately and never again.

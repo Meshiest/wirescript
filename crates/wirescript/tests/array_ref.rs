@@ -1,15 +1,11 @@
-use std::sync::Arc;
 
 use wirescript::ir::{gate_class, Module};
-use wirescript::lower::{lower, LowerInput};
-use wirescript::template_cache::TemplateCache;
-use wirescript::typecheck::{typecheck, CeSlotMap};
-use wirescript::{compile, resolve, CompileInput, FsLoader, FoldMode, Severity};
+use wirescript::{compile, FsLoader, FoldMode, Severity};
 
 mod common;
 
 fn compiles(src: &str) -> bool {
-    compile(CompileInput { source: src, file: "test", module_name: None, fold_mode: FoldMode::Auto }).is_ok()
+    compile(common::input(src, "test")).is_ok()
 }
 
 #[test]
@@ -53,14 +49,15 @@ var framebuf: int[]
 out display: int[] = framebuf
 in player: character
 on player { framebuf.push(42) }";
-    let r = compile(CompileInput { source: src, file: "test", module_name: None, fold_mode: FoldMode::Auto });
+    let r = compile(common::input(src, "test"));
     assert!(r.is_ok(), "out array should compile: {:?}", r.err());
 }
 
 /// Gate count of `class` in `m`, including nested chip modules.
 fn count_gate_class(m: &Module, class: &str) -> usize {
-    m.nodes.values().filter(|n| n.gate_class == class).count()
-        + m.chips.values().map(|c| count_gate_class(c, class)).sum::<usize>()
+    let mut n = 0;
+    m.walk(&mut |_, sub| n += sub.nodes.values().filter(|x| x.gate_class == class).count());
+    n
 }
 
 /// KNOWN PRE-EXISTING COMPILER DEFECT, unrelated to const evaluation: a
@@ -113,30 +110,18 @@ on go {
   var r: int[] = build(2)
   BroadcastChatMessage(\"\" .. r.length())
 }";
-    let resolved = resolve(src, "test.ws", &FsLoader);
+    let wirescript::FrontEnd { resolved, typecheck: tc, lowered, .. } =
+        wirescript::front_end(src, "test.ws", None, FoldMode::ForceOff, &FsLoader);
     assert!(
         resolved.diagnostics.iter().all(|d| d.severity != Severity::Error),
         "resolve errors: {:?}",
         resolved.diagnostics
     );
-    let tc = typecheck(&resolved.ast, "test.ws", &CeSlotMap::default());
     assert!(
         tc.diagnostics.iter().all(|d| d.severity != Severity::Error),
         "typecheck errors: {:?}",
         tc.diagnostics
     );
-    let lowered = lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test.ws",
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: FoldMode::ForceOff,
-        ce_slots: &CeSlotMap::default(),
-    });
     // No ERROR diagnostic — the program "compiles" cleanly end to end. That
     // silence (plus a value that still type-checks as `int[]`) is exactly
     // why nobody noticed: there is nothing red to see.

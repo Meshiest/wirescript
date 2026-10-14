@@ -41,7 +41,7 @@ pub(super) fn trigger_to_expr(t: &Trigger) -> Expr {
 /// `exec =` intent is still seen. Used to flag the `Handler` so lowering can
 /// reject an `exec =` whose callee has no completion exec (WS043) instead of
 /// silently orphaning it.
-fn expr_call_has_exec_arg(e: &Expr) -> bool {
+pub(super) fn expr_call_has_exec_arg(e: &Expr) -> bool {
     match e {
         Expr::Call { args, .. } => args
             .iter()
@@ -62,7 +62,7 @@ impl<'a> Parser<'a> {
     /// If, after scanning that pattern, the next real token is `{` or `(`
     /// (body / params), the trigger is simple.  Any other token (e.g. `&&`,
     /// `||`, `+`, a literal, …) means the user wrote an expression trigger.
-    fn looks_like_expr_trigger(&self) -> bool {
+    pub(super) fn looks_like_expr_trigger(&self) -> bool {
         let mut i = self.pos;
         let len = self.tokens.len();
         let get = |idx: usize| -> &Token {
@@ -131,7 +131,7 @@ impl<'a> Parser<'a> {
             }
             // Must see an ident for a simple trigger.
             if i >= len || get(i).kind != TokenKind::Ident {
-                // Non-ident at atom start → expression trigger (e.g. a literal
+                // Non-ident at atom start -> expression trigger (e.g. a literal
                 // or a `(` grouping used as expression, not trigger grouping).
                 // Actually `(` is also valid for trigger grouping; treat as
                 // expression only when it's not an ident or `!`.
@@ -148,12 +148,12 @@ impl<'a> Parser<'a> {
                             i += 1;
                         }
                         if i < len && get(i).kind == TokenKind::LParen {
-                            has_value_postfix = true; // method call → value expr
+                            has_value_postfix = true; // method call -> value expr
                             i = skip_balanced(i);
                         }
                     }
                     TokenKind::LBracket => {
-                        has_value_postfix = true; // index → value expr
+                        has_value_postfix = true; // index -> value expr
                         i = skip_balanced(i);
                     }
                     _ => break,
@@ -199,7 +199,12 @@ impl<'a> Parser<'a> {
         // (WS043) an `exec =` whose callee exposes no completion exec.
         let mut expr_trigger_has_exec_arg = false;
 
-        let trigger = if self.looks_like_expr_trigger() {
+        // `on name` for a `let name = on <trigger>` alias is that trigger,
+        // with its config args, as if written here.
+        let alias = self.event_alias_at_head();
+        let trigger = if let Some((_, t, _)) = &alias {
+            t.clone()
+        } else if self.looks_like_expr_trigger() {
             // `on <expr> { body }` — desugar into:
             //   let _on_expr_N = <expr>
             //   on _on_expr_N { body }
@@ -236,14 +241,19 @@ impl<'a> Parser<'a> {
         // An event trigger is a CALL, uniform with `on <call> -> (…)` — `on
         // RoundStart { }` must be written `on RoundStart() { }`. Recover as
         // if `()` were present so the rest of the handler parses.
-        self.require_event_call_parens(&trigger);
+        if alias.is_none() {
+            self.require_event_call_parens(&trigger);
+        }
 
         // Trigger args: the event call's parens hold config ONLY — string/
         // number literals and `name = value` pairs (e.g. `on ChatCommand("greet",
         // Description = "Greets you")`). Binding the event's data outputs is
         // done exclusively via a trailing `-> <pattern>` capture, parsed below.
         let mut params: Vec<HandlerParam> = Vec::new();
-        let mut config: Vec<HandlerConfigArg> = Vec::new();
+        let (alias, mut config) = match alias {
+            Some((name, _, config)) => (Some(name), config),
+            None => (None, Vec::new()),
+        };
         if self.match_tok(TokenKind::LParen, None).is_some() {
             // How many POSITIONAL config slots this trigger's event declares
             // (`CustomEvent`/`GlobalCustomEvent`: one, the channel name;
@@ -331,6 +341,7 @@ impl<'a> Parser<'a> {
             body,
             no_fold,
             expr_trigger_has_exec_arg,
+            alias,
             range: self.make_range(start, end),
         }
     }
@@ -342,7 +353,7 @@ impl<'a> Parser<'a> {
     /// capture's bindings. `trigger` is the already-parsed handler trigger (used
     /// to reject records on custom events and, for records, to resolve field
     /// names against `catalog::events::find_event`'s data order).
-    fn parse_handler_arrow_pattern(&mut self, trigger: &Trigger, params: &mut Vec<HandlerParam>) {
+    pub(super) fn parse_handler_arrow_pattern(&mut self, trigger: &Trigger, params: &mut Vec<HandlerParam>) {
         // `params` is always empty on entry: the trigger-args loop above
         // never produces params (there is no inline data-param parsing), so
         // there is nothing here to guard against.
@@ -535,6 +546,54 @@ impl<'a> Parser<'a> {
                 .collect(),
             None => Vec::new(),
         }
+    }
+
+    /// The trigger and config args of the `let name = on <trigger>` alias the
+    /// handler head names (`on name {`, `on name -> (..)`, `on name()`),
+    /// consuming the name, its ranges moved to where it is written: the name
+    /// and where it is, the trigger and the config args.
+    fn event_alias_at_head(&mut self) -> Option<((String, SourceRange), Trigger, Vec<HandlerConfigArg>)> {
+        if self.peek().kind != TokenKind::Ident
+            || !matches!(self.peek_at(1).kind, TokenKind::LBrace | TokenKind::Arrow | TokenKind::LParen)
+        {
+            return None;
+        }
+        let (trigger, config) = self.event_aliases.get(&self.peek().text)?.clone();
+        let tok = self.advance();
+        let at = self.make_range(tok.start, tok.end);
+        let range = at.clone();
+        let trigger = match trigger {
+            Trigger::Ident { name, .. } => Trigger::Ident { name, range },
+            Trigger::Field { obj, field, .. } => Trigger::Field { obj, field, range },
+            Trigger::Not { inner, .. } => Trigger::Not { inner, range },
+            Trigger::Union { parts, .. } => Trigger::Union { parts, range },
+        };
+        Some(((tok.text, at), trigger, config))
+    }
+
+    /// The config args of an aliased event call, `let x = on Clock(interval =
+    /// 1.0)`: a positional value or `name = value` each, as a handler's event
+    /// call takes them. None without parens.
+    pub(super) fn parse_alias_config(&mut self) -> Vec<HandlerConfigArg> {
+        let mut config = Vec::new();
+        if self.match_tok(TokenKind::LParen, None).is_none() {
+            return config;
+        }
+        while !self.check(TokenKind::RParen, None) && self.peek().kind != TokenKind::Eof {
+            if self.check(TokenKind::Ident, None) && self.peek_at(1).kind == TokenKind::Op && self.peek_at(1).text == "=" {
+                let name = self.expect(TokenKind::Ident, None).text;
+                self.expect(TokenKind::Op, Some("="));
+                let value = self.parse_expr();
+                config.push(HandlerConfigArg::Named { name, value });
+            } else {
+                config.push(HandlerConfigArg::Positional(self.parse_expr()));
+            }
+            if self.match_tok(TokenKind::Comma, None).is_none() {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen, None);
+        config
     }
 
     /// An event trigger is a CALL — `on RoundStart()` / `let x = on

@@ -32,7 +32,7 @@
         std::fs::write(&file, source).unwrap();
 
         let canonical_uri = Url::from_file_path(&file).unwrap();
-        // Same file, percent-encoded spelling → a different Url value.
+        // Same file, percent-encoded spelling -> a different Url value.
         let respelled = canonical_uri.as_str().replacen("main.ws", "mai%6E.ws", 1);
         let client_uri = Url::parse(&respelled).unwrap();
         assert_ne!(client_uri, canonical_uri, "respelling must differ as a Url");
@@ -91,6 +91,18 @@
     }
 
     #[test]
+    fn a_send_custom_event_offers_its_event_name_not_its_target() {
+        for call in ["SendCustomEvent", "SendGlobalCustomEvent"] {
+            let src = format!("in go: exec
+on go {{ {call}( }}");
+            let col = src.lines().nth(1).unwrap().find('(').unwrap() + 1;
+            let got = labels(&src, 1, col);
+            assert!(got.iter().any(|l| l == "eventName"), "{call}: {got:?}");
+            assert!(!got.iter().any(|l| l.starts_with("target")), "{call}: {got:?}");
+        }
+    }
+
+    #[test]
     fn completion_inside_nested_block_isolates_from_outer_context() {
         // Cursor inside a `$```…``` ` block: the outer SpawnPrefab param names
         // (`velocity`, `offset`, `lifetime`) must NOT leak in; the block is
@@ -129,7 +141,7 @@
             "./enemies/tank.brz".to_string(),
             "./notes.txt".to_string(), // not a candidate; excluded by the scan
         ];
-        // `SpawnPrefab(prefab = $./t` → offers the `./t…` prefab paths.
+        // `SpawnPrefab(prefab = $./t` -> offers the `./t…` prefab paths.
         let src = "on x { SpawnPrefab(prefab = $./t) }";
         let col = src.find("$./t").unwrap() + "$./t".len();
         let got = labels_with_prefabs(src, 0, col, &prefabs);
@@ -151,7 +163,7 @@
 
     #[test]
     fn asset_ref_completes_types_then_names() {
-        // After `$` → asset types.
+        // After `$` -> asset types.
         let src = "let w = $";
         let ls = labels(src, 0, 9);
         assert!(ls.iter().any(|l| l == "BRItemBase"), "asset type missing: {ls:?}");
@@ -159,7 +171,7 @@
         // It's an isolated context — keywords/functions must not leak in.
         assert!(!ls.iter().any(|l| l == "if"), "keyword leaked into $ completion");
 
-        // After `$BRItemBase/` → asset names of that type.
+        // After `$BRItemBase/` -> asset names of that type.
         let src2 = "let w = $BRItemBase/";
         let ls2 = labels(src2, 0, 20);
         assert!(ls2.iter().any(|l| l == "Weapon_Pistol"), "asset name missing: {ls2:?}");
@@ -648,7 +660,7 @@
                 docs: Mutex::new(HashMap::new()),
                 foreign_diags: Mutex::new(HashMap::new()),
                 watch_files: std::sync::atomic::AtomicBool::new(false),
-                change_gen: std::sync::atomic::AtomicU64::new(0),
+                changes: Mutex::new(HashMap::new()),
             });
         service
     }
@@ -768,6 +780,45 @@
         let dir = std::env::temp_dir().join(format!("ws-lsp-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// The `$`/`/` that triggers a completion is still in `did_change`'s
+    /// debounce when the request arrives; completion must read that text, not
+    /// the last analysed one.
+    #[tokio::test]
+    async fn completion_reads_the_undebounced_keystroke() {
+        let uri = Url::parse("file:///c:/t/main.ws").unwrap();
+        let service = build_backend();
+        let complete = |typed: &'static str| {
+            let service = &service;
+            let uri = uri.clone();
+            async move {
+                let analysed = "in b: brick\non go {\n  b.GetComponent()\n}\n";
+                let newest = format!("in b: brick\non go {{\n  b.GetComponent({typed})\n}}\n");
+                open_doc(service, &uri, analysed);
+                service.inner().changes.lock().unwrap().insert(uri.clone(), (1, newest));
+                let col = format!("  b.GetComponent({typed}").len() as u32;
+                let resp = service
+                    .inner()
+                    .completion(CompletionParams {
+                        text_document_position: text_document_position(&uri, 2, col),
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
+                        context: None,
+                    })
+                    .await
+                    .unwrap();
+                match resp {
+                    Some(CompletionResponse::Array(items)) => items,
+                    other => panic!("unexpected response {other:?}"),
+                }
+            }
+        };
+        let names = complete("$Component/").await;
+        assert!(names.iter().any(|i| i.label == "PointLight"), "{:?}", names.iter().map(|i| &i.label).collect::<Vec<_>>());
+        assert!(names.iter().all(|i| i.filter_text.is_none()), "a fixed filter text hides every name once one more letter is typed");
+        let types = complete("$compon").await;
+        assert!(types.iter().any(|i| i.label == "Component"), "{:?}", types.iter().map(|i| &i.label).collect::<Vec<_>>());
     }
 
     #[tokio::test]
@@ -1387,6 +1438,53 @@ on CharacterSpawned() -> (character) {
             est.keys().collect::<Vec<_>>()
         );
         assert!(est.contains_key("alpha"), "the pre-existing mod must keep its estimate");
+    }
+
+    /// An edit to one document must not cancel the pending analysis of
+    /// another. The debounce counter was shared by every document, so an edit
+    /// to `b.ws` within the wait after one to `a.ws` made `a.ws`'s handler
+    /// return without analysing, and its newest text got no diagnostics until
+    /// it was edited again.
+    #[tokio::test]
+    async fn an_edit_to_one_document_does_not_cancel_another_documents_analysis() {
+        let dir = scratch_dir("debounce-per-document");
+        let (a_file, b_file) = (dir.join("a.ws"), dir.join("b.ws"));
+        let a_opened = "import \"b\"\nmod alpha(v: *int) { v = v + 1 }\n";
+        let b_opened = "mod helper(v: *int) { v = v + 2 }\n";
+        std::fs::write(&a_file, a_opened).unwrap();
+        std::fs::write(&b_file, b_opened).unwrap();
+        let (a, b) = (Url::from_file_path(&a_file).unwrap(), Url::from_file_path(&b_file).unwrap());
+
+        let service = build_backend();
+        for (uri, text) in [(&a, a_opened), (&b, b_opened)] {
+            service
+                .inner()
+                .did_open(DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem {
+                        uri: uri.clone(),
+                        language_id: "wirescript".into(),
+                        version: 1,
+                        text: text.into(),
+                    },
+                })
+                .await;
+        }
+        let change = |uri: &Url, text: &str| DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier { uri: uri.clone(), version: 2 },
+            content_changes: vec![TextDocumentContentChangeEvent { range: None, range_length: None, text: text.into() }],
+        };
+        let a_edited = "import \"b\"\nmod alpha(v: *int) { v = v + 1 }\nmod gamma(v: *int) { v = v * 3 + 2 }\n";
+        let b_edited = "mod helper(v: *int) { v = v + 5 }\n";
+        tokio::join!(service.inner().did_change(change(&a, a_edited)), async {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            service.inner().did_change(change(&b, b_edited)).await;
+        });
+
+        let docs = service.inner().docs.lock().unwrap();
+        let a_doc = docs.get(&a).expect("a.ws is open");
+        assert_eq!(a_doc.source, a_edited, "a.ws must be analysed at its last text");
+        assert!(a_doc.resource_estimates.contains_key("gamma"), "the mod a.ws's last edit added must be analysed");
+        assert_eq!(docs.get(&b).expect("b.ws is open").source, b_edited);
     }
 
     /// `if constexpr` semantics mean an untaken branch is never checked, so it

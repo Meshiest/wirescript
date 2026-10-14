@@ -11,7 +11,7 @@ Chips are Wirescript's primary mechanism for organizing and reusing wire graph l
 - [Open and Closed Chips](#open-and-closed-chips)
 - [Compiling Without Microchips (`@flat`)](#compiling-without-microchips-flat)
 - [Chip Labels and Headers](#chip-labels-and-headers)
-- [`mod` -- Inline Chips](#mod----inline-chips)
+- [`mod`: Inline Chips](#mod-inline-chips)
 - [Boundary Pins](#boundary-pins)
 - [Nested Chips](#nested-chips)
 - [Inline `mod` with Mixed Parameters](#inline-mod-with-mixed-parameters)
@@ -74,7 +74,7 @@ open chip {
 }
 ```
 
-### `chip let` -- Compact Let Bindings
+### `chip let`: Compact Let Bindings
 
 `chip let` is shorthand for an anonymous chip containing one or more `let` bindings, separated by commas:
 
@@ -95,13 +95,13 @@ chip {
 This is commonly used to wrap pure computations in their own microchip for layout clarity.
 
 ```wirescript
-// From the 2048 example -- each chip let gets its own microchip
+// From the 2048 example: each chip let gets its own microchip
 chip let moved = c0 != c0.prev || c1 != c1.prev || c2 != c2.prev
 chip let score = c0 + c1 + c2 + c3 + c4 + c5
 chip let emptyCount = (if c0 == 0 then 1 else 0) + (if c1 == 0 then 1 else 0)
 ```
 
-### `chip on` -- Compact Handler
+### `chip on`: Compact Handler
 
 `chip on` is shorthand for an anonymous chip containing a single handler:
 
@@ -192,7 +192,7 @@ chip Adder(a: int, b: int) -> (sum: int) {
 Parameters can destructure record or tuple values directly in the signature, using the same `{ field, ... }: Type` syntax as `let` destructuring. This is most useful for `mod` declarations that work with record types:
 
 ```wirescript
-// Destructured parameters — fields are directly in scope in the body
+// Destructured parameters: fields are directly in scope in the body
 mod distance({ x, y }: Point) -> int { return x + y }
 mod process({ data, ...opts }: Config) { ... }
 ```
@@ -257,7 +257,7 @@ chip Double(x: int) -> int {
 
 let result = Double(21)  // result = 42
 
-// Multi-output chips return a record — access fields by name
+// Multi-output chips return a record with a field per output
 chip MinMax(a: int, b: int) -> (min: int, max: int) {
   out min = if a < b then a else b
   out max = if a > b then a else b
@@ -363,7 +363,7 @@ Swap(x, y)  // x and y are passed by reference
 A `mod` or `chip` parameter can be marked `const`, requiring the caller's
 argument to be a compile-time constant. Inside the body the parameter reads
 as one, usable anywhere a `const` binding is (see
-[`const` -- Compile-Time Binding](statements.md#const----compile-time-binding)):
+[`const` -- Compile-Time Binding](statements.md#const-compile-time-binding)):
 
 ```wirescript
 mod ping(channel: const string, v: int) {
@@ -380,7 +380,7 @@ A non-constant argument in a `const` slot is **WS046**:
 ```wirescript ignore
 in name: string
 mod ping(channel: const string) { SendCustomEvent(channel) }
-on go { ping(name) }   // WS046 -- 'name' is a runtime value
+on go { ping(name) }   // WS046: 'name' is a runtime value
 ```
 
 `v` above stays an ordinary wired parameter: a `mod`/`chip` can freely mix
@@ -405,35 +405,36 @@ A call to a `const mod` is itself const-evaluable (see
 used to build a `const` value out of one or more calls, including calls to
 other `const mod`s and reads of module-level constants.
 
-`const chip` is a parse error, because a `chip` compiles to one shared physical
+`const chip` is a parse error. A `chip` compiles to one shared physical
 microchip template reused across call sites, so "every parameter is const"
-isn't a property the declaration can have the way it is for an inlined
-`mod`. Mark the parameters you need constant individually instead:
+is not a property the declaration can have, as it is for an inlined `mod`.
+Mark the parameters you need constant individually instead:
 
 ```wirescript ignore
-const chip C(v: int) -> (r: int) { out r = v }   // error -- use a mod, or const params
+const chip C(v: int) -> (r: int) { out r = v }   // error: use a mod, or const params
 
 chip C(name: const string, v: int) -> (r: int) { out r = v }   // fine
 ```
 
-A `const` BINDING inside a named `chip`'s body is compile-time throughout that
+A `const` binding inside a named `chip`'s body is compile-time throughout that
 chip (its handlers, its `out`s, and its constant-only config slots), the
 same as inside a `mod`. Two places it is not: the body of an **anonymous**
 `chip { }`, and a chip *declared inside* another chip, which does not inherit
 the enclosing chip's body constants (pass them in as `const` parameters). Both
-are reported rather than silently dropped; see
-[Where `const` is allowed](statements.md#where-const-is-allowed).
+are reported rather than silently dropped (see
+[Where `const` is allowed](statements.md#where-const-is-allowed)).
 
-A `const mod` may declare multiple outputs, and its result destructures exactly
-as an ordinary multi-output mod's does. One rule is const-specific: the wire
-graph keeps whichever assignment to an output comes FIRST in source order, so a
-valued `return` placed *after* an `out` to the same output would disagree with
-it, so it is rejected (**WS046**) rather than shipping a mismatch.
+A `const mod` may declare multiple outputs, and its result destructures the same way
+as an ordinary multi-output mod's does. One rule is specific to `const`: the
+wire graph keeps whichever assignment to an output comes first in source order.
+A valued `return` placed after an `out` to the same output would disagree with
+the wire graph, so it is rejected (**WS046**) instead of compiling to a
+mismatch.
 
 ```wirescript ignore
 const mod pick(n: const int) -> (r: int) {
   out r = 111
-  if n > 0 { return 222 }   // WS046 -- disagrees with the wire graph
+  if n > 0 { return 222 }   // WS046: disagrees with the wire graph
 }
 ```
 
@@ -459,7 +460,7 @@ on go {
 
 An `if` whose condition is const-evaluable is resolved at compile time: the
 taken branch is checked and lowered normally, and the untaken branch is
-dropped **before type-checking ever looks at it**.
+dropped before type-checking reaches it.
 
 ```wirescript
 const MODE = 1
@@ -470,26 +471,26 @@ on go {
   if MODE == 1 {
     x = 1
   } else {
-    x = someModeTwoOnlyFunction()   // never type-checked -- MODE is always 1
+    x = someModeTwoOnlyFunction()   // never type-checked: MODE is always 1
   }
 }
 ```
 
-This is what lets one `mod`/`chip` serve call sites that share no common API:
-a branch that wouldn't even compile for a given constant value is simply
-never checked for it. The editor's hover on a dropped block explains why it
+This lets one `mod`/`chip` serve call sites that share no common API. A
+branch that would not compile for a given constant value is never checked
+for it. The editor's hover on a dropped block explains why it
 was dropped (e.g. `` `MODE == 1` is true here ``).
 
 **This does not work for a `const` parameter.** A `mod`/`chip` body is
-type-checked exactly once, before any call site exists, so there is no real
-argument yet to decide the branch with. A `const` parameter is seeded with a
-type-shaped placeholder during that one-time check, and the placeholder is
-deliberately never allowed to decide a branch: letting it choose would ship a
-branch the placeholder happened to select while the OTHER branch (the one a
-real call actually takes) goes unchecked. So **both branches of an `if` on
-a const parameter (or a `const` derived from one) are type-checked**, and
-each must be independently valid code, even though only one of them lowers
-per call site:
+type-checked once, before any call site exists, so there is no real
+argument yet to decide the branch with. During that check a `const`
+parameter holds a placeholder of its type, and the placeholder is never
+allowed to decide a branch. If it could, the compiler would accept the
+branch the placeholder happened to select and leave the other branch (the
+one a real call takes) unchecked. **Both branches of an `if` on a const
+parameter (or a `const` derived from one) are type-checked**, and each must
+be independently valid code, even though only one of them lowers per call
+site:
 
 ```wirescript
 var x: int = 0
@@ -498,25 +499,24 @@ mod f(mode: const int) {
   if mode == 1 {
     x = 1
   } else {
-    x = someOtherModesFunction()   // IS type-checked, even if every call site passes mode = 1
+    x = someOtherModesFunction()   // still type-checked, even if every call site passes mode = 1
   }
 }
 ```
 
 Both arms must compile for every possible constant value, not just the ones
-any call site actually passes. A top-level `const` (or one read from inside
-a mod body that is not itself a parameter) does not have this restriction;
-only the parameter itself, and anything derived from it, carries the
-placeholder.
+a call site passes. A top-level `const` (or one read from inside a mod body
+that is not itself a parameter) does not have this restriction. Only the
+parameter itself, and anything derived from it, carries the placeholder.
 
 ## Open and Closed Chips
 
 Non-root chips compile **open** by default: each chip's inner grid renders
 as an upright plane facing the same side of the chip as its `@bottom`
 rerouter pins, stacked in a wall above the placed microchip brick. The
-root module's plane sits at the bottom, its bottom edge just above the
-brick; directly-nested chips occupy a row above it; deeper nesting stacks
-higher still. Rows are centred and packed side by side, ordered first by
+root module's plane sits at the bottom, with its bottom edge just above the
+brick. Directly nested chips occupy a row above it, and deeper nesting stacks
+higher. Rows are centered and packed side by side, ordered first by
 parent position, then by source order within a parent. Within a plane the
 dataflow axis runs bottom-to-top: input gates sit at the bottom edge,
 outputs at the top.
@@ -539,20 +539,20 @@ place:
 
 `@closed` works on every chip form: `chip Name(...)`, `chip { ... }`,
 `chip on`, and `chip let`. `open chip { ... }` still parses, but is now a
-redundant no-op; combining `@closed` with `open` on the same chip is an
+redundant no-op. Combining `@closed` with `open` on the same chip is an
 error.
 
 ## Compiling Without Microchips (`@flat`)
 
 A module-level `@flat` at the top of the entry file inlines every chip body
-into the module that instantiates it. The program then emits **no microchip
-bricks and no nested grids**: every gate lands on one grid, and a wire that
+into the module that instantiates it. The program then emits no microchip
+bricks and no nested grids. Every gate lands on one grid, and a wire that
 would have crossed a chip wall becomes an ordinary same-grid wire instead of a
 pair of wires through a boundary pin.
 
-Nothing about the program's behavior changes. A chip is not a scoping or timing
-boundary, so a flattened program computes exactly what the nested one did; what
-goes away is the tree of planes to open and the per-crossing pin.
+Flattening does not change the program's behavior. A chip is not a scoping or
+timing boundary, so a flattened program computes the same results as the nested
+one. What it removes is the tree of planes to open and the pin at each crossing.
 
 Because the microchip brick and its plane no longer exist, `@closed` and
 `@label` have nothing to describe under `@flat`. They are inert rather than an
@@ -574,7 +574,7 @@ and its plane header:
 
 `@label` also applies to `in`/`out` declarations at any nesting level, and
 stacks with a `@left`/`@right`/`@top`/`@bottom` side annotation in either
-order (see [Outer Rerouter Pins](statements.md#left--right--top--bottom----outer-rerouter-pins)).
+order (see [Outer Rerouter Pins](statements.md#left--right--top--bottom-outer-rerouter-pins)).
 There it overrides the port's floating display label (and its rerouter pin
 label); the port's wiring-UI name is unaffected either way.
 
@@ -605,21 +605,21 @@ chip Counter(bump: exec) -> (value: int) {
 physical chip, so any annotation (`@closed`, `@label`, or a side pin)
 on a `mod` is an error.
 
-## `mod` -- Inline Chips
+## `mod`: Inline Chips
 
 The `mod` keyword declares a chip that is always **inlined** at call sites. Instead of creating a separate microchip brick, the `mod`'s gates are expanded directly into the caller's grid.
 
-Only the gates are expanded into the caller. Every name in the body resolves where the `mod` is declared, exactly as a `chip` body's does: a `var`, `let`, parameter or nested `mod` the caller declares under the same name is never the one the body reads, writes or calls.
+Only the gates are expanded into the caller. Every name in the body resolves where the `mod` is declared, the same way a `chip` body's names do: a `var`, `let`, parameter or nested `mod` the caller declares under the same name is never the one the body reads, writes or calls.
 
-A `fn` takes the same signature but compiles once, into a function definition plane that every call runs through a Function Call gate. Use a `fn` when one body is called from many places; use a `mod` when the call should cost no extra gate, needs type parameters, or must run in a pure context. A `for` loop is the third kind of plane: compiled once per loop, swept once per iteration. See [`fn`](statements.md#fn----function).
+A `fn` takes the same signature but compiles once, into a function definition plane that every call runs through a Function Call gate. Use a `fn` when one body is called from many places. Use a `mod` when the call should cost no extra gate, needs type parameters, or must run in a pure context. A `for` loop is the third kind of plane: compiled once per loop, swept once per iteration. See [`fn`](statements.md#fn-function).
 
 ```wirescript ignore
 mod Name(params) {
-  // body -- no output
+  // body: no output
 }
 
 mod Name(params) -> (result: type) {
-  // body -- single output, use `return expr` to set it
+  // body: single output, use `return expr` to set it
 }
 ```
 
@@ -639,7 +639,7 @@ let clamped = clamp(x, 0, 255)  // clamped is directly an int
 
 > **Note:** A single `return expr` wires the value directly (pure, zero-tick). Multiple `return expr` statements cause the compiler to insert a hidden variable: each branch does a `Var_Set`, and a `Var_Get` after the return union reads the result. This adds exec gates but is correct within the same tick's exec chain.
 
-An output set by name (`emit name = v` or `out name = v`) works the same way when it is set in more than one place, under a branch or loop, or beside a `return`: every write goes to the hidden variable, and the call reads the value the path that ran left there. A `mod` output behaves exactly like a `chip` output here, per call site for a `mod` and per instance for a `chip`: a path that does not write it leaves it holding its last value, which starts at the type's default (`0`, `""` or `false`). A write from an `on` handler nested in the mod lands whenever that handler fires, and the caller sees it until the caller's own chain writes the output again. A `return` inside such a handler is one of those writes: it sets the outputs and ends that handler's run, not the call. A `return` inside an anonymous `chip { }` is an ordinary return of the body.
+An output set by name (`emit name = v` or `out name = v`) works the same way when it is set in more than one place, under a branch or loop, or beside a `return`: every write goes to the hidden variable, and the call reads the value the path that ran left there. A `mod` output behaves like a `chip` output here, per call site for a `mod` and per instance for a `chip`. A path that does not write it leaves it holding its last value, which starts at the type's default (`0`, `""` or `false`). A write from an `on` handler nested in the mod lands whenever that handler fires, and the caller sees it until the caller's own chain writes the output again. A `return` inside such a handler is one of those writes: it sets the outputs and ends that handler's run, not the call. A `return` inside an anonymous `chip { }` is an ordinary return of the body.
 
 ### When to Use `mod`
 
@@ -680,7 +680,7 @@ on go {
 }
 ```
 
-The fixed parameters are still required (passing fewer is an arity error); only the
+The fixed parameters are still required (passing fewer is an arity error). Only the
 trailing count is open. The same `...tuple` splat works on any call: spread a bound
 tuple, a tuple literal, or a multi-output result into consecutive arguments:
 
@@ -743,7 +743,7 @@ on trigger {
 Nested anonymous chips still share their enclosing scope. Named chip declarations inside blocks create locally-scoped chip types.
 
 ```wirescript
-// From the 2048 example -- deeply nested chips
+// From the 2048 example: deeply nested chips
 if running && moved {
   chip {
     chip {

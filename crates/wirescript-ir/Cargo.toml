@@ -1,0 +1,27 @@
+[package]
+name = "wirescript-ir"
+version = "0.1.0"
+edition = "2024"
+description = "Brickadia wire-graph IR: build or load a gate graph, lay it out, and assemble it into a .brz/.brdb save"
+
+[features]
+default = ["brdb-full"]
+# `.brdb` (SQLite) output. Off for wasm32, which only writes `.brz`.
+brdb-full = ["brdb/brdb"]
+# Layout and emit internals for the wirescript crate's front-end-driven
+# backend tests, and `readback` for reading a written save. Enabled only
+# through its dev-dependency and by the examples that read a save back.
+test-internals = []
+
+[dependencies]
+brdb = { workspace = true, features = ["brz"] }
+rustc-hash = "2"
+thiserror.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+petgraph = "0.7"
+lasso = { version = "0.7", features = ["multi-threaded"] }
+
+[[example]]
+name = "and_gate"
+required-features = ["test-internals"]

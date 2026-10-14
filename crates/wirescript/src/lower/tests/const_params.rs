@@ -7,7 +7,8 @@
 /// Folding is FORCED OFF so any gate that is absent is absent because const
 /// evaluation removed it, never because the optimizer did.
 pub(crate) fn lower_ok(src: &str) -> crate::ir::Module {
-    let resolved = crate::resolve(src, "test", &crate::FsLoader);
+    let crate::compile::FrontEnd { resolved, typecheck: tc, lowered: out, .. } =
+        crate::compile::front_end(src, "test", None, crate::lower::FoldMode::ForceOff, &crate::FsLoader);
     assert!(
         resolved
             .diagnostics
@@ -16,11 +17,6 @@ pub(crate) fn lower_ok(src: &str) -> crate::ir::Module {
         "resolve errors: {:?}",
         resolved.diagnostics
     );
-    let tc = crate::typecheck::typecheck(
-        &resolved.ast,
-        "test",
-        &crate::typecheck::CeSlotMap::default(),
-    );
     assert!(
         tc.diagnostics
             .iter()
@@ -28,18 +24,6 @@ pub(crate) fn lower_ok(src: &str) -> crate::ir::Module {
         "typecheck errors: {:?}",
         tc.diagnostics
     );
-    let out = crate::lower::lower(crate::lower::LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test",
-        module_name: None,
-        template_cache: std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: crate::lower::FoldMode::ForceOff,
-        ce_slots: &crate::typecheck::CeSlotMap::default(),
-    });
     assert!(
         out.diagnostics
             .iter()
@@ -50,25 +34,12 @@ pub(crate) fn lower_ok(src: &str) -> crate::ir::Module {
     out.module
 }
 
-/// Every node of `class` in `m` and its nested chip modules.
-pub(crate) fn nodes_of<'a>(m: &'a crate::ir::Module, class: &str) -> Vec<&'a crate::ir::Node> {
-    let mut out: Vec<&crate::ir::Node> = m
-        .nodes
-        .values()
-        .filter(|n| n.gate_class == class)
-        .collect();
-    for chip in m.chips.values() {
-        out.extend(nodes_of(chip, class));
-    }
-    out
-}
-
 /// The baked `EventName` of every `SendCustomEvent` node. `EventName` is a
 /// data-struct field, not a pre-interned `sym::` constant (see
 /// `intern.rs`/`port_registry.rs`'s `WirePort::EventName`), so it's interned
 /// on the fly exactly like `lower/call/builtin.rs` does when baking it.
 fn event_name_properties(m: &crate::ir::Module) -> Vec<String> {
-    nodes_of(m, crate::ir::gate_class::SEND_CUSTOM_EVENT)
+    super::nodes_of(m, crate::ir::gate_class::SEND_CUSTOM_EVENT)
         .iter()
         .filter_map(
             |n| match n.properties.get(&crate::intern::intern("EventName")) {
@@ -84,7 +55,7 @@ fn event_name_properties(m: &crate::ir::Module) -> Vec<String> {
 /// gate class, not the sender's — the two must agree on `EventName` for a
 /// computed channel to actually connect a sender to its receiver.
 fn receiver_event_names(m: &crate::ir::Module) -> Vec<String> {
-    nodes_of(m, crate::ir::gate_class::CUSTOM_EVENT)
+    super::nodes_of(m, crate::ir::gate_class::CUSTOM_EVENT)
         .iter()
         .filter_map(
             |n| match n.properties.get(&crate::intern::intern("EventName")) {
@@ -315,11 +286,11 @@ fn a_const_param_read_in_a_wire_position_inlines_as_a_literal() {
          in go: exec\nvar hp: int = 0\non go { let z = addk(5, hp) }",
     );
     assert!(
-        nodes_of(&m, crate::ir::gate_class::UNSUPPORTED).is_empty(),
+        super::nodes_of(&m, crate::ir::gate_class::UNSUPPORTED).is_empty(),
         "a const param in a wire position must not lower to _Unsupported: {:?}",
         m.nodes.values().map(|n| n.gate_class).collect::<Vec<_>>()
     );
-    let adds = nodes_of(&m, "BrickComponentType_Expr_MathAdd");
+    let adds = super::nodes_of(&m, "BrickComponentType_Expr_MathAdd");
     assert_eq!(adds.len(), 1, "expected exactly one MathAdd");
     assert!(
         adds[0]
@@ -341,8 +312,8 @@ fn a_const_param_used_only_as_config_still_emits_no_literal_gate() {
          in go: exec\nvar hp: int = 0\non go { ping(\"died\", hp) }",
     );
     assert!(
-        nodes_of(&m, crate::ir::gate_class::LITERAL).is_empty()
-            && nodes_of(&m, crate::ir::gate_class::STRING_CONCATENATE).is_empty(),
+        super::nodes_of(&m, crate::ir::gate_class::LITERAL).is_empty()
+            && super::nodes_of(&m, crate::ir::gate_class::STRING_CONCATENATE).is_empty(),
         "a const-only param must leave no literal source gate behind: {:?}",
         m.nodes.values().map(|n| n.gate_class).collect::<Vec<_>>()
     );
@@ -469,12 +440,8 @@ fn a_destructured_const_satisfies_a_const_parameter_and_bakes() {
 /// Typecheck must still be clean, or the test would be asserting about a
 /// program that never had a chance to lower.
 fn lowering_codes(src: &str) -> Vec<String> {
-    let resolved = crate::resolve(src, "test", &crate::FsLoader);
-    let tc = crate::typecheck::typecheck(
-        &resolved.ast,
-        "test",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let crate::compile::FrontEnd { typecheck: tc, lowered, .. } =
+        crate::compile::front_end(src, "test", None, crate::lower::FoldMode::ForceOff, &crate::FsLoader);
     assert!(
         tc.diagnostics
             .iter()
@@ -482,18 +449,7 @@ fn lowering_codes(src: &str) -> Vec<String> {
         "typecheck errors: {:?}",
         tc.diagnostics
     );
-    crate::lower::lower(crate::lower::LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test",
-        module_name: None,
-        template_cache: std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: crate::lower::FoldMode::ForceOff,
-        ce_slots: &crate::typecheck::CeSlotMap::default(),
-    })
+    lowered
     .diagnostics
     .iter()
     .filter(|d| d.severity == crate::Severity::Error)

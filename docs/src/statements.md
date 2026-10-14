@@ -5,31 +5,31 @@ Statements are the building blocks of Wirescript programs. They declare data, de
 <!-- toc -->
 ## Contents
 
-- [`var` -- Mutable Variable](#var----mutable-variable)
-- [`let` -- Immutable Binding](#let----immutable-binding)
-- [`const` -- Compile-Time Binding](#const----compile-time-binding)
-- [`buffer` -- Buffered Value](#buffer----buffered-value)
-- [Arrays -- `var name: elementType[]`](#arrays----var-name-elementtype)
-- [Maps -- `var name: Map<K, V>`](#maps----var-name-mapk-v)
-- [`in` -- Input Port](#in----input-port)
-- [`out` -- Output Port](#out----output-port)
-- [`@left` / `@right` / `@top` / `@bottom` -- Outer Rerouter Pins](#left--right--top--bottom----outer-rerouter-pins)
-- [`if` -- Conditional Statement](#if----conditional-statement)
-- [`match` -- Branch on an Enum Variant](#match----branch-on-an-enum-variant)
-- [`if let` / `let else` -- Refutable Enum Binds](#if-let--let-else----refutable-enum-binds)
+- [`var`: Mutable Variable](#var-mutable-variable)
+- [`let`: Immutable Binding](#let-immutable-binding)
+- [`const`: Compile-Time Binding](#const-compile-time-binding)
+- [`buffer`: Buffered Value](#buffer-buffered-value)
+- [Arrays: `var name: elementType[]`](#arrays-var-name-elementtype)
+- [Maps: `var name: Map<K, V>`](#maps-var-name-mapk-v)
+- [`in`: Input Port](#in-input-port)
+- [`out`: Output Port](#out-output-port)
+- [`@left` / `@right` / `@top` / `@bottom`: Outer Rerouter Pins](#left--right--top--bottom-outer-rerouter-pins)
+- [`if`: Conditional Statement](#if-conditional-statement)
+- [`match`: Branch on an Enum Variant](#match-branch-on-an-enum-variant)
+- [`if let` / `let else`: Refutable Enum Binds](#if-let--let-else-refutable-enum-binds)
 - [`for` Loops](#for-loops)
-- [`fn` -- Function](#fn----function)
-- [`on` -- Event Handler](#on----event-handler)
-- [`let on` -- Event Declaration](#let-on----event-declaration)
-- [`emit` -- Emit Signal](#emit----emit-signal)
-- [`await` -- Suspend Exec Chain](#await----suspend-exec-chain)
+- [`fn`: Function](#fn-function)
+- [`on`: Event Handler](#on-event-handler)
+- [`let on`: Event Declaration](#let-on-event-declaration)
+- [`emit`: Emit Signal](#emit-emit-signal)
+- [`await`: Suspend Exec Chain](#await-suspend-exec-chain)
 - [Assignment](#assignment)
 - [Expression Statement](#expression-statement)
 - [Built-in Events](#built-in-events)
 - [`return`](#return)
 <!-- /toc -->
 
-## `var` -- Mutable Variable
+## `var`: Mutable Variable
 
 Declares a mutable variable backed by a wire graph variable gate. In exec context (inside handlers or mods), the variable is **reset to its initial value** each time the code path executes.
 
@@ -53,7 +53,7 @@ A variable is backed by a wire-graph `Variable` gate, whose value is a wire
 variant, so a `var` can hold any variant member type: `int`, `float`, `bool`,
 `string`, `vector`, and object types (`entity`, `controller`, `character`).
 
-### `static var` -- Persistent Variable
+### `static var`: Persistent Variable
 
 A `static var` keeps its value across handler/mod invocations. The initial value is set once when the save loads. Use this for accumulators, counters, or state that must survive across calls.
 
@@ -89,7 +89,7 @@ on RoundStart() {
 
 See [Execution Context](exec-context.md) for full details.
 
-## `let` -- Immutable Binding
+## `let`: Immutable Binding
 
 Binds a name to a computed value. Unlike `var`, a `let` binding is not mutable storage: it is a pure wire connection to an expression's output.
 
@@ -107,9 +107,9 @@ let greeting = "Hello, " .. playerName
 An optional type annotation can follow the name. The annotation does not change the binding's type. It is a checked assertion. If the expression's inferred type does not match, the compiler emits a **WS016** warning.
 
 ```wirescript
-let x: int = 42           // ok — types match
-let y: float = 42         // ok — int coerces to float
-let z: string = 42        // WS016 warning — int does not match string
+let x: int = 42           // ok: types match
+let y: float = 42         // ok: int coerces to float
+let z: string = 42        // WS016 warning: int does not match string
 ```
 
 `let` bindings can appear at the top level, inside blocks, and inside chip bodies. They are evaluated in pure context.
@@ -127,7 +127,7 @@ on RoundStart() {
 
 ### Declaring a Name Again
 
-A top-level `const` or `let` may declare a name the top level of the same file declares already (another `const` or `let`, or a `var`, `buffer`, array or map). The file is then read by position: a read names the latest declaration written before it, and the body of a `mod`, `chip`, generic or `const mod` reads as code written where that declaration is, wherever it is called from. The later declaration hides the earlier one from its position on, for values and for constant-only settings (an event name, a `Sleep` delay, a folded `if`) alike, and the compiler warns `WS108` at it, naming both lines. Storage is declared ahead of everything, so a read above every declaration of the name reads the storage, though a `var` initializer reads the declaration before the `var` (`let k = 5` then `var k: int = k` starts the var at 5), as a `let` initializer reads the one before the `let`; a `buffer` initializer reads the buffer itself, its value the tick before. With no storage, a `mod` or `chip` written above every declaration reads the first one, as it reads the only one when there is one. A library reads its own duplicates the same way, in the order it writes them, however it is imported (flat, by name, both, or by several paths), and its importer reads the last one, which a named import binds; a module imported `import * as` holds only the last one, which every read of it names, through a flat import of it in the same program too (one `WS108` says so). Two storage declarations of one name are `WS013`.
+A top-level `const` or `let` may declare a name the top level of the same file declares already (another `const` or `let`, or a `var`, `buffer`, array or map). The file is then read by position. A read names the latest declaration written before it, and the body of a `mod`, `chip`, generic or `const mod` reads as code written where that declaration is, wherever it is called from. The later declaration hides the earlier one from its position on, for values and for constant-only settings (an event name, a `Sleep` delay, a folded `if`) alike, and the compiler warns `WS108` at it, naming both lines. Storage is declared ahead of everything, so a read above every declaration of the name reads the storage. A `var` initializer is the exception: it reads the declaration before the `var` (`let k = 5` then `var k: int = k` starts the var at 5), as a `let` initializer reads the one before the `let`. A `buffer` initializer reads the buffer itself, which is its value the tick before. With no storage, a `mod` or `chip` written above every declaration reads the first one, as it reads the only one when there is one. A library reads its own duplicates the same way, in the order it writes them, however it is imported (flat, by name, both, or by several paths). Its importer reads the last one, which is the one a named import binds. A module imported with `import * as` holds only the last one. Every read of that module names it, including reads through a flat import of the same module in the same program (one `WS108` says so). Two storage declarations of one name are `WS013`.
 
 ```wirescript
 in go: exec
@@ -178,9 +178,9 @@ let args = (1, 2, 3)
 foo(...args)  // equivalent to foo(1, 2, 3)
 ```
 
-## `const` -- Compile-Time Binding
+## `const`: Compile-Time Binding
 
-`const` binds a name to a value, exactly like `let`:
+`const` binds a name to a value, like `let`:
 
 ```wirescript ignore
 const name = expression
@@ -205,13 +205,13 @@ silent runtime wire.
 ```wirescript
 in live: int
 
-let n = live + 1     // fine -- falls back to a runtime wire
+let n = live + 1     // fine: falls back to a runtime wire
 ```
 
 ```wirescript ignore
 in live: int
 
-const n = live + 1   // WS046 -- 'live' is a runtime value, not a compile-time constant
+const n = live + 1   // WS046: 'live' is a runtime value, not a compile-time constant
 ```
 
 Reach for `const` when a value's shape drives something that has to be known
@@ -234,17 +234,17 @@ mod f() -> int {
 }
 ```
 
-One scope limit is worth knowing, and it is reported, never silent. A NAMED
+One scope limit applies, and the compiler reports it when it is hit. A named
 chip's body constants reach that chip's own code, including its handlers, its
 `out`s and its constant-only config slots. A chip *declared inside* it is built
 against a constant scope of its own, so a name it would inherit from the outer
-body does not resolve there. Rather than drop the value, that reports
-**WS028**; pass the value in as a `const` parameter instead.
+body does not resolve there. The compiler reports this as **WS028** instead of
+dropping the value. Pass the value in as a `const` parameter.
 
 ```wirescript ignore
 chip Outer(t: exec) {
   const ch = "evt"
-  chip Inner(u: exec) { on u { send(ch) } }                // WS028 -- ch does not reach Inner
+  chip Inner(u: exec) { on u { send(ch) } }                // WS028: ch does not reach Inner
   chip Ok(u: exec, c: const string) { on u { send(c) } }   // pass it in instead
   let q = Ok(t, ch)
 }
@@ -260,14 +260,14 @@ chip Outer(t: exec) {
 - String interpolation (`"a${1 + 1}b"`) and the certified string/math builtin
   methods (`.ToUpper()`, `.Trim()`, `.Length()`, `sin`, `sqrt`, ...), when
   every operand is constant.
-- **`abs`, `min`, `max`, `clamp` fold on FLOAT constants but not INT ones.**
-  `min(3.0, 7.0)` folds; `min(3, 7)` emits a gate. This is a coverage gap, not a
-  language rule: the certified fold pass only folds a gate on an input shape the
-  in-game probe actually recorded, and these four were only ever probed with
+- **`abs`, `min`, `max`, `clamp` fold on float constants but not int ones.**
+  `min(3.0, 7.0)` folds, while `min(3, 7)` emits a gate. This is a coverage gap,
+  not a language rule. The certified fold pass only folds a gate on an input
+  shape the in-game probe recorded, and these four were only ever probed with
   float inputs (unlike `+`/`-`/`*`, which were probed with ints and fold). Until
   the probe is rerun with int inputs, either use a float literal (`max(n, 0.0)`)
-  where a float result is fine, or write the constant directly. A single
-  non-folding op strands everything downstream of it.
+  where a float result is fine, or write the constant directly. A single op
+  that does not fold keeps everything downstream of it from folding.
 - The `Vec`/`Rotation`/`Color` constructors.
 - Array and map literals, indexing (`arr[i]`, `m[k]`), and `.length()`.
 - Record literals and field access (`.field`), including nested records.
@@ -279,8 +279,8 @@ chip Outer(t: exec) {
   ```wirescript
   const mod double(n: int) -> int { return n * 2 }
 
-  const seven = double(3) + 1                 // 7 -- nested in an operator
-  const negSix = -double(3)                   // -6 -- nested in a unary operator
+  const seven = double(3) + 1                 // 7: nested in an operator
+  const negSix = -double(3)                   // -6: nested in a unary operator
   const v = Vec(double(1), y = 2.0, z = 3.0)  // nested in a named constructor argument
   ```
 
@@ -292,7 +292,7 @@ chip Outer(t: exec) {
   const mod double(n: int) -> int { return n * 2 }
   mod scaleUp(n: int) -> int { return n }
 
-  const total = scaleUp(double(3))   // WS046 -- scaleUp is not itself a `const mod`
+  const total = scaleUp(double(3))   // WS046: scaleUp is not itself a `const mod`
   ```
 
   Bind the call first, then pass the result: `const d = double(3)`, then
@@ -400,13 +400,13 @@ condition drops its untaken branch.
 | Code | Meaning |
 |------|---------|
 | **WS046** | Not a compile-time constant. The value names a runtime value, a call to a mod that isn't `const`, an unsupported syntactic form, an out-of-range index, or a missing map key/record field. The message names the actual offender. |
-| **WS047** | The certified evaluator refuses to compute the value even though every operand IS constant: overflow, a non-ASCII string operand, or a constructor declining its arguments. The fix is different from WS046: the value isn't a stray runtime read, the evaluator just won't guess it. |
+| **WS047** | The certified evaluator refuses to compute the value even though every operand is constant: overflow, a non-ASCII string operand, or a constructor declining its arguments. The fix differs from WS046, because the value is not a stray runtime read. The evaluator declines to guess it. |
 | **WS048** | Const evaluation gave up because the call chain is too deep or took too many steps. Guards a runaway or self-referential `const mod` call chain, which fails with this diagnostic rather than a stack overflow. |
-| **WS028** | Reused from ordinary constant-config checking: a value that IS fully constant but has no scalar form for the slot it's used in, such as a const **record** used as a gate's config field, which has no wire representation and must be consumed at compile time (read a field off it instead of handing the whole record to the slot). |
+| **WS028** | Reused from ordinary constant-config checking: a value that is fully constant but has no scalar form for the slot it's used in, such as a const **record** used as a gate's config field, which has no wire representation and must be consumed at compile time (read a field off it instead of handing the whole record to the slot). |
 | **WS044** | Reused from the container-method backstop: a mutating method (`push`, `clear`, `set`, `sort`, ...) called on a `const` array or map, which is immutable. Declare it `var`, or do the mutation inside a `const mod` body, where it happens at compile time. |
 | **WS007** | Reused from the writable-target check: an index write (`t[0] = 4`) to a `const` array or map, rejected for the same reason as a mutating method. |
 
-## `buffer` -- Buffered Value
+## `buffer`: Buffered Value
 
 Declares a value that is delayed by one tick. Buffers are useful for creating feedback loops where a value depends on its own previous state without creating a circular dependency.
 
@@ -422,7 +422,7 @@ buffer delayed: int = count
 
 The optional type annotation is useful when the expression type needs clarification (e.g., for self-referential buffers).
 
-## Arrays -- `var name: elementType[]`
+## Arrays: `var name: elementType[]`
 
 An array holds multiple values of the same element type. Declare one as a `var`
 whose type ends in `[]` (there is no separate `array` keyword):
@@ -536,7 +536,7 @@ contents. The one exception is a literal that starts with a spread of the array
 being assigned: `work = [...work, 6]` keeps the old contents and appends the rest,
 in order, so an element such as `work.length()` sees what the elements before it
 added. A spread of that array anywhere else (`work = [0, ...work]`) would read it after
-the clear, and is `WS088`; use `work.insert(0, v)` to put values in front.
+the clear, and is `WS088`. Use `work.insert(0, v)` to put values in front.
 Spreads are only valid here, not in a top-level initializer.
 
 Access elements with bracket notation:
@@ -547,7 +547,7 @@ let item = scores[i]
 // item.bOutOfBounds: bool (bounds check)
 ```
 
-## Maps -- `var name: Map<K, V>`
+## Maps: `var name: Map<K, V>`
 
 A map is a keyed collection backed by a `MapVar` gate. Declare one as a `var`
 whose type is `Map<K, V>` (there is no separate `map` keyword):
@@ -576,13 +576,13 @@ on tick {
 ```
 
 A map literal can seed a map at declaration or in an assignment
-(`scores = { "a": 1, "b": 2 }`); a map literal used anywhere else is a **WS026**
-error, and assigning a whole map from another map (`m = m2`) is unsupported, so
+(`scores = { "a": 1, "b": 2 }`). A map literal used anywhere else is a **WS026**
+error. Assigning a whole map from another map (`m = m2`) is unsupported, so
 use `m.copyFrom(src)` (**WS027**). See
 [Builtin Functions](builtins.md) for the full map-method table (`get`, `set`,
 `has`, `remove`, `clear`, `copyFrom`, `length`, `keys`, `values`).
 
-## `in` -- Input Port
+## `in`: Input Port
 
 Declares an input port for the current scope. At the top level, `in` creates an external input that other wire graphs can connect to. Inside a chip, `in` creates a chip input port.
 
@@ -599,7 +599,7 @@ in enabled: bool
 
 Input values are read-only within the script. They are provided by the external wire graph environment.
 
-## `out` -- Output Port
+## `out`: Output Port
 
 Declares an output port that exposes a value externally.
 
@@ -632,7 +632,7 @@ out ratio: float = hits / total
 out ref: *int = &myVar           // ref output: carries the variable's ref
 ```
 
-A `*T` output carries a ref, so its value is written `&myVar`; a bare `myVar` there is its value, a type mismatch (WS003). The annotation also disambiguates the type when the compiler would otherwise warn.
+A `*T` output carries a ref, so its value is written `&myVar`. A bare `myVar` there is the variable's value, which is a type mismatch (WS003). The annotation also disambiguates the type when the compiler would otherwise warn.
 
 ### Exec outputs
 
@@ -692,7 +692,7 @@ chip's port. Hoisting reaches only top-level handlers: an `out` in a handler
 inside any chip, named or anonymous, is WS073. Declare it in the chip body or
 its signature.
 
-### WS017 -- Ambiguous variable output type
+### WS017: Ambiguous variable output type
 
 When `out foo = someVar` is used and `someVar` has no explicit type annotation, the compiler emits **WS017** because it cannot determine whether you want the variable's value or a reference to it:
 
@@ -708,7 +708,7 @@ out foo: int = myVar      // exposes the value (uses .Value)
 out foo: *int = &myVar    // exposes the variable reference
 ```
 
-## `@left` / `@right` / `@top` / `@bottom` -- Outer Rerouter Pins
+## `@left` / `@right` / `@top` / `@bottom`: Outer Rerouter Pins
 
 Annotating a top-level `in` or `out` with a side places a physical Rerouter
 brick on the outside of the compiled microchip, pre-wired to that port.
@@ -725,7 +725,7 @@ out done: exec             // or on the line directly above
 
 Rules:
 
-- Valid sides are exactly `left`, `right`, `top`, `bottom`; one annotation
+- The valid sides are `left`, `right`, `top` and `bottom`, with one annotation
   per declaration.
 - Only **top-level** `in`/`out` of the compiled file may be annotated.
   Inside `chip {}` or `mod` bodies the annotation is an error (WS023).
@@ -739,8 +739,8 @@ Placement:
 - Ports on the same side appear in **declaration order**, with `in` and
   `out` freely interleaved. Left/right sides run top to bottom; top/bottom
   sides run left to right.
-- Each rerouter is coloured by its port's value type and carries a floating
-  label with the port's name; a side's input and output labels read opposite
+- Each rerouter is colored by its port's value type and carries a floating
+  label with the port's name. A side's input and output labels read opposite
   ways so the two are easy to tell apart.
 
 ```
@@ -754,7 +754,7 @@ Placement:
                 @bottom ports (left to right)
 ```
 
-### `@label` -- Port Display Label
+### `@label`: Port Display Label
 
 `@label("text")` overrides the floating display label on a port's gate
 (and its rerouter pin label, if the port also has a side annotation). The
@@ -818,32 +818,32 @@ on tick { status = "running" }
 Without the blank line, `@label(status)` would instead attach to the `status`
 declaration directly (a variable self-label, above).
 
-### `@nofold` -- Suppress Constant Folding
+### `@nofold`: Suppress Constant Folding
 
 - `@nofold`: suppress constant folding/elision for everything lowered from this
   declaration (`let`/`out`/`var`/`chip`/`on`, including captured events
-  `let e = on trigger { … }` and await bindings); legal at any nesting depth.
+  `let e = on trigger { … }` and await bindings). It is legal at any nesting depth.
   Placed at the very top of the file (after any module doc comment) and
   separated from the first declaration by a blank line, it applies to the
   whole module, following the same blank-line rule as module doc comments. Sites where
   it can have no effect (anonymous chips, `in` declarations) emit a warning.
   Used by semantics-verification circuits that need real gates for known
   values.
-- Two module-level gotchas: leave a **blank line between a module doc block and
-  a module-level `@nofold`** (a directly-adjacent pair registers as neither),
-  and a module-level `@nofold` applies only to the file compiled as the
-  **entry**: an imported library's own module-level `@nofold` does not carry
+- Two module-level rules: leave a **blank line between a module doc block and
+  a module-level `@nofold`** (a directly-adjacent pair registers as neither).
+  A module-level `@nofold` also applies only to the file compiled as the
+  **entry**. An imported library's own module-level `@nofold` does not carry
   into the importer (annotate the individual declarations instead).
 - A module-level `@nofold` disables the entire constant-fold pass for that
   compile, with the same effect as `--no-fold` on the CLI.
 - `@nofold` also preserves literal-condition `if` branches. Normally an `if`
   whose condition is a literal `true`/`false` has its dead side stripped
-  during lowering as a shortcut, ahead of the fold pass proper, but under
+  during lowering as a shortcut, ahead of the fold pass proper. Under
   `@nofold` (including a module-level one) that shortcut is suppressed too,
   so both branches stay real gates. See [Constant Folding](folding.md) for
   the full pass.
 
-### `@fold` -- Constant Folding (on by default)
+### `@fold`: Constant Folding (on by default)
 
 - Constant folding runs on every compile by default, so `@fold` is now
   **redundant**. It is still accepted for backward compatibility but enables
@@ -857,11 +857,11 @@ declaration directly (a variable self-label, above).
   module-level-only error.
 - If both a module-level `@fold` and `@nofold` are present, `@nofold` wins and
   the parser warns that the two conflict.
-- `--fold` on the CLI likewise just re-affirms the default; `--no-fold`
-  disables folding. See [Constant Folding](folding.md) for the full
-  enable/disable story.
+- `--fold` on the CLI also only re-affirms the default, and `--no-fold`
+  disables folding. See [Constant Folding](folding.md) for how folding is
+  enabled and disabled.
 
-### `@layout("code")` -- Source-Shaped Gate Layout
+### `@layout("code")`: Source-Shaped Gate Layout
 
 - By default, gates are placed with a flat topological layout: nodes are
   ordered by dependency depth into columns, with no relationship to where
@@ -880,10 +880,10 @@ declaration directly (a variable self-label, above).
   file, or synthetic nodes the compiler generates without a source range)
   adopt the row of whichever node consumes or produces them; a node with no
   such neighbor lands on an overflow row below the last source line.
-- Three wrapping tiers keep large modules inside their placement budgets: a
+- Three wrapping tiers keep large modules inside their placement budgets. A
   line wider than the line-width budget soft-wraps into an indented
-  continuation row; lines stack into vertical bands capped at a height
-  budget; a band that would push a page past its width budget starts a new
+  continuation row. Lines stack into vertical bands capped at a height
+  budget. A band that would push a page past its width budget starts a new
   page, stacked above the previous one. Each page is centered and flipped
   independently, so it reads top-down on its own.
 - Nested chips inherit the mode from their parent, so a chip's interior also
@@ -899,19 +899,19 @@ declaration directly (a variable self-label, above).
   as long as it is read, and the longest-lived, most-read values take the
   outermost columns. A value read on a single row keeps its direct wire unless
   it is stored state, a port, or crosses a chip wall. An exec chain running
-  from one statement to the next stays a direct wire either way: it belongs
-  on the spine of its own rows, not out in the gutter.
+  from one statement to the next always stays a direct wire along its own
+  rows and never gets a lane.
 - **Own-line `//` comments render into the plane** as floating text, on a row
   of their own between the surrounding code rows and left-aligned at the
   comment's own indentation, so the notes read where they sit in the source.
-  A comment lands on exactly one plane: the innermost chip whose own rows
+  A comment is placed on one plane only: the innermost chip whose own rows
   bracket its line, or the outermost plane for a comment no chip's rows
   bracket (a file's leading or closing notes). Only entry-file comments
   render, and only on planes whose own rows come from the entry file. An
   imported chip's interior numbers its rows against its own file, so it
   carries no comments and takes its indentation from its nodes' columns.
-  **Trailing comments** (code and then `//` on the same line) are **not**
-  rendered; the code already occupies that row. Doc comments (`///`) are
+  **Trailing comments** (code and then `//` on the same line) are not
+  rendered, because the code already occupies that row. Doc comments (`///`) are
   unaffected: they keep rendering on the plane header of what they document.
 - There is no CLI-flag equivalent (unlike `@fold`/`--fold`): `@layout` is a
   source annotation only.
@@ -939,7 +939,7 @@ on tick {
 }
 ```
 
-### `@layout("cube")` -- Compact 3D Packing
+### `@layout("cube")`: Compact 3D Packing
 
 `@layout("cube")` packs gates into a cube (rows of bricks, stacked into
 layers along the plane's depth axis) without analyzing the wire graph at
@@ -947,10 +947,10 @@ all. The compiler already falls back to this arrangement on modules too large
 for the default layout to place economically; the annotation asks for it at
 any size.
 
-It is the opposite trade from `@layout("code")`: wires are ignored entirely,
-so nothing about the picture tells you how signals flow, but the brick mass is
-as small as it can be and placement cost does not grow with the number of
-wires. Reach for it when a module is too big to read anyway and you want it to
+It makes the opposite trade from `@layout("code")`. Wires are ignored, so the
+placed gates show nothing about how signals flow, but the bricks take up as
+little space as possible and placement cost does not grow with the number of
+wires. Use it when a module is too big to read anyway and you want it to
 occupy as little space as possible.
 
 Same placement rules as the other module annotations: at the very top of the
@@ -968,26 +968,26 @@ on tick {
 }
 ```
 
-### `@flat` -- Inline Every Chip
+### `@flat`: Inline Every Chip
 
 `@flat` compiles the program onto a single grid. Every gate that would have
 lived inside a chip is placed alongside the rest, and every wire that would
 have crossed a chip wall becomes an ordinary same-grid wire. The result has no
 microchip bricks and no nested planes to open.
 
-This is a placement decision, not a semantic one. Chips have never been a
-scoping boundary (wire references cross them freely either way), so a
-flattened program computes exactly what the nested one computed. What changes
-is that you get one plane to look at instead of a tree of them, and the
-per-boundary rerouter pins a crossing would otherwise need are gone.
+`@flat` changes placement only. Chips have never been a scoping boundary
+(wire references cross them freely either way), so a flattened program
+computes the same results as the nested one. What changes is that you get one
+plane to look at instead of a tree of them, and the per-boundary rerouter pins
+a crossing would otherwise need are gone.
 
 It is independent of `@layout(...)` and composes with it. `@flat` with
 `@layout("cube")` is the natural pairing: one plane, packed as tightly as the
 gates allow. `@flat` on its own, or with `@layout("code")`, works too.
 
 Because the chip bricks no longer exist, `@label` and `@closed` on a chip have
-nothing to apply to under `@flat`. They are not an error. They simply have
-no effect.
+nothing to apply to under `@flat`. They are accepted without an error and
+have no effect.
 
 Same placement rules as the other module annotations: at the very top of the
 entry file, separated from the first declaration by a blank line, and inert in
@@ -1009,7 +1009,7 @@ on tick {
 }
 ```
 
-## `if` -- Conditional Statement
+## `if`: Conditional Statement
 
 The `if` statement executes a block conditionally. It **requires exec context**: you can only use `if` statements inside `on` handlers or after handlers in the exec chain.
 
@@ -1051,7 +1051,7 @@ on trigger {
 }
 ```
 
-## `match` -- Branch on an Enum Variant
+## `match`: Branch on an Enum Variant
 
 `match` branches on an [enum](enums.md) value's variant, with each arm's
 pattern binding the variant's payload (if any). It works as an
@@ -1090,7 +1090,7 @@ uncovered variant is a **WS054** error. See [Enums](enums.md#match) for
 exhaustiveness, nested patterns, and the scrutinee limitation (a `match`
 target must be a `var`/`let`/param/`const`, not an enum `in` port).
 
-## `if let` / `let else` -- Refutable Enum Binds
+## `if let` / `let else`: Refutable Enum Binds
 
 Single-variant shorthand for a one-armed `match`. `if let PATTERN = scrutinee
 { ... } else { ... }` runs the block only when the scrutinee is that variant,
@@ -1129,8 +1129,8 @@ See [Enums](enums.md#if-let--let-else) for the full reference.
 
 ## `for` Loops
 
-`for` iterates a range, an array, or a map. Which loop you get follows from
-what you iterate: there is one keyword, not three.
+`for` iterates a range, an array, or a map. The same keyword covers all three,
+and the kind of loop follows from what you iterate.
 
 ```wirescript
 in go: exec
@@ -1173,7 +1173,7 @@ on go {
 A loop's body is its own microchip plane, driven by the loop rather than by
 wires from the surrounding grid. Reading and writing a `var` declared outside
 the loop still works from inside the body: it is an ordinary boundary
-crossing, priced the same as a `chip { }`'s. `for` is exec-position only.
+crossing, and costs the same as one into a `chip { }`. `for` is exec-position only.
 
 ### Range Sources
 
@@ -1230,7 +1230,7 @@ on go {
 
 `{ }` names the loop's own entry ports, and only a range accepts it. An array
 or map slot holds a value rather than a set of ports, and no slot of either
-kind is a record, so `{ }` on one is rejected (`WS076`) - name the slot
+kind is a record, so `{ }` on one is rejected (`WS076`). Name the slot
 instead.
 
 ```wirescript
@@ -1249,8 +1249,8 @@ first/last flags or iteration ordinal; compare `index` against the bounds
 instead.
 
 **A record-typed array cannot be iterated.** Both `for { x, y } in points` and
-the single-binding `for p in points` are rejected over a `Point[]` (`WS082`):
-such an array is stored as one array gate per field (see
+the single-binding `for p in points` are rejected over a `Point[]` (`WS082`).
+Such an array is stored as one array gate per field (see
 [Records as storage](types.md#records-as-storage)), so there is no single
 array reference for the loop to bind. Iterate the index instead:
 
@@ -1312,7 +1312,7 @@ on go {
 }
 ```
 
-A deliberate `break` does **not** set `run.aborted`. That field reports the
+A `break` in the body does not set `run.aborted`. That field reports the
 runtime cutting a loop off on its own (an invocation limit, for instance),
 which a `break` is not.
 
@@ -1338,9 +1338,33 @@ on go {
 }
 ```
 
-`@sliced` goes on a `for` or a `let run = for` and nothing else, and
-takes no other annotation beside it. The body rules below still apply: a body
-cannot `await`, even when the game runs it across ticks.
+`@sliced` goes on a `for` or a `let run = for` and nothing else. The body
+rules below still apply: a body cannot `await`, even when the game runs it
+across ticks.
+
+### Naming the loop chip (`@label`)
+
+`@label` names a loop's microchip, as it names a `chip`'s: the name shows on
+the loop's brick and as the title of its plane. It takes a string or a
+constant expression (a runtime value is `WS040`), and sits beside `@sliced` in
+either order. A loop takes no other annotation.
+
+```wirescript
+const ROW_LABEL = "rows"
+in go: exec
+var total: int = 0
+
+on go {
+  @label("sum") @sliced
+  for i in 0..100 {
+    total = total + i
+  }
+  @label(ROW_LABEL)
+  let run = for i in 0..10 {
+    total = total + 1
+  }
+}
+```
 
 ### What a Loop Body Can't Do
 
@@ -1349,17 +1373,17 @@ cannot `await`, even when the game runs it across ticks.
   caller. Assign to a `var` declared before the loop and `return` it after the
   loop ends instead.
 - **`await`.** A loop body runs as one synchronous sweep within a single
-  tick, so it cannot suspend across ticks - the compiler rejects any `await`
+  tick, so it cannot suspend across ticks. The compiler rejects any `await`
   inside one (`WS079`), including `await Sleep(...)`/`await SleepTicks(...)`.
   Spread work across ticks with a back-edge loop (see [Loops](#loops) under
   `emit`) outside the `for` instead.
 - **`@flat`.** A loop's plane is a real execution boundary, not a layout
-  grouping, so flattening it would compile a different program - the
+  grouping, so flattening it would compile a different program. The
   compiler rejects `@flat` over a file containing any `for` (`WS080`).
 - **`buffer`.** A `buffer` binding inside a loop body compiles today, but a
   tick-delayed value inside a body swept many times within one tick has no
   established meaning. Treat it as undefined and declare the `buffer` outside
-  the loop until the behaviour is confirmed.
+  the loop until the behavior is confirmed.
 
 ### Cost
 
@@ -1367,11 +1391,11 @@ A loop's gates are placed once no matter how many times it runs, but its
 body's computation is not: the same plane sweeps once per iteration, so
 anything inside the body that doesn't depend on the loop's binding is
 recomputed on every pass. Compute it once above the loop and read it inside
-instead. This is the first loop in the language where that trade-off exists:
-a `mod` bakes its cost in per call site at compile time, so there was never a
-runtime sweep to hoist work out of.
+instead. `for` is the first loop in the language with this trade-off. A
+`mod`'s gates are emitted once per call site at compile time, so a `mod` has
+no runtime sweep to move work out of.
 
-## `fn` -- Function
+## `fn`: Function
 
 A `fn` is written like a `mod`, but compiles once. Its body becomes one
 function definition plane, and every call is a Function Call gate bound to
@@ -1476,7 +1500,7 @@ tuple, enum or `exec` (`WS114`). A call with neither an exec chain nor an
 | Outer storage | wired directly | through handles in its plane | wired through the plane's pins |
 | Recursion | no (`WS020`) | no (`WS020`) | no |
 
-## `on` -- Event Handler
+## `on`: Event Handler
 
 Handlers run code in response to events or triggers. The handler body executes in exec context.
 
@@ -1522,8 +1546,8 @@ on ZoneLeft(zone = room) -> (character) { }
 ```
 
 > **Frozen entities still fire entity zone events**: `SetFrozen(true)` does not
-> suppress `EntityZoneEntered`. But an entry only fires on a **boundary crossing**:
-> `SetLocation`-ing an entity to a zone it is *already* inside does **not** re-fire
+> suppress `EntityZoneEntered`. An entry fires only on a **boundary crossing**, so
+> `SetLocation`-ing an entity to a zone it is *already* inside does not re-fire
 > the event. To force a fresh entry, move it out of the zone and back in.
 
 ### Binding Event Data
@@ -1586,7 +1610,7 @@ on CustomEvent("dmg") -> (amount: int, source: character) {
 ```
 
 A slot's type can be omitted and is then **inferred** from a matching in-unit
-`SendCustomEvent`/`SendGlobalCustomEvent` on the same channel; when no sender
+`SendCustomEvent`/`SendGlobalCustomEvent` on the same channel. When no sender
 supplies a type either, the slot defaults to `float` and emits `WS042`. See
 [Custom Events](builtins.md#custom-events) for the full send/receive contract.
 
@@ -1706,7 +1730,7 @@ The older `|` trigger-union syntax still parses but is discouraged in favor of
 `Union(...)`:
 
 ```wirescript
-on eventA | eventB {   // deprecated — use `on Union(eventA, eventB)`
+on eventA | eventB {   // deprecated: use `on Union(eventA, eventB)`
   // Fires on either event
 }
 ```
@@ -1721,7 +1745,7 @@ on obj.field {
 }
 ```
 
-## `let on` -- Event Declaration
+## `let on`: Event Declaration
 
 Event declarations create named triggers using `let ... = on ...`. The `event` keyword is also accepted as a legacy alias.
 
@@ -1752,7 +1776,7 @@ let bumped = on Bumped {
 }
 ```
 
-## `emit` -- Emit Signal
+## `emit`: Emit Signal
 
 Fires an exec signal to an output port or local exec signal. Bare `emit` requires exec context; `emit target = expr` also works in pure context.
 
@@ -1789,8 +1813,8 @@ on trigger {
 ```
 
 The `emit name = value` form is reserved for carrying a **payload alongside an
-exec signal**, a local signal you later `await` (see below): it fires the signal
-*and* ferries the value, so use it only when you actually want the exec to route.
+exec signal**, a local signal you later `await` (see below). It fires the signal
+*and* ferries the value, so use it only when you want the exec to route.
 
 ### Local Exec Signals
 
@@ -1807,17 +1831,17 @@ A `type` alias of `exec` declares one the same way: with `type Signal = exec`, `
 
 ### Buffered Emit
 
-`buffer emit sig` routes the emit's exec through a **Buffer** gate, delaying delivery by one tick. This is the tick-crossing barrier that makes emit/await **loops** legal: a back-edge `emit` after an `await` closes a wire-graph cycle, and every cycle must cross a Buffer or the compile errors (**WS005**).
+`buffer emit sig` routes the emit's exec through a **Buffer** gate, delaying delivery by one tick. Crossing a tick this way is what makes emit/await **loops** legal. A back-edge `emit` after an `await` closes a wire-graph cycle, and every cycle must cross a Buffer or the compile fails (**WS005**).
 
 ```wirescript ignore
 buffer emit loop            // 1 tick (default)
 buffer(3) emit loop         // 3 ticks (BufferTicks)
 buffer(0.5s) emit loop      // 0.5 seconds (BufferSeconds)
-buffer(d) emit loop         // variable delay — wired into TicksToWait
+buffer(d) emit loop         // variable delay: wired into TicksToWait
 buffer(0, 1s) emit sig      // delay 0, hold output 1s after the input drops
 ```
 
-- The first duration is the **delay** (`TicksToWait` / `SecondsToWait`); the optional second is the **hold** (`ZeroTicksToWait` / `ZeroSecondsToWait`: how long the output stays up after the input drops; omitted = `-1` = same as delay).
+- The first duration is the **delay** (`TicksToWait` / `SecondsToWait`). The optional second is the **hold** (`ZeroTicksToWait` / `ZeroSecondsToWait`), how long the output stays up after the input drops. Omitting it gives `-1`, which means the same as the delay.
 - An `s` suffix selects the seconds gate; unadorned durations are ticks.
 - Constant durations bake into the gate; variables/expressions wire into the duration port.
 
@@ -1837,7 +1861,7 @@ let { sum, index } = await loop      // destructure the fields
 
 ### Loops
 
-`emit`/`await` on a local signal plus a buffered back-edge forms a loop that advances one iteration per buffer period. Loop state can live in `var`s (they persist across iterations; non-static vars reset on the entry chain, once per call):
+`emit`/`await` on a local signal plus a buffered back-edge forms a loop that advances one iteration per buffer period. Loop state can live in `var`s (they persist across iterations, and non-static vars reset on the entry chain, once per call):
 
 ```wirescript
 mod sumItems(arr: int[]) -> int {
@@ -1871,16 +1895,16 @@ mod sumItems(arr: int[]) -> int {
 }
 ```
 
-Semantics worth knowing:
+Semantics:
 
 - An emit on the **same exec chain** as an unconditional `await` of that signal is sequenced through a `Var_Set(armed = true)` **before** entering the signal's union, so the awaiting `Var_Get` can never race the arm, and a loop back-edge re-arms the await every iteration.
 - Emits from **other handlers** enter the signal directly and are guarded by the armed flag: the continuation only runs if the awaiting chain has reached the `await`.
 - An `await` inside an `if` branch keeps pure flag semantics (its arm only fires when the branch is taken).
-- **A back-edge loop whose `await` sits inside an `if` runs exactly ONE iteration.** This follows from the rule above and is the single easiest way to write a loop that looks fine and is not. The first pass consumes the arm; the buffered back-edge arrives on the next tick, finds the branch untaken and the await unarmed, and the continuation never runs. There is no error, no warning, and no hang - the program carries on with one iteration's worth of work done, so a loop meant to fill 25 entries leaves 1.
+- **A back-edge loop whose `await` sits inside an `if` runs only one iteration.** This follows from the rule above, and it is an easy mistake to make because the loop looks correct. The first pass consumes the arm. The buffered back-edge arrives on the next tick, finds the branch untaken and the await unarmed, and the continuation never runs. There is no error, no warning and no hang. The program continues with one iteration's work done, so a loop meant to fill 25 entries leaves 1.
 
   Measured, same loop body both ways: 5 of 5 iterations with the `await` at its handler's top level, 1 of 5 with it inside a branch.
 
-  This bites hardest when a loop lives in a `mod` called from a step machine, because the `mod` inlines into the caller and inherits its branch:
+  This happens most easily when a loop is in a `mod` called from a step machine, because the `mod` inlines into the caller and inherits its branch:
 
   ```wirescript ignore
   // BROKEN - the call site puts the await inside an `if`
@@ -1902,9 +1926,9 @@ Semantics worth knowing:
   }
   ```
 
-  The `if` guarding the loop's own continuation (`if idx < 25`) is fine and required - it is the exit test. What must not be branched is the `await` itself.
+  The `if` guarding the loop's own continuation (`if idx < 25`) is fine and required, because it is the exit test. Only the `await` itself must stay out of a branch.
 - **Loop state must outlive the tick.** A back-edge buffer crosses a tick, and a
-  tick is a new call of whatever handler the loop sits in - so a non-static `var`
+  tick is a new call of whatever handler the loop sits in, so a non-static `var`
   declared inside the loop's own scope is reset before the next iteration reads
   it. A counter declared there sticks at its initial value forever, and the loop
   rewrites element 0 on every pass while looking like it is running. Put the
@@ -1927,9 +1951,9 @@ Semantics worth knowing:
   }
   ```
 
-  The failure is silent: the program runs, the loop terminates, and the
-  collection simply holds one element.
-- **A loop advances one iteration per tick.** The back-edge is a buffer, and a buffer crosses a tick, so walking N elements takes N ticks. That is fine for work that runs once (a reset sweep, a one-off rebuild) and wrong for work that has to happen every tick for every element: a per-tick sweep over a roster of N costs N ticks per pass and degrades as the roster grows. When you need per-tick work per entity, give each entity its own chip instance instead of looping a central one. See [per-entity fan-out](best-practices.md#10-per-entity-fan-out-one-chip-each-not-one-loop-over-all).
+  The failure is silent. The program runs, the loop terminates, and the
+  collection holds one element.
+- **A loop advances one iteration per tick.** The back-edge is a buffer, and a buffer crosses a tick, so walking N elements takes N ticks. That is fine for work that runs once (a reset sweep, a one-off rebuild) and wrong for work that has to happen every tick for every element: a per-tick sweep over a roster of N costs N ticks per pass and degrades as the roster grows. When you need per-tick work per entity, sweep with a [`for` loop](#for-loops), which finishes within the tick, or give each entity its own chip instance. See [per-entity fan-out](best-practices.md#10-per-entity-work-a-for-sweep-or-one-chip-each).
 
 ### Gate Cost
 
@@ -1943,7 +1967,7 @@ Semantics worth knowing:
 | `let { F fields } = await sig` | +F Var_Get |
 | per signal | 1 Union hub (+1 arm Var_Set when same-chain emits exist); a single-input hub is spliced away |
 
-## `await` -- Suspend Exec Chain
+## `await`: Suspend Exec Chain
 
 Suspends the current exec chain and resumes from the awaited expression's exec output. Everything after the `await` runs when that exec fires. Only valid in exec context.
 
@@ -1953,7 +1977,7 @@ let val = await signal               // capture the signal's ferried payload
 let { a, b } = await signal          // destructure a record payload
 let val = await value on trigger     // capture value when trigger fires
 let n: int = await CustomEvent("c")  // wait for an event, capture its data
-await a || b                         // race -- first signal wins
+await a || b                         // race: first signal wins
 await Sleep(_, delay = 1.0)          // sleep 1 second using _ armed flag
 await SleepTicks(_, delay = 5)       // sleep 5 ticks
 ```
@@ -1973,7 +1997,7 @@ on go {
 }
 ```
 
-Annotate the binding's type (`let amount: int = ...`): the event's data ports are untyped in-game, so the annotation is what makes the wire carry the right variant. Without it the value defaults to a float and mis-delivers non-float data ([`WS055`](diagnostics.md)). A **tuple** `let (p, t) = await CustomEvent("c")` captures the data outputs positionally (`p` = DataOut1, `t` = DataOut2) but has no place to annotate them, so prefer one typed binding per value, or the handler form `on CustomEvent("c") -> (p: int, t: float) { ... }` when you want several typed at once. A bare `await CustomEvent("c")` with no binding just waits for the event.
+Annotate the binding's type (`let amount: int = ...`). The event's data ports are untyped in-game, so the annotation decides which variant the wire carries. Without it the value defaults to a float and mis-delivers non-float data ([`WS055`](diagnostics.md)). A **tuple** `let (p, t) = await CustomEvent("c")` captures the data outputs positionally (`p` = DataOut1, `t` = DataOut2) but has no place to annotate them, so prefer one typed binding per value, or the handler form `on CustomEvent("c") -> (p: int, t: float) { ... }` when you want several typed at once. A bare `await CustomEvent("c")` with no binding just waits for the event.
 
 ### The `_` Placeholder
 
@@ -2148,7 +2172,7 @@ mod process(v: *int) {
 }
 ```
 
-### `return expr` -- Return with Value
+### `return expr`: Return with Value
 
 For mods with a single output (declared with `-> (name: type)`), `return expr` sets the output value and exits:
 

@@ -33,20 +33,47 @@ pub(super) fn pre_declare_chip_name(ctx: &mut LowerCtx, c: &ChipDecl) {
 /// name that means something outside the body (an outer frame's binding, a
 /// constant, an enum or variant, a namespace) when a statement before it, or
 /// its own initializer, reads the name: those read what it meant there.
-pub(super) fn hoists_storage(ctx: &LowerCtx, stmts: &[Stmt], at: usize, name: &str) -> bool {
+pub(super) fn hoists_storage(ctx: &LowerCtx, stmts: &Mentions, at: usize, name: &str) -> bool {
     if ctx.scope.get_current(name).is_some() {
         return false;
     }
     let means_something = ctx.scope.get(name).is_some() || ctx.consts.resolved_by_name(name);
-    !means_something
-        || !stmts[..=at].iter().any(|s| crate::ast::walk::mentions(crate::ast::walk::Node::Stmt(s), name))
+    !means_something || !stmts.by(at, name)
+}
+
+/// Which statements of a body mention each name, worked out on the first
+/// question and kept for the rest of the body's declarations.
+pub(super) struct Mentions<'a> {
+    stmts: &'a [Stmt],
+    first: std::cell::OnceCell<HashMap<&'a str, usize>>,
+}
+
+impl<'a> Mentions<'a> {
+    pub(super) fn new(stmts: &'a [Stmt]) -> Self {
+        Self { stmts, first: std::cell::OnceCell::new() }
+    }
+
+    /// Whether a statement up to and including `at` mentions `name` (see
+    /// [`crate::ast::walk::mentions`]).
+    pub(super) fn by(&self, at: usize, name: &str) -> bool {
+        let first = self.first.get_or_init(|| {
+            let mut first = HashMap::default();
+            for (i, s) in self.stmts.iter().enumerate() {
+                crate::ast::walk::mentioned_names(crate::ast::walk::Node::Stmt(s), &mut |n| {
+                    first.entry(n).or_insert(i);
+                });
+            }
+            first
+        });
+        first.get(name).is_some_and(|i| *i <= at)
+    }
 }
 
 /// [`hoists_storage`], for the body pre-declare loops: a declaration it
 /// leaves to its statement is recorded, so that statement declares fresh
 /// storage even though the frame already binds the name (see
 /// `LowerCtx::unhoisted`).
-pub(super) fn hoist_or_defer(ctx: &mut LowerCtx, stmts: &[Stmt], at: usize, name: &str, range: &SourceRange) -> bool {
+pub(super) fn hoist_or_defer(ctx: &mut LowerCtx, stmts: &Mentions, at: usize, name: &str, range: &SourceRange) -> bool {
     let hoists = hoists_storage(ctx, stmts, at, name);
     if !hoists {
         ctx.unhoisted.insert((range.file.clone(), range.start.offset));
@@ -77,6 +104,7 @@ pub(super) fn record_later_storage(ctx: &mut LowerCtx, body: &Block) {
         });
     }
     let frame = ctx.scope.current_id();
+    let mentions = Mentions::new(&body.stmts);
     for (i, s) in body.stmts.iter().enumerate() {
         let mut decls = Vec::new();
         decls_in(s, &mut decls);
@@ -86,10 +114,10 @@ pub(super) fn record_later_storage(ctx: &mut LowerCtx, body: &Block) {
         let stmts = &body.stmts;
         let names: Vec<crate::intern::Sym> = (i + 1..stmts.len())
             .filter_map(|j| match &stmts[j] {
-                Stmt::Var(v) => Some(&v.name).filter(|n| hoists_storage(ctx, stmts, j, n)),
-                Stmt::Array(a) => Some(&a.name).filter(|n| hoists_storage(ctx, stmts, j, n)),
-                Stmt::Map(m) => Some(&m.name).filter(|n| hoists_storage(ctx, stmts, j, n)),
-                Stmt::Buffer(b) => Some(&b.name).filter(|n| hoists_storage(ctx, stmts, j, n)),
+                Stmt::Var(v) => Some(&v.name).filter(|n| hoists_storage(ctx, &mentions, j, n)),
+                Stmt::Array(a) => Some(&a.name).filter(|n| hoists_storage(ctx, &mentions, j, n)),
+                Stmt::Map(m) => Some(&m.name).filter(|n| hoists_storage(ctx, &mentions, j, n)),
+                Stmt::Buffer(b) => Some(&b.name).filter(|n| hoists_storage(ctx, &mentions, j, n)),
                 // A chip body's ports are always declared up front.
                 Stmt::In(p) => Some(&p.name),
                 _ => None,
@@ -219,6 +247,7 @@ pub(super) fn pre_declare_anon_chip(ctx: &mut LowerCtx, ac: &AnonChipDecl, hoist
             props.insert(*sym::DOC_TEXT, Literal::String(doc.clone()));
         }
     }
+    crate::lower::style::bake_style(ctx, chip_node_id, ac.color_expr.as_ref(), ac.material_expr.as_ref());
     // Pair the node with its decl so `lower_anon_chip` finds it without a
     // whole-module scan. Keyed by (range, enclosing chip), the same pair the
     // scan matched on.
@@ -335,15 +364,8 @@ pub(super) fn build_exec_signal_hub(ctx: &mut LowerCtx, name: &str, range: &Sour
     let key = format!("{name}#{hub}");
     ctx.exec_signal_hubs.insert(key.clone(), hub);
     ctx.exec_signal_keys.insert(hub, key.clone());
+    ctx.exec_signal_depths.insert(key.clone(), ctx.exec_branch_depth);
     ctx.pending_emits.entry(key).or_default();
-}
-
-#[allow(dead_code)]
-pub(super) fn is_entity_family(t: &Type) -> bool {
-    matches!(
-        t,
-        Type::Controller | Type::Character | Type::Entity
-    )
 }
 
 pub(super) use crate::types::mono::unwrap_ref;
@@ -1337,39 +1359,6 @@ fn fold_resource_amount(e: &Expr) -> Option<Literal> {
     ]))
 }
 
-/// Coerce a constant literal to a declared scalar type, matching the gate
-/// coercion laws the array bake path uses (string→bool via `!= ""`, and
-/// numeric int/float/bool normalization). Identity for anything already the
-/// right kind or with no defined coercion.
-///
-/// Without this, a coercion-mixed map entry (e.g. `Map<int, bool> = { 1 =>
-/// "on" }`) would bake its RAW folded literal (`String("on")`), which emit's
-/// `wire_map_variant_from_literals` then can't match against the declared
-/// value kind and silently zero-falls-back to `false` — a typechecked
-/// program baking the wrong data.
-pub(super) fn coerce_literal_to_type(lit: Literal, ty: &Type) -> Literal {
-    match ty {
-        Type::Int => match lit {
-            Literal::Bool(b) => Literal::Int(b as i64),
-            number => crate::const_eval::number_in_type(number, ty),
-        },
-        Type::Float => match lit {
-            Literal::Float(f) => Literal::Float(f),
-            Literal::Int(n) => crate::const_eval::number_in_type(Literal::Int(n), ty),
-            Literal::Bool(b) => Literal::Float(b as i64 as f64),
-            other => other,
-        },
-        Type::Bool => match lit {
-            Literal::Bool(b) => Literal::Bool(b),
-            Literal::Int(n) => Literal::Bool(n != 0),
-            Literal::String(s) => Literal::Bool(!s.is_empty()), // the `!= ""` law
-            other => other,
-        },
-        // string / vector / rotator / quat / color / object: no cross-coercion here.
-        _ => lit,
-    }
-}
-
 /// Fold a map-literal entry to a `(key, value)` literal pair coerced to the
 /// declared `key_ty`/`val_ty`, or `None` if either side isn't a compile-time
 /// constant. Routes through `const_eval::eval_expr` the same way and for the
@@ -1388,8 +1377,8 @@ fn map_entry_literal(
     let key_lit = crate::const_eval::eval_expr(&e.key, &cx, &mut crate::const_eval::Budget::default()).ok()?;
     let val_lit = crate::const_eval::eval_expr(&e.value, &cx, &mut crate::const_eval::Budget::default()).ok()?;
     Some((
-        coerce_literal_to_type(key_lit, key_ty),
-        coerce_literal_to_type(val_lit, val_ty),
+        crate::const_eval::scalar_in_type(key_lit, key_ty),
+        crate::const_eval::scalar_in_type(val_lit, val_ty),
     ))
 }
 
@@ -1609,15 +1598,10 @@ fn declare_array_var(
     properties: HashMap<crate::intern::Sym, Literal>,
     range: &SourceRange,
 ) -> NodeId {
-    let node_id = make_array_var_gate(ctx, &elem_type, properties, range);
+    let node_id = make_array_var_gate(ctx, &elem_type, properties, range, None);
     ctx.scope.insert(
         name,
-        Binding::Var(VarRecord {
-            node_id,
-            inner_type: elem_type,
-            get_node_for_handler: None,
-            storage: VarStorage::Array,
-        }),
+        Binding::Var(VarRecord::new(node_id, elem_type, VarStorage::Array)),
     );
     node_id
 }
@@ -1625,24 +1609,19 @@ fn declare_array_var(
 /// Build just the `Pseudo_ArrayVar` gate (no scope binding) — the gate half of
 /// [`declare_array_var`], shared with [`record_field_storage`]'s per-field array
 /// backing so a record ARRAY field and a top-level array var cannot drift apart.
-fn make_array_var_gate(
+pub(super) fn make_array_var_gate(
     ctx: &mut LowerCtx,
     elem_type: &Type,
     properties: HashMap<crate::intern::Sym, Literal>,
     range: &SourceRange,
+    note: Option<&'static str>,
 ) -> NodeId {
     ctx.add_gate(AddNodeOpts {
         gate_class: gc::ARRAY_VAR,
         source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![PortSpec::new(
-                              *sym::ARRAY_VAR_REF,
-                              Type::Ref(Box::new(Type::Array(Box::new(elem_type.clone())))),
-                          )],
-        },
+        ports: GateIO::array_storage(elem_type.clone()),
         properties,
-        note: None,
+        note,
         ..Default::default()
     })
 }
@@ -1661,12 +1640,7 @@ fn declare_map_var(
     let node_id = make_map_var_gate(ctx, &map_type, properties, range);
     ctx.scope.insert(
         name,
-        Binding::Var(VarRecord {
-            node_id,
-            inner_type: map_type,
-            get_node_for_handler: None,
-            storage: VarStorage::Map,
-        }),
+        Binding::Var(VarRecord::new(node_id, map_type, VarStorage::Map)),
     );
     node_id
 }
@@ -1683,10 +1657,7 @@ fn make_map_var_gate(
     ctx.add_gate(AddNodeOpts {
         gate_class: gc::MAP_VAR,
         source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![PortSpec::new(*sym::MAP_VAR_REF, Type::Ref(Box::new(map_type.clone())))],
-        },
+        ports: GateIO::map_storage(map_type.clone()),
         properties,
         note: None,
         ..Default::default()
@@ -1701,13 +1672,14 @@ pub(super) fn make_scalar_var_gate(
     inner_type: &Type,
     properties: HashMap<crate::intern::Sym, Literal>,
     range: &SourceRange,
+    note: Option<&'static str>,
 ) -> NodeId {
     ctx.add_gate(AddNodeOpts {
         gate_class: gc::VAR,
         source_range: range.clone(),
         ports: GateIO::var_storage(inner_type.clone()),
         properties,
-        note: None,
+        note,
         ..Default::default()
     })
 }
@@ -1886,13 +1858,8 @@ fn record_field_storage(
                     let lits = items.into_iter().map(|lit| bake_string_bool(lit, elem)).collect();
                     properties.insert(*sym::INITIAL_VALUE, Literal::Array(lits));
                 }
-                let node_id = make_array_var_gate(ctx, elem, properties, range);
-                Binding::Var(VarRecord {
-                    node_id,
-                    inner_type: (**elem).clone(),
-                    get_node_for_handler: None,
-                    storage: VarStorage::Array,
-                })
+                let node_id = make_array_var_gate(ctx, elem, properties, range, None);
+                Binding::Var(VarRecord::new(node_id, (**elem).clone(), VarStorage::Array))
             }
             Type::Map(k, v) => {
                 let map_type = Type::Map(k.clone(), v.clone());
@@ -1904,16 +1871,11 @@ fn record_field_storage(
                     properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs));
                 } else if let Some(Literal::Map(pairs)) = init.and_then(|e| const_container_init(ctx, e)) {
                     let coerce =
-                        |(a, b): (Literal, Literal)| (coerce_literal_to_type(a, k), coerce_literal_to_type(b, v));
+                        |(a, b): (Literal, Literal)| (crate::const_eval::scalar_in_type(a, k), crate::const_eval::scalar_in_type(b, v));
                     properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs.into_iter().map(coerce).collect()));
                 }
                 let node_id = make_map_var_gate(ctx, &map_type, properties, range);
-                Binding::Var(VarRecord {
-                    node_id,
-                    inner_type: map_type,
-                    get_node_for_handler: None,
-                    storage: VarStorage::Map,
-                })
+                Binding::Var(VarRecord::new(node_id, map_type, VarStorage::Map))
             }
             scalar => {
                 let init_lit = init
@@ -1922,31 +1884,21 @@ fn record_field_storage(
                     // without the const env it resolved to nothing and the var
                     // silently started at its type default.
                     .and_then(|e| expr_to_literal_in(e, &consts))
-                    .map(|lit| bake_literal_for_type(lit, scalar))
+                    .map(|lit| crate::const_eval::scalar_in_type(lit, scalar))
                     .or_else(|| default_literal_for_var_type(scalar));
                 if let Some(lit) = init_lit {
                     properties.insert(*sym::INITIAL_VALUE, lit);
                 }
-                let node_id = make_scalar_var_gate(ctx, scalar, properties, range);
-                Binding::Var(VarRecord {
-                    node_id,
-                    inner_type: scalar.clone(),
-                    get_node_for_handler: None,
-                    storage: VarStorage::Var,
-                })
+                let node_id = make_scalar_var_gate(ctx, scalar, properties, range, None);
+                Binding::Var(VarRecord::new(node_id, scalar.clone(), VarStorage::Var))
             }
         },
         // A record ARRAY: each scalar field backs onto its own parallel array of
         // that field's element type. (Container-typed fields inside an array
         // element are rejected by typecheck — no array-of-arrays.)
         VarStorage::Array => {
-            let node_id = make_array_var_gate(ctx, field_type, properties, range);
-            Binding::Var(VarRecord {
-                node_id,
-                inner_type: field_type.clone(),
-                get_node_for_handler: None,
-                storage: VarStorage::Array,
-            })
+            let node_id = make_array_var_gate(ctx, field_type, properties, range, None);
+            Binding::Var(VarRecord::new(node_id, field_type.clone(), VarStorage::Array))
         }
         // A record MAP: each scalar field backs onto its own parallel map from
         // the SAME key type to that field's value type.
@@ -1954,21 +1906,11 @@ fn record_field_storage(
             let key = map_key.cloned().unwrap_or(Type::Any);
             let map_type = Type::Map(Box::new(key), Box::new(field_type.clone()));
             let node_id = make_map_var_gate(ctx, &map_type, properties, range);
-            Binding::Var(VarRecord {
-                node_id,
-                inner_type: map_type,
-                get_node_for_handler: None,
-                storage: VarStorage::Map,
-            })
+            Binding::Var(VarRecord::new(node_id, map_type, VarStorage::Map))
         }
         VarStorage::Buffer => {
-            let node_id = make_scalar_var_gate(ctx, field_type, properties, range);
-            Binding::Var(VarRecord {
-                node_id,
-                inner_type: field_type.clone(),
-                get_node_for_handler: None,
-                storage: VarStorage::Var,
-            })
+            let node_id = make_scalar_var_gate(ctx, field_type, properties, range, None);
+            Binding::Var(VarRecord::new(node_id, field_type.clone(), VarStorage::Var))
         }
     }
 }
@@ -2201,8 +2143,8 @@ fn bake_record_map_pairs(
                     .iter()
                     .filter_map(|(k, ve)| {
                         Some((
-                            coerce_literal_to_type(fold_const(ctx, k)?, &key_ty),
-                            coerce_literal_to_type(fold_const(ctx, ve)?, &val_ty),
+                            crate::const_eval::scalar_in_type(fold_const(ctx, k)?, &key_ty),
+                            crate::const_eval::scalar_in_type(fold_const(ctx, ve)?, &val_ty),
                         ))
                     })
                     .collect();
@@ -2243,7 +2185,7 @@ fn bake_folded_map_columns(ctx: &mut LowerCtx, rec: &HashMap<crate::intern::Sym,
                     .iter()
                     .map(|(k, r)| {
                         let value = field(r).or_else(|| default_literal_for_var_type(val_ty))?;
-                        Some((coerce_literal_to_type(k.clone(), key_ty), coerce_literal_to_type(value, val_ty)))
+                        Some((crate::const_eval::scalar_in_type(k.clone(), key_ty), crate::const_eval::scalar_in_type(value, val_ty)))
                     })
                     .collect();
                 if let Some(pairs) = pairs {
@@ -2304,18 +2246,18 @@ fn bake_record_var_fields(ctx: &mut LowerCtx, rec: &HashMap<crate::intern::Sym, 
             Some(Binding::Var(v)) => {
                 let baked = match (v.storage, value) {
                     (VarStorage::Array, Literal::Array(items)) => Literal::Array(
-                        items.iter().map(|l| bake_literal_for_type(l.clone(), &v.inner_type)).collect(),
+                        items.iter().map(|l| crate::const_eval::scalar_in_type(l.clone(), &v.inner_type)).collect(),
                     ),
                     (VarStorage::Map, Literal::Map(pairs)) => match &v.inner_type {
                         Type::Map(k, t) => {
                             let coerce = |(a, b): &(Literal, Literal)| {
-                                (coerce_literal_to_type(a.clone(), k), coerce_literal_to_type(b.clone(), t))
+                                (crate::const_eval::scalar_in_type(a.clone(), k), crate::const_eval::scalar_in_type(b.clone(), t))
                             };
                             Literal::Map(pairs.iter().map(coerce).collect())
                         }
                         _ => continue,
                     },
-                    (VarStorage::Var, value) => bake_literal_for_type(value.clone(), &v.inner_type),
+                    (VarStorage::Var, value) => crate::const_eval::scalar_in_type(value.clone(), &v.inner_type),
                     _ => continue,
                 };
                 set_initial_value(ctx, v.node_id, baked);
@@ -2680,15 +2622,10 @@ fn declare_enum_container(
         // Unknown enum shouldn't happen post-typecheck (or in the isolated
         // resource-estimation `LowerCtx`, which seeds `enum_defs` empty) -
         // fall back to a bare scalar so lowering doesn't panic.
-        let node_id = make_scalar_var_gate(ctx, &Type::Int, HashMap::default(), range);
+        let node_id = make_scalar_var_gate(ctx, &Type::Int, HashMap::default(), range, None);
         ctx.scope.insert(
             name,
-            Binding::Var(VarRecord {
-                node_id,
-                inner_type: Type::Int,
-                get_node_for_handler: None,
-                storage: VarStorage::Var,
-            }),
+            Binding::Var(VarRecord::new(node_id, Type::Int, VarStorage::Var)),
         );
         return;
     };
@@ -2736,13 +2673,8 @@ pub(super) fn build_enum_fields(
             .or_else(|| def.variants.first().map(|v| v.discriminant))
             .unwrap_or(0);
         disc_props.insert(*sym::INITIAL_VALUE, Literal::Int(disc_init));
-        let disc_node = make_scalar_var_gate(ctx, &Type::Int, disc_props, range);
-        Binding::Var(VarRecord {
-            node_id: disc_node,
-            inner_type: Type::Int,
-            get_node_for_handler: None,
-            storage: VarStorage::Var,
-        })
+        let disc_node = make_scalar_var_gate(ctx, &Type::Int, disc_props, range, None);
+        Binding::Var(VarRecord::new(disc_node, Type::Int, VarStorage::Var))
     };
     fields.insert(crate::intern::intern("__disc"), disc_binding);
 
@@ -2899,37 +2831,22 @@ fn enum_payload_slot(
     props.insert(*sym::NAME_LABEL, Literal::String(label.to_string()));
     match &field_type {
         Type::Array(elem) => {
-            let node_id = make_array_var_gate(ctx, elem, props, range);
-            Binding::Var(VarRecord {
-                node_id,
-                inner_type: (**elem).clone(),
-                get_node_for_handler: None,
-                storage: VarStorage::Array,
-            })
+            let node_id = make_array_var_gate(ctx, elem, props, range, None);
+            Binding::Var(VarRecord::new(node_id, (**elem).clone(), VarStorage::Array))
         }
         Type::Map(k, v) => {
             let map_type = Type::Map(k.clone(), v.clone());
             let node_id = make_map_var_gate(ctx, &map_type, props, range);
-            Binding::Var(VarRecord {
-                node_id,
-                inner_type: map_type,
-                get_node_for_handler: None,
-                storage: VarStorage::Map,
-            })
+            Binding::Var(VarRecord::new(node_id, map_type, VarStorage::Map))
         }
         scalar => {
             if let Some(lit) = init_lit {
-                props.insert(*sym::INITIAL_VALUE, bake_literal_for_type(lit, scalar));
+                props.insert(*sym::INITIAL_VALUE, crate::const_eval::scalar_in_type(lit, scalar));
             } else if let Some(lit) = default_literal_for_var_type(scalar) {
                 props.insert(*sym::INITIAL_VALUE, lit);
             }
-            let node_id = make_scalar_var_gate(ctx, scalar, props, range);
-            Binding::Var(VarRecord {
-                node_id,
-                inner_type: scalar.clone(),
-                get_node_for_handler: None,
-                storage: VarStorage::Var,
-            })
+            let node_id = make_scalar_var_gate(ctx, scalar, props, range, None);
+            Binding::Var(VarRecord::new(node_id, scalar.clone(), VarStorage::Var))
         }
     }
 }
@@ -3181,7 +3098,7 @@ fn const_container_gate(
                     .and_then(wire_type_of_literal)
                     .unwrap_or(Type::Any),
             };
-            // Element-wise compile-time string → bool, the same `!= ""` law the
+            // Element-wise compile-time string -> bool, the same `!= ""` law the
             // `var` paths bake through (see `bake_string_bool`), and an integer
             // in a `float` table is the float it names.
             let items: Vec<Literal> = items
@@ -3192,14 +3109,9 @@ fn const_container_gate(
                 })
                 .collect();
             properties.insert(*sym::INITIAL_VALUE, Literal::Array(items));
-            let node_id = make_array_var_gate(ctx, &elem_type, properties, range);
+            let node_id = make_array_var_gate(ctx, &elem_type, properties, range, None);
             ctx.immutable_containers.insert(node_id);
-            Some(VarRecord {
-                node_id,
-                inner_type: elem_type,
-                get_node_for_handler: None,
-                storage: VarStorage::Array,
-            })
+            Some(VarRecord::new(node_id, elem_type, VarStorage::Array))
         }
         Literal::Map(pairs) => {
             let (key_ty, val_ty) = match checked {
@@ -3219,8 +3131,8 @@ fn const_container_gate(
                 .into_iter()
                 .map(|(k, v)| {
                     (
-                        coerce_literal_to_type(k, &key_ty),
-                        coerce_literal_to_type(v, &val_ty),
+                        crate::const_eval::scalar_in_type(k, &key_ty),
+                        crate::const_eval::scalar_in_type(v, &val_ty),
                     )
                 })
                 .collect();
@@ -3228,12 +3140,7 @@ fn const_container_gate(
             let map_type = Type::Map(Box::new(key_ty), Box::new(val_ty));
             let node_id = make_map_var_gate(ctx, &map_type, properties, range);
             ctx.immutable_containers.insert(node_id);
-            Some(VarRecord {
-                node_id,
-                inner_type: map_type,
-                get_node_for_handler: None,
-                storage: VarStorage::Map,
-            })
+            Some(VarRecord::new(node_id, map_type, VarStorage::Map))
         }
         _ => None,
     }
@@ -3257,7 +3164,14 @@ fn var_label(ctx: &LowerCtx, d: &VarDecl) -> String {
         .unwrap_or_else(|| d.name.clone())
 }
 
+/// Declare `d`'s storage gates and bake any constant `@color` / `@material`
+/// onto them.
 pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
+    pre_declare_var_storage(ctx, d);
+    crate::lower::style::bake_var_style(ctx, d);
+}
+
+fn pre_declare_var_storage(ctx: &mut LowerCtx, d: &VarDecl) {
     // An alias naming a container (`type Pts = P[]`) declares that container.
     let expanded = d.typ.as_ref().and_then(|te| container_alias(ctx, te));
     let typ = expanded.as_ref().or(d.typ.as_ref());
@@ -3349,7 +3263,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         let label = var_label(ctx, d);
         properties.insert(*sym::NAME_LABEL, Literal::String(label));
         if let Some(Expr::Array { elements, .. }) = &d.init {
-            // Element-wise compile-time string → bool for `var v: bool[] =
+            // Element-wise compile-time string -> bool for `var v: bool[] =
             // [..]` — same `!= ""` law as the wire path's CompareNotEqual
             // gate (see `bake_string_bool`).
             let lits: Vec<Literal> = elements
@@ -3426,7 +3340,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         if let Some(Literal::Map(pairs)) = d.init.as_ref().and_then(|e| const_container_init(ctx, e)) {
             let pairs = pairs
                 .into_iter()
-                .map(|(k, v)| (coerce_literal_to_type(k, &key_ty), coerce_literal_to_type(v, &value_ty)))
+                .map(|(k, v)| (crate::const_eval::scalar_in_type(k, &key_ty), crate::const_eval::scalar_in_type(v, &value_ty)))
                 .collect();
             properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs));
         }
@@ -3485,8 +3399,8 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         // `var v: float = 0` must widen to Float(0.0) or it ships an integer
         // variable, and `var v: bool = "x"` bakes Bool(!s.is_empty()) under
         // the same `!= ""` law as the wire path's `CompareNotEqual` gate
-        // (see `bake_literal_for_type`).
-        .map(|lit| bake_literal_for_type(lit, &inner_type))
+        // (see `const_eval::scalar_in_type`).
+        .map(|lit| crate::const_eval::scalar_in_type(lit, &inner_type))
         .or_else(|| default_literal_for_var_type(&inner_type));
     let mut properties = HashMap::default();
     let label = var_label(ctx, d);
@@ -3495,22 +3409,10 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         properties.insert(*sym::INITIAL_VALUE, lit);
     }
 
-    let node_id = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::VAR,
-        source_range: d.range.clone(),
-        ports: GateIO::var_storage(inner_type.clone()),
-        properties,
-        note: None,
-        ..Default::default()
-    });
+    let node_id = make_scalar_var_gate(ctx, &inner_type, properties, &d.range, None);
     ctx.scope.insert(
         &d.name,
-        Binding::Var(VarRecord {
-            node_id,
-            inner_type,
-            get_node_for_handler: None,
-            storage: VarStorage::Var,
-        }),
+        Binding::Var(VarRecord::new(node_id, inner_type, VarStorage::Var)),
     );
 }
 
@@ -3570,8 +3472,8 @@ pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
     let mut properties = HashMap::default();
     properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
     if !d.init.is_empty() {
-        // Element-wise compile-time string → bool for `var a: bool[] =
-        // ["x", ""]` → [true, false] — same `!= ""` law as the wire path's
+        // Element-wise compile-time string -> bool for `var a: bool[] =
+        // ["x", ""]` -> [true, false] — same `!= ""` law as the wire path's
         // CompareNotEqual gate (see `bake_string_bool`); a raw String
         // element in a Bool array variant would diverge to the gate's
         // native content-aware truthiness at load.
@@ -3698,12 +3600,7 @@ fn record_input_pins(
         // container ref-port (see `container_binding`); a scalar field is a
         // plain by-value input.
         let binding = match super::context::container_binding(ctx.ref_storage(None, &field.typ), &ft) {
-            Some((storage, inner)) => Binding::Var(VarRecord {
-                node_id,
-                inner_type: inner,
-                get_node_for_handler: None,
-                storage,
-            }),
+            Some((storage, inner)) => Binding::Var(VarRecord::new(node_id, inner, storage)),
             None => Binding::Input(NodeRecord {
                 node_id,
                 ty: ft.clone(),
@@ -3826,7 +3723,7 @@ pub(super) fn pre_declare_output(
     }
     // An explicit annotation IS the port's type — the value coerces INTO it
     // (typecheck validates the pair; the `ctx.connect` choke point inserts
-    // any adapter, e.g. the string → bool `!= ""` compare). Deriving the
+    // any adapter, e.g. the string -> bool `!= ""` compare). Deriving the
     // port type from the VALUE instead silently made `out y: bool = s` a
     // string port. A `*T` port carries a ref, so it keeps its ref type; an
     // array or map ref is the container itself.

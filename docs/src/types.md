@@ -8,6 +8,7 @@ Wirescript has a static type system that maps directly to Brickadia's wire graph
 - [Primitive Types](#primitive-types)
 - [Compound Types](#compound-types)
 - [Generics](#generics)
+- [Type Coercion](#type-coercion)
 - [Type Annotations](#type-annotations)
 - [Field Access on Types](#field-access-on-types)
 <!-- /toc -->
@@ -50,11 +51,11 @@ on reset {
 
 ### `any` Type
 
-`any` is a wildcard annotation for a value that flows through a wire without the checker pinning down (or caring about) its concrete type: `test & 1`, `test == "x"`, and every other operator overload still resolve against whatever operand type is on the other side, instead of erroring the way an actually-unknown type would. The tradeoff is spelled out by the name. An `any` value works anywhere, but its side effects are on you: the checker can't warn you if the operator that ends up selected wasn't the one you meant.
+`any` is a wildcard annotation for a value that flows through a wire without the checker fixing its concrete type. `test & 1`, `test == "x"`, and every other operator overload still resolve against the operand type on the other side, instead of erroring as an unknown type would. An `any` value is accepted anywhere, but the checker can't warn you if the operator it selects isn't the one you meant.
 
-For a `mod` parameter that just passes a value through, prefer a [generic type parameter](#generics) (`<T>`) over `any`, because it keeps the checker's help instead of erasing the type. See [`any` vs. a Generic Parameter](#any-vs-a-generic-parameter).
+For a `mod` parameter that passes a value through, prefer a [generic type parameter](#generics) (`<T>`) over `any`, because it keeps the type and the checker's help with it. See [`any` vs. a Generic Parameter](#any-vs-a-generic-parameter).
 
-`any` is valid wherever a value just passes through:
+`any` is valid wherever a value passes through:
 
 ```wirescript
 in test: any             // input port
@@ -72,7 +73,7 @@ var foo: any[]          // ERROR: same
 buffer foo: any = 0       // ERROR: same
 ```
 
-An **unannotated** `var` or `buffer` is unaffected: its placeholder type is refined from the initializer (or left as the internal "unknown" fallback), never `any`, so it never trips this rejection.
+An **unannotated** `var` or `buffer` is unaffected: its placeholder type is refined from the initializer (or left as the internal "unknown" fallback), never `any`, so this rejection never applies to it.
 
 ### Object references & assets
 
@@ -175,10 +176,10 @@ mod slide(a: *int, b: *int) { ... }
 
 #### A ref to a record, tuple, or enum refs its parts
 
-A record has no single wire to point at: stored, it becomes one backing gate per
-field. So `*T` on a record **distributes over the fields**: `*{ a: float, b:
-float }` means `{ a: *float, b: *float }`. This is what lets a chip or mod write
-through to the caller's record:
+A record has no single wire to point at. When stored, it becomes one backing gate
+per field, so `*T` on a record **distributes over the fields**: `*{ a: float, b:
+float }` means `{ a: *float, b: *float }`. This lets a chip or mod write through
+to the caller's record:
 
 ```wirescript
 type Player = { score: int, lives: int }
@@ -198,8 +199,8 @@ B)` refs each element, and `*SomeEnum` refs the enum's discriminant and payload
 slots, so a chip can reassign the caller's enum outright.
 
 A field that is *already* a reference stays as it is rather than becoming a
-double reference. Note that a record whose fields are references still cannot be
-stored in a variable, array, or map (`WS049`): storage needs a real value per
+double reference. A record whose fields are references still cannot be stored in
+a variable, array, or map (`WS049`), because storage needs a real value per
 field.
 
 ### Reference values
@@ -241,7 +242,7 @@ A record's `*T` field is one of two things, fixed by where the record comes from
 
 `&r` of a whole record is a record of refs, one per field, as `*` on a record type distributes over its fields: after `let x = &r`, `*x.a` reads `r.a`.
 
-A record parameter's fields stay places whatever the caller passes. A ref value there makes the field the var the ref points at, so it reads and writes that var in an exec context; a pure read of it is `WS006`, as for any runtime ref.
+A record parameter's fields stay places whatever the caller passes. A ref value there makes the field the var the ref points at, so it reads and writes that var in an exec context. A pure read of it is `WS006`, as for any runtime ref.
 
 ```wirescript
 type R = { p: *int }
@@ -337,7 +338,7 @@ error. The value type `V` may be any storable variant.
 Maps are read and written through their methods (`get`, `set`, `has`, `remove`,
 `clear`, `copyFrom`, `length`, `keys`, `values`), which run in exec context.
 See the map-method table in [builtins.md](builtins.md) and the
-[Maps statement section](statements.md#maps----var-name-mapk-v).
+[Maps statement section](statements.md#maps-var-name-mapk-v).
 
 ### Tuple Types (`(A, B, C)`)
 
@@ -360,6 +361,8 @@ let first = pair.0
 let second = pair.1
 ```
 
+Both `Type::Record` and `Type::Tuple` exist in the type system. Records use named fields (`{ x: int, y: int }`), while tuples use positional access (`(int, float)`).
+
 ### Record Types
 
 Record types are named structural types with labeled fields. Define them with the `type` keyword:
@@ -380,7 +383,7 @@ let s: State = { val: n }
 on RoundStart() { s.val = 42 }  // writes to n
 ```
 
-Nested records work as expected: field access chains resolve through each level:
+Nested records work the same way. Field access chains resolve through each level:
 
 ```wirescript
 type Inner = { x: *int }
@@ -402,7 +405,7 @@ and kept across ticks, which a plain record *value* cannot.
 type Point = { x: int, y: int }
 
 on RoundStart() {
-  // A record VARIABLE: one Variable gate per field.
+  // A record variable: one Variable gate per field.
   var p: Point = { x: 1, y: 2 }
   p.x = 10                  // writes the x gate only, y untouched
   p = { x: 7, y: 8 }        // whole-record assignment writes every field
@@ -411,14 +414,14 @@ on RoundStart() {
   q = p                     // copies each field into q's own gates, not an alias
   p.x = 99                  // ...so this does not change q.x
 
-  // A record ARRAY: parallel arrays, one per field.
+  // A record array: parallel arrays, one per field.
   var pts: Point[]
   pts.push({ x: 3, y: 4 })  // pushes x into pts' x-array, y into its y-array
   let first = pts[0].x      // reads the x-array at index 0
   pts[0] = { x: 9, y: 9 }   // writes every field's array at index 0
   let n = pts.length()      // the fields share a length; length reads the first
 
-  // A record MAP: parallel maps, one per field (same key type).
+  // A record map: parallel maps, one per field (same key type).
   var m: Map<int, Point>
   m.set(0, { x: 5, y: 6 })
   let v = m.get(0).x        // reads the x-map at key 0
@@ -437,20 +440,20 @@ var grid: Map<int, Point> = { 0 => { x: 5, y: 6 } }   // x-map {0:5}, y-map {0:6
 **Struct-of-arrays access.** Because a record array is *stored* as one array per
 field, that field's array is directly reachable as `pts.field`, a real
 `T[]` you can index (`pts.x[i]`), read (`pts.x.length()`, `pts.x.sum()`,
-`pts.x.min()`, `pts.x.find(v)`), or pass on. Sorting is special-cased so it stays
-safe: `pts.field.sort(descending?)` sorts the WHOLE record BY that field,
-reordering every sibling column to match, so rows stay intact (wide records sort
-in groups against a copy of the key, so there is no field-count limit).
-Everything else on a column acts on that
-column alone, which is powerful but sharp: mutating one field's array by itself
-(`pts.x.push(1)` without a matching `pts.y.push(...)`) breaks the row
-correspondence the whole-array ops rely on. Prefer the whole-record ops
-(`push`/`pop`/`pts[i]`) unless you specifically want a single column.
+`pts.x.min()`, `pts.x.find(v)`), or pass on. Sorting is a special case:
+`pts.field.sort(descending?)` sorts the whole record by that field and reorders
+every sibling column to match, so rows stay intact. (Wide records sort in groups
+against a copy of the key, so there is no field-count limit.) Every other
+operation on a column acts on that column alone. Mutating one field's array by
+itself (`pts.x.push(1)` without a matching `pts.y.push(...)`) breaks the row
+correspondence that the whole-array operations rely on. Prefer the whole-record
+operations (`push`/`pop`/`pts[i]`) unless you want to work on a single column.
 
 **Choosing between two records.** A record has no single wire, so an `if`
 expression or a `match` expression over records makes the choice **per leaf
-field**: one `Select` per leaf, all reading the one lowered condition (or, for
-a `match`, the one `__disc` read). It reads like an ordinary conditional value:
+field**: one `Select` per leaf, all reading the same lowered condition (or, for
+a `match`, the same `__disc` read). In source it is written like any other
+conditional value:
 
 ```wirescript
 type Point = { x: int, y: int }
@@ -484,36 +487,38 @@ store: a number, `bool`, `string`, `vector`/`rotator`/`color`, an entity type,
 or a nested record/array/map. A reference-only field (`*T`, `zone`, `teleport`, a
 prefab reference) or an `exec` field cannot be stored, and a record with one is
 rejected with `WS049`. (A record *value* may still carry a `*T` field for interior
-mutability, as above; only *storage* is restricted.)
+mutability, as above. Only *storage* is restricted.)
 
 A record variable's array or map field is itself a container. When its elements
-are records (`type H = { pts: Point[] }`), `h.pts` is stored exactly like a
+are records (`type H = { pts: Point[] }`), `h.pts` is stored the same way as a
 top-level `var pts: Point[]`, one column per field, and supports the same
 operations (`h.pts.push(p)`, `h.pts[i].y`, `h.pts.x[i]`). Two shapes are
-rejected with `WS049` because a column holds one value per element: a record
-or tuple stored in an array or map cannot contain an array or map at any depth
-(`type H = { xs: int[] }` then `var hs: H[]`), and an array or map of records,
-or a record holding one, cannot cross a port (an `in`/`out` port or a `chip`
-parameter or output), since a pin carries one reference. Pass it to a `mod`
-instead. A record literal that initializes or is assigned to a record variable
-fills its container fields the same way the field assignments would
+rejected with `WS049` because a column holds one value per element. First, a
+record or tuple stored in an array or map cannot contain an array or map at any
+depth (`type H = { xs: int[] }` then `var hs: H[]`). Second, an array or map of
+records, or a record holding one, cannot cross a port (an `in`/`out` port or a
+`chip` parameter or output), since a pin carries one reference. Pass it to a
+`mod` instead. A record literal that initializes or is assigned to a record
+variable fills its container fields the same way the field assignments would
 (`h = { pts: [{ x: 1, y: 2 }], m: { "a": 1 }, n: 0 }`), and a `...spread`
-supplies every field it names. A record assignment is a parallel assignment:
-its sources are evaluated in source order and every field sees the values from
-before the assignment, so `p = { x: p.y, y: p.x }` swaps, and a value computed
-from a `let` that reads the record is held before the first field is written.
-As everywhere (see [Evaluation Order](expressions.md#evaluation-order)), a
-record literal's fields are evaluated in source order and each keeps its value,
-so `{ x: q, y: bump() }` keeps the `q` from before `bump()`. A container
-field is copied when its write runs rather than read up front: a container copied
-from one the assignment also replaces is copied first, two copied from each other
-(`h = { pts: h.qs, qs: h.pts }`) are `WS087`, and one that a later field's code may
+supplies every field it names.
+
+A record assignment is a parallel assignment. Its sources are evaluated in
+source order and every field sees the values from before the assignment, so
+`p = { x: p.y, y: p.x }` swaps, and a value computed from a `let` that reads the
+record is held before the first field is written. As everywhere (see
+[Evaluation Order](expressions.md#evaluation-order)), a record literal's fields
+are evaluated in source order and each keeps its value, so `{ x: q, y: bump() }`
+keeps the `q` from before `bump()`. A container field is copied when its write
+runs, not read up front. A container copied from one that the assignment also
+replaces is copied first. Two containers copied from each other
+(`h = { pts: h.qs, qs: h.pts }`) are `WS087`. One that a later field's code may
 change first (`h = { ps: src, n: popper() }`, where `popper` clears `src`) is
-`WS089`; a write through a ref, an array element or a parameter pin may change
-any container of its kind. Inside a handler,
-a record `var` with an initializer is reset to it every run, like a scalar or
-container `var`, and one without resets each scalar field to its zero value, as
-`var x: int` does; a `static var` keeps its baked initializer.
+`WS089`, and a write through a ref, an array element or a parameter pin may
+change any container of its kind. Inside a handler, a record `var` with an
+initializer is reset to it every run, like a scalar or container `var`. One
+without an initializer resets each scalar field to its zero value, as
+`var x: int` does. A `static var` keeps its baked initializer.
 
 **Container operations.** A record array supports `push`, `pop`, `insert`,
 `remove`, `fill`, `resize`, `swap`, `reverse`, `clear`, `length`, and element
@@ -527,30 +532,7 @@ reorder elements by *value* (`sort`, `shuffle`), fold *over* whole records
 `WS050`. Index a scalar field instead. A record map supports `set`, `get`,
 `has`, `remove`, `clear`, `length`, `keys`, and `m[k]` access, with the same
 depth of nested-field access (`m[k].inner.a`, `m[k].inner`). A map **key**
-cannot be a record (`WS039`); keys must be a single wire value.
-
-### Tuple Types (`(A, B, C)`)
-
-Tuples are fixed-size ordered collections of potentially different types:
-
-```wirescript
-// A chip returning multiple outputs produces a record/tuple
-chip Split(v: vector) -> (x: float, y: float, z: float) {
-  out x = v.x
-  out y = v.y
-  out z = v.z
-}
-```
-
-Access tuple elements with `.0`, `.1`, `.2` etc:
-
-```wirescript
-let pair = someTuple
-let first = pair.0
-let second = pair.1
-```
-
-Both `Type::Record` and `Type::Tuple` exist in the type system. Records use named fields (`{ x: int, y: int }`), while tuples use positional access (`(int, float)`).
+cannot be a record (`WS039`). Keys must be a single wire value.
 
 ### Union Types (`A | B`)
 
@@ -564,8 +546,8 @@ let x: int | float = 42
 Union syntax is also how a [generic bound](#constraint-classes-bounds) names
 an ad hoc set of types (`<T: int | vector>`).
 
-Note that an `if`-then-else expression does **not** produce a union of its
-branch types. It *widens* them to a single common type instead (see
+An `if`-then-else expression does **not** produce a union of its branch
+types. It *widens* them to a single common type instead (see
 [Widening Inference](#widening-inference) and the
 [if-expression note](expressions.md#conditional-expressions-if-then-else)).
 `if condition then 42 else 3.14` has type `float`, not `int | float`.
@@ -638,8 +620,8 @@ There are three built-in classes, and unbounded `<T>` means `<T: Variant>`:
 | `Numeric` | `int`, `float`, `vector`, `rotator`, `quat`, `color` |
 | `Variant` | `Numeric` + `bool`, `string`, `entity`, `character`, `controller` (all value variants) |
 
-`Scalar ⊆ Numeric ⊆ Variant`. Note `bool` is only a member of `Variant`:
-`Scalar` and `Numeric` are strictly numeric-math types, and a bounded call
+`Scalar ⊆ Numeric ⊆ Variant`. `bool` is a member of `Variant` only.
+`Scalar` and `Numeric` contain only numeric-math types, and a bounded call
 with a `bool` argument is rejected:
 
 ```wirescript
@@ -651,8 +633,8 @@ in flag: bool
 let bad = addOne(flag)   // ERROR WS033: 'T' = bool, which isn't allowed by its bound
 ```
 
-An **anonymous union bound** (`<T: A | B>`) restricts `T` to exactly that
-set of types instead of a named class:
+An **anonymous union bound** (`<T: A | B>`) restricts `T` to that set of
+types instead of a named class:
 
 ```wirescript
 mod pickAxis<T: int | vector>(v: T) -> T {
@@ -693,18 +675,18 @@ See the widening note there.
 ### Body Checking Is Per-Mask-Member
 
 A generic mod's body is type-checked against **every** type in its bound's
-mask, not just the types it happens to be called with, so the body must
-be valid for the whole bound, not only your call sites. This is the most
-common gotcha: `<T: Numeric>` includes `rotator`, and an operator that isn't
-defined between `rotator` and a bare `int` literal fails the definition
-itself, even if you never call the mod with a `rotator`:
+mask, not only the types it is called with. The body must be valid for the
+whole bound. This is the most common mistake with generics: `<T: Numeric>`
+includes `rotator`, and an operator that isn't defined between `rotator` and
+a bare `int` literal fails the definition itself, even if you never call the
+mod with a `rotator`:
 
 ```wirescript
 mod addOne<T: Numeric>(v: T) -> T {
   return v + 1
 }
-// ERROR WS004: no overload for '+' on rotator, int -- rejected at the
-// DEFINITION, because `Numeric` includes `rotator` and `rotator + int`
+// ERROR WS004: no overload for '+' on rotator, int. Reported at the
+// definition, because `Numeric` includes `rotator` and `rotator + int`
 // has no overload, even though every actual call site below uses `int`.
 ```
 
@@ -713,17 +695,17 @@ semantics: `v + 1` is valid for every `Scalar` member, so this is clean:
 
 ```wirescript
 mod addOne<T: Scalar>(v: T) -> T {
-  return v + 1     // OK -- valid for both int and float
+  return v + 1     // OK: valid for both int and float
 }
 ```
 
-An operation that genuinely is valid across the whole `Numeric` family (a
+An operation that is valid across the whole `Numeric` family (a
 same-type operator, for instance) is fine to write against `Numeric`
 directly:
 
 ```wirescript
 mod square<T: Numeric>(v: T) -> T {
-  return v * v     // OK -- same-type multiply is defined for the whole family
+  return v * v     // OK: same-type multiply is defined for the whole family
 }
 ```
 
@@ -779,8 +761,8 @@ mod inc<T: Scalar>(v: *T) {
 operators against it and can't tell you when you've made a mistake. A
 generic parameter keeps the type information and validates the body against
 the bound, so prefer a generic `mod` (`<T>` or `<T: Bound>`) over `any` for
-a value that flows through unchanged. Reach for `any` only when you
-genuinely don't care what flows through and don't need the checker's help.
+a value that flows through unchanged. Use `any` only when the type of what
+flows through doesn't matter and you don't need the checker's help.
 
 ### Generic type aliases
 
@@ -793,7 +775,7 @@ let p: Pair<int> = { a: 1, b: 2 }   // resolves to { a: int, b: int }
 
 An alias must be **fully applied** (`Pair` alone, or `Pair<int, float>` on a
 one-parameter alias, is a `WS002` error) and **non-recursive** (`type L<T> =
-{ tail: L<T> }` is rejected, not hung).
+{ tail: L<T> }` is rejected rather than hanging the compiler).
 
 Every alias body, generic or not, is read where the alias is declared. A
 generic `mod` whose type parameter is named `T` hides an alias `T` only in what
@@ -806,7 +788,7 @@ A program's own type named like a builtin generic is the program's wherever it
 is declared: `type Map<K, V> = { k: K, v: V }` makes `Map<int, int>` that
 record, in every stage of the compiler. `Array<T>` and `Ref<T>` are how `T[]`
 and `*T` are written, so a `type` or `enum` named `Array` or `Ref` with one type
-parameter could never be named, and is a `WS107` error; with another number of
+parameter could never be named, and is a `WS107` error. With another number of
 type parameters it is the program's own type, as `Map` is.
 
 ### Explicit type arguments
@@ -816,22 +798,22 @@ a `<...>` type-argument list at the call site:
 
 ```wirescript
 let x = pick<int>(flag, a, b)   // same as the inferred pick(flag, a, b)
-let z = zero<vector>()          // REQUIRED: T appears only in the return
+let z = zero<vector>()          // required: T appears only in the return
 ```
 
 Explicit type arguments are the only way to call a mod whose type parameter
 can't be inferred from its arguments, e.g. a `T` that appears only in the
 return type (`mod zero<T>() -> T`). They are checked like inferred ones: the
 count must match the type parameters, and each must satisfy its bound
-(`zero<string>()` on a `<T: Numeric>` is a `WS033` error); type arguments on a
-non-generic function are an error too, and on a builtin they are ignored with a
-`WS037` warning (a builtin's result type is derived from its arguments).
+(`zero<string>()` on a `<T: Numeric>` is a `WS033` error). Type arguments on a
+non-generic function are an error too. On a builtin they are ignored with a
+`WS037` warning, because a builtin's result type is derived from its arguments.
 
 Parsing note: `f<int>(...)` is read as a type-argument list only when the
 `<...>` is a valid list of types immediately followed by `(`. A plain `a < b`
 comparison (or `a < b > c`) is never mistaken for it.
 
-
+## Type Coercion
 
 Wirescript automatically inserts coercion gates when types don't match exactly but are compatible. The coercion rules mirror Brickadia's `PortsAreCompatible` behavior.
 
@@ -850,12 +832,12 @@ truncates to: `var n: int = 2.5` and `const K: int = 2.5` both hold 2, with a
 `WS106` warning that the fraction is dropped. The constant is then an integer
 wherever it goes, so `var u = K` declares an `int` and `u / 4` divides as
 integers. The same holds for a chip argument, a field of a record or tuple
-literal, an element and a return. Custom-event data is no `int` place: a float
-constant sent to a receiver that declares `int` is sent as the float, and
-`WS030` warns of the mismatch. A float constant no `int` holds (`1e30`) is a
-`WS028` error.
+literal, an element and a return. Custom-event data is not an `int` place. A
+float constant sent to a receiver that declares `int` is sent as the float, and
+`WS030` warns of the mismatch. A float constant that no `int` can hold (`1e30`)
+is a `WS028` error.
 
-Because `bool` coerces to `int` automatically, you do not need `if x then 1 else 0`. Just use the bool directly where an int is expected. The `if/then/else` form is only needed when you want specific non-0/1 scalar values:
+Because `bool` coerces to `int` automatically, you do not need `if x then 1 else 0`. Use the bool directly where an int is expected. The `if/then/else` form is only needed when you want specific non-0/1 scalar values:
 
 ```wirescript
 let count = a + b + c            // bools coerce to 0/1 automatically
@@ -890,15 +872,15 @@ var pos: string = someVector   // vector -> string: formatted
 
 The following types format to string: `bool`, `int`, `float`, `string`, `vector`, `rotator`, `color`, `entity`, `character`, `controller`.
 
-### String Coercion to Bool -- empty is false
+### String Coercion to Bool (empty is false)
 
-A `string` coerces to `bool` wherever a bool is expected: a condition, a `bool`-typed `let`/`var`, a bool-typed port or chip/mod param. The semantics are exactly `s != ""`, and the compiler inserts a real `CompareNotEqual(s, "")` gate at every such coercion point:
+A `string` coerces to `bool` wherever a bool is expected: a condition, a `bool`-typed `let`/`var`, a bool-typed port or chip/mod param. The coercion means `s != ""`, and the compiler inserts a `CompareNotEqual(s, "")` gate at every such coercion point:
 
 ```wirescript
 in name: string
 
 if name {
-  // taken whenever `name` is non-empty — compiles as `if name != ""`
+  // taken whenever `name` is non-empty (compiles as `if name != ""`)
 }
 
 let hasName: bool = name   // also `name != ""`
@@ -909,9 +891,9 @@ let hasName: bool = name   // also `name != ""`
 | `""` | `false` |
 | anything else (including `"0"`, `"false"`, `" "`) | `true` |
 
-String *literals* in bool positions (`var v: bool = "0"`, `array flags: bool[] = ["x", ""]`, `Select("0", a, b)`) are converted at compile time by the same `!= ""` law: the baked value is already a bool, so `"0"` bakes as `true`.
+String *literals* in bool positions (`var v: bool = "0"`, `array flags: bool[] = ["x", ""]`, `Select("0", a, b)`) are converted at compile time by the same `!= ""` rule: the baked value is already a bool, so `"0"` bakes as `true`.
 
-The rule is deliberately simple: **only the empty string is false**. This differs from the game's *native* bool-port behavior, which is content-aware: a string wired manually into a bool port (e.g. via an [`any`](#any-type)-typed value, whose erased type skips the coercion, or through the logical operators' native string overloads) is read by the gate itself, where `""`, `"0"`, and `"false"` are all falsy. That native law is certified per build against the in-game gate-semantics table, the same certification that drives constant folding of conditions (see [folding.md](folding.md)). If you want the content-aware behavior, wire it manually; if you write `if someString`, you get the deterministic `!= ""`.
+**Only the empty string is false.** This differs from the game's *native* bool-port behavior, which is content-aware. A string wired manually into a bool port (e.g. via an [`any`](#any-type)-typed value, whose erased type skips the coercion, or through the logical operators' native string overloads) is read by the gate itself, where `""`, `"0"`, and `"false"` are all falsy. That native rule is certified per build against the in-game gate-semantics table, the same certification that drives constant folding of conditions (see [folding.md](folding.md)). If you want the content-aware behavior, wire it manually. If you write `if someString`, you get the deterministic `!= ""`.
 
 This direction is one-way: `bool` to `string` still goes through the format gate above and renders `"true"`/`"false"` text, not the other way around.
 
@@ -936,7 +918,7 @@ Reference types (`ref T`) do **not** coerce. A `ref int` cannot be passed where 
 var x: int = 0
 var y: float = 0.0
 
-// This would be an error -- ref int != ref float
+// This would be an error: ref int != ref float
 // someChip(x, y)  // if both params expect ref int
 ```
 
@@ -960,7 +942,7 @@ var y: float = 0.0
 | `quat` | `rotator` | Coerce |
 | any primitive | `string` | Via format gate |
 | `string` | `bool` | Coerce (compiler inserts `!= ""`, so only empty is false) |
-| `exec` | `bool` | Coerce (true for one frame) as a condition, a logical operator's operand or an `on` trigger; stored or passed as a `bool`, `WS003` (see [Logical Operators](expressions.md#logical-operators)) |
+| `exec` | `bool` | Coerce (true for one frame) as a condition, a logical operator's operand or an `on` trigger. Stored or passed as a `bool`, it is `WS003` (see [Logical Operators](expressions.md#logical-operators)) |
 | `bool`/`int`/`float`/`vector`/`entity`/`character`/`controller` | `exec` | Pulsing coerce |
 | `ref T` | `ref U` (T != U) | **Mismatch** |
 | `any` | anything | Same |
@@ -1017,8 +999,8 @@ Variables (type `ref T`) have special fields:
 ```wirescript
 var count: int = 0
 
-count.Value  // Current value (type T) -- delayed read, usable in pure context
-count.prev   // Previous tick's value (type T) -- useful for change detection
+count.Value  // Current value (type T), a delayed read usable in pure context
+count.prev   // Previous tick's value (type T), useful for change detection
 ```
 
 See [Execution Context](exec-context.md) for when to use `.Value` vs direct access.

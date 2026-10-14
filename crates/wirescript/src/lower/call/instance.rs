@@ -212,10 +212,11 @@ pub(in crate::lower) fn lower_chip_call_instance(
             props.insert(*sym::DOC_TEXT, Literal::String(doc.clone()));
         }
     }
+    crate::lower::style::bake_style(ctx, chip_node_id, chip_decl.color_expr.as_ref(), chip_decl.material_expr.as_ref());
 
     let child_inputs = child_module.inputs.clone();
     let child_outputs = child_module.outputs.clone();
-    ctx.builder.module.chips.insert(chip_node_id, child_module);
+    ctx.insert_chip(chip_node_id, child_module);
 
     // Wire args FIRST — this may create Var_Gets in the exec chain
     let mut const_folds: Vec<ConstFold> = Vec::new();
@@ -364,11 +365,9 @@ fn check_constant_pins(ctx: &mut LowerCtx, chip_node: NodeId, pins: &[NodeId], r
         .iter()
         .copied()
         .filter(|p| {
-            ctx.builder.module.wires.iter().any(|w| {
-                w.target.node_id == *p
-                    && w.target.port == WirePort::RerInput
-                    && is_immutable_container(ctx, w.source.node_id)
-            })
+            crate::lower::ordered::feeds_of(ctx, *p)
+                .into_iter()
+                .any(|(port, src)| port == WirePort::RerInput && is_immutable_container(ctx, src.node_id))
         })
         .collect();
     if tainted.is_empty() {
@@ -440,7 +439,7 @@ fn check_constant_pins(ctx: &mut LowerCtx, chip_node: NodeId, pins: &[NodeId], r
 /// `d`'s declaration scope.
 fn body_captures(ctx: &LowerCtx, d: &ChipDecl) -> String {
     let mut names = crate::collections::HashSet::default();
-    crate::resolve::collect_idents_in_block(&d.body, &mut names);
+    crate::resolve::collect_idents(crate::ast::walk::Node::Block(&d.body), crate::resolve::Uses::All, &mut names);
     collect_emit_targets(&d.body, &mut names);
     for p in &d.inputs {
         names.remove(&p.name);

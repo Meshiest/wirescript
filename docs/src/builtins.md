@@ -124,7 +124,7 @@ let radians = Deg2Rad(90.0)
 | `BitNand(a, b)` | `(a: int, b: int) -> int` | Bitwise NAND (same as `~(a & b)`) |
 | `BitNor(a, b)` | `(a: int, b: int) -> int` | Bitwise NOR (same as `~(a \| b)`) |
 
-Note: `~(a & b)` and `~(a | b)` are automatically fused into single NAND/NOR gates by the compiler.
+The compiler fuses `~(a & b)` and `~(a | b)` into single NAND/NOR gates.
 
 ```wirescript
 let bits = BitCount(flags)
@@ -210,7 +210,7 @@ let yaw = r.ToEuler().Yaw
 | `c.SplitColor()` | `(c: color) -> {r, g, b, a: float}` | Decompose into linear components |
 | `c.ToSRGB()` | `(color) -> {R, G, B, A: int}` | Decompose into sRGB bytes |
 | `c.ToHex()` | `(color) -> string` | Hex string |
-| `a.ColorBlend(b, alpha)` | `(color, color, float) -> color` | Blend two colors (colour-space aware) |
+| `a.ColorBlend(b, alpha)` | `(color, color, float) -> color` | Blend two colors (color-space aware) |
 
 `SplitColor`, `ToSRGB`, `ToHex`, and `ColorBlend` support receiver syntax on `color`.
 
@@ -289,7 +289,7 @@ The `^^` operator is boolean XOR, which returns true if exactly one operand is t
 let either = a ^^ b  // true if a or b but not both
 ```
 
-Note: `!(a && b)` and `!(a || b)` are automatically fused into single NAND/NOR gates.
+The compiler fuses `!(a && b)` and `!(a || b)` into single NAND/NOR gates.
 
 ## String Operations (Pure)
 
@@ -353,12 +353,12 @@ rejected with `WS050`. See [Records as storage](types.md#records-as-storage).
 |--------|-----------|-------------|
 | `arr.push(value)` | `(value: T)` | Append an element |
 | `arr.pop()` | `() -> T` | Remove and return the last element |
-| `arr.get(index)` | `(index: int) -> {Value: T, OutOfBounds: bool}` | Read the element at `index` (auto-unwraps to `Value`); `.OutOfBounds` flags a bad index. This is the explicit form of `arr[i]` |
+| `arr.get(index)` | `(index: int) -> {Value: T, OutOfBounds: bool}` | Read the element at `index` (auto-unwraps to `Value`). `.OutOfBounds` flags a bad index. This is the explicit form of `arr[i]` |
 | `arr.length()` | `() -> int` | Number of elements |
 | `arr.remove(index)` | `(index: int)` | Remove the element at `index` |
 | `arr.insert(index, value)` | `(index: int, value: T)` | Insert before `index` |
 | `arr.clear()` | `()` | Remove all elements |
-| `arr.find(value)` | `(value: T) -> {Index: int, Found: bool, Value: T}` | Find the first match (auto-unwraps to `Index`); `Index` is `-1` when `Found` is `false` |
+| `arr.find(value)` | `(value: T) -> {Index: int, Found: bool, Value: T}` | Find the first match (auto-unwraps to `Index`). `Index` is `-1` when `Found` is `false` |
 | `arr.sort(descending?)` | `(descending?: bool)` | Sort in place |
 | `arr.sortMultiple(other, ..., descending?)` | `(other: T[], ..., descending?: bool)` | Sort in place, reordering at most 7 parallel arrays through the same permutation (more is `WS011`). A record array argument is carried along as one array per field, and each field counts toward the 7. Only a trailing `bool` is `descending` |
 | `arr.reverse()` | `()` | Reverse in place |
@@ -453,8 +453,8 @@ call, rather than reading them continuously. The field names are identical to
 `InputReader`'s, so only the context differs. Its operand also accepts a
 persistent player, which wires straight into the `character` parameter.
 
-Being exec form, it must sit on an exec chain; in pure position it reports
-`WS007`.
+It is an exec gate, so it must sit on an exec chain. In pure position it
+reports `WS007`.
 
 ```wirescript
 on Clock(interval = 0.1) {
@@ -502,7 +502,7 @@ Reads the character's camera/aim in a single gate. Returns a record:
 - `Origin: vector`: aim origin position
 - `Direction: vector`: aim direction vector
 
-Receiver on `character`. Access the fields with `.Origin` / `.Direction`; both
+Receiver on `character`. Access the fields with `.Origin` / `.Direction`. Both
 share one gate, so reading both costs a single GetAim.
 
 ```wirescript
@@ -527,7 +527,7 @@ Display HUD text to a player. Receiver on `controller`. Returns the resolved
 The 2D layout ports are `Vector2D` composites, and the call feeds them one axis
 at a time: `positionX` / `positionY`, `anchorX` / `anchorY`, and so on, each a
 `float`. There is no `vector`-typed `position` or `anchor`, and passing one is a
-`WS041` error. A constant axis bakes into the parent `Vector2D` data field; a
+`WS041` error. A constant axis bakes into the parent `Vector2D` data field. A
 runtime value wires the matching sub-port. The call also exposes the scalar
 styling below, plus `fontSize` / `justify` / `easing` / `typeface` / `font`, which
 are constant-only data fields (not wire inputs).
@@ -808,9 +808,9 @@ TeamWins(team: entity)
 ```
 
 End the current round by declaring a winner. (The old imperative `EndRound`
-gate was removed; a round now ends via a win.) `PlayerWins` declares a player
-the winner, or their team if `teamWinsInstead` is true; `TeamWins` declares a
-team the winner.
+gate was removed, and a round now ends via a win.) `PlayerWins` declares a
+player the winner, or their team if `teamWinsInstead` is true. `TeamWins`
+declares a team the winner.
 
 ### GetCurrentRound
 ```
@@ -897,15 +897,16 @@ character.AddInventoryBrick(brick, size?)            // append a placeable brick
 character.SetInventoryBrick(brick, slot?, size?)
 character.AddInventoryEntity(entityType)             // append a spawnable entity
 character.SetInventoryEntity(entityType, slot?)
-character.AddInventoryItemAdv(item, damage?, speed?, scale?, itemName?, projectile?)
-character.SetInventoryItemAdv(item, slot?, damage?, speed?, scale?, itemName?, projectile?)
+character.AddInventoryItemAdv(item, damage?, speed?, scale?, itemName?, projectile?, projectileScale?)
+character.SetInventoryItemAdv(item, slot?, damage?, speed?, scale?, itemName?, projectile?, projectileScale?)
 ```
 
 Give items, procedural bricks, or spawnable entities to a character's
 inventory. Asset args are `$Type/Name` references (`$BRItemBase/...` for
 items, a brick asset for bricks, an entity type for entities), inlined into
 the gate's data. The `Adv` variants add per-item overrides: damage/weapon
-speed/scale multipliers, a display-name override, and a projectile override.
+speed/scale multipliers, a display-name override, a projectile override, and
+a projectile size multiplier (`projectileScale`, default `1.0`).
 All receive on `character`.
 
 ```wirescript
@@ -950,7 +951,7 @@ controller.ShowTextInputBox(message: string, title?: string) -> { ClickedBy, Tex
 ```
 
 Pop up a dialog for this player. Receiver on `controller`. The call itself
-continues at once; the answer arrives later. When the player confirms, the
+continues at once, and the answer arrives later. When the player confirms, the
 `OkClicked` (or `YesClicked`) exec field pulses, `ClickedBy` is the player who
 answered (a `controller`), and `ShowTextInputBox`'s `Text` is the line they
 typed. Every other outcome pulses `Declined`: Cancel or No, closing the
@@ -978,11 +979,11 @@ controller.ForceRespawn()
 controller.SetTeamPinned(pinned: bool)
 ```
 
-Read a player's account name, persistent user id, or current display name;
-check whether they are trusted by the brick owner, hold a named permission, or
-have a named role (`HasRole`); toggle their ability to respawn or immediately
-respawn them (`ForceRespawn`, also callable as `ForceRespawn(player)`); or pin
-them to their team. All receive on `controller`.
+These read a player's account name, persistent user id, or current display
+name. They check whether the player is trusted by the brick owner, holds a
+named permission, or has a named role (`HasRole`). They toggle the player's
+ability to respawn, respawn them immediately (`ForceRespawn`, also callable as
+`ForceRespawn(player)`), or pin them to their team. All receive on `controller`.
 
 ## Broadcast Messaging (Exec)
 
@@ -1011,8 +1012,9 @@ player.PlayClientAudio(audio, volume?, pitch?)
 
 Play a one-shot sound at an entity's location (spatialized by default),
 globally for all players, or non-spatially for a single player
-(`PlayClientAudio`, receiver on the player, which is a character or persistent player
-reference; also callable as `PlayClientAudio(player, audio, ...)`). The `audio`
+(`PlayClientAudio`). `PlayClientAudio` receives on the player, which is a
+character or persistent player reference, and is also callable as
+`PlayClientAudio(player, audio, ...)`. The `audio`
 arg is a `$BrickOneShotAudioDescriptor/...` asset reference. `PlayAudioAt`
 receives on `entity` (characters work too).
 
@@ -1049,7 +1051,7 @@ auto-unwrapped like a map read, and `Found` is `false` when the key is not set.
 `CopyCustomProperties` replaces the receiver's properties with a copy of
 `source`'s, for instance to give a spawned replacement the original's data. A
 holder keeps up to 256 properties, and a key is at most 100 characters. The
-value can be any wire value; annotate the read (`let hp: int = ...`) to give it
+value can be any wire value. Annotate the read (`let hp: int = ...`) to give it
 a type.
 
 ```wirescript
@@ -1097,7 +1099,7 @@ collides with it. `property` is a constant `BrickProperty` member (`Visible`,
 `InteractionCollision`, `PhysicsCollision`), written bare or qualified
 (`BrickProperty.Color`). The value is a `bool` for `Visible` and the collision
 flags and a `color` for `Color`, both for what `GetBrickProperty` returns and
-for what `SetBrickProperty` accepts; any other type there is `WS003`.
+for what `SetBrickProperty` accepts. Any other type there is `WS003`.
 `Material` and `MaterialOpacity` read and write `any`. Receiver on `brick`.
 
 ```wirescript
@@ -1117,16 +1119,9 @@ Environment.<environment>.<property> = value    // write
 ```
 
 Reads and writes a setting of the world's environment: the time of day, the
-sky's color, the water's height. The environments are `Ambience`, `Ground`,
-`Sky`, `Lighting`, `Universe` and `Water`, as the game's environment dialog
-names them, and the editor completes them and their properties. Each property
-has its own type (`Environment.Sky.TimeOfDay` is a `float`,
-`Environment.Sky.SkyColor` a `color`), and a write must fit it. The game
-converts and clamps a written value as the environment dialog would, and leaves
-a setting the dialog has locked alone. An enum property reads and writes as an
-`int`, and a write also takes a member of its enum
-(`Environment.Ambience.ReverbEffect = ReverbEffect.LongHallway`). Both run on
-the exec chain.
+sky's color, the water's height. Both run on the exec chain. Every
+environment and property, with the type each reads and writes as, is listed in
+[Environment Settings](environment.md).
 
 ```wirescript
 in go: exec
@@ -1147,13 +1142,13 @@ component.<property> = value    // write
 ```
 
 `GetComponent` gives a reference to the brick's component of that type (an
-empty reference if it has none); `AddComponent` adds one first if it has none.
+empty reference if it has none). `AddComponent` adds one first if it has none.
 The reference is typed by its component type, so its properties read and write
 with their own types (`light.Brightness` is a `float`). The game converts a
 written value to the property's type and leaves a wired property alone.
 `RemoveComponent` removes the brick's component of that type after the current
 update, unless an `AddComponent` of its type runs first. It takes the brick,
-not a reference: no gate gives a reference's brick, so `component.Remove()` is
+not a reference. No gate gives a reference's brick, so `component.Remove()` is
 `WS110`. The component types are the ones a
 player can add to a brick (see [Components](expressions.md#components)), and
 the editor completes a reference's properties.
@@ -1183,7 +1178,7 @@ on go {
 |----------|-----------|-------------|
 | `FindPlayer(query)` | `(query: string) -> character` (exec) | Look up a player by name; emits their character |
 | `PrintToConsole(text)` | `(text: any) -> ()` (exec) | Print a value to the game console (debugging) |
-| `Opaque(value)` | `(value: any) -> any` (pure) | Identity rerouter; the permanent constant-fold barrier: the wrapped value always stays a real runtime wire, never folded or seen through (probe/test circuits; see [Constant Folding](folding.md)) |
+| `Opaque(value)` | `(value: any) -> any` (pure) | Identity rerouter that acts as a permanent constant-fold barrier. The wrapped value always stays a real runtime wire and is never folded or seen through. Used in probe/test circuits (see [Constant Folding](folding.md)) |
 | `DeltaTime()` | `() -> float` | Seconds elapsed since the previous tick |
 | `ServerUptime()` | `() -> float` | Seconds the server has been running |
 | `ReadBrickGrid()` | `() -> entity` | The brick grid this gate's microchip is on, as an entity |
@@ -1205,7 +1200,7 @@ EasingFunction.Bounce` and `function = Bounce` set the same field. Functions:
 `Linear`/`In`.
 
 `Timer` is a function-call instance. The `restart`/`pause`/`resume` exec
-controls are optional; its outputs are a value (`Time`) and an exec (`Expired`):
+controls are optional. Its outputs are a value (`Time`) and an exec (`Expired`):
 
 ```wirescript
 in trigger: exec
@@ -1227,12 +1222,12 @@ let origin = grid.GetLocation()
 
 Some gate settings are not wire inputs. They are the checkboxes, dropdowns,
 and values in a gate's in-game **settings menu**. Wirescript sets them as
-**optional, constant-only call arguments**; a constant is baked into the gate's
+**optional, constant-only call arguments**. A constant is baked into the gate's
 data, and anything you omit keeps the game default. (A non-constant value is a
 compile error, because these can't be wired.)
 
 **Enum values are bare member names**, validated against the game's own enum
-member list at compile time. An unknown name is a `WS028` error; a raw int is
+member list at compile time. An unknown name is a `WS028` error. A raw int is
 also accepted (and range-checked).
 
 ```wirescript
@@ -1251,8 +1246,8 @@ let c = ColorBlend(a, b, t, blendSpace = ColorSpace.Oklab, clampAlpha = true)
 p.DisplayText("hi", typeface = TextTypeface.Bold, justify = DisplayTextJustification.Center, easing = DisplayTextEasing.EaseInOut)
 ```
 
-**Every** config field is settable, not just the aliases below. In addition to
-the friendly names, each gate exposes each `bool`/`int`/`float`/`string`/`enum`
+Every config field is settable, including fields that have no alias below. In
+addition to the friendly names, each gate exposes each `bool`/`int`/`float`/`string`/`enum`
 settings-menu field under its **raw game name**, so any of the ~60 config gates
 works even without a curated alias:
 
@@ -1263,7 +1258,7 @@ p.DisplayText("hi", FontSize = 40, Typeface = Bold, Justification = Center)
 
 Completion offers these raw field names, and hovering one shows its type (and
 enum members). The friendly alias and the raw name set the same field, so pick
-either; the table below lists the ergonomic aliases for the common gates.
+either. The table below lists the aliases for the common gates.
 
 Config attributes by gate:
 
@@ -1297,7 +1292,8 @@ Wirescript name, as a [built-in game enum](enums.md#built-in-game-enums):
 
 ## Clock (Event)
 
-The Clock gate emits a periodic execution pulse forever; it reads as an event.
+The Clock gate emits a periodic execution pulse forever. Wirescript uses it as
+an event.
 It takes `interval` and `enabled`, both **wire inputs**: a constant bakes into
 the gate and a variable wires in, so the rate and the on/off state can change at
 runtime. The handler body runs on each pulse.
@@ -1313,7 +1309,7 @@ on Clock(interval = 2.0, enabled = running) {
 ## ChatCommand (Event)
 
 Registers a chat command. The call parens hold only **config args** (the
-command name and an optional description); the event's data outputs are bound
+command name and an optional description). The event's data outputs are bound
 by a trailing `-> (…)` tuple capture (or `-> { field: local }` record):
 
 - **String literals** fill the config fields in order: `CommandName`, then
@@ -1342,23 +1338,23 @@ on ChatCommand("wave", Description = "Wave at everyone") {
 ## Custom Events
 
 A named, cross-gate event channel that carries up to **8 data values**. Each comes
-in two flavours: **personal** (same-owner) and **global** (ownership-agnostic), on
+in two flavors: **personal** (same-owner) and **global** (ownership-agnostic), on
 **separate** channel namespaces, so a personal `"x"` and a global `"x"` never mix.
 
 ### SendCustomEvent (Exec)
 
-`SendCustomEvent(name, data1, … data8, target = …)`: `name` is the channel, a
+`SendCustomEvent(name, data1, … data8, target = …)` takes the channel `name` as a
 **constant** string baked into the gate (a variable or computed value is a `WS028`
 error), followed by up to 8 optional data values of any type. `target` is an
 optional entity whose grid receives the matching **object** events. Delivery is
-same-owner; use `SendGlobalCustomEvent` for the ownership-agnostic version. Fires
-all matching receivers.
+same-owner. Use `SendGlobalCustomEvent` for the ownership-agnostic version. It
+fires all matching receivers.
 
 > **A targeted send needs `isObject = true` on the receiver.** Giving a `target`
 > (including the receiver spelling, `ent.SendCustomEvent(...)`) makes it an
 > *object* event, and only an object-scoped receiver matches one. A plain
-> `on CustomEvent("x")` is scoped grid-wide and **silently never fires** for it -
-> no error, no warning, at check or compile. The two spellings pair up:
+> `on CustomEvent("x")` is scoped grid-wide and **silently never fires** for it.
+> There is no error or warning at check or compile. The two spellings pair up:
 >
 > ```wirescript ignore
 > ent.SendCustomEvent("ui.init", who)          // targeted -> object event
@@ -1384,14 +1380,14 @@ The receiver's call parens hold only the channel name (positional) and any
 config (`isObject = true`); the **typed data outputs** are bound by a trailing
 `-> (…)` tuple capture. Each data slot's type can be given explicitly
 (`amount: int`) or **inferred from a matching in-unit
-`SendCustomEvent`** on the same channel; when neither is available the slot
+`SendCustomEvent`** on the same channel. When neither is available, the slot
 defaults to `float` and a **`WS042`** warning is emitted (the game stores each
 data slot as a typed value, not `any`). Unused slots default to `float`.
 `isObject = true` is constant config that scopes the receiver to a specific
 grid/object (an **object event**) instead of firing grid-wide.
 
 ```wirescript
-var lastDamage: int = 0   // a top-level var is already persistent — no `static`
+var lastDamage: int = 0   // a top-level var is already persistent, so it needs no `static`
 
 on CustomEvent("damage") -> (amount: int, attacker: character) {
   lastDamage = amount
@@ -1564,8 +1560,8 @@ Returns a record with fields:
 ```wirescript
 on trigger {
   let aim = char.GetAim()
-  // Run the Sweep INSIDE the exec handler; handle it with nested Hit/Miss branches.
-  // A top-level `Sweep(..., exec = t)` does NOT fire.
+  // Run the Sweep inside the exec handler and handle it with nested Hit/Miss branches.
+  // A top-level `Sweep(..., exec = t)` does not fire.
   let r = Sweep(aim.Origin, aim.Direction, 10000.0,
     radius = 5.0, ignore = char, detectPlayers1 = true)
   on r.Hit  { r.HitEntity.ShowStatusMessage("hit!") }
@@ -1590,9 +1586,9 @@ on RoundStart() {
 }
 ```
 
-`Random` rides the same PrimMath variant as the [arithmetic operators](expressions.md#arithmetic-operators), so its `min`/`max` may be a `vector`, `rotator`, `quat`, or `color`, and it then rolls each component independently and returns that same type. `Random(Vec(0.0, 0.0, 0.0), Vec(1.0, 1.0, 1.0))` is a random point in the unit cube; `Random(a, b)` on two colors is a random color between them (all four RGBA channels). Both bounds share the type of the result.
+`Random` uses the same PrimMath variant as the [arithmetic operators](expressions.md#arithmetic-operators), so its `min`/`max` may be a `vector`, `rotator`, `quat`, or `color`. It then rolls each component independently and returns that same type. `Random(Vec(0.0, 0.0, 0.0), Vec(1.0, 1.0, 1.0))` is a random point in the unit cube. `Random(a, b)` on two colors is a random color between them (all four RGBA channels). Both bounds share the type of the result.
 
-Note: `Random` is an exec function because it requires sequential execution to produce a new random value each time.
+`Random` is an exec function because it requires sequential execution to produce a new random value each time.
 
 ## Sleep / Delay (Pure)
 
@@ -1629,7 +1625,7 @@ let delayed = SleepTicks(rawSignal, delay = 5)
 Exec functions that are called outside of an exec context can be given an explicit `exec` named argument to provide the execution trigger:
 
 ```wirescript
-// Outside a handler -- provide exec explicitly
+// Outside a handler, provide exec explicitly
 let r = Random(0, 10, exec = someTrigger)
 ```
 
@@ -1705,10 +1701,10 @@ mapping is not verified in game.**
 
 `EnumToInt` / `IntToEnum` are the gate-backed twins of `.ToInt()` (=
 `.Discriminant`) and `Enum.FromInt(n)`. `EnumToInt` requires an enum
-argument (a non-enum is a type error); a compile-time-known enum folds to its
-discriminant literal, a runtime enum routes through the gate. `IntToEnum`'s
+argument (a non-enum is a type error). A compile-time-known enum folds to its
+discriminant literal, and a runtime enum routes through the gate. `IntToEnum`'s
 result is an enum whose concrete type comes from the annotated target (like
-`FromInt`); a constant tag folds to the enum record, a runtime tag routes
+`FromInt`). A constant tag folds to the enum record, a runtime tag routes
 through the gate, and `wrap` clamps an out-of-range tag. See
 [enums.md](enums.md#enum-and-int-conversion).
 
@@ -1769,7 +1765,7 @@ var names: string[]
 
 on tick {
   scores.set("alice", 10)                 // insert / overwrite
-  let g = scores.get("alice")             // { Value, Found } — auto-unwraps to Value
+  let g = scores.get("alice")             // { Value, Found }, auto-unwraps to Value
   if g.Found { PrintToConsole(g.Value) }
   if scores.has("bob") { ... }
   scores.remove("bob")                    // -> bool (was present)
@@ -1793,18 +1789,18 @@ Entries use `=>` for any key expression, or `:` for a string / atom / int
 *literal* key (or a bracketed `[expr]` computed key):
 
 ```wirescript
-var m: Map<int, int>    = { :red => 10, 7 => 0 }    // arrow -- any key
-var s: Map<string, int> = { "red": 1, "blue": 2 }    // colon -- string literal key
-var a: Map<int, int>    = { :red: 1, :blue: 2 }      // colon -- atom literal key
+var m: Map<int, int>    = { :red => 10, 7 => 0 }    // arrow: any key
+var s: Map<string, int> = { "red": 1, "blue": 2 }    // colon: string literal key
+var a: Map<int, int>    = { :red: 1, :blue: 2 }      // colon: atom literal key
 var e: Map<int, int>    = {}                         // explicit empty map
-on tick { m = { [runtimeKey] => x } }                // computed key -- desugars
+on tick { m = { [runtimeKey] => x } }                // computed key, desugars
 ```
 
 A **constant** map literal (every key and value a compile-time constant) in a
 `var` initializer bakes straight into the map at rest, with no runtime
-gates; the map loads pre-populated. An initializer with any non-constant
-entry doesn't bake: its entries are dropped (with a compiler warning) and
-the map loads empty; build it at runtime instead. Inside an exec handler,
+gates, and the map loads pre-populated. An initializer with any non-constant
+entry doesn't bake. Its entries are dropped (with a compiler warning) and
+the map loads empty, so build it at runtime instead. Inside an exec handler,
 `m = { ... }` (or a literal with runtime keys/values) desugars to `clear()`
 followed by one `set(key, value)` per entry, in source order, the same
 clear-then-populate shape as [array literal assignment](statements.md).
@@ -1848,8 +1844,8 @@ Branch(cond: bool, exec: exec) -> (A: exec, B: exec)
 Every variable / array / map wire gate is also exposed as a plain function named
 after the in-game gate, alongside its method / operator / assignment form. The
 two forms are **identical** (the call desugars to the method or assignment at
-parse time), so pick whichever reads better. Named after the game gates for
-discoverability (and completion).
+parse time), so pick whichever reads better. The names match the game gates so
+they are easy to find (and complete).
 
 **Variables**
 
@@ -1897,4 +1893,4 @@ the same operation; the receiver is the first argument:
 | | | | `GetMapValues(m, dest)` | `m.values(dest)` |
 
 All array/map operations remain **exec-context only** (they run on the exec
-chain), exactly like their method forms.
+chain), like their method forms.

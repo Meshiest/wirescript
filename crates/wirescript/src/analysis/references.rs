@@ -14,7 +14,7 @@ pub struct TextRange {
 /// site set the scoped resolver (`analysis::scoped_refs::references_at`)
 /// returns; this maps each site to its new text. A record-literal shorthand
 /// (`{ name }`) keeps its field name and binds the renamed value —
-/// `{ name }` → `{ name: new_name }` — every other site is replaced outright.
+/// `{ name }` -> `{ name: new_name }` — every other site is replaced outright.
 pub fn rename_edit_text(site: &TextRange, old_name: &str, new_name: &str) -> String {
     if site.is_shorthand {
         format!("{old_name}: {new_name}")
@@ -42,6 +42,27 @@ fn is_ident_char(c: char) -> bool {
 /// so each candidate is checked for identifier-boundary neighbors on both
 /// sides before it's accepted.
 pub fn find_name_range(source: &str, decl_range: &SourceRange, name: &str) -> Option<SourceRange> {
+    // The range's first line starts at the line break before its byte offset,
+    // so the search reads only the range's own lines. A range with no offset
+    // (0 past the first line) is found by counting lines from the top.
+    let at = decl_range.start.offset;
+    let by_offset = (at > 0 || decl_range.start.line <= 1) && source.is_char_boundary(at.min(source.len())) && at <= source.len();
+    if !by_offset {
+        return name_range_in_lines(source.lines().skip((decl_range.start.line as usize).saturating_sub(1)), decl_range, name);
+    }
+    let line_start = source[..at].rfind('\n').map_or(0, |i| i + 1);
+    let found = name_range_in_lines(source[line_start..].lines(), decl_range, name);
+    debug_assert_eq!(
+        found,
+        name_range_in_lines(source.lines().skip((decl_range.start.line as usize).saturating_sub(1)), decl_range, name),
+        "the line at byte {at} is not line {}",
+        decl_range.start.line
+    );
+    found
+}
+
+/// [`find_name_range`] over `lines`, the source's lines from the range's first.
+fn name_range_in_lines<'a>(mut lines: impl Iterator<Item = &'a str>, decl_range: &SourceRange, name: &str) -> Option<SourceRange> {
     if name.is_empty() {
         return None;
     }
@@ -50,9 +71,7 @@ pub fn find_name_range(source: &str, decl_range: &SourceRange, name: &str) -> Op
     // Walk the range's own lines rather than collecting the whole file: a
     // decl range is one line in the common case, and this is called once per
     // coarse span, so collecting cost 167 MB on a large file's semantic-token
-    // request. `lines()` is resumed from the previous line rather than
-    // re-scanned per line, so the whole loop stays one pass.
-    let mut lines = source.lines().skip(start_line.saturating_sub(1));
+    // request.
     for line_no in start_line..=end_line {
         let Some(line) = lines.next() else {
             break;

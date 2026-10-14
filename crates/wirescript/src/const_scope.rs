@@ -762,28 +762,112 @@ impl ConstScope {
     /// [`get`]: Self::get
     pub(crate) fn env<V>(&self, scope: &Scope<V>, bound: &dyn Fn(&V) -> Bound, admit: Admit) -> ConstNames {
         let slot = admit.slot();
-        if let Some((s, c, env)) = &self.answered.borrow()[slot]
-            && *s == scope.rev()
-            && *c == self.rev
-        {
-            return env.clone();
+        let cached = self.answered.borrow()[slot].clone();
+        let env = match cached {
+            Some((s, c, env)) if c == self.rev && s == scope.rev() => return env,
+            // Only names bound since: each decides only its own answer.
+            Some((s, c, env)) if c == self.rev && let Some(names) = scope.inserted_since(s) => {
+                let names: Vec<crate::intern::Sym> = names.collect();
+                let frames = self.env_frames(scope);
+                let recorded = self.recorded(&frames);
+                let mut here = (*env.here).clone();
+                for sym in names {
+                    let key = crate::intern::resolve(sym);
+                    match self.answer(scope, bound, admit, &frames, &recorded, key) {
+                        Some(answer) => here.insert(key, answer),
+                        None => here.remove(key),
+                    };
+                }
+                let env = ConstNames { module: env.module, here: Arc::new(here) };
+                debug_assert!(
+                    *env.here == *self.rebuild(scope, bound, admit).here,
+                    "an incremental constant env differs from a rebuilt one"
+                );
+                env
+            }
+            _ => self.rebuild(scope, bound, admit),
+        };
+        self.answered.borrow_mut()[slot] = Some((scope.rev(), self.rev, env.clone()));
+        env
+    }
+
+    /// The open frames [`env`](Self::env) reads, innermost first.
+    fn env_frames<V>(&self, scope: &Scope<V>) -> Vec<(usize, u64)> {
+        let floor = scope.floor().max(1);
+        scope.visible_frame_ids().filter(|(i, _)| *i >= floor).collect()
+    }
+
+    /// Every name a frame of `frames` records a constant under.
+    fn recorded(&self, frames: &[(usize, u64)]) -> HashSet<&str> {
+        frames
+            .iter()
+            .filter_map(|(_, id)| self.frame(*id))
+            .flat_map(|f| f.values.keys().map(|k| k.as_str()))
+            .collect()
+    }
+
+    /// [`env`](Self::env)'s answer for `key` alone, as [`rebuild`](Self::rebuild)
+    /// decides it: `None` when `key` is left to the module.
+    fn answer<V>(
+        &self,
+        scope: &Scope<V>,
+        bound: &dyn Fn(&V) -> Bound,
+        admit: Admit,
+        frames: &[(usize, u64)],
+        recorded: &HashSet<&str>,
+        key: &'static str,
+    ) -> Option<Option<Literal>> {
+        let sym = crate::intern::intern(key);
+        let module = &self.module.admitted[admit.slot()];
+        for (i, id) in frames.iter().copied() {
+            if let Some((lit, marks)) = self.frame(id).and_then(|f| f.values.get(key)) {
+                return Some(match scope.get_in(i, sym).map(bound) {
+                    Some(Bound::Value) => None,
+                    Some(Bound::Holds(_)) => self.get(scope, bound, key, admit).cloned(),
+                    Some(Bound::MayBeConstant | Bound::NotAValue) | None => marks.admit(admit).then(|| lit.clone()),
+                });
+            }
+            match scope.get_in(i, sym).map(bound) {
+                None | Some(Bound::NotAValue) => {}
+                Some(Bound::Holds(_)) => return Some(self.get(scope, bound, key, admit).cloned()),
+                Some(Bound::MayBeConstant | Bound::Value) => {
+                    if module.contains_key(key) || recorded.contains(key) || self.by_name.contains(key) {
+                        return Some(None);
+                    }
+                }
+            }
         }
-        let module = self.module.admitted[slot].clone();
+        if scope.floor() == 0 {
+            if let Some((_, held)) = self.hidden_at_top.iter().rev().find(|(name, _)| name == key) {
+                return Some(held.as_ref().filter(|(_, marks)| marks.admit(admit)).map(|(lit, _)| lit.clone()));
+            }
+            if self.dups.top.dups().any(|(name, _)| name == key)
+                && let Some(answer) = self.dup_answer(key)
+            {
+                return Some(answer.filter(|(_, marks)| marks.admit(admit)).map(|(lit, _)| lit.clone()));
+            }
+            if self.by_name_at_top.iter().any(|name| name == key)
+                && scope.visible_bindings(key).any(|(_, v)| !matches!(bound(v), Bound::NotAValue))
+            {
+                return Some(self.get(scope, bound, key, admit).cloned());
+            }
+        }
+        None
+    }
+
+    /// [`env`](Self::env) worked out from every open frame.
+    fn rebuild<V>(&self, scope: &Scope<V>, bound: &dyn Fn(&V) -> Bound, admit: Admit) -> ConstNames {
+        let module = self.module.admitted[admit.slot()].clone();
         // One pass over the open frames, innermost first: a name is decided
         // by the first frame that records it or binds it to a value, as
         // `get` and `walk` decide it. A gate holding a constant container is
         // left to `get`.
         let mut here: HashMap<&'static str, Option<Literal>> = HashMap::default();
-        let floor = scope.floor().max(1);
-        let frames: Vec<(usize, u64)> = scope.visible_frame_ids().filter(|(i, _)| *i >= floor).collect();
+        let frames = self.env_frames(scope);
         // A binding needs an answer only when something else would answer
         // its name: the module, a frame further out, or an evaluator
         // resolving it itself.
-        let recorded: HashSet<&str> = frames
-            .iter()
-            .filter_map(|(_, id)| self.frame(*id))
-            .flat_map(|f| f.values.keys().map(|k| k.as_str()))
-            .collect();
+        let recorded = self.recorded(&frames);
         for (i, id) in frames.iter().copied() {
             if let Some(frame) = self.frame(id) {
                 for (name, (lit, marks)) in &frame.values {
@@ -840,9 +924,7 @@ impl ConstScope {
                 }
             }
         }
-        let env = ConstNames { module, here: Arc::new(here) };
-        self.answered.borrow_mut()[slot] = Some((scope.rev(), self.rev, env.clone()));
-        env
+        ConstNames { module, here: Arc::new(here) }
     }
 
     /// The context `const_eval` evaluates in where `scope` is now: names

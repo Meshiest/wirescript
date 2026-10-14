@@ -24,7 +24,7 @@ Expressions compute values. In Wirescript, expressions map to wire graph gates: 
 - [Ref and Deref](#ref-and-deref)
 - [Type Conversion (`as`)](#type-conversion-as)
 - [Parenthesized Expressions](#parenthesized-expressions)
-- [Gotchas](#gotchas)
+- [Common mistakes](#common-mistakes)
 - [Asset References](#asset-references)
 - [Prefab References](#prefab-references)
 <!-- /toc -->
@@ -59,8 +59,9 @@ let x = 2 ** 3 ** 2   // = 2 ** (3 ** 2) = 2 ** 9 = 512
 // Standard math precedence:
 let y = 1 + 2 * 3     // = 1 + (2 * 3) = 7
 
-// String concat at same level as +/-:
-let s = "x=" .. x + 1  // = "x=" .. (x + 1) -- careful!
+// String concat is at the same level as +/- and groups left to right,
+// so `"x=" .. x + 1` means ("x=" .. x) + 1, which is a WS004 error.
+let s = "x=" .. (x + 1)
 ```
 
 ## Evaluation Order
@@ -118,26 +119,26 @@ Mixed `int`/`float` arithmetic promotes the result to `float`. `bool` values are
 `+ - * / %` also operate component-wise on two `vector` operands, lowering to
 the same math gates (whose inputs accept the vector, `f64` and `i64` wire
 variants). Mixing a vector with a scalar broadcasts the scalar across the
-components (`v * 2.0`, `10.0 * v`, `v / 4`); the result is a vector. The
+components (`v * 2.0`, `10.0 * v`, `v / 4`), and the result is a vector. The
 `Scale` helper still works for explicit vector-scalar scaling.
 
-Colors work the same way: the math gate's variant set also covers `color`
-(`LinearColor`), so `+ - * / %` operate **RGBA channel-wise** on two `color`
-operands, and mixing a color with a **number** broadcasts that number across the
-channels: add one to lighten (`c + 0.1`), multiply to scale (`tint * 0.5` dims
-every channel including alpha), either direction (`0.1 + c`, `2 * c`). The result
-is a color.
+Colors work the same way. The math gate's variant set also covers `color`
+(`LinearColor`), so `+ - * / %` operate RGBA channel-wise on two `color`
+operands. Mixing a color with a number broadcasts that number across the
+channels. Add a number to lighten (`c + 0.1`) or multiply to scale (`tint * 0.5`
+dims every channel including alpha), with the number on either side (`0.1 + c`,
+`2 * c`). The result is a color.
 
 The same gates also accept the rotation family (`quat` / `rotator`), so `q1 * q2`
-composes two rotations. Same-type operands keep their type; a `quat`/`rotator`
-mix yields a `quat` (freely coercible back to a `rotator`; see
-[types](types.md)).
+composes two rotations. Operands of the same type keep their type. A
+`quat`/`rotator` mix yields a `quat`, which coerces freely back to a `rotator`
+(see [types](types.md)).
 
-An **object** operand (a `controller`/`character`/`entity`,
+An object operand (a `controller`/`character`/`entity`,
 e.g. a player) no longer coerces directly to an `int` on a math gate, so it is
 routed through `(obj || false)` first: `1 + player` lowers to
 `add(1, or(player, false))`. The `||` gate coerces the object to a value the math
-gate accepts. This is automatic, so just write the arithmetic.
+gate accepts. The compiler inserts this for you, so write the arithmetic as usual.
 
 ```wirescript
 let a = 10 + 3       // 13: int
@@ -186,7 +187,7 @@ let sameTeam = teamA == teamB
 | `^^` | Logical XOR | any wire variant pair | `bool` |
 | `!` | Logical NOT (unary) | any wire variant | `bool` |
 
-Wire variant types are: `bool`, `int`, `float`, `exec`, `string`, `entity`, `controller`, `character`. The engine coerces all of these to bool on bool ports (truthy/falsy). An `exec` value is true for the tick it fires, and works directly as an operand of the logical operators (`&&`, `||`, `^^`, `!`), as an `if` or `if ... then ... else` condition and as an `on` trigger, read directly or through a `let`. It is no `bool` value otherwise: storing it (in a `bool` variable, array, map, record field or output), passing it to a `bool` parameter or returning it from a `-> bool` mod is `WS003`, and comparing it with `==` is `WS004`. An exec carried through an output pin of no type (`out o: any`) reads as true where a `bool` is read or written; read as any other type (a number, text, a color) it carries no value, which is `WS094`:
+Wire variant types are: `bool`, `int`, `float`, `exec`, `string`, `entity`, `controller`, `character`. The engine coerces all of these to bool on bool ports (truthy/falsy). An `exec` value is true for the tick it fires, and works directly as an operand of the logical operators (`&&`, `||`, `^^`, `!`), as an `if` or `if ... then ... else` condition and as an `on` trigger, read directly or through a `let`. Otherwise it is not a `bool` value. Storing it (in a `bool` variable, array, map, record field or output), passing it to a `bool` parameter or returning it from a `-> bool` mod is `WS003`, and comparing it with `==` is `WS004`. An exec carried through an output pin of no type (`out o: any`) reads as true where a `bool` is read or written. Read as any other type (a number, text, a color), it carries no value, which is `WS094`:
 
 ```wirescript
 in reset: bool
@@ -201,7 +202,7 @@ let either = a ^^ b
 
 ## Bitwise Operators
 
-All bitwise operators produce `int` results. Operands are `int`; a `float` or `bool` operand coerces to `int` first (`1.5 & 2` truncates `1.5` to `1`), so only a non-numeric operand (`string`, `vector`, …) is a **WS011** error.
+All bitwise operators produce `int` results. Operands are `int`. A `float` or `bool` operand coerces to `int` first (`1.5 & 2` truncates `1.5` to `1`), so only a non-numeric operand (`string`, `vector`, …) is a **WS011** error.
 
 | Operator | Operation |
 |----------|-----------|
@@ -264,8 +265,8 @@ let price = "Cost: \$${amount}"
 ```
 
 > **Both arms evaluate.** An `if` expression compiles to a `Select` fed by both
-> results, so the arm that is not chosen is computed and discarded. The branch
-> picks which value is used, it does not skip work. Two consequences: an
+> results, so the arm that is not chosen is computed and discarded. The
+> condition only picks which value is used and skips no work. Two consequences: an
 > expensive expression in the untaken arm still costs its gates every tick, and
 > an arm that would fail on bad input (an out-of-range slice, a divide by zero)
 > still runs. Gates yield a default rather than faulting, which is why this is
@@ -275,12 +276,13 @@ let price = "Cost: \$${amount}"
 > (a handler or a `mod` it calls), an arm that writes a variable or an output,
 > sends, mutates a container, runs an action builtin, or `return`s (directly,
 > through a `match` block arm, or inside a `mod` it calls) runs only when it
-> is taken: the `if` then compiles like an `if` statement whose branches store
-> the value, and reads it after they rejoin. An `if` whose value is a record,
-> tuple or enum can't do this (`WS097`); write an `if` statement instead. A
-> `match` used as a value treats its arms the same way. This covers what the
-> arm itself runs, not an `on` handler inside a `mod` or `chip` it calls: that
-> handler runs whenever its own trigger fires, taken or not (`WS102`).
+> is taken. In that case the `if` compiles like an `if` statement whose
+> branches store the value, and the value is read after they rejoin. An `if`
+> whose value is a record, tuple or enum can't do this (`WS097`), so write an
+> `if` statement instead. A `match` used as a value treats its arms the same
+> way. This applies only to what the arm itself runs. An `on` handler inside a
+> `mod` or `chip` the arm calls runs whenever its own trigger fires, whether or
+> not the arm is taken (`WS102`).
 
 ## Conditional Expressions (if-then-else)
 
@@ -366,8 +368,8 @@ The name may contain letters, digits, `_`, and `-` (the first character must
 be a letter or `_`, since a leading digit or `-` doesn't lex as an atom start).
 `:my-text` is a single atom, not `:my` followed by a subtraction. Write
 `:a - b`, with spaces, when you mean `:a` minus `b`. Atoms only lex where a value is expected
-(after `=`, an operator, `(`, `,`, `[`, `=>`, ...); a `:` immediately after
-something that already reads as a value stays a plain colon instead: a type annotation (`x: int`), a
+(after `=`, an operator, `(`, `,`, `[`, `=>`, ...). A `:` immediately after
+something that already reads as a value stays a plain colon, as in a type annotation (`x: int`), a
 record field (`{ x: 1 }`), or a map's string/atom key separator (`"red": 1`,
 `:red: 1`).
 
@@ -444,23 +446,24 @@ SplitQuaternion), which outputs the single `float` component:
 in a: vector
 in b: vector
 let sum = a + b          // vector
-let height = sum.z       // float — the z component
+let height = sum.z       // float: the z component
 
 in tint: color
 let red = tint.r         // float
 
 in facing: rotator
-let turn = facing.yaw    // float — degrees
+let turn = facing.yaw    // float, in degrees
 
 let spin = a.ToRotation() // quat
 let scalar = spin.w       // float
 ```
 
-Reading several components of the same value costs **one** gate, not one per
-component: the split gates are identical and merge.
+Reading several components of the same value costs a single gate, not one per
+component, because the split gates are identical and merge.
 
-A component name belongs to exactly one type, so borrowing one (`v.w`,
-`facing.x`, `tint.z`) is a `WS010` error rather than a silent misread.
+A component name belongs to only one type, so using one on another type (`v.w`,
+`facing.x`, `tint.z`) is a `WS010` error. It is never silently read as some
+other component.
 
 ### Variable Fields
 
@@ -469,10 +472,10 @@ Variables have special `.Value` and `.prev` fields:
 ```wirescript
 var count: int = 0
 
-// .Value -- reads the current value (delayed read, works in pure context)
+// .Value: reads the current value (delayed read, works in pure context)
 out currentCount = count.Value
 
-// .prev -- reads the previous tick's value (change detection)
+// .prev: reads the previous tick's value (change detection)
 chip let changed = count != count.prev
 ```
 
@@ -502,7 +505,7 @@ Four cases resolve through `.exec`:
   is `OnChanged`). `.exec` denotes that exec directly:
 
   ```wirescript
-  let ch = Change(score)     // exec — fires when `score` changes
+  let ch = Change(score)     // exec: fires when `score` changes
   on ch.exec {               // handle it
     ctrl.DisplayText("score changed")
   }
@@ -550,7 +553,7 @@ Four cases resolve through `.exec`:
 
   ```wirescript
   in reset: exec
-  on Union(reset, CustomEvent("ping").exec) {   // fires on reset OR the event
+  on Union(reset, CustomEvent("ping").exec) {   // fires on reset or the event
     ctrl.DisplayText("announced")
   }
   ```
@@ -574,8 +577,8 @@ Use bracket notation to index into arrays:
 
 ```wirescript
 let item = myArray[i]
-// item.value -- the element value
-// item.bOutOfBounds -- bool, true if index was out of range
+// item.value: the element value
+// item.bOutOfBounds: bool, true if index was out of range
 ```
 
 ## Tuple Pick
@@ -612,15 +615,15 @@ Arguments are evaluated in source order, named ones included, and each keeps the
 **Running an exec gate with `exec = <trigger>`.** Any exec-gate call (a builtin
 like `Random`, an array/map method, or a user-defined exec chip/mod) accepts a
 reserved `exec = <trigger>` named argument that drives its exec input. This lets
-an exec gate run **outside** a handler: it fires each time the trigger's value
-changes rather than riding the surrounding exec chain, so the call becomes a leaf
-that is legal in a **pure** binding.
+an exec gate run outside a handler. It fires each time the trigger's value
+changes instead of running as part of the surrounding exec chain, so the call
+becomes a leaf that is legal in a pure binding.
 
 ```wirescript
-// Pure output binding — the get fires whenever `i` changes (i + 1 is never 0):
+// Pure output binding: the get fires whenever `i` changes (i + 1 is never 0):
 out c: color = lut.get(i, exec = i + 1).Value
 
-// Outside any handler — provide the trigger explicitly:
+// Outside any handler, provide the trigger explicitly:
 let r = Random(0, 10, exec = someTrigger)
 ```
 
@@ -707,7 +710,7 @@ Converts `bool`, `int`, `float` and `string` into one another; a number into a
 `vector`, `rotator` or `color` (it fills every channel, a color's clamped to
 0..1); a `rotator` into a `quat` and back; and a `vector`, `rotator`, `quat` or
 `color` into a `string` (`X=1.000 Y=2.000 Z=3.000`, `FFBC00FF`). An `any` value
-converts to any type. These are the conversions measured in game; every other
+converts to any type. These are the conversions measured in game. Every other
 pair (a vector as a number or a color, a string as a vector, anything to or
 from an object) comes out of the gate as the target type's default, so it is
 `WS109`.
@@ -749,7 +752,7 @@ let result = (a + b) * c
 let check = !(x && y)
 ```
 
-## Gotchas
+## Common mistakes
 
 ### Bitwise `&` is lower precedence than `==`/`!=`
 
@@ -757,7 +760,7 @@ This matches C. `x >> 31 & 1 != 0` parses as `x >> 31 & (1 != 0)`. Always parent
 
 ```wirescript
 let bit = ((x >> 31) & 1) != 0  // correct
-let bad = x >> 31 & 1 != 0      // wrong — compares 1 != 0 first
+let bad = x >> 31 & 1 != 0      // wrong: compares 1 != 0 first
 ```
 
 ### Chips encapsulate state
@@ -803,7 +806,7 @@ a misspelled name or a property the component does not have is `WS110`.
 Property names come from the component's fields in the save schema, so the
 list may hold fields the game's own picker does not offer (unverified). The
 type goes to `GetComponent` and `AddComponent` (see
-[Components](builtins.md#components)); it is a constant setting, not a value
+[Components](builtins.md#components)). It is a constant setting, not a value
 a program can hold.
 
 ## Prefab References
@@ -852,18 +855,19 @@ on CharacterSpawned() -> (who) {
 }
 ```
 
-> **Why this form exists.** A loop advances one iteration per tick, so a central
-> chip sweeping N entities every tick costs N ticks per pass. Spawning one chip
-> per entity moves that work into parallel gate instances, and the per-tick cost
-> stops depending on N. Note that the nested `on ServerUptime()` above is **not**
+> **Why this form exists.** A back-edge loop advances one iteration per tick, so
+> a central chip sweeping N entities with one costs N ticks per pass. A `for`
+> sweep finishes in one tick but runs its body N times. Spawning one chip per
+> entity moves that work into parallel gate instances, and the per-tick cost
+> stops depending on N. The nested `on ServerUptime()` above is not
 > registered by the init handler. The wire graph is static, so its trigger is
 > live from the moment the prefab spawns, before `init` lands, which is why real
 > code guards it on an init-set value. See
-> [per-entity fan-out](best-practices.md#10-per-entity-fan-out-one-chip-each-not-one-loop-over-all)
+> [per-entity fan-out](best-practices.md#10-per-entity-work-a-for-sweep-or-one-chip-each)
 > and [Loops](statements.md#loops).
 
-At compile the referenced `.brz` is read and **embedded into the output
-bundle** (content-addressed at `Prefabs/Uploads/<hash>.brz`), and the gate's
+At compile the referenced `.brz` is read and embedded into the output
+bundle (content-addressed at `Prefabs/Uploads/<hash>.brz`), and the gate's
 `Prefab` property is set to that embedded path, so the compiled program is
 self-contained. Typing `$./` completes available `.brz` files (the editor scans
 the project directory; the web playground has a Prefabs panel where you upload

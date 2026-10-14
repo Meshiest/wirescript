@@ -1,25 +1,9 @@
 #!/usr/bin/env node
 // wirescript compiler — run with: node compile.mjs <file.ws> [output.brz]
 
-import { readFileSync, writeFileSync, readdirSync } from 'fs';
-import { resolve, basename, dirname, join } from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-function buildFileMap(file) {
-  const dir = dirname(resolve(file));
-  const name = basename(resolve(file));
-  const map = {};
-  try {
-    for (const entry of readdirSync(dir)) {
-      if (entry.endsWith('.ws') && entry !== name) {
-        map[entry] = readFileSync(join(dir, entry), 'utf-8');
-      }
-    }
-  } catch {}
-  return JSON.stringify(map);
-}
+import { readFileSync, writeFileSync } from 'fs';
+import { resolve, basename } from 'path';
+import { fileMapJson, loadWasm, prefabsJson } from './lib.mjs';
 
 async function main() {
   const file = process.argv[2];
@@ -31,16 +15,11 @@ async function main() {
   const source = readFileSync(resolve(file), 'utf-8');
   const outFile = process.argv[3] || file.replace(/\.[^.]+$/, '.brz');
 
-  const mod = await import('./pkg/wasm.js');
-  // nodejs-target pkg exports directly; web-target pkg needs init().
-  if (typeof mod.default === 'function') {
-    const wasmBytes = readFileSync(join(__dirname, 'pkg', 'wasm_bg.wasm'));
-    await mod.default({ module_or_path: wasmBytes });
-  }
-  const wirescript_compile = mod.wirescript_compile ?? mod.default?.wirescript_compile;
+  const wirescript_compile = (await loadWasm())('wirescript_compile');
 
   try {
-    const bytes = wirescript_compile(source, basename(file).replace(/\.[^.]+$/, ''), buildFileMap(file));
+    const name = basename(file).replace(/\.[^.]+$/, '');
+    const bytes = wirescript_compile(source, name, fileMapJson(file), prefabsJson(file, source));
     writeFileSync(resolve(outFile), Buffer.from(bytes));
     console.log(`✓ wrote ${outFile} (${bytes.length} bytes)`);
   } catch (e) {

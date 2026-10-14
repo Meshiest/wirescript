@@ -56,67 +56,33 @@ A browser-based development environment for Wirescript with full language suppor
 `,
 };
 
-// Pages fetched from docs/*.md
-export const DOC_MANIFEST = {
-  Overview: 'docs/README.md',
-  Syntax: 'docs/syntax.md',
-  Types: 'docs/types.md',
-  Enums: 'docs/enums.md',
-  Expressions: 'docs/expressions.md',
-  Statements: 'docs/statements.md',
-  'Chips & Mods': 'docs/chips.md',
-  Builtins: 'docs/builtins.md',
-  'Game Knowledge': 'docs/game-knowledge.md',
-  'Exec Context': 'docs/exec-context.md',
-  'Best Practices': 'docs/best-practices.md',
-  Testing: 'docs/testing.md',
-  'Constant Folding': 'docs/folding.md',
-  Diagnostics: 'docs/diagnostics.md',
-  Upgrading: 'docs/upgrading.md',
-  Changelog: 'docs/CHANGELOG.md',
-};
-
-// List of doc pages in display order
-export const DOC_PAGES = [
-  'Playground',
-  'Overview',
-  'Syntax',
-  'Types',
-  'Enums',
-  'Expressions',
-  'Statements',
-  'Chips & Mods',
-  'Builtins',
-  'Game Knowledge',
-  'Exec Context',
-  'Best Practices',
-  'Testing',
-  'Constant Folding',
-  'Diagnostics',
-  'Upgrading',
-  'Changelog',
+// Every doc page, in display order: its key, its title in the navigation and
+// the file it loads (none for the playground's own help). The book's table of
+// contents is generated from this list, so a new page is registered here once.
+export const DOCS = [
+  { key: 'Playground', title: 'Playground Help', file: null },
+  { key: 'Overview', title: 'Overview', file: 'docs/README.md' },
+  { key: 'Syntax', title: 'Syntax', file: 'docs/syntax.md' },
+  { key: 'Types', title: 'Types', file: 'docs/types.md' },
+  { key: 'Enums', title: 'Enums', file: 'docs/enums.md' },
+  { key: 'Expressions', title: 'Expressions', file: 'docs/expressions.md' },
+  { key: 'Statements', title: 'Statements', file: 'docs/statements.md' },
+  { key: 'Chips & Mods', title: 'Chips & Mods', file: 'docs/chips.md' },
+  { key: 'Builtins', title: 'Built-in Functions', file: 'docs/builtins.md' },
+  { key: 'Environment', title: 'Environment Settings', file: 'docs/environment.md' },
+  { key: 'Game Knowledge', title: 'Game Knowledge', file: 'docs/game-knowledge.md' },
+  { key: 'Exec Context', title: 'Execution Context', file: 'docs/exec-context.md' },
+  { key: 'Best Practices', title: 'Best Practices', file: 'docs/best-practices.md' },
+  { key: 'Testing', title: 'Testing', file: 'docs/testing.md' },
+  { key: 'Constant Folding', title: 'Constant Folding', file: 'docs/folding.md' },
+  { key: 'Diagnostics', title: 'Diagnostics (WS Codes)', file: 'docs/diagnostics.md' },
+  { key: 'Upgrading', title: 'Upgrading', file: 'docs/upgrading.md' },
+  { key: 'Changelog', title: 'Changelog', file: 'docs/CHANGELOG.md' },
 ];
 
-// Display names for the navigation
-export const DOC_TITLES = {
-  Playground: 'Playground Help',
-  Overview: 'Overview',
-  Syntax: 'Syntax',
-  Types: 'Types',
-  Enums: 'Enums',
-  Expressions: 'Expressions',
-  Statements: 'Statements',
-  'Chips & Mods': 'Chips & Mods',
-  Builtins: 'Built-in Functions',
-  'Game Knowledge': 'Game Knowledge',
-  'Exec Context': 'Execution Context',
-  'Best Practices': 'Best Practices',
-  Testing: 'Testing',
-  'Constant Folding': 'Constant Folding',
-  Diagnostics: 'Diagnostics (WS Codes)',
-  Upgrading: 'Upgrading',
-  Changelog: 'Changelog',
-};
+export const DOC_MANIFEST = Object.fromEntries(DOCS.filter((d) => d.file).map((d) => [d.key, d.file]));
+export const DOC_PAGES = DOCS.map((d) => d.key);
+export const DOC_TITLES = Object.fromEntries(DOCS.map((d) => [d.key, d.title]));
 
 async function loadDoc(page) {
   if (DOCS_CACHE[page] !== undefined) return DOCS_CACHE[page];

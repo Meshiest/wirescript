@@ -81,6 +81,8 @@ impl ReadAt {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TopNames {
     chips: Vec<TopChip>,
+    /// Each chip's index in `chips` by its range, the first when two share one.
+    chip_index: crate::collections::HashMap<SourceRange, usize>,
     values: crate::collections::HashMap<(std::sync::Arc<str>, String), SourceRange>,
     /// Each name the top level of one file (outside every chip) declares more
     /// than once, with its declarations in source order.
@@ -177,7 +179,11 @@ impl TopNames {
                 values.entry((d.range().file.clone(), name)).or_insert_with(|| d.range().clone());
             }
         }
-        Self { chips, values, dups }
+        let mut chip_index = crate::collections::HashMap::default();
+        for (i, c) in chips.iter().enumerate() {
+            chip_index.entry(c.range.clone()).or_insert(i);
+        }
+        Self { chips, chip_index, values, dups }
     }
 
     /// Only the names declared more than once at the top level of a file:
@@ -264,7 +270,7 @@ impl TopNames {
 
     /// The chip written exactly at `range`.
     pub(crate) fn chip_at(&self, range: &SourceRange) -> Option<&TopChip> {
-        self.chips.iter().find(|c| c.range == *range)
+        self.chip_index.get(range).map(|&i| &self.chips[i])
     }
 
     /// Whether declarations written at `a` and `b` are in one scope of the

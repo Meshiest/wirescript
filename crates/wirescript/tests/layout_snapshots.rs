@@ -1,7 +1,7 @@
 //! Snapshot tests for the block-aware layout pass.
 //!
 //! Each fixture `<name>.ws` in `tests/fixtures/` is compiled through
-//! parse → typecheck → lower → layout, then dumped to a stable text
+//! parse -> typecheck -> lower -> layout, then dumped to a stable text
 //! format and compared against `<name>.layout.snap`. Set `BLESS=1`
 //! when running `cargo test` to regenerate the goldens after a
 //! deliberate change.

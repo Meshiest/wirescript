@@ -18,6 +18,37 @@ pub(super) struct ParsedAnnotations {
     pub(super) invisible: Option<SourceRange>,
     /// `@sliced`, legal only before a `for` loop.
     pub(super) sliced: Option<SourceRange>,
+    /// `@color(expr)`, legal before a chip or a `var`.
+    pub(super) color: Option<(Expr, SourceRange)>,
+    /// `@material(expr)`, legal where `@color` is.
+    pub(super) material: Option<(Expr, SourceRange)>,
+}
+
+/// Result of [`Parser::collect_module_label`]: the expression annotations
+/// that opened the file and apply to the root microchip.
+#[derive(Default)]
+pub(super) struct ModuleExprAnnotations {
+    pub(super) label: Option<Expr>,
+    pub(super) color: Option<Expr>,
+    pub(super) material: Option<Expr>,
+}
+
+/// The annotations that take an expression and may also open the file for the
+/// root microchip. A run of them is module-level when a blank line follows it.
+const MODULE_EXPR_ANN_WORDS: &[&str] = &["label", "color", "material"];
+
+/// Put `@color` / `@material` expressions on the declaration they precede.
+/// Only a `var` and a chip carry them; the parser has already reported them
+/// anywhere else.
+pub(super) fn set_style(decl: &mut TopDecl, color: Option<Expr>, material: Option<Expr>) {
+    let (c, m) = match decl {
+        TopDecl::Var(v) => (&mut v.color_expr, &mut v.material_expr),
+        TopDecl::Chip(c) => (&mut c.color_expr, &mut c.material_expr),
+        TopDecl::AnonChip(ac) => (&mut ac.color_expr, &mut ac.material_expr),
+        _ => return,
+    };
+    *c = color;
+    *m = material;
 }
 
 /// Result of [`Parser::collect_module_annotations`] — which module-level
@@ -63,28 +94,16 @@ fn layout_choices() -> String {
 }
 
 impl<'a> Parser<'a> {
-    /// If the file opens (after any module doc / annotations) with a
-    /// `@label(<expr>)` that is separated from the first declaration by a blank
-    /// line, consume it as the ROOT microchip's label (same blank-line rule as
-    /// the other top-of-file annotations) and return its expression. A `@label`
-    /// directly above a declaration (no blank line) is left untouched for
-    /// `parse_annotations` to attach to that declaration.
-    ///
-    /// Uses a non-advancing look-ahead to find the matching `)` and check the
-    /// blank-line separator BEFORE committing, so a decl-level `@label` never
-    /// gets its expression parsed here (which would otherwise emit stray
-    /// diagnostics before the roll-back).
-    /// Non-advancing look-ahead: is the token at `idx` a module-level
-    /// `@label(<expr>)` — i.e. `@label` `(` … `)` with balanced parens, followed
-    /// by a blank line (or EOF)? Shared by [`Self::collect_module_label`] and the
-    /// module-annotation run so the two passes compose (a run of `@invisible`
-    /// etc. may hand off to a `@label` that follows it).
-    fn module_label_follows(&self, idx: usize) -> bool {
-        if self.peek_at(idx).kind != TokenKind::Annotation || self.peek_at(idx).text != "label" {
-            return false;
+    /// Non-advancing look-ahead: is the token at `idx` an expression annotation
+    /// ([`MODULE_EXPR_ANN_WORDS`]) written `@word` `(` … `)` with balanced
+    /// parens? Returns the index of its closing `)`.
+    fn expr_ann_end(&self, idx: usize) -> Option<usize> {
+        let t = self.peek_at(idx);
+        if t.kind != TokenKind::Annotation || !MODULE_EXPR_ANN_WORDS.contains(&t.text.as_str()) {
+            return None;
         }
         if self.peek_at(idx + 1).kind != TokenKind::LParen {
-            return false;
+            return None;
         }
         // Scan to the `)` matching the opening `(`, counting nested parens.
         let mut c = idx + 2;
@@ -95,32 +114,91 @@ impl<'a> Parser<'a> {
                 TokenKind::RParen => {
                     depth -= 1;
                     if depth == 0 {
-                        break;
+                        return Some(c);
                     }
                 }
-                TokenKind::Eof => return false, // unbalanced — leave for normal parse
+                TokenKind::Eof => return None, // unbalanced — leave for normal parse
                 _ => {}
             }
             c += 1;
         }
-        // Module-level only if a blank line (or EOF) follows the closing `)`.
-        let after = self.peek_at(c + 1).kind;
-        let after2 = self.peek_at(c + 2).kind;
-        after == TokenKind::Eof
-            || (after == TokenKind::Newline && matches!(after2, TokenKind::Newline | TokenKind::Eof))
     }
 
-    pub(super) fn collect_module_label(&mut self) -> Option<Expr> {
-        if !self.module_label_follows(0) {
-            return None; // not present, or decl-level — leave for parse_annotations
+    /// Non-advancing look-ahead: does a module-level run of expression
+    /// annotations start at `idx`? That is one or more `@label(…)`,
+    /// `@color(…)` and `@material(…)`, sharing a line or one per line, with a
+    /// blank line (or EOF) after the last. Shared by
+    /// [`Self::collect_module_label`] and the module-annotation run so the two
+    /// passes compose (a run of `@invisible` etc. may hand off to a `@label`
+    /// that follows it).
+    fn module_label_follows(&self, idx: usize) -> bool {
+        let mut at = idx;
+        loop {
+            let Some(close) = self.expr_ann_end(at) else { return false };
+            let after = self.peek_at(close + 1).kind;
+            if after == TokenKind::Eof {
+                return true;
+            }
+            if self.expr_ann_end(close + 1).is_some() {
+                at = close + 1; // another one on the same line
+                continue;
+            }
+            if after != TokenKind::Newline {
+                return false;
+            }
+            if matches!(self.peek_at(close + 2).kind, TokenKind::Newline | TokenKind::Eof) {
+                return true;
+            }
+            at = close + 2; // the run continues on the next line, or is decl-level
         }
-        // Commit: advance past `@label` `(`, parse the expression, eat `)`.
-        self.advance();
-        self.advance();
-        let expr = self.parse_expr();
-        self.match_tok(TokenKind::RParen, None);
+    }
+
+    /// If the file opens (after any module doc / annotations) with a run of
+    /// `@label(<expr>)`, `@color(<expr>)` and `@material(<expr>)` separated
+    /// from the first declaration by a blank line (see
+    /// [`Self::module_label_follows`]), consume it as the ROOT microchip's
+    /// label and style. A run directly above a declaration (no blank line) is
+    /// left untouched for `parse_annotations` to attach to that declaration.
+    ///
+    /// The look-ahead finds the matching `)` and checks the blank-line
+    /// separator BEFORE committing, so a decl-level annotation never gets its
+    /// expression parsed here (which would otherwise emit stray diagnostics
+    /// before the roll-back).
+    pub(super) fn collect_module_label(&mut self) -> ModuleExprAnnotations {
+        let mut out = ModuleExprAnnotations::default();
+        if !self.module_label_follows(0) {
+            return out; // not present, or decl-level — leave for parse_annotations
+        }
+        loop {
+            // Commit: advance past `@word` `(`, parse the expression, eat `)`.
+            let tok = self.advance();
+            self.advance();
+            let expr = self.parse_expr();
+            let end = expr.range().end;
+            self.match_tok(TokenKind::RParen, None);
+            let slot = match tok.text.as_str() {
+                "label" => &mut out.label,
+                "color" => &mut out.color,
+                _ => &mut out.material,
+            };
+            if slot.is_some() {
+                self.error(format!("duplicate @{}", tok.text), tok.start, end);
+            } else {
+                *slot = Some(expr);
+            }
+            // The look-ahead fixed the run's extent: another annotation on this
+            // line or the next continues it, anything else ends it.
+            if self.expr_ann_end(0).is_some() {
+                continue;
+            }
+            if self.peek().kind == TokenKind::Newline && self.expr_ann_end(1).is_some() {
+                self.advance();
+                continue;
+            }
+            break;
+        }
         self.eat_newlines();
-        Some(expr)
+        out
     }
 
     /// If the file opens (after any module doc) with a run of module-level
@@ -252,10 +330,11 @@ impl<'a> Parser<'a> {
             cursor += 2;
         }
         // The run stopped at a token that isn't a module-annotation word. If it
-        // is a blank-line-separated `@label(<expr>)` (its own later pass) and we
-        // already collected module annotations, finish the run here — consuming
-        // those annotations and leaving the `@label` for `collect_module_label`
-        // — so e.g. `@invisible` directly above a module `@label` isn't lost.
+        // opens a blank-line-separated `@label` / `@color` / `@material` run
+        // (its own later pass) and we already collected module annotations,
+        // finish the run here — consuming those annotations and leaving the
+        // `@label` for `collect_module_label` — so e.g. `@invisible` directly
+        // above a module `@label` isn't lost.
         if !spans.is_empty() && self.module_label_follows(cursor) {
             return self.finish_module_annotations(spans, errors, cursor);
         }
@@ -334,17 +413,26 @@ impl<'a> Parser<'a> {
                 // Another doc line continues this block.
                 TokenKind::DocComment => continue,
                 // A blank line (or a discarded `//` comment, which leaves only
-                // its newline) separates the block from the first decl → module doc.
+                // its newline) separates the block from the first decl -> module doc.
                 TokenKind::Newline => {
                     self.eat_newlines();
                     return Some(lines.join("\n"));
                 }
-                // A declaration follows immediately → the block documents it, not
+                // A declaration follows immediately -> the block documents it, not
                 // the module. Rewind so the main loop attaches it to that decl.
                 _ => {
                     self.pos = save;
                     return None;
                 }
+            }
+        }
+    }
+
+    /// Report each `@color` / `@material` in `anns` as not allowed on `what`.
+    pub(super) fn reject_style(&mut self, anns: &ParsedAnnotations, what: &str) {
+        for (word, ann) in [("color", &anns.color), ("material", &anns.material)] {
+            if let Some((_, r)) = ann {
+                self.error(format!("@{word} is not allowed on {what}"), r.start, r.end);
             }
         }
     }
@@ -412,6 +500,29 @@ impl<'a> Parser<'a> {
                             tok.start,
                             tok.end,
                         ),
+                    }
+                }
+                "color" | "material" => {
+                    // `@color(expr)` / `@material(expr)`: any expression; its
+                    // type and constness are typecheck's to judge.
+                    let mut arg: Option<(Expr, Pos)> = None;
+                    if self.match_tok(TokenKind::LParen, None).is_some() && !self.check(TokenKind::RParen, None) {
+                        let e = self.parse_expr();
+                        let end = e.range().end;
+                        arg = Some((e, end));
+                    }
+                    self.match_tok(TokenKind::RParen, None);
+                    let word = tok.text.as_str();
+                    let slot = if word == "color" { &mut anns.color } else { &mut anns.material };
+                    match arg {
+                        Some((_, end)) if slot.is_some() => {
+                            self.error(format!("duplicate @{word}"), tok.start, end);
+                        }
+                        Some((e, end)) => *slot = Some((e, self.make_range(tok.start, end))),
+                        None => {
+                            let example = if word == "color" { "@color(Color(1.0, 0.5, 0.0))" } else { "@material(Glow)" };
+                            self.error(format!("@{word} requires an argument: {example}"), tok.start, tok.end);
+                        }
                     }
                 }
                 "closed" => {
@@ -485,7 +596,7 @@ impl<'a> Parser<'a> {
                             )
                         } else {
                             format!(
-                                "unknown annotation '@{}'; expected @left, @right, @top, @bottom, @label, @closed, @invisible, @nofold, or @sliced",
+                                "unknown annotation '@{}'; expected @left, @right, @top, @bottom, @label, @color, @material, @closed, @invisible, @nofold, or @sliced",
                                 w
                             )
                         };

@@ -45,7 +45,7 @@ fn string_in_select_inlines_as_variant() {
         concat_count, 0,
         "string branches should inline, not wire through Concatenate; found {concat_count}"
     );
-    // Both branches inline as InputA/InputB data (branch→input slot is a
+    // Both branches inline as InputA/InputB data (branch->input slot is a
     // Select-gate convention, so check the set, not a fixed slot).
     let mut strs: Vec<String> = ["InputA", "InputB"]
         .iter()
@@ -300,10 +300,10 @@ fn constant_string_operand_bakes_into_each_concat() {
 fn string_into_bool_port_inserts_not_empty_compare() {
     // A string value assigned into a declared-`bool` var must route through
     // an inserted `CompareNotEqual(s, "")` gate — the language-level
-    // string → bool coercion means exactly `s != ""` (empty is false,
+    // string -> bool coercion means exactly `s != ""` (empty is false,
     // everything else true), NOT the game's native content-aware port
     // truthiness (where "0"/"false" are also falsy). The wire shape is:
-    //   s (MicrochipInput) → NE.InputA;  NE.InputB baked "";  NE.bOutput → Var_Set.Value
+    //   s (MicrochipInput) -> NE.InputA;  NE.InputB baked "";  NE.bOutput -> Var_Set.Value
     let r = compile("in s: string\nin t: exec\nvar v: bool = false\non t { v = s }");
     assert_no_errors(&r);
 
@@ -407,7 +407,7 @@ fn string_if_condition_inserts_not_empty_compare() {
     );
 }
 
-// ---- compile-time string → bool on literal-BAKE paths ----
+// ---- compile-time string -> bool on literal-BAKE paths ----
 //
 // Bare String literals never reach the wire choke point — they bake straight
 // into component data (var/array InitialValue, call-arg data fields). Each
@@ -419,7 +419,7 @@ fn string_if_condition_inserts_not_empty_compare() {
 
 #[test]
 fn var_bool_string_literal_init_bakes_bool() {
-    // "0" is non-empty → true under the `!= ""` law (native truthiness
+    // "0" is non-empty -> true under the `!= ""` law (native truthiness
     // would call it false — the exact divergence this pin guards).
     let r = compile("var v: bool = \"0\"");
     assert_no_errors(&r);
@@ -449,7 +449,7 @@ fn array_bool_string_literal_inits_bake_elementwise() {
     assert_eq!(
         arr.properties.get(&crate::intern::intern_static("InitialValue")),
         Some(&Literal::Array(vec![Literal::Bool(true), Literal::Bool(false)])),
-        "bool[] string inits must convert element-wise: \"x\" → true, \"\" → false"
+        "bool[] string inits must convert element-wise: \"x\" -> true, \"\" -> false"
     );
 }
 
@@ -458,7 +458,7 @@ fn select_string_literal_cond_bakes_bool() {
     // A bare-literal call argument bakes onto the gate's data field (never
     // a wire), so the conversion must happen in literal_for_property_port.
     // Bool(true) baked on bSelectB IS the truthy-side selection: "0" is
-    // non-empty → true under the `!= ""` law.
+    // non-empty -> true under the `!= ""` law.
     let r = compile("out y = Select(\"0\", 1, 2)");
     assert_no_errors(&r);
     let select = r

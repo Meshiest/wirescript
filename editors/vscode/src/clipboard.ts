@@ -40,10 +40,12 @@ export function clipboardCommands(
     ];
   }
   if (platform === "darwin") {
+    // An AppleScript string escapes `\` and `"` with a backslash.
+    const quoted = filePath.replace(/[\\"]/g, (c) => `\\${c}`);
     return [
       {
         cmd: "osascript",
-        args: ["-e", `set the clipboard to POSIX file "${filePath}"`],
+        args: ["-e", `set the clipboard to POSIX file "${quoted}"`],
         input: "",
       },
     ];

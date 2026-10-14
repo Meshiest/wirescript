@@ -7,18 +7,16 @@
 //! Run with: `cargo test -p wirescript --test pollution`
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+
+mod common;
 
 use wirescript::{
     compile,
-    compile::CompileInput,
     emit::{emit_brz, EmitOptions},
     ir::{Module, NodeId},
     layout::layout,
-    lower::{lower, FoldMode, LowerInput},
-    resolve::{FsLoader, resolve as ws_resolve},
-    template_cache::TemplateCache,
-    typecheck::typecheck,
+    lower::FoldMode,
+    resolve::FsLoader,
 };
 
 // ---------- helpers ----------
@@ -50,24 +48,11 @@ fn assert_no_errors(lr: &wirescript::lower::LowerResult) {
     );
 }
 
-/// Parse → typecheck → lower a source string (no file imports).
+/// The front end over a source string (no file imports).
 fn lower_source(src: &str) -> wirescript::lower::LowerResult {
-    let resolved = ws_resolve(src, "test.ws", &FsLoader);
-    let tc = typecheck(&resolved.ast, "test.ws", &wirescript::typecheck::CeSlotMap::default());
-    lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test.ws",
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        // Node-ID isolation tests use constant chip args as minimal fixtures;
-        // force folding off so the fold pass can't elide the chip instances.
-        fold_mode: FoldMode::ForceOff,
-        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
-    })
+    // Node-ID isolation tests use constant chip args as minimal fixtures;
+    // force folding off so the fold pass can't elide the chip instances.
+    wirescript::front_end(src, "test.ws", None, FoldMode::ForceOff, &FsLoader).lowered
 }
 
 /// Collect every chip sub-module from a module tree into a flat list of
@@ -269,12 +254,7 @@ let r4 = ALU(7, 8)
 let r5 = ALU(9, 10)
 out total = r1 + r2 + r3 + r4 + r5
 "#;
-    let result = compile(CompileInput {
-        source: src,
-        file: "test.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    });
+    let result = compile(common::input(src, "test.ws"));
     match result {
         Ok(cr) => {
             assert!(
@@ -321,8 +301,7 @@ on tick {
 
     // Must also emit valid BRZ.
     let layout_result = layout(&lr.module);
-    let template_cache = Arc::new(TemplateCache::new());
-    let brz = emit_brz(&lr.module, &layout_result, &EmitOptions::default(), &template_cache);
+    let brz = emit_brz(&lr.module, &Default::default(), &layout_result, &EmitOptions::default());
     assert!(brz.is_ok(), "BRZ emit failed: {:?}", brz.err());
     let brz_bytes = brz.unwrap();
     assert!(

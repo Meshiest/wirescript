@@ -75,25 +75,13 @@ fn assert_agrees(src: &str) {
 /// [`assert_agrees`] for `entry` importing the in-memory `deps`, each
 /// `(name, source)` loaded as `name.ws`.
 fn assert_agrees_multi(entry: &str, deps: &[(&str, &str)]) {
-    use crate::resolve::{MemLoader, resolve};
+    use crate::resolve::MemLoader;
     let loader = MemLoader {
         files: deps.iter().map(|(k, v)| (format!("{k}.ws"), v.to_string())).collect(),
     };
-    let resolved = resolve(entry, "test", &loader);
+    let crate::compile::FrontEnd { resolved, typecheck: tc, lowered: mut r, .. } =
+        crate::compile::front_end(entry, "test", None, FoldMode::ForceOff, &loader);
     assert!(resolved.diagnostics.is_empty(), "resolve diags: {:?}", resolved.diagnostics);
-    let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, "test");
-    let mut r = lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test",
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: FoldMode::ForceOff,
-        ce_slots: &ce_slots,
-    });
     r.diagnostics.extend(tc.diagnostics);
     let idents = tc.ident_decls;
     let mut sources: HashMap<String, &str> = HashMap::default();

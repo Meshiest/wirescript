@@ -3,8 +3,10 @@
 
 use brdb::IntoReader;
 use std::sync::Arc;
+
+mod common;
 use wirescript::{
-    CompileInput, EmitOptions, FoldMode, NestedCompiler, PrefabResolver, compile_to_world,
+    EmitOptions, NestedCompiler, PrefabResolver, compile_to_world,
 };
 
 /// Build a trivial single-brick prefab's `.brz` bytes to stand in for a
@@ -41,7 +43,7 @@ on start {
         ..Default::default()
     };
     let result = compile_to_world(
-        CompileInput { source: src, file: "test.ws", module_name: None, fold_mode: FoldMode::Auto },
+        common::input(src, "test.ws"),
         opts,
     )
     .expect("compile should succeed");
@@ -81,7 +83,7 @@ on start {
         ..Default::default()
     };
     let msg = match compile_to_world(
-        CompileInput { source: src, file: "test.ws", module_name: None, fold_mode: FoldMode::Auto },
+        common::input(src, "test.ws"),
         opts,
     ) {
         Ok(_) => panic!("missing .brz extension should fail"),
@@ -101,7 +103,7 @@ on start {
     // Default (disk) resolver against a nonexistent file: emit fails with a
     // clear error rather than silently dropping the reference.
     let msg = match compile_to_world(
-        CompileInput { source: src, file: "nonexistent.ws", module_name: None, fold_mode: FoldMode::Auto },
+        common::input(src, "nonexistent.ws"),
         EmitOptions::default(),
     ) {
         Ok(_) => panic!("missing prefab file should fail"),
@@ -123,12 +125,7 @@ fn nested_prefab_embeds_compiled_inner() {
     };
     let src = "in start: exec\non start { SpawnPrefab($```in q: exec```) }\n";
     let world = compile_to_world(
-        CompileInput {
-            source: src,
-            file: "test.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input(src, "test.ws"),
         opts,
     )
     .expect("compile should succeed")
@@ -141,7 +138,7 @@ fn nested_prefab_compiles_end_to_end_without_explicit_compiler() {
     // No caller-provided nested_compiler: the driver supplies a recursive one.
     let src = "in start: exec\non start { SpawnPrefab($```in q: exec\non q { }```) }\n";
     let world = compile_to_world(
-        CompileInput { source: src, file: "test.ws", module_name: None, fold_mode: FoldMode::Auto },
+        common::input(src, "test.ws"),
         EmitOptions::default(),
     )
     .expect("compile should succeed")
@@ -161,7 +158,7 @@ fn nested_prefab_depth_guard_trips() {
     // `expect_err` can't be used here — match instead, as the resolver tests
     // above do.
     let msg = match compile_to_world(
-        CompileInput { source: &src, file: "t.ws", module_name: None, fold_mode: FoldMode::Auto },
+        common::input(&src, "t.ws"),
         EmitOptions::default(),
     ) {
         Ok(_) => panic!("deeply nested prefab should fail"),
@@ -175,12 +172,7 @@ fn nested_prefab_brz_path_compiles_without_explicit_compiler() {
     // The public `.brz` entry (`compile`, used by the CLI / VS Code build) must
     // also supply a default nested compiler, not just the `.brz`-less World path.
     let src = "in start: exec\non start { SpawnPrefab($```in q: exec```) }\n";
-    let result = wirescript::compile(CompileInput {
-        source: src,
-        file: "test.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let result = wirescript::compile(common::input(src, "test.ws"))
     .expect("brz compile should succeed");
     // The emitted `.brz` embeds exactly one prefab (the compiled inner block).
     let reader = brdb::Brz::read_slice(&result.brz).unwrap().into_reader();

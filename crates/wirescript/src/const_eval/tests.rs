@@ -2036,3 +2036,26 @@ fn a_float_made_an_int_truncates_or_has_no_int() {
     assert_eq!(written_float(2147483648.0), "2147483648.0");
     assert_eq!(written_float(2.5), "2.5");
 }
+
+/// A call that leaves out a parameter with a default passes the default, as a
+/// lowered call does.
+#[test]
+fn a_const_mod_parameter_default_fills_an_omitted_argument() {
+    let src = "const mod scale(v: int, by: int = 2) -> int { return v * by }\nconst K = scale(5)\nconst L = scale(5, 3)\nconst M = scale(v = 4)\n";
+    assert_eq!(eval_ok(src, "K"), Literal::Int(10));
+    assert_eq!(eval_ok(src, "L"), Literal::Int(15));
+    assert_eq!(eval_ok(src, "M"), Literal::Int(8));
+}
+
+/// A mutating method takes its arguments by name too, as the method table
+/// spells them.
+#[test]
+fn a_const_mod_mutation_takes_named_arguments() {
+    let src = "const mod f() -> int[] { const t = [1, 2]\n t.push(value = 3)\n t.set(index = 0, value = 9)\n return t }";
+    assert_eq!(
+        eval_mod_call(src, &[]).unwrap(),
+        Literal::Array(vec![Literal::Int(9), Literal::Int(2), Literal::Int(3)])
+    );
+    let src = "const mod g() -> int { const m = { 1 => 10 }\n m.set(key = 2, value = 20)\n m.remove(key = 1)\n return 0 }";
+    assert_eq!(eval_mod_call(src, &[]).unwrap(), Literal::Int(0));
+}

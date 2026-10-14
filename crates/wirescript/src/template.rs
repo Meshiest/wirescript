@@ -33,7 +33,7 @@ pub struct TemplateBounds {
 /// template — captured from an enclosing scope.  These are listed in
 /// `external_refs` as `(original_name, original_id)` pairs.  When
 /// [`instantiate`][CompiledTemplate::instantiate] is called the caller passes a
-/// `captures` map `{ original_name → caller_node_id }` so that external wires
+/// `captures` map `{ original_name -> caller_node_id }` so that external wires
 /// are routed to the correct nodes in the merged graph rather than getting
 /// phantom fresh IDs.
 #[derive(Clone, Debug)]
@@ -78,7 +78,7 @@ impl CompiledTemplate {
         self.instantiate_with_map(prefix, captures).0
     }
 
-    /// Like [`instantiate`] but also returns the `old_id → new_id` mapping
+    /// Like [`instantiate`] but also returns the `old_id -> new_id` mapping
     /// so callers can remap PortRefs that reference template-internal nodes
     /// (e.g. exec chain entry/exit points).
     pub fn instantiate_with_map(
@@ -114,7 +114,7 @@ fn stamp_module(
     }
 
     // --- 3. Instantiate chip children FIRST, collecting each child's FULL
-    // (recursive) old→new id map. This module's wires can reference a child's
+    // (recursive) old->new id map. This module's wires can reference a child's
     // boundary nodes directly — a parent gate wires into a nested chip's
     // MicrochipInput, and a nested chip's MicrochipOutput feeds a parent
     // consumer. Those child IDs are not in `id_map` (they live in the child
@@ -249,6 +249,12 @@ fn stamp_module(
             node_id: remap(p.node_id),
             port: p.port,
         }),
+        // Remapped like `dynamic_labels`: the runtime styles shipped so far
+        // live on the root module only, so these are empty for a chip.
+        dynamic_colors: remap_hosts(&src.dynamic_colors, &remap),
+        dynamic_materials: remap_hosts(&src.dynamic_materials, &remap),
+        root_style: src.root_style.clone(),
+        value_names: Default::default(),
     };
     // Return this module's map PLUS all descendants' maps, so a caller
     // remapping boundary PortRefs (or a parent instantiation) can resolve
@@ -256,6 +262,13 @@ fn stamp_module(
     let mut full_map = id_map;
     full_map.extend(descendant_map);
     (module, full_map)
+}
+
+/// A host -> source map with both ends renamed by `remap`.
+fn remap_hosts(map: &HashMap<NodeId, PortRef>, remap: &impl Fn(NodeId) -> NodeId) -> HashMap<NodeId, PortRef> {
+    map.iter()
+        .map(|(host, port)| (remap(*host), PortRef { node_id: remap(port.node_id), port: port.port }))
+        .collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

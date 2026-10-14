@@ -8,6 +8,8 @@
 use wirescript::compile::{CompileError, CompileInput, FoldMode, compile_to_world, diagnostics_only};
 use wirescript::diagnostic::Severity;
 
+mod common;
+
 /// Two named chips (one nested inside the other, and one instantiated
 /// twice — so template instantiation is exercised), an anonymous chip, a
 /// chip that owns its own handler, and a chip reading an outer variable.
@@ -47,27 +49,16 @@ struct Shape {
     grids: usize,
     root_bricks: usize,
     wires: usize,
-    overlaps: usize,
     fan_in: usize,
 }
 
 fn build(prefix: &str) -> Shape {
     let source = format!("{prefix}{BODY}");
     let r = compile_to_world(
-        CompileInput {
-            source: &source,
-            file: "flat_emit.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input(&source, "flat_emit.ws"),
         wirescript::EmitOptions::default(),
     )
     .unwrap_or_else(|e| panic!("compile {prefix:?}: {e:?}"));
-
-    let mut overlaps = 0;
-    for bricks in std::iter::once(&r.world.bricks).chain(r.world.grids.iter().map(|(_, b)| b)) {
-        overlaps += overlapping_pairs(bricks);
-    }
 
     let mut seen: std::collections::HashMap<(usize, String, String), usize> =
         std::collections::HashMap::new();
@@ -89,38 +80,8 @@ fn build(prefix: &str) -> Shape {
         grids: r.world.grids.len(),
         root_bricks: r.world.bricks.len(),
         wires: r.world.wires.len(),
-        overlaps,
         fan_in,
     }
-}
-
-/// Brick pairs whose world-space AABBs intersect. Same scan as the
-/// `check_overlaps` example, which is the acceptance gate for this feature.
-fn overlapping_pairs(bricks: &[brdb::Brick]) -> usize {
-    let boxes: Vec<(brdb::Position, brdb::Position)> = bricks
-        .iter()
-        .map(|b| {
-            let (lo, hi) = b.local_bounds();
-            (b.position + lo, b.position + hi)
-        })
-        .collect();
-    let mut n = 0;
-    for i in 0..boxes.len() {
-        for j in (i + 1)..boxes.len() {
-            let (alo, ahi) = &boxes[i];
-            let (blo, bhi) = &boxes[j];
-            let separated = ahi.x <= blo.x
-                || bhi.x <= alo.x
-                || ahi.y <= blo.y
-                || bhi.y <= alo.y
-                || ahi.z <= blo.z
-                || bhi.z <= alo.z;
-            if !separated {
-                n += 1;
-            }
-        }
-    }
-    n
 }
 
 /// `world.grids` holds the child brick grids. Without `@flat` this program
@@ -150,9 +111,10 @@ fn flat_leaves_no_child_grid_under_any_layout() {
     }
 }
 
-/// The two failures the game reports as nothing at all.
+/// A fan-in the game reports as nothing at all. Emit refuses overlapping
+/// bricks itself, so a world that builds has none.
 #[test]
-fn flat_emits_no_overlaps_and_no_fan_in_under_any_layout() {
+fn flat_emits_no_fan_in_under_any_layout() {
     for prefix in [
         "",
         "@flat\n\n",
@@ -160,7 +122,6 @@ fn flat_emits_no_overlaps_and_no_fan_in_under_any_layout() {
         "@flat\n@layout(\"code\")\n\n",
     ] {
         let s = build(prefix);
-        assert_eq!(s.overlaps, 0, "{prefix:?} emitted overlapping bricks");
         assert_eq!(s.fan_in, 0, "{prefix:?} emitted fan-in wire targets");
     }
 }
@@ -172,12 +133,7 @@ fn flat_emits_no_overlaps_and_no_fan_in_under_any_layout() {
 fn flat_emits_one_microchip_brick_for_the_root_shell_only() {
     let source = format!("@flat\n\n{BODY}");
     let r = compile_to_world(
-        CompileInput {
-            source: &source,
-            file: "flat_emit.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input(&source, "flat_emit.ws"),
         wirescript::EmitOptions::default(),
     )
     .expect("compile");
@@ -227,12 +183,7 @@ const FLAT_OVER_A_LOOP: &str = "@flat\n\nvar t: int = 0\non ReadBrickGrid() {\n 
 /// `just check` (`diagnostics_only`) must report WS080 for this program.
 #[test]
 fn flat_over_a_loop_is_ws080_in_diagnostics_only() {
-    let diags = diagnostics_only(CompileInput {
-        source: FLAT_OVER_A_LOOP,
-        file: "flat_emit.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    });
+    let diags = diagnostics_only(common::input(FLAT_OVER_A_LOOP, "flat_emit.ws"), &wirescript::FsLoader);
     assert!(
         diags
             .iter()
@@ -247,12 +198,7 @@ fn flat_over_a_loop_is_ws080_in_diagnostics_only() {
 #[test]
 fn flat_over_a_loop_fails_compile_to_world() {
     let result = compile_to_world(
-        CompileInput {
-            source: FLAT_OVER_A_LOOP,
-            file: "flat_emit.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input(FLAT_OVER_A_LOOP, "flat_emit.ws"),
         wirescript::EmitOptions::default(),
     );
     let Err(CompileError::HasErrors(diags)) = result else {
@@ -270,12 +216,7 @@ fn flat_over_a_loop_fails_compile_to_world() {
 #[test]
 fn the_same_loop_without_flat_compiles_clean() {
     let source = FLAT_OVER_A_LOOP.replacen("@flat\n\n", "", 1);
-    let diags = diagnostics_only(CompileInput {
-        source: &source,
-        file: "flat_emit.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    });
+    let diags = diagnostics_only(common::input(&source, "flat_emit.ws"), &wirescript::FsLoader);
     assert!(
         diags.iter().all(|d| d.severity != Severity::Error),
         "the loop alone (no @flat) must compile clean: {diags:?}"
@@ -291,7 +232,7 @@ fn ws080_count(source: &str) -> usize {
         file: "flat_emit.ws",
         module_name: None,
         fold_mode: FoldMode::Auto,
-    })
+    }, &wirescript::FsLoader)
     .into_iter()
     .filter(|d| d.code == "WS080")
     .count()

@@ -8,22 +8,16 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
+use wirescript::analysis::text::Ruler;
 use wirescript::analysis::{
     asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
-    collection_kind, cursor_byte_offset, field_name_at, fill_match_arms_at, fill_record_at, find_asset_refs, find_enclosing_call, find_name_range,
-    format_wirescript, hover_at, member_receiver_at, named_arg_value, param_names,
-    prepare_rename_at, receiver_methods, record_field_names, references_at, references_to_export,
-    rename_edit_text, resolve_symbol, semantic_tokens, swizzle_fields, type_str,
-    user_receiver_methods, word_at, AssetRef, CollectionKind, CrossFile, InlayHintKind, RefNs,
-    RefSite, RefTarget, ResourceEstimate, SemTokenKind, SymbolDef, TextRange, TypeMap,
-    VarReadContextMap, byte_to_char_col, char_col_to_byte, char_col_to_utf16_col, line_text,
-    utf16_col_to_char_col,
+    cursor_byte_offset, field_name_at, fill_match_arms_at, fill_record_at, find_asset_refs,
+    find_name_range, format_wirescript, hover_at, prepare_rename_at, references_at,
+    references_to_export, rename_edit_text, semantic_tokens, word_at, AssetRef, CrossFile,
+    InlayHintKind, RefNs, RefSite, RefTarget, ResourceEstimate, SemTokenKind, SymbolDef, TextRange,
+    TypeMap, VarReadContextMap,
 };
 use wirescript::ast::{ImportKind, LetBinding, Script, TopDecl};
-use wirescript::catalog::arrays::ARRAY_METHODS;
-use wirescript::catalog::maps::MAP_METHODS;
-use wirescript::catalog::calls::calls;
-use wirescript::catalog::events::events;
 use wirescript::lexer::KEYWORDS;
 use wirescript::resolve::{resolve, resolve_parsed, FileLoader, FsLoader};
 use wirescript::typecheck::typecheck_with_inference;
@@ -44,50 +38,19 @@ impl tower_lsp::lsp_types::notification::Notification for CompileProgressNotific
 
 /// Editor position -> the 0-based char column `analysis::` expects.
 fn lsp_col_to_char(source: &str, line: usize, character: u32) -> usize {
-    utf16_col_to_char_col(line_text(source, line), character as usize)
+    wirescript::analysis::text::editor_col_to_char(source, line, character as usize)
 }
 
-/// A 0-based char column from `analysis::` -> the editor's UTF-16 column.
-///
-/// A column past the end of the line it names is left alone rather than
-/// clamped: the two conventions agree for everything below U+10000, so passing
-/// it through is right whenever the line could not be read (a closed file that
-/// has since changed on disk), while clamping would collapse it onto the line's
-/// end.
-fn char_col_to_lsp(source: &str, line: usize, col: usize) -> u32 {
-    let l = line_text(source, line);
-    if l.chars().count() < col {
-        return col as u32;
-    }
-    char_col_to_utf16_col(l, col) as u32
+/// [`wirescript::analysis::text::char_col_to_editor`] as an LSP position's
+/// `character`.
+fn char_col_to_lsp(ruler: &Ruler, line: usize, col: usize) -> u32 {
+    ruler.char_col_to_editor(line, col) as u32
 }
 
-/// A byte offset within a line (what the raw-text scanners in this file, and
-/// the lexer's `Pos::col`, produce) -> the editor's UTF-16 column.
-fn byte_off_to_lsp(source: &str, line: usize, byte: usize) -> u32 {
-    let l = line_text(source, line);
-    if l.len() < byte {
-        return byte as u32;
-    }
-    char_col_to_utf16_col(l, byte_to_char_col(l, byte)) as u32
-}
-
-/// [`byte_off_to_lsp`] against a prebuilt [`LineIndex`].
-///
-/// Identical arithmetic; only the line lookup differs. Worth building the
-/// index whenever one request converts more than a handful of ranges, because
-/// the plain version rescans from the top of the file every call.
-fn byte_off_to_lsp_indexed(
-    idx: &wirescript::analysis::text::LineIndex,
-    source: &str,
-    line: usize,
-    byte: usize,
-) -> u32 {
-    let l = idx.line_text(source, line);
-    if l.len() < byte {
-        return byte as u32;
-    }
-    char_col_to_utf16_col(l, byte_to_char_col(l, byte)) as u32
+/// [`wirescript::analysis::text::byte_col_to_editor`] as an LSP position's
+/// `character`.
+fn byte_off_to_lsp(ruler: &Ruler, line: usize, byte: usize) -> u32 {
+    ruler.byte_col_to_editor(line, byte) as u32
 }
 
 /// Source text for `uri`, preferring the open document and falling back to
@@ -104,36 +67,48 @@ fn source_for<'a>(docs: &'a HashMap<Url, DocState>, uri: &Url) -> std::borrow::C
     }
 }
 
-fn pos_to_lsp(source: &str, p: wirescript::diagnostic::Pos) -> Position {
+fn pos_to_lsp(ruler: &Ruler, p: wirescript::diagnostic::Pos) -> Position {
     let line = p.line.saturating_sub(1);
     Position {
         line: line as u32,
         // `Pos::col` is a 1-based byte column.
-        character: byte_off_to_lsp(source, line as usize, p.col.saturating_sub(1) as usize),
+        character: byte_off_to_lsp(ruler, line as usize, p.col.saturating_sub(1) as usize),
     }
 }
 
-fn range_to_lsp(source: &str, r: &wirescript::diagnostic::SourceRange) -> Range {
+fn range_to_lsp(ruler: &Ruler, r: &wirescript::diagnostic::SourceRange) -> Range {
     Range {
-        start: pos_to_lsp(source, r.start),
-        end: pos_to_lsp(source, r.end),
+        start: pos_to_lsp(ruler, r.start),
+        end: pos_to_lsp(ruler, r.end),
     }
 }
 
 /// A [`TextRange`] carries 0-based BYTE columns, `ref_site_to_text_range`
 /// builds it straight from a `SourceRange`, not the char columns the rest of
 /// `analysis::` returns.
-fn text_range_to_lsp(source: &str, r: &TextRange) -> Range {
+fn text_range_to_lsp(ruler: &Ruler, r: &TextRange) -> Range {
     Range {
         start: Position {
             line: r.start_line as u32,
-            character: byte_off_to_lsp(source, r.start_line, r.start_col),
+            character: byte_off_to_lsp(ruler, r.start_line, r.start_col),
         },
         end: Position {
             line: r.end_line as u32,
-            character: byte_off_to_lsp(source, r.end_line, r.end_col),
+            character: byte_off_to_lsp(ruler, r.end_line, r.end_col),
         },
     }
+}
+
+/// The editor range of each result, in order, reading each file (from disk
+/// when it is not open) and indexing its lines once however many results it
+/// holds.
+fn ranges_in_files(docs: &HashMap<Url, DocState>, refs: &[(Url, TextRange)]) -> Vec<Range> {
+    let mut sources: HashMap<&Url, std::borrow::Cow<str>> = HashMap::new();
+    for (u, _) in refs {
+        sources.entry(u).or_insert_with(|| source_for(docs, u));
+    }
+    let rulers: HashMap<&Url, Ruler> = sources.iter().map(|(u, s)| (*u, Ruler::new(s))).collect();
+    refs.iter().map(|(u, r)| text_range_to_lsp(&rulers[u], r)).collect()
 }
 
 /// One [`RefSite`] converted to the LSP-facing [`TextRange`] the edit path
@@ -404,7 +379,7 @@ fn insert_quickfix(
 ) -> CodeActionOrCommand {
     let at = Position {
         line: line as u32,
-        character: char_col_to_lsp(source, line, col),
+        character: char_col_to_lsp(&Ruler::new(source), line, col),
     };
     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
     changes.insert(
@@ -479,13 +454,15 @@ fn collect_atom_references(docs: &HashMap<Url, DocState>, uri: &Url, name: &str)
     let mut out: Vec<Location> = Vec::new();
     for (doc_uri, doc_state) in docs.iter() {
         let file = uri_to_file_string(doc_uri);
+        let ruler = Ruler::new(&doc_state.source);
         for r in wirescript::analysis::atom_references(&doc_state.source, &file, name) {
-            out.push(Location { uri: doc_uri.clone(), range: range_to_lsp(&doc_state.source, &r) });
+            out.push(Location { uri: doc_uri.clone(), range: range_to_lsp(&ruler, &r) });
         }
     }
     for_each_unopened_sibling(docs, uri, None, |entry_uri, file, src| {
+        let ruler = Ruler::new(&src);
         for r in wirescript::analysis::atom_references(&src, &file, name) {
-            out.push(Location { uri: entry_uri.clone(), range: range_to_lsp(&src, &r) });
+            out.push(Location { uri: entry_uri.clone(), range: range_to_lsp(&ruler, &r) });
         }
     });
     out
@@ -530,45 +507,21 @@ fn scan_prefab_paths(uri: &Url) -> Vec<String> {
     out
 }
 
-/// Resolve a prefab file reference path (the part after `$`) to a filesystem
-/// path, the same way `disk_prefab_resolver` does: `./rel` and bare `rel`
-/// resolve against the referencing file's directory; a leading `/` is absolute.
-fn resolve_prefab_path(entry_file: &str, path: &str) -> std::path::PathBuf {
-    use std::path::{Path, PathBuf};
-    let base = Path::new(entry_file).parent();
-    if let Some(rel) = path.strip_prefix("./") {
-        base.map_or_else(|| PathBuf::from(rel), |b| b.join(rel))
-    } else if path.starts_with('/') {
-        PathBuf::from(path)
-    } else {
-        base.map_or_else(|| PathBuf::from(path), |b| b.join(path))
-    }
-}
-
-/// LSP diagnostics for prefab file references that don't resolve: a missing
-/// file on disk, or a ref without the required `.brz`/`.ws` extension.
+/// LSP diagnostics for `.brz` prefab file references with no file on disk.
 fn prefab_ref_diagnostics(source: &str, file: &str) -> Vec<Diagnostic> {
     let mut out = Vec::new();
+    let ruler = Ruler::new(source);
     for r in find_asset_refs(source).into_iter().filter(AssetRef::is_file) {
         let range = Range {
-            start: Position { line: r.line as u32, character: char_col_to_lsp(source, r.line, r.start_col) },
-            end: Position { line: r.line as u32, character: char_col_to_lsp(source, r.line, r.end_col) },
+            start: Position { line: r.line as u32, character: char_col_to_lsp(&ruler, r.line, r.start_col) },
+            end: Position { line: r.line as u32, character: char_col_to_lsp(&ruler, r.line, r.end_col) },
         };
-        if !r.path.ends_with(".brz") && !r.path.ends_with(".ws") {
-            out.push(Diagnostic {
-                range,
-                severity: Some(DiagnosticSeverity::WARNING),
-                code: Some(NumberOrString::String("prefab-ext".into())),
-                source: Some("wirescript".into()),
-                message: format!(
-                    "prefab reference `${}` must end in `.brz` (a prebuilt archive) or `.ws` (a source file)",
-                    r.path
-                ),
-                ..Default::default()
-            });
+        // Typecheck reports a bad extension and a `.ws` source it cannot read
+        // (WS019); a `.brz` is only read at compile time.
+        if !r.path.ends_with(".brz") {
             continue;
         }
-        let resolved = resolve_prefab_path(file, &r.path);
+        let resolved = wirescript::compile::resolve_prefab_path(file, &r.path);
         if !resolved.is_file() {
             out.push(Diagnostic {
                 range,
@@ -635,9 +588,9 @@ impl SplitDiagnostics {
     }
 }
 
-fn to_lsp_diagnostic(source: &str, d: &wirescript::diagnostic::Diagnostic) -> Diagnostic {
+fn to_lsp_diagnostic(ruler: &Ruler, d: &wirescript::diagnostic::Diagnostic) -> Diagnostic {
     Diagnostic {
-        range: range_to_lsp(source, &d.range),
+        range: range_to_lsp(ruler, &d.range),
         severity: Some(match d.severity {
             wirescript::diagnostic::Severity::Error => DiagnosticSeverity::ERROR,
             wirescript::diagnostic::Severity::Warning => DiagnosticSeverity::WARNING,
@@ -672,10 +625,14 @@ fn split_by_file<'a>(
         .map(|u| FsLoader.canonical_path(&uri_to_file_string(u), "."))
         .collect();
     let mut split = SplitDiagnostics::default();
+    let ruler = Ruler::new(source);
+    // Each imported file is read once, and its lines indexed once, after the
+    // diagnostics naming it are gathered.
     let mut foreign_src: HashMap<Url, Option<String>> = HashMap::new();
+    let mut foreign: Vec<(Url, &wirescript::diagnostic::Diagnostic)> = Vec::new();
     for d in diags {
         if &*d.range.file == file || d.range.file.is_empty() {
-            split.own.push(to_lsp_diagnostic(source, d));
+            split.own.push(to_lsp_diagnostic(&ruler, d));
             continue;
         }
         let Ok(other) = Url::from_file_path(&*d.range.file) else {
@@ -684,15 +641,16 @@ fn split_by_file<'a>(
         if open_paths.contains(&FsLoader.canonical_path(&d.range.file, ".")) {
             continue;
         }
-        let text = foreign_src
+        foreign_src
             .entry(other.clone())
             .or_insert_with(|| std::fs::read_to_string(&*d.range.file).ok());
-        let Some(text) = text.as_deref() else { continue };
-        split
-            .foreign
-            .entry(other)
-            .or_default()
-            .push(to_lsp_diagnostic(text, d));
+        foreign.push((other, d));
+    }
+    let rulers: HashMap<&Url, Ruler> =
+        foreign_src.iter().filter_map(|(u, text)| Some((u, Ruler::new(text.as_deref()?)))).collect();
+    for (other, d) in foreign {
+        let Some(ruler) = rulers.get(&other) else { continue };
+        split.foreign.entry(other).or_default().push(to_lsp_diagnostic(ruler, d));
     }
     split
 }
@@ -709,9 +667,11 @@ struct Backend {
     /// registration, read from its initialize capabilities. Set once in
     /// `initialize`, read once in `initialized`.
     watch_files: std::sync::atomic::AtomicBool,
-    /// Bumped by every `did_change`. A debounced handler analyses only if it
-    /// still holds the newest value when its wait ends, see [`DEBOUNCE`].
-    change_gen: std::sync::atomic::AtomicU64,
+    /// Per document, a count of its `did_change`s and the text of the newest.
+    /// A debounced handler analyses only if its document's count is still the
+    /// one it took when its wait ends, see [`DEBOUNCE`]; meanwhile an analysis
+    /// of an importer reads the newest text rather than the last analysed.
+    changes: Mutex<HashMap<Url, (u64, String)>>,
 }
 
 /// How long `did_change` waits before analysing.
@@ -789,7 +749,7 @@ impl Backend {
                         .map(|(u, d)| {
                             (
                                 FsLoader.canonical_path(&uri_to_file_string(u), "."),
-                                d.source.clone(),
+                                self.newest_text(u).unwrap_or_else(|| d.source.clone()),
                             )
                         })
                         .collect()
@@ -890,7 +850,7 @@ impl Backend {
                         file: &file_owned,
                         module_name: None,
                         fold_mode: FoldMode::Auto,
-                    })
+                    }, &wirescript::FsLoader)
                 })
                 .await;
                 (full.unwrap_or_default(), None)
@@ -909,7 +869,7 @@ impl Backend {
                         file: &file_owned,
                         module_name: None,
                         fold_mode: FoldMode::Auto,
-                    })
+                    }, &wirescript::FsLoader)
                 })
                 .await;
                 (full.unwrap_or_default(), Some(e.to_string()))
@@ -942,6 +902,20 @@ impl Backend {
     /// affect — i.e. those importing it (transitively) — rather than every open
     /// document, so a keystroke in one file doesn't cost (open tabs + 1) full
     /// analyses for every other open file.
+    /// The text of `uri`'s newest change, which its own debounced handler
+    /// may not have analysed yet.
+    fn newest_text(&self, uri: &Url) -> Option<String> {
+        self.changes.lock().ok()?.get(uri).map(|(_, text)| text.clone())
+    }
+
+    /// Drop what `did_change` recorded for `uri`, when it is opened afresh or
+    /// closed. A handler still waiting then finds no count and returns.
+    fn forget_changes(&self, uri: &Url) {
+        if let Ok(mut changes) = self.changes.lock() {
+            changes.remove(uri);
+        }
+    }
+
     async fn reanalyze_other_docs(&self, changed_uri: &Url) {
         let changed = FsLoader.canonical_path(&uri_to_file_string(changed_uri), ".");
         let others: Vec<(Url, String)> = {
@@ -952,7 +926,7 @@ impl Backend {
             docs.iter()
                 .filter(|(uri, _)| *uri != changed_uri)
                 .filter(|(_, doc)| doc.imported_files.iter().any(|p| p == &changed))
-                .map(|(uri, doc)| (uri.clone(), doc.source.clone()))
+                .map(|(uri, doc)| (uri.clone(), self.newest_text(uri).unwrap_or_else(|| doc.source.clone())))
                 .collect()
         };
         for (uri, source) in others {
@@ -1109,20 +1083,21 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let file = uri_to_file_string(uri);
+        let ruler = Ruler::new(&doc.source);
         // Clickable links for prefab file references that exist on disk.
         let links: Vec<DocumentLink> = find_asset_refs(&doc.source)
             .into_iter()
             .filter(AssetRef::is_file)
             .filter_map(|r| {
-                let target = resolve_prefab_path(&file, &r.path);
+                let target = wirescript::compile::resolve_prefab_path(&file, &r.path);
                 if !target.is_file() {
                     return None;
                 }
                 let target_uri = Url::from_file_path(&target).ok()?;
                 Some(DocumentLink {
                     range: Range {
-                        start: Position { line: r.line as u32, character: char_col_to_lsp(&doc.source, r.line, r.start_col) },
-                        end: Position { line: r.line as u32, character: char_col_to_lsp(&doc.source, r.line, r.end_col) },
+                        start: Position { line: r.line as u32, character: char_col_to_lsp(&ruler, r.line, r.start_col) },
+                        end: Position { line: r.line as u32, character: char_col_to_lsp(&ruler, r.line, r.end_col) },
                     },
                     target: Some(target_uri),
                     tooltip: Some("Open prefab file".into()),
@@ -1172,6 +1147,7 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        self.forget_changes(&params.text_document.uri);
         let split = self.analyze(&params.text_document.uri, &params.text_document.text);
         self.publish_split(&params.text_document.uri, split).await;
         // The file just opened may be one an already-open importer had been
@@ -1186,14 +1162,19 @@ impl LanguageServer for Backend {
             return;
         };
         // Coalesce a burst of keystrokes: wait, then analyse only if no newer
-        // change arrived meanwhile. A superseded handler returns without
-        // touching the front end at all.
-        let generation = self
-            .change_gen
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            + 1;
+        // change to this document arrived meanwhile. A superseded handler
+        // returns without touching the front end at all.
+        let generation = match self.changes.lock() {
+            Ok(mut changes) => {
+                let entry = changes.entry(uri.clone()).or_default();
+                entry.0 += 1;
+                entry.1 = change.text.clone();
+                entry.0
+            }
+            Err(_) => return,
+        };
         tokio::time::sleep(DEBOUNCE).await;
-        if self.change_gen.load(std::sync::atomic::Ordering::SeqCst) != generation {
+        if self.changes.lock().map_or(true, |changes| changes.get(&uri).map(|c| c.0) != Some(generation)) {
             return;
         }
         let split = self.analyze(&uri, &change.text);
@@ -1226,6 +1207,7 @@ impl LanguageServer for Backend {
         if let Ok(mut docs) = self.docs.lock() {
             docs.remove(&uri);
         }
+        self.forget_changes(&uri);
         // Clear what this file was showing. Diagnostics belong to the server
         // until it says otherwise, so dropping the document without publishing
         // an empty set left every marker on screen for the rest of the session.
@@ -1247,15 +1229,19 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position.text_document.uri;
 
         let prefab_paths = scan_prefab_paths(uri);
+        // The keystroke that triggered this request (`$`, `/`) is usually still
+        // waiting out `did_change`'s debounce, so `doc.source` lacks it.
+        let newest = self.newest_text(uri);
         let items = match self.docs.lock() {
             Ok(docs) => match docs.get(uri) {
                 Some(doc) => {
-                    let col = lsp_col_to_char(&doc.source, line, pos.character);
+                    let source = newest.as_deref().unwrap_or(&doc.source);
+                    let col = lsp_col_to_char(source, line, pos.character);
                     // Inside a `$```…``` ` nested-prefab block, complete against
                     // the INNER program so the outer file's context (SpawnPrefab
                     // params, outer symbols) doesn't leak into the isolated block.
                     if let Some((inner, il, ic)) =
-                        nested_block_at(&doc.source, &uri_to_file_string(uri), line, col)
+                        nested_block_at(source, &uri_to_file_string(uri), line, col)
                     {
                         wirescript::on_big_stack(|| {
                             let resolved = resolve(&inner, "nested", &FsLoader);
@@ -1268,7 +1254,7 @@ impl LanguageServer for Backend {
                             build_completions(&inner, &syms, il, ic, &[])
                         })
                     } else {
-                        build_completions(&doc.source, &doc.symbols, line, col, &prefab_paths)
+                        build_completions(source, &doc.symbols, line, col, &prefab_paths)
                     }
                 }
                 None => build_completions("", &[], line, raw_col, &prefab_paths),
@@ -1428,10 +1414,10 @@ impl LanguageServer for Backend {
         if let Ok(docs) = self.docs.lock() {
             if let Some(doc) = docs.get(uri) {
                 let col = lsp_col_to_char(&doc.source, line, pos.character);
-                // `$./file.brz` prefab reference → jump to the referenced file.
+                // `$./file.brz` prefab reference -> jump to the referenced file.
                 if let Some(r) = asset_ref_at(&doc.source, line, col) {
                     if r.is_file() {
-                        let target = resolve_prefab_path(&uri_to_file_string(uri), &r.path);
+                        let target = wirescript::compile::resolve_prefab_path(&uri_to_file_string(uri), &r.path);
                         if let Ok(target_uri) = Url::from_file_path(&target) {
                             if target.is_file() {
                                 return Ok(Some(GotoDefinitionResponse::Scalar(Location {
@@ -1445,7 +1431,7 @@ impl LanguageServer for Backend {
                     return Ok(None);
                 }
 
-                // Type field → show all references. A cursor on a record FIELD
+                // Type field -> show all references. A cursor on a record FIELD
                 // NAME is deliberately excluded: it must fall through to the
                 // `definition_at` field-resolution path below, not resolve to
                 // the enclosing `type X = {…}` binding (whose coarse range spans
@@ -1465,10 +1451,8 @@ impl LanguageServer for Backend {
                         if !refs.is_empty() {
                             let locations: Vec<Location> = refs
                                 .iter()
-                                .map(|(u, r)| Location {
-                                    uri: u.clone(),
-                                    range: text_range_to_lsp(&source_for(&docs, u), r),
-                                })
+                                .zip(ranges_in_files(&docs, &refs))
+                                .map(|((u, _), range)| Location { uri: u.clone(), range })
                                 .collect();
                             return Ok(Some(GotoDefinitionResponse::Array(locations)));
                         }
@@ -1490,6 +1474,7 @@ impl LanguageServer for Backend {
                         .and_then(|f| Url::from_file_path(f).ok())
                         .unwrap_or_else(|| uri.clone());
                     let target_src = source_for(&docs, &target_uri);
+                    let target_src = Ruler::new(&target_src);
                     return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                         uri: target_uri.clone(),
                         range: Range {
@@ -1535,10 +1520,8 @@ impl LanguageServer for Backend {
                     let refs = collect_references_across_files(&docs, uri, &target, &current_sites);
                     let locations: Vec<Location> = refs
                         .iter()
-                        .map(|(u, r)| Location {
-                            uri: u.clone(),
-                            range: text_range_to_lsp(&source_for(&docs, u), r),
-                        })
+                        .zip(ranges_in_files(&docs, &refs))
+                        .map(|((u, _), range)| Location { uri: u.clone(), range })
                         .collect();
                     return Ok(Some(locations));
                 }
@@ -1563,7 +1546,7 @@ impl LanguageServer for Backend {
                     prepare_rename_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
                 {
                     return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-                        range: range_to_lsp(&doc.source, &range),
+                        range: range_to_lsp(&Ruler::new(&doc.source), &range),
                         placeholder,
                     }));
                 }
@@ -1591,9 +1574,9 @@ impl LanguageServer for Backend {
                     let refs = collect_references_across_files(&docs, uri, &target, &current_sites);
 
                     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-                    for (file_uri, r) in &refs {
+                    for ((file_uri, r), range) in refs.iter().zip(ranges_in_files(&docs, &refs)) {
                         changes.entry(file_uri.clone()).or_default().push(TextEdit {
-                            range: text_range_to_lsp(&source_for(&docs, file_uri), r),
+                            range,
                             new_text: rename_edit_text(r, &target.name, new_name),
                         });
                     }
@@ -1651,7 +1634,7 @@ impl LanguageServer for Backend {
         let spans = semantic_tokens(&doc.pre_resolve_ast);
         // One index for the whole pass: this loop converts two columns per
         // token, and the scanning conversion is O(offset) each time.
-        let idx = wirescript::analysis::text::LineIndex::new(&doc.source);
+        let ruler = Ruler::new(&doc.source);
         let mut toks: Vec<Tok> = Vec::with_capacity(spans.len());
         for span in &spans {
             // A coarse span (a whole-declaration/whole-type-expr range) must
@@ -1677,16 +1660,14 @@ impl LanguageServer for Backend {
             // before. A span crossing lines has no single line to measure in;
             // no name token does, so the byte width stands in.
             let line = range.start.line.saturating_sub(1);
-            let start_char = byte_off_to_lsp_indexed(
-                &idx,
-                &doc.source,
+            let start_char = byte_off_to_lsp(
+                &ruler,
                 line as usize,
                 range.start.col.saturating_sub(1) as usize,
             );
             let length = if range.start.line == range.end.line {
-                byte_off_to_lsp_indexed(
-                    &idx,
-                    &doc.source,
+                byte_off_to_lsp(
+                    &ruler,
                     line as usize,
                     range.end.col.saturating_sub(1) as usize,
                 )
@@ -1870,14 +1851,7 @@ impl LanguageServer for Backend {
                     self.client
                         .log_message(
                             MessageType::ERROR,
-                            format!(
-                                "[compile]   {}:{}:{} {} {}",
-                                wirescript::diagnostic::display_path(&d.range.file),
-                                d.range.start.line,
-                                d.range.start.col,
-                                d.code,
-                                d.message
-                            ),
+                            format!("[compile]   {} {} {}", d.location(), d.code, d.message),
                         )
                         .await;
                 }
@@ -1924,14 +1898,7 @@ impl LanguageServer for Backend {
             self.client
                 .log_message(
                     MessageType::WARNING,
-                    format!(
-                        "[compile]   {}:{}:{} {} {}",
-                        wirescript::diagnostic::display_path(&d.range.file),
-                        d.range.start.line,
-                        d.range.start.col,
-                        d.code,
-                        d.message
-                    ),
+                    format!("[compile]   {} {} {}", d.location(), d.code, d.message),
                 )
                 .await;
         }
@@ -1961,12 +1928,13 @@ impl LanguageServer for Backend {
                     &doc.type_map,
                     &uri_to_file_string(uri),
                 );
+                let ruler = Ruler::new(&doc.source);
                 let lsp_hints: Vec<InlayHint> = hints
                     .into_iter()
                     .map(|h| InlayHint {
                         position: Position {
                             line: h.line as u32,
-                            character: char_col_to_lsp(&doc.source, h.line, h.col),
+                            character: char_col_to_lsp(&ruler, h.line, h.col),
                         },
                         label: InlayHintLabel::String(h.label),
                         kind: Some(match h.kind {
@@ -2042,7 +2010,7 @@ async fn main() {
         docs: Mutex::new(HashMap::new()),
         foreign_diags: Mutex::new(HashMap::new()),
         watch_files: std::sync::atomic::AtomicBool::new(false),
-        change_gen: std::sync::atomic::AtomicU64::new(0),
+        changes: Mutex::new(HashMap::new()),
     });
     // Above tower-lsp's default of 4. A debounced `did_change` holds its slot
     // while it waits (see `DEBOUNCE`), so with the default a burst of five
@@ -2052,260 +2020,6 @@ async fn main() {
         .concurrency_level(32)
         .serve(service)
         .await;
-}
-
-/// Completions for `receiver.` — array methods, var fields, record fields, or
-/// the receiver methods valid for a typed value. Returns only the members of the
-/// receiver (possibly empty); it never falls through to the global
-/// keyword/function list, so e.g. a `string` receiver shows only string methods.
-fn member_completions(
-    var_name: &str,
-    symbols: &[SymbolDef],
-    source: &str,
-    line: usize,
-    col: usize,
-) -> Vec<CompletionItem> {
-    let mut items = Vec::new();
-
-    // A component reference: its properties and `Remove`.
-    if let Some(found) = resolve_symbol(symbols, source, var_name, line, col)
-        .and_then(|s| s.ty.as_deref())
-        .and_then(wirescript::analysis::component_member_completions)
-    {
-        return found
-            .into_iter()
-            .map(|(label, detail)| CompletionItem {
-                kind: Some(if label == "Remove" { CompletionItemKind::METHOD } else { CompletionItemKind::PROPERTY }),
-                label,
-                detail: Some(detail),
-                ..Default::default()
-            })
-            .collect();
-    }
-
-    let enum_registry = enum_registry_from_source(source);
-
-    // `arr[i].` — an indexed read, not the array itself. Its members are the
-    // array-get gate's outputs (the element `Value` and the `OutOfBounds`
-    // flag), never the array's methods.
-    if let Some(base) = var_name.strip_suffix("[]") {
-        let sym = resolve_symbol(symbols, source, base, line, col);
-        let elem = sym
-            .and_then(|s| s.ty.as_deref())
-            .and_then(|t| t.strip_suffix("[]"))
-            .unwrap_or("");
-        for (name, ty) in [("Value", elem), ("OutOfBounds", "bool")] {
-            items.push(CompletionItem {
-                label: name.to_string(),
-                kind: Some(CompletionItemKind::FIELD),
-                detail: Some(if ty.is_empty() {
-                    "field".to_string()
-                } else {
-                    format!("{name}: {ty}")
-                }),
-                insert_text: Some(name.to_string()),
-                ..Default::default()
-            });
-        }
-        return items;
-    }
-
-    let sym = resolve_symbol(symbols, source, var_name, line, col);
-
-    // Field name (record field / swizzle component) completion item. Declared
-    // ahead of the bare enum-type receiver check below so that check's bare-
-    // variant fallback can also reach `push_type_members` (which closes over
-    // `field_item`).
-    let field_item = |name: String| CompletionItem {
-        label: name.clone(),
-        kind: Some(CompletionItemKind::FIELD),
-        detail: Some("field".to_string()),
-        insert_text: Some(name),
-        ..Default::default()
-    };
-    // Method + swizzle members valid for a typed value: an enum-typed value's
-    // `.Discriminant`, swizzle fields, builtin receiver-methods, then
-    // in-scope user `self`-mods whose receiver matches.
-    let push_type_members = |ty: &str, items: &mut Vec<CompletionItem>| {
-        if enum_registry.editor_lookup(ty).is_some() {
-            items.push(CompletionItem {
-                label: "Discriminant".to_string(),
-                kind: Some(CompletionItemKind::FIELD),
-                detail: Some(format!("{ty} discriminant (int)")),
-                insert_text: Some("Discriminant".to_string()),
-                ..Default::default()
-            });
-        }
-        for f in swizzle_fields(ty) {
-            items.push(field_item(f.to_string()));
-        }
-        for (name, sig) in receiver_methods(ty) {
-            items.push(CompletionItem {
-                label: name.to_string(),
-                kind: Some(CompletionItemKind::METHOD),
-                detail: Some(sig),
-                ..Default::default()
-            });
-        }
-        for (name, sig) in user_receiver_methods(ty, symbols) {
-            items.push(CompletionItem {
-                label: name.clone(),
-                kind: Some(CompletionItemKind::METHOD),
-                detail: Some(format!("{name}{sig}")),
-                insert_text: Some(name),
-                ..Default::default()
-            });
-        }
-    };
-
-    // Bare enum-type receiver (`Shape.<here>`): a variant PATH ready for
-    // construction or `.Discriminant`, not a value. Only when the name is NOT
-    // shadowed by a value binding: `collect_symbols_for_file` emits no symbol
-    // for an `enum` decl itself, so an unshadowed enum name resolves to `None`
-    // (or, defensively, a `type` symbol), whereas a `var`/`let`/param/mod of
-    // the same name resolves to that value here and must win. This mirrors the
-    // compiler's own shadow guard (`infer.rs`'s
-    // `resolve_variant_for_construction`: a value symbol whose name equals the
-    // enum's shadows the type, so the name is NOT a construction site).
-    if sym.is_none_or(|s| s.kind == "type") {
-        if let Some(def) = enum_registry.editor_lookup(var_name) {
-            push_variant_completions(&mut items, def);
-            return items;
-        }
-        // A bare variant name used as a value receiver (`EasingFunction.
-        // Bounce.`, or any `Enum.Variant.` chain) arrives here as just
-        // `Variant`, because `member_receiver_at` only reports the identifier
-        // directly before the dot, discarding the `Enum.` qualifier. Resolve
-        // it the same way the compiler resolves a bare variant
-        // (`resolve_bare_variant_enum`): on a UNIQUE owning enum, treat the
-        // receiver as a value of that enum type, offering `.Discriminant`
-        // (via `push_type_members`) exactly as a directly-typed value would.
-        // An ambiguous or unknown bare name yields no owner and falls through
-        // unchanged.
-        if let Some(owner) = wirescript::typecheck::enums::resolve_bare_variant_enum(
-            &enum_registry,
-            var_name,
-            |n| enum_registry.editor_lookup(n).is_some(),
-        ) {
-            push_type_members(&owner.name, &mut items);
-            if !items.is_empty() {
-                return items;
-            }
-        }
-    }
-
-    // Collection methods come from the receiver's declared type (resolved through
-    // type aliases): a `Map<K, V>` gets the map table, `T[]` or an `array` decl
-    // the array table. The tables are distinct — a map's `length`/`clear`/
-    // `copyFrom` are its own, and `get`/`set`/`has`/`keys`/`values` exist on no
-    // array — so this dispatches on type, never on the bare method name.
-    let collection = sym.and_then(|s| {
-        s.ty.as_deref()
-            .and_then(|ty| collection_kind(ty, symbols))
-            .or_else(|| (s.kind == "array").then_some(CollectionKind::Array))
-    });
-    if let Some(kind) = collection {
-        let method_item = |name: &str, signature: &str, doc: &str| CompletionItem {
-            label: name.to_string(),
-            kind: Some(CompletionItemKind::METHOD),
-            detail: Some(format!("{name}{signature}")),
-            documentation: Some(Documentation::String(doc.to_string())),
-            ..Default::default()
-        };
-        match kind {
-            CollectionKind::Array => {
-                for m in ARRAY_METHODS {
-                    items.push(method_item(m.name, m.signature, m.doc));
-                }
-            }
-            CollectionKind::Map => {
-                for m in MAP_METHODS {
-                    items.push(method_item(m.name, m.signature, m.doc));
-                }
-            }
-        }
-        return items;
-    }
-
-    // Namespace alias (`import * as u`): offer its qualified `u.member` symbols.
-    if sym.is_some_and(|s| s.kind == "namespace") {
-        let prefix = format!("{var_name}.");
-        for m in symbols {
-            if let Some(member) = m.name.strip_prefix(&prefix) {
-                if member.contains('.') {
-                    continue; // deeper nesting isn't a direct member
-                }
-                items.push(CompletionItem {
-                    label: member.to_string(),
-                    kind: Some(namespace_member_kind(m.kind)),
-                    insert_text: Some(member.to_string()),
-                    ..Default::default()
-                });
-            }
-        }
-        return items;
-    }
-
-    // Vars (mutable `var` / `static var`) expose `.Value`/`.prev`, plus any
-    // method/swizzle valid for the var's element type (`pos.Normalize()`,
-    // `pos.x`).
-    if sym.is_some_and(|s| matches!(s.kind, "var" | "static var")) {
-        for (name, detail) in &wirescript::catalog::VAR_PSEUDO_FIELDS {
-            items.push(CompletionItem {
-                label: name.to_string(),
-                kind: Some(CompletionItemKind::FIELD),
-                detail: Some(detail.to_string()),
-                insert_text: Some(name.to_string()),
-                ..Default::default()
-            });
-        }
-        if let Some(ty) = sym.and_then(|s| s.ty.as_deref()) {
-            push_type_members(ty, &mut items);
-        }
-        return items;
-    }
-
-    // Record-typed value (e.g. `let split = pl.InputReader()` → {Forward, Right,
-    // Jump}, or a multi-output mod result): offer the record's field names, so
-    // `split.<here>` / `on split.<here>` completes `Forward`/`Right`/`Jump`. The
-    // type may be an inline `{…}` string or a named `type` alias resolved here.
-    if let Some(fields) = sym
-        .and_then(|s| s.ty.as_deref())
-        .and_then(|ty| resolve_record_fields(ty, symbols))
-    {
-        for f in fields {
-            items.push(field_item(f));
-        }
-        return items;
-    }
-
-    // Any other typed value: methods (e.g. string methods on a string) + swizzle.
-    if let Some(ty) = sym.and_then(|s| s.ty.as_deref()) {
-        push_type_members(ty, &mut items);
-    }
-
-    items
-}
-
-/// Record field names for a receiver type string: an inline `{…}` record, or a
-/// named `type` alias resolved through the `type` symbol it points at.
-fn resolve_record_fields(ty: &str, symbols: &[SymbolDef]) -> Option<Vec<String>> {
-    if let Some(fields) = record_field_names(ty) {
-        return Some(fields);
-    }
-    let alias = symbols.iter().find(|s| s.name == ty && s.kind == "type")?;
-    record_field_names(alias.ty.as_deref()?)
-}
-
-/// The completion-item kind for a namespace member of the given symbol kind.
-fn namespace_member_kind(kind: &str) -> CompletionItemKind {
-    match kind {
-        "mod" | "chip" | "fn" => CompletionItemKind::FUNCTION,
-        "let" => CompletionItemKind::CONSTANT,
-        "type" => CompletionItemKind::CLASS,
-        "event" => CompletionItemKind::EVENT,
-        _ => CompletionItemKind::FIELD,
-    }
 }
 
 /// The Compile command's diagnostic payload. `sources` maps a diagnostic's
@@ -2322,6 +2036,8 @@ fn compile_diagnostic_items(
     diags: &[wirescript::diagnostic::Diagnostic],
     sources: &HashMap<String, String>,
 ) -> Vec<serde_json::Value> {
+    let rulers: HashMap<&str, Ruler> = sources.iter().map(|(f, s)| (f.as_str(), Ruler::new(s))).collect();
+    let none = Ruler::new("");
     diags
         .iter()
         .map(|d| {
@@ -2330,7 +2046,7 @@ fn compile_diagnostic_items(
                 wirescript::diagnostic::Severity::Warning => "warning",
                 _ => "info",
             };
-            let text = sources.get(&*d.range.file).map_or("", String::as_str);
+            let text = rulers.get(&*d.range.file).unwrap_or(&none);
             let start_line = d.range.start.line.saturating_sub(1) as usize;
             let end_line = d.range.end.line.saturating_sub(1) as usize;
             serde_json::json!({
@@ -2410,259 +2126,8 @@ fn nested_block_at(
     None
 }
 
-/// The `enum` declarations visible in `source`, keyed by name, plus the
-/// built-in `Option`/`Result` prelude - reparsed on demand so enum-aware
-/// completions don't require threading a cached AST/type-checked document
-/// through every completion path. Gated by a fast substring check: a file
-/// with no `enum ` keyword at all cannot contain a `TopDecl::Enum`, so
-/// skipping the reparse in that case returns the exact same registry
-/// (`build_registry` only reads `TopDecl::Enum` entries out of `decls`) that
-/// a full parse would, at zero cost for the common no-enum file.
-fn enum_registry_from_source(
-    source: &str,
-) -> wirescript::typecheck::enums::EnumRegistry {
-    if !source.contains("enum ") {
-        return wirescript::typecheck::enums::build_registry(&[]);
-    }
-    let ast = wirescript::on_big_stack(|| wirescript::parse(source, "completion")).ast;
-    wirescript::typecheck::enums::build_registry(&ast.decls)
-}
-
-/// Push a completion item for each variant of `def` - the user-enum analog of
-/// `push_enum_member_completions` below, used both for `match`-arm-head
-/// pattern completion and for a bare `Enum.<here>` variant-path receiver.
-fn push_variant_completions(items: &mut Vec<CompletionItem>, def: &wirescript::typecheck::enums::EnumDef) {
-    for v in &def.variants {
-        items.push(CompletionItem {
-            label: v.name.clone(),
-            kind: Some(CompletionItemKind::ENUM_MEMBER),
-            detail: Some(format!("{} variant", def.name)),
-            insert_text: Some(v.name.clone()),
-            ..Default::default()
-        });
-    }
-}
-
-/// If the cursor sits in a `match <scrutinee> { <here> }` arm-head position -
-/// directly inside the match's own arm-list braces, at or past the last arm
-/// separator (a `,`, or a comma-less block arm's closing `}`, or the opening
-/// brace) and before any `=>` of an in-progress arm - return the scrutinee's
-/// raw source text (trimmed). `None` inside a pattern's own parens
-/// (`Circle(<here>)`), inside an arm's body (`Empty => { <here> }` or past
-/// its `=>`), or outside any match at all.
-///
-/// Scans the whole prefix up to the cursor once, like `find_enclosing_call`
-/// above, skipping strings/comments and tracking brace/paren/bracket nesting
-/// with a small frame stack. Only the innermost `{ }` opened directly by a
-/// `match <expr>` is tagged `MatchArms`; every other brace/paren/bracket is
-/// an opaque `Other` frame, except the block body of an arm (a `{` whose arm
-/// is `AwaitingBody`, the state right after `=>`), which is tagged `ArmBlock`
-/// so that popping it returns the enclosing arm to `Head`. That mirrors the
-/// parser: a block-bodied arm may omit the trailing comma
-/// (`parser/expr.rs`), so the cursor after a comma-less `Empty => { .. }` is
-/// still an arm head. A scrutinee expression that itself contains a raw `{`
-/// (a record literal, e.g. `match f(){x:1} { ... }`) is not handled - the
-/// `{` would be mistaken for the arms brace - but that shape is rare enough
-/// not to be worth the extra bookkeeping here.
-fn match_arm_head_scrutinee_at(source: &str, line: usize, col: usize) -> Option<String> {
-    let offset = cursor_byte_offset(source, line, col);
-    let prefix = &source[..offset];
-    let bytes = prefix.as_bytes();
-
-    // Per-arm position within a `MatchArms` frame: `Head` is pattern position
-    // (the only state that offers variant completions); `AwaitingBody` is the
-    // gap right after `=>` before the body's first token (which decides block
-    // vs expression body); `InBody` is anywhere in an expression body.
-    #[derive(PartialEq)]
-    enum ArmState {
-        Head,
-        AwaitingBody,
-        InBody,
-    }
-
-    enum Frame {
-        MatchArms { scrutinee: String, state: ArmState },
-        Other,
-        // The `{ }` block body of a match arm; popping it returns the
-        // enclosing arm to `Head` (a block arm may drop its trailing comma).
-        ArmBlock,
-    }
-
-    let mut stack: Vec<Frame> = Vec::new();
-    let mut pending_match_start: Option<usize> = None;
-    let mut in_string: Option<u8> = None;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if in_line_comment {
-            if c == b'\n' {
-                in_line_comment = false;
-            }
-            i += 1;
-            continue;
-        }
-        if in_block_comment {
-            if c == b'*' && bytes.get(i + 1) == Some(&b'/') {
-                in_block_comment = false;
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        if let Some(q) = in_string {
-            if c == b'\\' {
-                i += 2; // skip the escaped char
-            } else {
-                if c == q {
-                    in_string = None;
-                }
-                i += 1;
-            }
-            continue;
-        }
-        // The first non-trivia token after `=>` fixes the body shape: a `{`
-        // opens a block body (handled below), anything else is an expression
-        // body, so a later `{` in it (a record literal) is not the arm block.
-        if !matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'{') {
-            if let Some(Frame::MatchArms { state, .. }) = stack.last_mut() {
-                if *state == ArmState::AwaitingBody {
-                    *state = ArmState::InBody;
-                }
-            }
-        }
-        match c {
-            b'"' | b'\'' => {
-                in_string = Some(c);
-                i += 1;
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                in_line_comment = true;
-                i += 1;
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                in_block_comment = true;
-                i += 2;
-            }
-            b'{' => {
-                if let Some(start) = pending_match_start.take() {
-                    let scrutinee = prefix[start..i].trim().to_string();
-                    stack.push(Frame::MatchArms { scrutinee, state: ArmState::Head });
-                } else if matches!(
-                    stack.last(),
-                    Some(Frame::MatchArms { state: ArmState::AwaitingBody, .. })
-                ) {
-                    stack.push(Frame::ArmBlock);
-                } else {
-                    stack.push(Frame::Other);
-                }
-                i += 1;
-            }
-            b'}' => {
-                let popped = stack.pop();
-                if matches!(popped, Some(Frame::ArmBlock)) {
-                    if let Some(Frame::MatchArms { state, .. }) = stack.last_mut() {
-                        *state = ArmState::Head;
-                    }
-                }
-                i += 1;
-            }
-            b'(' | b'[' => {
-                stack.push(Frame::Other);
-                i += 1;
-            }
-            b')' | b']' => {
-                stack.pop();
-                i += 1;
-            }
-            b',' => {
-                if let Some(Frame::MatchArms { state, .. }) = stack.last_mut() {
-                    *state = ArmState::Head;
-                }
-                i += 1;
-            }
-            b'=' if bytes.get(i + 1) == Some(&b'>') => {
-                if let Some(Frame::MatchArms { state, .. }) = stack.last_mut() {
-                    *state = ArmState::AwaitingBody;
-                }
-                i += 2;
-            }
-            _ if c.is_ascii_alphabetic() || c == b'_' => {
-                let start = i;
-                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                    i += 1;
-                }
-                if &prefix[start..i] == "match" {
-                    pending_match_start = Some(i);
-                }
-            }
-            _ => i += 1,
-        }
-    }
-
-    match stack.last() {
-        Some(Frame::MatchArms { scrutinee, state: ArmState::Head }) if !scrutinee.is_empty() => {
-            Some(scrutinee.clone())
-        }
-        _ => None,
-    }
-}
-
-/// Push a completion item for each member of enum `et`. `filter_text` is set to
-/// whatever is already typed (`value_so_far`) so VS Code keeps showing every
-/// sibling even when the cursor sits at the end of a complete member. Shared by
-/// the `CallSpec` and `EventSpec` named-arg value paths.
-fn push_enum_member_completions(items: &mut Vec<CompletionItem>, et: &str, value_so_far: &str) {
-    let filter = value_so_far.trim().to_string();
-    for v in wirescript::catalog::enum_member_names(et) {
-        items.push(CompletionItem {
-            label: v.clone(),
-            kind: Some(CompletionItemKind::ENUM_MEMBER),
-            detail: Some(format!("{et} member")),
-            insert_text: Some(v),
-            filter_text: Some(filter.clone()),
-            ..Default::default()
-        });
-    }
-}
-
-/// Push a QUALIFIED completion item (`EasingFunction.Bounce`) for each variant
-/// of the built-in game enum backed by schema enum `et`, if any, alongside
-/// [`push_enum_member_completions`]'s bare-name items, so a config value slot
-/// resolves to a schema enum offers both the bare member and the qualified
-/// form an author would use to construct the value directly. `et` is the raw
-/// schema type (`config_enum_for_named_arg`'s return); at most one built-in
-/// game enum maps to it, found via [`wirescript::catalog::game_enum_schema_type`].
-/// A no-op for a schema enum with no built-in game-enum counterpart.
-fn push_qualified_builtin_game_enum_variant_completions(
-    items: &mut Vec<CompletionItem>,
-    et: &str,
-    value_so_far: &str,
-) {
-    let filter = value_so_far.trim().to_string();
-    let Some(def) = wirescript::typecheck::enums::game_enum_defs()
-        .into_iter()
-        .find(|def| wirescript::catalog::game_enum_schema_type(&def.name) == Some(et))
-    else {
-        return;
-    };
-    for v in &def.variants {
-        let label = format!("{}.{}", def.name, v.name);
-        items.push(CompletionItem {
-            label: label.clone(),
-            kind: Some(CompletionItemKind::ENUM_MEMBER),
-            detail: Some(format!("{} variant", def.name)),
-            insert_text: Some(label),
-            filter_text: Some(filter.clone()),
-            ..Default::default()
-        });
-    }
-}
-
-/// Build completion items for a position. Pure (no document lock / async) so it
-/// can be unit-tested.
+/// The completions at a position, as LSP items. Pure (no document lock /
+/// async) so it can be unit-tested.
 fn build_completions(
     source: &str,
     symbols: &[SymbolDef],
@@ -2670,467 +2135,52 @@ fn build_completions(
     col: usize,
     prefab_paths: &[String],
 ) -> Vec<CompletionItem> {
-    let mut items = Vec::new();
-
-    // Prefab file reference `$./file.brz` / `$/abs/file.brz`: complete from the
-    // candidate paths the frontend supplied (disk scan / drag registry). A
-    // text edit over the whole `$…` fragment keeps `.`/`/` filtering robust.
-    if let Some(l) = source.lines().nth(line) {
-        let col_idx = char_col_to_byte(l, col);
-        let before = &l[..col_idx];
-        if let Some(dollar) = before.rfind('$') {
-            let frag = &before[dollar + 1..];
-            let is_prefab_frag = (frag.starts_with('.') || frag.starts_with('/'))
-                && frag
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || matches!(c, '_' | '/' | '.' | '-'));
-            if is_prefab_frag {
-                let range = Range {
-                    start: Position {
-                        line: line as u32,
-                        character: byte_off_to_lsp(source, line, dollar + 1),
-                    },
-                    end: Position {
-                        line: line as u32,
-                        character: char_col_to_lsp(source, line, col),
-                    },
-                };
-                for path in prefab_paths {
-                    if path.starts_with(frag) {
-                        items.push(CompletionItem {
-                            label: path.clone(),
-                            kind: Some(CompletionItemKind::FILE),
-                            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                                range,
-                                new_text: path.clone(),
-                            })),
-                            ..Default::default()
-                        });
-                    }
-                }
-                if !items.is_empty() {
-                    return items;
-                }
-            }
-        }
-    }
-
-    // Asset reference `$AssetType/AssetName`: complete types after `$`, names
-    // after `$Type/`.
-    if let Some(l) = source.lines().nth(line) {
-        let col_idx = char_col_to_byte(l, col);
-        let before = &l[..col_idx];
-        if let Some(dollar) = before.rfind('$') {
-            let frag = &before[dollar + 1..];
-            if frag
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '_' || c == '/')
-            {
-                if let Some(slash) = frag.rfind('/') {
-                    // filter_text = the name already typed, so ctrl-space at the
-                    // end of a complete name still lists the other assets.
-                    let typed = frag[slash + 1..].to_string();
-                    for name in wirescript::analysis::asset_names(&frag[..slash]) {
-                        items.push(CompletionItem {
-                            label: name.to_string(),
-                            kind: Some(CompletionItemKind::CONSTANT),
-                            filter_text: Some(typed.clone()),
-                            ..Default::default()
-                        });
-                    }
-                } else {
-                    for ty in wirescript::analysis::asset_types() {
-                        items.push(CompletionItem {
-                            label: ty.to_string(),
-                            kind: Some(CompletionItemKind::CLASS),
-                            insert_text: Some(format!("{ty}/")),
-                            ..Default::default()
-                        });
-                    }
-                }
-                if !items.is_empty() {
-                    return items;
-                }
-            }
-        }
-    }
-
-    // Member access `receiver.partial` — return only the receiver's members.
-    // Checked before call-param completion so `Call(arg = recv.<here>` shows
-    // recv's methods, not the enclosing call's params. A plain `Call(` (the dot
-    // belongs to the callee, cursor at an arg boundary) yields no receiver here
-    // and falls through to param completion below.
-    // `Environment.<env>.<property>`: environment names, then properties.
-    let env_items = if symbols.iter().any(|s| s.name == "Environment") {
-        None
-    } else {
-        wirescript::analysis::environment_completions(source, line, col)
-    };
-    if let Some(items) = env_items {
-        return items
-            .into_iter()
-            .map(|(label, detail)| CompletionItem {
-                label,
-                kind: Some(CompletionItemKind::PROPERTY),
-                detail: Some(detail),
-                ..Default::default()
-            })
-            .collect();
-    }
-    if let Some(var_name) = member_receiver_at(source, line, col) {
-        return member_completions(&var_name, symbols, source, line, col);
-    }
-
-    // Match-arm-head position (`match <scrutinee> { <here> }`): if the
-    // scrutinee resolves to a registered enum, offer its variant names as
-    // patterns (`Circle`, `Empty`, ...). Checked before call-param
-    // completion for the same reason as member access above - a `match`
-    // isn't itself a call, but its arm head can sit inside one lexically
-    // (`foo(x = match s { <here> })`), and the arm-head reading must win.
-    if let Some(scrutinee) = match_arm_head_scrutinee_at(source, line, col) {
-        if let Some(ty) = resolve_symbol(symbols, source, &scrutinee, line, col).and_then(|s| s.ty.as_deref()) {
-            let registry = enum_registry_from_source(source);
-            if let Some(def) = registry.editor_lookup(ty) {
-                push_variant_completions(&mut items, def);
-                if !items.is_empty() {
-                    return items;
-                }
-            }
-        }
-    }
-
-    // Named params inside a function call: `Call(<here>)`.
-    if let Some(call_name) = find_enclosing_call(source, line, col) {
-        if let Some(spec) = calls().get(call_name.as_str()) {
-            // Enum-valued named arg (e.g. `justify = Center`): complete the
-            // enum's member names when the cursor is in the value slot. Members
-            // insert bare (the idiomatic form; a quoted string also works).
-            let value_ctx = named_arg_value(source, line, col);
-            if let Some((param_name, value_so_far)) = value_ctx.as_ref() {
-                // Enum config value — works for both a hand-coded param
-                // (`justify = …`) and a raw config field (`Justification = …`),
-                // resolved through the unified call+event helper.
-                if let Some(et) = wirescript::catalog::config_enum_for_named_arg(
-                    call_name.as_str(),
-                    param_name,
-                ) {
-                    push_enum_member_completions(&mut items, et, value_so_far);
-                    push_qualified_builtin_game_enum_variant_completions(&mut items, et, value_so_far);
-                    if !items.is_empty() {
-                        return items;
-                    }
-                }
-                if let Some(param) = spec.params.iter().find(|p| &p.name == param_name) {
-                    // Asset-ref config param (`font = <here>`, `weapon = <here>`):
-                    // offer full `$Type/Name` refs for the param's asset type, so
-                    // the author needn't know the type name. (Once they type `$`,
-                    // the `$Type/` block above takes over.) Constant-only params
-                    // only — a wire-input Entity port takes a live value.
-                    if !wirescript::catalog::is_wire_input(spec.gate_class, param.port.as_str()) {
-                        if let Some(asset_ty) =
-                            wirescript::analysis::asset_type_for_port(param.port.as_str())
-                        {
-                            for name in wirescript::analysis::asset_names(asset_ty) {
-                                let full = format!("${asset_ty}/{name}");
-                                items.push(CompletionItem {
-                                    label: full.clone(),
-                                    kind: Some(CompletionItemKind::CONSTANT),
-                                    detail: Some(format!("{asset_ty} asset")),
-                                    insert_text: Some(full),
-                                    ..Default::default()
-                                });
-                            }
-                            if !items.is_empty() {
-                                return items;
-                            }
-                        }
-                    }
-                }
-            }
-            // Argument-NAME completions: only when NOT completing a value. In a
-            // `name = <here>` value slot that wasn't an enum/asset value, skip the
-            // arg names and fall through to the in-scope identifier list below.
-            if value_ctx.is_none() {
-                for (i, p) in spec.params.iter().enumerate() {
-                    // The receiver param (index 0 on a method call) is already
-                    // supplied via the `x.Method(` syntax — don't offer it.
-                    if i == 0 && spec.receiver.is_some() {
-                        continue;
-                    }
-                    // A config param surfaced as a plain int but backed by a schema
-                    // enum shows the enum's name instead of `int`.
-                    let ty_label = wirescript::field_enum_type(spec.gate_class, p.port.as_str())
-                        .map(str::to_string)
-                        .unwrap_or_else(|| type_str(&p.ty));
-                    if p.optional {
-                        items.push(CompletionItem {
-                            label: format!("{} = ", p.name),
-                            kind: Some(CompletionItemKind::FIELD),
-                            detail: Some(format!("{ty_label} (optional)")),
-                            insert_text: Some(format!("{} = ", p.name)),
-                            ..Default::default()
-                        });
-                    } else {
-                        items.push(CompletionItem {
-                            label: p.name.to_string(),
-                            kind: Some(CompletionItemKind::FIELD),
-                            detail: Some(format!("{ty_label} (required)")),
-                            ..Default::default()
-                        });
-                    }
-                }
-                // Data-driven config attributes: the gate's raw settings-menu field
-                // names (those without a hand-coded alias param).
-                for cfg in wirescript::catalog::scalar_config_fields(spec.gate_class) {
-                    if spec.params.iter().any(|p| p.name == cfg.name) {
-                        continue;
-                    }
-                    let ty_label =
-                        wirescript::catalog::config_field_enum_type(spec.gate_class, &cfg.name)
-                            .map(str::to_string)
-                            .unwrap_or_else(|| cfg.ty.clone());
-                    items.push(CompletionItem {
-                        label: format!("{} = ", cfg.name),
-                        kind: Some(CompletionItemKind::FIELD),
-                        detail: Some(format!("{ty_label} (config)")),
-                        insert_text: Some(format!("{} = ", cfg.name)),
-                        ..Default::default()
-                    });
-                }
-                if !items.is_empty() {
-                    return items;
-                }
-            }
-        } else if let Some(evt) = wirescript::catalog::events::find_event(call_name.as_str()) {
-            // Event trigger config (`on Clock(<here>)`): the call-param path has
-            // no CallSpec, so resolve names/enum values from the EventSpec.
-            let value_ctx = named_arg_value(source, line, col);
-            if let Some((param_name, value_so_far)) = value_ctx.as_ref() {
-                if let Some(et) =
-                    wirescript::catalog::config_enum_for_named_arg(call_name.as_str(), param_name)
-                {
-                    push_enum_member_completions(&mut items, et, value_so_far);
-                    push_qualified_builtin_game_enum_variant_completions(&mut items, et, value_so_far);
-                    if !items.is_empty() {
-                        return items;
-                    }
-                }
-            }
-            // Argument-NAME completions only when NOT completing a value; in a
-            // value slot, fall through to the in-scope identifier list below.
-            if value_ctx.is_none() {
-                for (surf, _, _) in &evt.input_named {
-                    items.push(CompletionItem {
-                        label: format!("{surf} = "),
-                        kind: Some(CompletionItemKind::FIELD),
-                        detail: Some("wired input".to_string()),
-                        insert_text: Some(format!("{surf} = ")),
-                        ..Default::default()
-                    });
-                }
-                for (surf, field) in &evt.config_named {
-                    let ty_label =
-                        wirescript::catalog::config_field_enum_type(evt.gate_class, field)
-                            .map(str::to_string)
-                            .unwrap_or_else(|| "config".to_string());
-                    items.push(CompletionItem {
-                        label: format!("{surf} = "),
-                        kind: Some(CompletionItemKind::FIELD),
-                        detail: Some(format!("{ty_label} (config)")),
-                        insert_text: Some(format!("{surf} = ")),
-                        ..Default::default()
-                    });
-                }
-                if !items.is_empty() {
-                    return items;
-                }
-            }
-        } else if let Some(sig) = symbols
-            .iter()
-            .find(|s| s.name == call_name.as_str() && matches!(s.kind, "mod" | "chip" | "fn"))
-            .and_then(|s| s.ty.as_deref())
-        {
-            // User-defined mod/chip/fn call: complete its parameter names,
-            // parsed from the signature string in the symbol's type.
-            if let Some(names) = param_names(sig) {
-                for name in names {
-                    items.push(CompletionItem {
-                        label: name.clone(),
-                        kind: Some(CompletionItemKind::FIELD),
-                        insert_text: Some(name),
-                        ..Default::default()
-                    });
-                }
-                if !items.is_empty() {
-                    return items;
-                }
-            }
-        }
-    }
-
-    // User symbols. Qualified namespace members (`u.member`) are addressed only
-    // through `u.` member completion, so keep them out of the bare-identifier list.
-    // Dedupe by name: when a name is declared in several scopes, offer only the
-    // one in scope at the cursor (nearest enclosing/preceding declaration), so a
-    // handler-local `players: character[]` doesn't leak into file scope where a
-    // different `players` is visible. Forward references to top-level symbols
-    // still appear (`resolve_symbol` falls back to the first declaration).
-    // Precompute the nearest-preceding (and first-seen) declaration per name in
-    // ONE pass over the symbol table, then resolve each unique name by O(1)
-    // lookup below. `resolve_symbol` re-scans every symbol per call, so calling
-    // it once per unique name made this loop O(n²). This mirrors its rule: the
-    // nearest declaration at/before the cursor wins, else the first declaration.
-    let (cl, cc) = ((line + 1) as u32, (col + 1) as u32);
-    let mut first: wirescript::collections::HashMap<&str, &SymbolDef> =
-        wirescript::collections::HashMap::default();
-    let mut best: wirescript::collections::HashMap<&str, (&SymbolDef, (u32, u32))> =
-        wirescript::collections::HashMap::default();
-    for s in symbols {
-        if s.name.contains('.') {
-            continue;
-        }
-        first.entry(s.name.as_str()).or_insert(s);
-        let p = (s.range.start.line, s.range.start.col);
-        let precedes = p.0 < cl || (p.0 == cl && p.1 <= cc);
-        if precedes && best.get(s.name.as_str()).is_none_or(|(_, bp)| p > *bp) {
-            best.insert(s.name.as_str(), (s, p));
-        }
-    }
-    let mut seen: wirescript::collections::HashSet<&str> = wirescript::collections::HashSet::default();
-    for sym in symbols {
-        if sym.name.contains('.') {
-            continue;
-        }
-        if !seen.insert(sym.name.as_str()) {
-            continue;
-        }
-        let chosen = best
-            .get(sym.name.as_str())
-            .map(|(s, _)| *s)
-            .or_else(|| first.get(sym.name.as_str()).copied())
-            .unwrap_or(sym);
-        let kind = match chosen.kind {
-            "var" | "static var" | "buffer" | "array" => CompletionItemKind::VARIABLE,
-            "fn" | "mod" | "chip" => CompletionItemKind::FUNCTION,
-            "in" => CompletionItemKind::FIELD,
-            "let" => CompletionItemKind::CONSTANT,
-            "event" => CompletionItemKind::EVENT,
-            "namespace" => CompletionItemKind::MODULE,
-            "type" => CompletionItemKind::CLASS,
-            _ => CompletionItemKind::TEXT,
-        };
-        items.push(CompletionItem {
-            label: chosen.name.clone(),
-            kind: Some(kind),
-            detail: chosen.ty.clone(),
-            ..Default::default()
-        });
-    }
-
-    for kw in KEYWORDS {
-        items.push(CompletionItem {
-            label: kw.to_string(),
-            kind: Some(CompletionItemKind::KEYWORD),
-            ..Default::default()
-        });
-    }
-
-    // Annotations: `@side` port pins, the chip annotations, and the
-    // module-level run that opens a file.
-    for (ann, detail) in [
-        ("@left", "outer rerouter pin"),
-        ("@right", "outer rerouter pin"),
-        ("@top", "outer rerouter pin"),
-        ("@bottom", "outer rerouter pin"),
-        ("@label", "display-text override"),
-        ("@closed", "compile chip collapsed"),
-        ("@sliced", "let a for loop run across ticks"),
-        ("@fold", "module-level: fold constant expressions"),
-        ("@nofold", "module-level: never fold"),
-        ("@layout", "module-level: placement engine (code/cube)"),
-        ("@flat", "module-level: inline every chip onto one grid"),
-    ] {
-        items.push(CompletionItem {
-            label: ann.to_string(),
-            kind: Some(CompletionItemKind::KEYWORD),
-            detail: Some(detail.to_string()),
-            ..Default::default()
-        });
-    }
-
-    // Built-in events (RoundStart, ChatCommand, CharacterSpawned, ...).
-    for (name, evt) in events().iter() {
-        let params: Vec<&str> = evt.data.iter().map(|d| d.name).collect();
-        items.push(CompletionItem {
-            label: name.to_string(),
-            kind: Some(CompletionItemKind::EVENT),
-            detail: if params.is_empty() {
-                None
-            } else {
-                Some(format!("({})", params.join(", ")))
-            },
-            ..Default::default()
-        });
-    }
-
-    for (name, spec) in calls().iter() {
-        let params_str: Vec<String> = spec
-            .params
-            .iter()
-            .map(|p| {
-                if p.optional {
-                    format!("{}?", p.name)
-                } else {
-                    p.name.to_string()
-                }
-            })
-            .collect();
-        items.push(CompletionItem {
-            label: name.to_string(),
-            kind: Some(CompletionItemKind::FUNCTION),
-            detail: Some(format!("({})", params_str.join(", "))),
-            ..Default::default()
-        });
-    }
-
-    // Callable gate builtins (GetMapElement, PushToArray, SetVariable, …) — they
-    // desugar to the method/assignment forms, so they aren't in `calls()`.
-    for name in wirescript::catalog::gate_builtins::ALL {
-        items.push(CompletionItem {
-            label: name.to_string(),
-            kind: Some(CompletionItemKind::FUNCTION),
-            detail: Some("gate builtin".to_string()),
-            ..Default::default()
-        });
-    }
-
-    for ty in &[
-        "int", "float", "bool", "string", "entity", "controller", "character", "vector",
-        "rotator", "color", "brick", "exec",
-    ] {
-        items.push(CompletionItem {
-            label: ty.to_string(),
-            kind: Some(CompletionItemKind::CLASS),
-            ..Default::default()
-        });
-    }
-
-    // Built-in game enum type names (`EasingFunction` and friends). Unlike a
-    // user-declared `enum`, these have no `TopDecl::Enum` and so never appear
-    // in `symbols`; offer them here so `var e: <here>` completes them the
-    // same as any hardcoded scalar type above.
-    for def in wirescript::typecheck::enums::game_enum_defs() {
-        items.push(CompletionItem {
-            label: def.name.clone(),
-            kind: Some(CompletionItemKind::CLASS),
-            detail: Some("game enum".to_string()),
-            insert_text: Some(def.name),
-            ..Default::default()
-        });
-    }
-
-    items
+    let ruler = Ruler::new(source);
+    wirescript::analysis::completions(source, symbols, line, col, prefab_paths, &wirescript::typecheck::enums::EnumRegistry::editor_lookup)
+        .into_iter()
+        .map(|c| completion_item(&ruler, line, col, c))
+        .collect()
 }
+
+/// `c` as an LSP item, its replaced span in UTF-16 columns.
+fn completion_item(ruler: &Ruler, line: usize, col: usize, c: wirescript::analysis::Completion) -> CompletionItem {
+    use wirescript::analysis::CompletionKind as K;
+    let kind = match c.kind {
+        K::Text => CompletionItemKind::TEXT,
+        K::Method => CompletionItemKind::METHOD,
+        K::Function => CompletionItemKind::FUNCTION,
+        K::Field => CompletionItemKind::FIELD,
+        K::Variable => CompletionItemKind::VARIABLE,
+        K::Class => CompletionItemKind::CLASS,
+        K::Module => CompletionItemKind::MODULE,
+        K::Property => CompletionItemKind::PROPERTY,
+        K::Keyword => CompletionItemKind::KEYWORD,
+        K::Constant => CompletionItemKind::CONSTANT,
+        K::EnumMember => CompletionItemKind::ENUM_MEMBER,
+        K::Event => CompletionItemKind::EVENT,
+        K::File => CompletionItemKind::FILE,
+    };
+    let text_edit = c.replace_from.map(|from| {
+        let at = |character| Position { line: line as u32, character };
+        CompletionTextEdit::Edit(TextEdit {
+            range: Range { start: at(byte_off_to_lsp(ruler, line, from)), end: at(char_col_to_lsp(ruler, line, col)) },
+            new_text: c.label.clone(),
+        })
+    });
+    CompletionItem {
+        label: c.label,
+        kind: Some(kind),
+        detail: c.detail,
+        documentation: c.documentation.map(Documentation::String),
+        insert_text: c.insert_text,
+        filter_text: c.filter_text,
+        text_edit,
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+use wirescript::analysis::match_arm_head_scrutinee_at;
 
 #[cfg(test)]
 mod tests;

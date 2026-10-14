@@ -1,4 +1,5 @@
 use super::*;
+use crate::lower::fold::eval::{FORMAT_SLOTS, interp_groups};
 use crate::catalog::operators::OpRule;
 
 /// The operator rule for the CURRENT monomorph. Non-generic bodies read the
@@ -7,7 +8,7 @@ use crate::catalog::operators::OpRule;
 /// operators once, against its declared types. Inside a generic mod's body
 /// that map holds the STALE last-mask-member rule — the per-mask-member body
 /// check in typecheck re-resolves every operator once per member and the last
-/// write wins (`Numeric` → Color, `Scalar` → Float, an unbounded `T` →
+/// write wins (`Numeric` -> Color, `Scalar` -> Float, an unbounded `T` ->
 /// Prefab), so a `square<int>` monomorph would otherwise emit a Color
 /// MathMultiply. Re-resolve from each operand's type in this instantiation
 /// (`LowerCtx::type_of`), as typecheck resolves it; an operand that has none
@@ -67,18 +68,37 @@ pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     if ctx.mono_stack.is_empty() && ctx.op_for(e).is_none() {
         return synthesise_unsupported(ctx, e);
     }
+    // A brick or ref compared with `null` compares with the port left empty,
+    // which holds that type's null reference: no literal spells one.
+    let null_ref = |x: &Expr| matches!(x, Expr::NullLit { .. }) && ctx.type_of(x).ref_kind().is_some();
+    if null_ref(left) || null_ref(right) {
+        let (left_port, right_port) = if null_ref(left) {
+            (None, Some(lower_expr(ctx, right)))
+        } else {
+            (Some(lower_expr(ctx, left)), None)
+        };
+        return binop_gate_of(ctx, e, left_port, right_port);
+    }
     let ports = crate::lower::ordered::lower_in_order(ctx, &[left, right]);
     binop_gate(ctx, e, ports[0], ports[1])
 }
 
 /// The gate of the binary operator `e` over its lowered operands.
 pub(super) fn binop_gate(ctx: &mut LowerCtx, e: &Expr, left_port: PortRef, right_port: PortRef) -> PortRef {
+    binop_gate_of(ctx, e, Some(left_port), Some(right_port))
+}
+
+/// [`binop_gate`], an operand of `None` leaving its input unwired.
+fn binop_gate_of(ctx: &mut LowerCtx, e: &Expr, left_port: Option<PortRef>, right_port: Option<PortRef>) -> PortRef {
     let Expr::BinOp { op, range, .. } = e else {
         return synthesise_unsupported(ctx, e);
     };
-    let rule = match mono_op_rule(ctx, e, op, &[left_port, right_port]) {
-        Some(r) => r,
-        None => return synthesise_unsupported(ctx, e),
+    let rule = match (left_port, right_port) {
+        (Some(l), Some(r)) => mono_op_rule(ctx, e, op, &[l, r]),
+        _ => ctx.op_for(e).cloned(),
+    };
+    let Some(rule) = rule else {
+        return synthesise_unsupported(ctx, e);
     };
 
     // Players (and other objects) don't cast directly to ints on a math gate,
@@ -86,10 +106,15 @@ pub(super) fn binop_gate(ctx: &mut LowerCtx, e: &Expr, left_port: PortRef, right
     // LogicalOR coerces it to a value the gate accepts. `1 + player` becomes
     // `add(1, or(player, false))`. Only applies to the Math* gates; logical and
     // comparison gates take object operands natively.
-    let (left_port, left_ty) =
-        wrap_object_for_math(ctx, left_port, &rule.operands[0], rule.gate_class, range);
-    let (right_port, right_ty) =
-        wrap_object_for_math(ctx, right_port, &rule.operands[1], rule.gate_class, range);
+    let operand = |ctx: &mut LowerCtx, port: Option<PortRef>, ty: &Type| match port {
+        Some(p) => {
+            let (p, t) = wrap_object_for_math(ctx, p, ty, rule.gate_class, range);
+            (Some(p), t)
+        }
+        None => (None, ty.clone()),
+    };
+    let (left_port, left_ty) = operand(ctx, left_port, &rule.operands[0]);
+    let (right_port, right_ty) = operand(ctx, right_port, &rule.operands[1]);
 
     let in_a = rule.ports.inputs[0];
     let in_b = rule.ports.inputs[1];
@@ -112,8 +137,12 @@ pub(super) fn binop_gate(ctx: &mut LowerCtx, e: &Expr, left_port: PortRef, right
         note: None,
         ..Default::default()
     });
-    ctx.connect(left_port, node_id.port(in_a));
-    ctx.connect(right_port, node_id.port(in_b));
+    if let Some(p) = left_port {
+        ctx.connect(p, node_id.port(in_a));
+    }
+    if let Some(p) = right_port {
+        ctx.connect(p, node_id.port(in_b));
+    }
     node_id.port(out)
 }
 
@@ -140,17 +169,9 @@ fn wrap_object_for_math(
     }
 
     // `false` literal feeding the OR's second input.
-    let mut false_props = HashMap::default();
-    false_props.insert(*sym::VALUE, Literal::Bool(false));
-    let false_id = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::LITERAL,
-        source_range: range.clone(),
-        ports: GateIO::source(Type::Bool),
-        properties: false_props,
-        ..Default::default()
-    });
+    let false_port = raw_literal(ctx, range, Type::Bool, Literal::Bool(false), None);
 
-    // (obj || false) → LogicalOR coerces the object to an int/bool the gate takes.
+    // (obj || false) -> LogicalOR coerces the object to an int/bool the gate takes.
     let or_id = ctx.add_gate(AddNodeOpts {
         gate_class: "BrickComponentType_Expr_LogicalOR",
         source_range: range.clone(),
@@ -165,7 +186,7 @@ fn wrap_object_for_math(
         ..Default::default()
     });
     ctx.connect(port, or_id.port(WirePort::BInputA));
-    ctx.connect(false_id.port(WirePort::Output), or_id.port(WirePort::BInputB));
+    ctx.connect(false_port, or_id.port(WirePort::BInputB));
     // The math input is declared Int (not Bool): the OR output coerces to the
     // gate's PrimMath variant at the wire level, and an Int default keeps the
     // gate's variant field valid (a Bool default is rejected by PrimMathVariant).
@@ -177,8 +198,8 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         Expr::UnOp { op, operand, range } => (op, operand, range),
         _ => return synthesise_unsupported(ctx, e),
     };
-    // Fuse !(a && b) → LogicalNAND, !(a || b) → LogicalNOR
-    // Fuse ~(a & b) → BitwiseNAND,  ~(a | b) → BitwiseNOR
+    // Fuse !(a && b) -> LogicalNAND, !(a || b) -> LogicalNOR
+    // Fuse ~(a & b) -> BitwiseNAND,  ~(a | b) -> BitwiseNOR
     if (op == "!" || op == "~")
         && let Expr::BinOp {
             op: inner_op,
@@ -295,14 +316,6 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     node_id.port(out)
 }
 
-/// Substitution inputs on one FormatText gate — the gate has exactly these 7
-/// (`InputA`..`InputG`).
-const FORMAT_SLOTS: [WirePort; 7] = [
-    WirePort::InputA, WirePort::InputB, WirePort::InputC,
-    WirePort::InputD, WirePort::InputE, WirePort::InputF,
-    WirePort::InputG,
-];
-
 /// Build one FormatText gate from a finished format string and its already
 /// lowered substitution ports (`slots.len()` must be `<= FORMAT_SLOTS.len()`).
 pub(super) fn build_format_text(
@@ -356,7 +369,6 @@ pub(super) fn lower_interp(
     parts: &[InterpPart],
     range: &SourceRange,
 ) -> PortRef {
-    let max = FORMAT_SLOTS.len();
     // A FormatText gate has only 7 substitution inputs, so a template with more
     // than 7 `${...}` values is split across several gates whose outputs are
     // concatenated. Literals attach to the current group; a group is flushed
@@ -371,28 +383,10 @@ pub(super) fn lower_interp(
         })
         .collect();
     let mut ports = crate::lower::ordered::lower_in_order(ctx, &exprs).into_iter();
-    let mut groups: Vec<(String, Vec<PortRef>)> = Vec::new();
-    let mut cur_fmt = String::new();
-    let mut cur_slots: Vec<PortRef> = Vec::new();
-    for p in parts {
-        match p {
-            InterpPart::Lit(s) => {
-                cur_fmt.push_str(&s.replace('{', "{{").replace('}', "}}"));
-            }
-            InterpPart::Expr(_) => {
-                if cur_slots.len() == max {
-                    groups.push((std::mem::take(&mut cur_fmt), std::mem::take(&mut cur_slots)));
-                }
-                cur_fmt.push_str(&format!("{{{}}}", cur_slots.len()));
-                cur_slots.extend(ports.next());
-            }
-        }
-    }
-    groups.push((cur_fmt, cur_slots));
-
+    let Ok(groups) = interp_groups(parts, |_| Ok::<_, std::convert::Infallible>(ports.next()));
     let outs: Vec<PortRef> = groups
         .into_iter()
-        .map(|(fmt, slots)| build_format_text(ctx, fmt, slots, range))
+        .map(|(fmt, slots)| build_format_text(ctx, fmt, slots.into_iter().flatten().collect(), range))
         .collect();
     concat_string_ports(ctx, outs, range)
 }

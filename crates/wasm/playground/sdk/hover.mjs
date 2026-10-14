@@ -1,25 +1,9 @@
 #!/usr/bin/env node
 // wirescript hover info — run with: node hover.mjs <file.ws> <line> <col>
 
-import { readFileSync, readdirSync } from 'fs';
-import { resolve, basename, dirname, join } from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-function buildFileMap(file) {
-  const dir = dirname(resolve(file));
-  const name = basename(resolve(file));
-  const map = {};
-  try {
-    for (const entry of readdirSync(dir)) {
-      if (entry.endsWith('.ws') && entry !== name) {
-        map[entry] = readFileSync(join(dir, entry), 'utf-8');
-      }
-    }
-  } catch {}
-  return JSON.stringify(map);
-}
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+import { fileMapJson, loadWasm } from './lib.mjs';
 
 async function main() {
   const [file, lineStr, colStr] = process.argv.slice(2);
@@ -33,15 +17,9 @@ async function main() {
   const line = parseInt(lineStr, 10) - 1;
   const col = parseInt(colStr || '1', 10) - 1;
 
-  const mod = await import('./pkg/wasm.js');
-  // nodejs-target pkg exports directly; web-target pkg needs init().
-  if (typeof mod.default === 'function') {
-    const wasmBytes = readFileSync(join(__dirname, 'pkg', 'wasm_bg.wasm'));
-    await mod.default({ module_or_path: wasmBytes });
-  }
-  const wirescript_hover = mod.wirescript_hover ?? mod.default?.wirescript_hover;
+  const wirescript_hover = (await loadWasm())('wirescript_hover');
 
-  const result = wirescript_hover(source, line, col, buildFileMap(file));
+  const result = wirescript_hover(source, line, col, fileMapJson(file));
   if (!result) {
     console.log('(no hover info)');
     process.exit(0);

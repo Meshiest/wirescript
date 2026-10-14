@@ -99,16 +99,11 @@ pub fn analyze(enums: Enums<'_>, scrutinee: &Type, arms: &[Pattern]) -> Usefulne
                 entry.rows.push(row);
             }
             None => {
-                // Useful iff the arms so far leave some value uncovered: a
-                // constructor never tested, or a tested one whose payload
-                // sub-matrix is not exhaustive. Runs at most once - the next
-                // wildcard-like arm short-circuits on `seen_catchall`.
-                let useful = !seen_catchall
-                    && edef.variants.iter().any(|v| match spec.get(v.name.as_str()) {
-                        None => true,
-                        Some(s) => !useful_witnesses(&s.rows, &s.types, enums).is_empty(),
-                    });
-                if !useful {
+                // The first catch-all is always reachable: a runtime tag that
+                // names no variant (`Enum.FromInt(n)` out of range, a pin)
+                // matches no variant arm and runs it. The next wildcard-like
+                // arm short-circuits on `seen_catchall`.
+                if seen_catchall {
                     unreachable_arms.push(i);
                 }
                 seen_catchall = true;

@@ -6,8 +6,8 @@ export const monarchLanguage = {
 
   keywords: [
     'if', 'else', 'then', 'match', 'on', 'return', 'emit', 'await', 'for', 'break',
-    'var', 'array', 'buffer', 'let', 'const', 'fn', 'chip', 'mod', 'in', 'out', 'open', 'ref',
-    'import', 'from', 'as', 'event', 'static', 'type',
+    'var', 'array', 'map', 'buffer', 'let', 'const', 'fn', 'chip', 'mod', 'in', 'out', 'open', 'ref',
+    'import', 'from', 'as', 'static', 'type',
     // Contextual: the parser also accepts these as ordinary identifiers, so a
     // variable named `enum` highlights as a keyword. Worth it -- they are the
     // spelling of whole language features (tagged unions, payload access,
@@ -17,7 +17,8 @@ export const monarchLanguage = {
 
   typeKeywords: [
     'int', 'float', 'bool', 'string', 'entity', 'controller', 'character',
-    'vector', 'rotator', 'color', 'exec', 'brick', 'prefab', 'any', 'never',
+    'vector', 'rotator', 'quat', 'color', 'exec', 'brick', 'zone', 'teleport', 'prefab',
+    'Component', 'any', 'never',
   ],
 
   builtins: [
@@ -25,9 +26,9 @@ export const monarchLanguage = {
     'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
     'exp', 'ln', 'sign', 'round',
     'Deg2Rad', 'Rad2Deg', 'min', 'max', 'BitCount',
-    'MakeColor', 'Vec', 'Dot', 'Cross', 'Normalize',
+    'Color', 'Vec', 'Dot', 'Cross', 'Normalize',
     'Magnitude', 'MagnitudeSq', 'Distance', 'DistanceSq',
-    'ScaleVec', 'RotToDir',
+    'ScaleVec',
     'DisplayText', 'ControllerOf', 'CharacterOf',
     'GetAim',
     'InputReader', 'Random', 'Fmt',
@@ -43,14 +44,16 @@ export const monarchLanguage = {
 
   events: [
     'RoundStart', 'RoundEnd',
-    'CharacterSpawned', 'CharacterDied',
-    'ControllerJoined', 'ControllerLeft',
-    'ZoneEntered', 'ZoneLeft',
+    'CharacterSpawned', 'CharacterDied', 'CharacterDamaged', 'CharacterFiredWeapon',
+    'ControllerJoined', 'ControllerLeft', 'ControllerJoinedTeam', 'ControllerLeftTeam',
+    'ZoneEntered', 'ZoneLeft', 'EntityZoneEntered', 'EntityZoneLeft',
+    'ProjectileZoneEntered', 'ProjectileZoneLeft',
     'BrickChanged', 'BrickRemoved',
-    'Bumped',
+    'WholeGridInteracted', 'WholeGridTargeted',
+    'ChatCommand', 'Clock', 'CustomEvent', 'GlobalCustomEvent',
   ],
 
-  constants: ['true', 'false'],
+  constants: ['true', 'false', 'null'],
 
   operators: [
     '&&', '||', '==', '!=', '<=', '>=', '..', '**',
@@ -101,6 +104,15 @@ export const monarchLanguage = {
 
       // Single-quoted strings with interpolation
       [/'/, 'string', '@string_single'],
+
+      // Annotations: @layout("code"), @closed, @label(...)
+      [/@[a-zA-Z_]\w*/, 'annotation'],
+
+      // Asset and prefab references: $Item/Foo, $./file.brz
+      [/\$[A-Za-z0-9_.\/-]+/, 'string.asset'],
+
+      // Atoms: :red, written where no name or closing bracket comes before
+      [/(?<![A-Za-z0-9_")\]}]):[A-Za-z_][A-Za-z0-9_-]*/, 'constant.atom'],
 
       // Identifiers, keywords, types, builtins
       [/[a-zA-Z_]\w*/, {

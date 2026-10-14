@@ -455,6 +455,35 @@
         assert!(!items.iter().any(|i| i["label"] == "ChatCommand"), "event leaked");
     }
 
+    /// The playground completes with the language server's engine: an indexed
+    /// read offers the read's outputs, and a match arm the scrutinee's variants.
+    #[test]
+    fn completion_matches_the_language_server() {
+        let src = "var xs: int[]
+let a = xs[0].";
+        let items = parse_items(&completions(src, 1, 14, "{}", &[]));
+        assert!(items.iter().any(|i| i["label"] == "OutOfBounds"), "got: {items:?}");
+        let src = "enum Hue { Red, Green }
+var h: Hue
+in go: exec
+on go { let n = match h {  } }";
+        let col = src.lines().nth(3).unwrap().find("{  }").unwrap() as u32 + 2;
+        let items = parse_items(&completions(src, 3, col, "{}", &[]));
+        assert!(items.iter().any(|i| i["label"] == "Green"), "got: {items:?}");
+    }
+
+    /// The playground reads `insertText`: an optional argument inserts
+    /// `name = `, not its bare label.
+    #[test]
+    fn completion_items_carry_insert_text_as_the_editor_reads_it() {
+        let src = "in go: exec
+on go { SendCustomEvent( }";
+        let col = src.lines().nth(1).unwrap().find('(').unwrap() as u32 + 1;
+        let items = parse_items(&completions(src, 1, col, "{}", &[]));
+        let data1 = items.iter().find(|i| i["label"] == "data1 = ").unwrap_or_else(|| panic!("{items:?}"));
+        assert_eq!(data1["insertText"], "data1 = ", "{data1:?}");
+    }
+
     #[test]
     fn prefab_ref_completes_from_registry() {
         // `$./t` offers registered prefab paths under `./t…`.

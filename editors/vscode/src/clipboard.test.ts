@@ -47,3 +47,8 @@ test("windows and macos each have exactly one helper", () => {
   assert.deepEqual(names("win32", {}), ["powershell"]);
   assert.deepEqual(names("darwin", {}), ["osascript"]);
 });
+
+test("a quote or backslash in the path stays inside the AppleScript string", () => {
+  const [c] = clipboardCommands('/tmp/a "b" \\c.brz', "darwin", {});
+  assert.equal(c.args[1], 'set the clipboard to POSIX file "/tmp/a \\"b\\" \\\\c.brz"');
+});

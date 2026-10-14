@@ -149,7 +149,7 @@
       "patterns": [
         {
           "name": "storage.modifier.annotation.wirescript",
-          "match": "@(left|right|top|bottom|label|closed|nofold|fold|layout|flat|invisible|sliced)\\b"
+          "match": "@(left|right|top|bottom|label|color|material|closed|nofold|fold|layout|flat|invisible|sliced)\\b"
         }
       ]
     },
@@ -166,7 +166,7 @@
         },
         {
           "name": "keyword.control.wirescript",
-          "match": "\\b(if|else|then|match|on|return|emit|await|from|as|for|break)\\b"
+          "match": "\\b(as|await|break|else|emit|for|from|if|match|on|return|then)\\b"
         },
         {
           "comment": "`unsafe` is contextual: match only the marker position, so a name spelled `unsafe` stays unhighlighted",
@@ -180,7 +180,7 @@
         },
         {
           "name": "keyword.declaration.wirescript",
-          "match": "\\b(var|static|buffer|let|const|fn|chip|mod|in|out|open|ref|import|type)\\b"
+          "match": "\\b(array|buffer|chip|const|enum|fn|import|in|let|map|mod|out|ref|static|type|var)\\b"
         },
         {
           "name": "storage.modifier.wirescript",
@@ -192,7 +192,7 @@
       "patterns": [
         {
           "name": "support.type.wirescript",
-          "match": "\\b(int|float|bool|string|entity|controller|character|vector|rotator|quat|color|brick|exec|zone|teleport|any|never)\\b"
+          "match": "\\b(Component|any|bool|brick|character|color|controller|entity|exec|float|int|never|prefab|quat|rotator|string|teleport|vector|zone)\\b"
         },
         {
           "name": "entity.name.type.wirescript",
@@ -204,7 +204,11 @@
       "patterns": [
         {
           "name": "support.function.wirescript",
-          "match": "\\b(sin|cos|asin|acos|atan|atan2|sinh|cosh|tanh|asinh|acosh|atanh|exp|ln|sign|round|Deg2Rad|Rad2Deg|min|max|BitCount|MakeColor|Vec|Dot|Cross|Normalize|Magnitude|MagnitudeSq|Distance|DistanceSq|ScaleVec|RotToDir|DisplayText|ControllerOf|CharacterOf|AimOrigin|AimDirection|InputReader|Random|Fmt|SetLocation|SetRotation|SetLocationRotation|AddLocationRotation|Teleport|RelativeTeleport|SetVelocity|AddVelocity|SetLinearVelocity|SetAngularVelocity|SetGravityDirection|SetLeaderboard|IncLeaderboard|GetLeaderboard|GetTeam|GetLocation|GetRotation|GetLocationRotation|GetLinearVelocity|GetAngularVelocity|GetVelocity|SpawnPrefab|Sweep)\\b"
+          "match": "\\b(AddLocationRotation|AddVelocity|BitCount|CharacterOf|Color|ControllerOf|Cross|Deg2Rad|DisplayText|Distance|DistanceSq|Dot|Fmt|GetAim|GetAngularVelocity|GetLeaderboard|GetLinearVelocity|GetLocation|GetLocationRotation|GetRotation|GetTeam|GetVelocity|IncLeaderboard|InputReader|Magnitude|MagnitudeSq|Normalize|Rad2Deg|Random|RelativeTeleport|ScaleVec|SetAngularVelocity|SetGravityDirection|SetLeaderboard|SetLinearVelocity|SetLocation|SetLocationRotation|SetRotation|SetVelocity|SpawnPrefab|Sweep|Teleport|Vec|acos|acosh|asin|asinh|atan|atan2|atanh|cos|cosh|exp|ln|max|min|round|sign|sin|sinh|tanh)\\b"
+        },
+        {
+          "name": "support.constant.event.wirescript",
+          "match": "\\b(BrickChanged|BrickRemoved|CharacterDamaged|CharacterDied|CharacterFiredWeapon|CharacterSpawned|ChatCommand|Clock|ControllerJoined|ControllerJoinedTeam|ControllerLeft|ControllerLeftTeam|CustomEvent|EntityZoneEntered|EntityZoneLeft|GlobalCustomEvent|ProjectileZoneEntered|ProjectileZoneLeft|RoundEnd|RoundStart|WholeGridInteracted|WholeGridTargeted|ZoneEntered|ZoneLeft)\\b"
         }
       ]
     },
@@ -212,7 +216,7 @@
       "patterns": [
         {
           "name": "constant.language.wirescript",
-          "match": "\\b(true|false)\\b"
+          "match": "\\b(false|null|true)\\b"
         }
       ]
     },

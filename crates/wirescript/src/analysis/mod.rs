@@ -12,6 +12,7 @@ pub mod inlay_hints;
 pub mod atoms;
 pub mod visit;
 pub mod scoped_refs;
+pub mod completion;
 
 use crate::collections::HashMap;
 use crate::ir::Type;
@@ -43,4 +44,5 @@ pub use resource_estimate::{ResourceEstimate, collect_estimates, lookup_estimate
 pub use inlay_hints::{collect_inlay_hints, InlayHintInfo, InlayHintKind};
 pub use atoms::{atom_at, atom_references, AtomRef};
 pub use visit::visit_program;
+pub use completion::{completions, match_arm_head_scrutinee_at, Completion, CompletionKind};
 pub use scoped_refs::{field_name_at, prepare_rename_at, references_at, references_to_export, semantic_tokens, CrossFile, RefNs, RefSite, RefTarget, SemSpan, SemTokenKind};

@@ -65,7 +65,7 @@
 
     #[test]
     fn cycle_diag_lists_loop_members() {
-        // A → B → A: the WS005 message must name both gates and show the path so
+        // A -> B -> A: the WS005 message must name both gates and show the path so
         // the loop is actually diagnosable.
         let mut m = Module::new("loop");
         let a = gate("Alpha");

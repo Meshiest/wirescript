@@ -4,6 +4,8 @@
 
 use wirescript::compile::{CompileInput, FoldMode, compile, compile_to_world};
 
+mod common;
+
 /// Carries own-line comments and a chip, so the geometry comparison below
 /// covers the annotation and nested-plane paths as well as the gate rows.
 /// `CompileResult.placements` holds no annotations and no chip interiors, so
@@ -52,12 +54,7 @@ fn brick_counts(source: &str, file: &str) -> Vec<usize> {
 
 #[test]
 fn code_layout_compiles_and_orders_lines_top_down() {
-    let r = compile(CompileInput {
-        source: SRC,
-        file: "code_layout_emit.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let r = compile(common::input(SRC, "code_layout_emit.ws"))
     .expect("compile");
     assert!(!r.brz.is_empty());
     // Placements occupy >= 4 distinct Placement.x rows (4+ occupied source
@@ -66,12 +63,7 @@ fn code_layout_compiles_and_orders_lines_top_down() {
     // gives identical placements.
     let rows: std::collections::HashSet<i32> = r.placements.values().map(|p| p.x).collect();
     assert!(rows.len() >= 4, "expected line-stacked rows, got {}", rows.len());
-    let r2 = compile(CompileInput {
-        source: SRC,
-        file: "code_layout_emit.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let r2 = compile(common::input(SRC, "code_layout_emit.ws"))
     .expect("compile 2");
     assert_eq!(
         r.placements.len(),
@@ -125,19 +117,9 @@ fn code_layout_compiles_and_orders_lines_top_down() {
 fn without_annotation_dag_layout_is_unchanged() {
     let dag_src = SRC.strip_prefix("@layout(\"code\")\n\n").expect("prefix");
 
-    let annotated = compile(CompileInput {
-        source: SRC,
-        file: "code_layout_emit.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let annotated = compile(common::input(SRC, "code_layout_emit.ws"))
     .expect("compile annotated");
-    let plain = compile(CompileInput {
-        source: dag_src,
-        file: "code_layout_emit_plain.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let plain = compile(common::input(dag_src, "code_layout_emit_plain.ws"))
     .expect("compile plain");
 
     assert_eq!(

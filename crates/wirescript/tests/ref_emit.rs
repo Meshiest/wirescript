@@ -4,7 +4,6 @@
 mod common;
 
 use brdb::schema::{BrdbValue, SavedBrickRef, WireValue};
-use wirescript::{CompileInput, FoldMode};
 
 const SRC: &str = "\
 var p0: color\n\
@@ -25,12 +24,7 @@ on go {\n\
 }\n";
 
 fn components() -> Vec<brdb::schema::BrdbStruct> {
-    let cr = wirescript::compile::compile(CompileInput {
-        source: SRC,
-        file: "ref_emit.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let cr = wirescript::compile::compile(common::input(SRC, "ref_emit.ws"))
     .expect("should compile to brz");
     common::world_components(&cr.brz)
 }

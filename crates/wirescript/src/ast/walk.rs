@@ -133,6 +133,26 @@ pub fn mentions(node: Node, name: &str) -> bool {
     found
 }
 
+/// Every name [`mentions`] finds in `node`, each passed to `out`.
+pub fn mentioned_names<'a>(node: Node<'a>, out: &mut dyn FnMut(&'a str)) {
+    let mut reads = |n: Node<'a>| match n {
+        Node::Expr(Expr::Ident { name, range: _ }) => out(name),
+        Node::Expr(Expr::RecordLit { fields, .. } | Expr::VariantCtor { fields, .. }) => {
+            for f in fields {
+                if let RecordLitField::Shorthand { name, range: _ } = f {
+                    out(name);
+                }
+            }
+        }
+        _ => {}
+    };
+    reads(node);
+    walk(node, Ctx::default(), &mut |n, _| {
+        reads(n);
+        true
+    });
+}
+
 /// Whether `pred` holds for some node below `node` reached only through flows
 /// `follow` accepts.
 pub fn any_below<'a>(
@@ -194,7 +214,8 @@ fn stmts_children<'a>(stmts: &'a [Stmt], exits: Exits, f: &mut dyn FnMut(Node<'a
     flow
 }
 
-/// Call `f` with each top-level declaration of `script` and its module label.
+/// Call `f` with each top-level declaration of `script` and its module
+/// label, color and material.
 pub fn script_children<'a>(script: &'a Script, f: &mut dyn FnMut(Node<'a>, Flow)) {
     let Script {
         decls,
@@ -206,12 +227,16 @@ pub fn script_children<'a>(script: &'a Script, f: &mut dyn FnMut(Node<'a>, Flow)
         flat: _,
         invisible: _,
         module_label,
+        module_color,
+        module_material,
         imports: _,
     } = script;
     for d in decls {
         f(Node::Decl(d), Flow::Seq);
     }
     opt(module_label, Flow::Seq, f);
+    opt(module_color, Flow::Seq, f);
+    opt(module_material, Flow::Seq, f);
 }
 
 fn opt<'a>(e: &'a Option<Expr>, flow: Flow, f: &mut dyn FnMut(Node<'a>, Flow)) {
@@ -237,10 +262,10 @@ fn decl_children<'a>(d: &'a TopDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
         }
         TopDecl::Chip(c) => chip_children(c, f),
         TopDecl::AnonChip(ac) => anon_chip_children(ac, f),
-        TopDecl::Event(EventDecl { name: _, source, captured_body, no_fold: _, range: _ }) => {
+        TopDecl::Event(EventDecl { name: _, source, captured, no_fold: _, range: _ }) => {
             f(Node::Expr(source), Flow::Seq);
-            if let Some(b) = captured_body {
-                f(Node::Block(b), Flow::Handler);
+            if let Some(h) = captured {
+                handler_children(h, f);
             }
         }
         TopDecl::In(i) => in_children(i, f),
@@ -285,7 +310,8 @@ pub fn stmt_children<'a>(s: &'a Stmt, f: &mut dyn FnMut(Node<'a>, Flow)) {
         Stmt::AnonChip(ac) => anon_chip_children(ac, f),
         Stmt::ChipDecl(c) => chip_children(c, f),
         Stmt::Return { value, range: _ } => opt(value, Flow::Seq, f),
-        Stmt::For(ForStmt { bindings: _, source, result: _, sliced: _, body, range: _ }) => {
+        Stmt::For(ForStmt { bindings: _, source, result: _, sliced: _, label: _, label_expr, body, range: _ }) => {
+            opt(label_expr, Flow::Seq, f);
             match source {
                 ForSource::Range(RangeSource { extent, step, reversed: _, range: _ }) => {
                     match extent {
@@ -471,9 +497,11 @@ fn expr_stmt_children<'a>(es: &'a ExprStmt, f: &mut dyn FnMut(Node<'a>, Flow)) {
 }
 
 fn var_children<'a>(v: &'a VarDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
-    let VarDecl { name: _, typ: _, init, is_static: _, no_fold: _, label: _, label_expr, range: _ } = v;
+    let VarDecl { name: _, typ: _, init, is_static: _, no_fold: _, label: _, label_expr, color_expr, material_expr, range: _ } = v;
     opt(init, Flow::Seq, f);
     opt(label_expr, Flow::Seq, f);
+    opt(color_expr, Flow::Seq, f);
+    opt(material_expr, Flow::Seq, f);
 }
 
 fn array_children<'a>(a: &'a ArrayDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
@@ -520,6 +548,7 @@ fn handler_children<'a>(h: &'a Handler, f: &mut dyn FnMut(Node<'a>, Flow)) {
         body,
         no_fold: _,
         expr_trigger_has_exec_arg: _,
+        alias: _,
         range: _,
     } = h;
     for c in config {
@@ -533,8 +562,10 @@ fn handler_children<'a>(h: &'a Handler, f: &mut dyn FnMut(Node<'a>, Flow)) {
 }
 
 fn anon_chip_children<'a>(ac: &'a AnonChipDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
-    let AnonChipDecl { open: _, body, range: _, label: _, label_expr, closed: _ } = ac;
+    let AnonChipDecl { body, range: _, label: _, label_expr, color_expr, material_expr, closed: _ } = ac;
     opt(label_expr, Flow::Seq, f);
+    opt(color_expr, Flow::Seq, f);
+    opt(material_expr, Flow::Seq, f);
     f(Node::Block(body), Flow::AnonChip);
 }
 
@@ -550,11 +581,54 @@ fn chip_children<'a>(c: &'a ChipDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
         inline: _,
         label: _,
         label_expr,
+        color_expr,
+        material_expr,
         closed: _,
         no_fold: _,
         is_const: _,
         is_fn: _,
     } = c;
     opt(label_expr, Flow::Seq, f);
+    opt(color_expr, Flow::Seq, f);
+    opt(material_expr, Flow::Seq, f);
     f(Node::Block(body), Flow::Decl);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `mentioned_names` finds exactly the names `mentions` answers yes for,
+    /// statement by statement: identifiers, `{ name }` shorthand, nested blocks.
+    #[test]
+    fn mentioned_names_agrees_with_mentions() {
+        let src = "type P = { a: int, b: int }
+in go: exec
+var a: int = 0
+var b: int = 0
+                   on go {
+  var c: int = a
+  let p: P = { a, b: c }
+  if b > 0 { c = p.a }
+  b = c + 1
+}";
+        let r = crate::parser::parse(src, "t.ws");
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        let body = r
+            .ast
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                TopDecl::Handler(h) => Some(&h.body),
+                _ => None,
+            })
+            .expect("the handler");
+        for s in &body.stmts {
+            let mut names = Vec::new();
+            mentioned_names(Node::Stmt(s), &mut |n| names.push(n));
+            for name in ["a", "b", "c", "p", "go", "P"] {
+                assert_eq!(names.contains(&name), mentions(Node::Stmt(s), name), "{name} in {s:?}");
+            }
+        }
+    }
 }

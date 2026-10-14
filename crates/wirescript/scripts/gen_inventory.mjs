@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Regenerate data/logic_gate_inventory.simple.json — the gate catalog the
+// Regenerate wirescript-ir/data/logic_gate_inventory.simple.json — the gate catalog the
 // compiler bakes in via include_str! — from the in-game inventory dump.
 //
 // Sources (merge):
@@ -23,14 +23,16 @@
 //
 //   node scripts/gen_inventory.mjs            # regenerate in place
 //   node scripts/gen_inventory.mjs --check    # don't write; report diff only
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { writeOrCheck } from "./lib.mjs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DATA = join(HERE, "..", "data");
 const NDJSON = join(DATA, "inventory_dump.ndjson");
-const OUT = join(DATA, "logic_gate_inventory.simple.json");
+// The inventory belongs to the backend crate; the raw dump stays here.
+const OUT = join(HERE, "..", "..", "wirescript-ir", "data", "logic_gate_inventory.simple.json");
 
 const checkOnly = process.argv.includes("--check");
 
@@ -360,9 +362,7 @@ if (added.length) console.log(`  new: ${added.map((c) => c.replace("BrickCompone
 if (removed.length) console.log(`  removed: ${removed.map((c) => c.replace("BrickComponentType_", "")).join(", ")}`);
 if (carried.length) console.log(`  carried over (absent from dump, kept from curated): ${carried.map((c) => c.replace("BrickComponentType_", "")).join(", ")}`);
 
-if (checkOnly) {
-  console.log("--check: not writing");
-} else {
-  writeFileSync(OUT, JSON.stringify(out, null, 2) + "\n");
-  console.log(`wrote ${OUT}`);
+if (!writeOrCheck(OUT, JSON.stringify(out, null, 2) + "\n", { check: checkOnly, what: "logic_gate_inventory.simple.json", fix: `node scripts/gen_inventory.mjs` })) {
+  process.exit(1);
 }
+console.log(checkOnly ? `${OUT} is up to date` : `wrote ${OUT}`);

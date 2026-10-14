@@ -6,15 +6,6 @@ use crate::ir::gate_class as gc;
 use crate::typecheck::{ContainerKind, MethodTarget};
 use std::cell::RefCell;
 
-fn class_of(r: &LowerResult, id: crate::ir::NodeId) -> &'static str {
-    r.module.nodes[&id].gate_class
-}
-
-/// The node wired into `(node, port)`.
-fn source_of(r: &LowerResult, node: crate::ir::NodeId, port: WirePort) -> Option<crate::ir::NodeId> {
-    r.module.wires.iter().find(|w| w.target.node_id == node && w.target.port == port).map(|w| w.source.node_id)
-}
-
 fn only(r: &LowerResult, class: &str) -> crate::ir::NodeId {
     let v: Vec<_> = r.module.nodes.values().filter(|n| n.gate_class == class).map(|n| n.id).collect();
     assert_eq!(v.len(), 1, "expected one {class}, got {}", v.len());

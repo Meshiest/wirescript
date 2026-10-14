@@ -2,10 +2,8 @@
 // wirescript formatter — run with: node format.mjs <file.ws> [--stdout]
 
 import { readFileSync, writeFileSync } from 'fs';
-import { resolve, dirname, join } from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { resolve } from 'path';
+import { loadWasm } from './lib.mjs';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -19,13 +17,7 @@ async function main() {
 
   const source = readFileSync(resolve(file), 'utf-8');
 
-  const mod = await import('./pkg/wasm.js');
-  // nodejs-target pkg exports directly; web-target pkg needs init().
-  if (typeof mod.default === 'function') {
-    const wasmBytes = readFileSync(join(__dirname, 'pkg', 'wasm_bg.wasm'));
-    await mod.default({ module_or_path: wasmBytes });
-  }
-  const wirescript_format = mod.wirescript_format ?? mod.default?.wirescript_format;
+  const wirescript_format = (await loadWasm())('wirescript_format');
 
   const formatted = wirescript_format(source, 2, false);
 

@@ -31,6 +31,19 @@ import {
 } from "vscode-languageclient/node";
 
 let client: LanguageClient;
+// The temporary copy of the server binary the running client was started from.
+let runningCopy: string | undefined;
+
+/** Stop the client and delete the copy of the server it ran from. */
+async function stopClient(): Promise<void> {
+  if (client) await client.stop();
+  if (runningCopy) {
+    try {
+      require("fs").unlinkSync(runningCopy);
+    } catch {}
+    runningCopy = undefined;
+  }
+}
 
 class PrettierFormatter implements DocumentFormattingEditProvider {
   private extDir: string;
@@ -75,7 +88,6 @@ class PrettierFormatter implements DocumentFormattingEditProvider {
 
 export function activate(context: ExtensionContext) {
   const config = workspace.getConfiguration("wirescript");
-  let serverPath = config.get<string>("lspPath", "");
 
   const fs = require("fs");
   let extDir = context.extensionPath;
@@ -84,23 +96,29 @@ export function activate(context: ExtensionContext) {
   } catch {}
   const repoRoot = path.resolve(extDir, "..", "..");
 
-  if (!serverPath) {
-    const ext = process.platform === "win32" ? ".exe" : "";
-    serverPath = path.join(
+  // The server binary: the configured one, else this checkout's release build.
+  const sourceBinaryPath =
+    config.get<string>("lspPath", "") ||
+    path.join(
       repoRoot,
       "target",
       "release",
-      `wirescript-lsp${ext}`,
+      `wirescript-lsp${process.platform === "win32" ? ".exe" : ""}`,
     );
-  }
 
-  // On Windows, copy the binary so cargo can rebuild while the LSP is running
-  if (process.platform === "win32" && fs.existsSync(serverPath)) {
+  // On Windows the server runs from a copy, so cargo can rebuild the binary
+  // while it runs. Each copy is deleted once its server has stopped.
+  function serverCopy(): string {
+    if (process.platform !== "win32" || !fs.existsSync(sourceBinaryPath)) {
+      return sourceBinaryPath;
+    }
     const copyPath = path.join(os.tmpdir(), `wirescript-lsp-${Date.now()}.exe`);
     try {
-      fs.copyFileSync(serverPath, copyPath);
-      serverPath = copyPath;
-    } catch {}
+      fs.copyFileSync(sourceBinaryPath, copyPath);
+      return copyPath;
+    } catch {
+      return sourceBinaryPath;
+    }
   }
 
   const clientOptions: LanguageClientOptions = {
@@ -111,17 +129,9 @@ export function activate(context: ExtensionContext) {
     initializationOptions: { provideFormatting: false },
   };
 
-  // Track the source binary path (before copy) so we can watch for rebuilds
-  const sourceBinaryPath =
-    config.get<string>("lspPath", "") ||
-    path.join(
-      repoRoot,
-      "target",
-      "release",
-      `wirescript-lsp${process.platform === "win32" ? ".exe" : ""}`,
-    );
-
-  function startClient(binPath: string) {
+  function startClient() {
+    const binPath = serverCopy();
+    runningCopy = binPath === sourceBinaryPath ? undefined : binPath;
     const exe: Executable = { command: binPath };
     const opts: ServerOptions = { run: exe, debug: exe };
     client = new LanguageClient(
@@ -133,7 +143,7 @@ export function activate(context: ExtensionContext) {
     client.start();
   }
 
-  startClient(serverPath);
+  startClient();
 
   // Prettier-based formatter — the sole formatting provider (see
   // initializationOptions above).
@@ -152,17 +162,8 @@ export function activate(context: ExtensionContext) {
       debounce = setTimeout(async () => {
         debounce = null;
         try {
-          let newPath = sourceBinaryPath;
-          if (process.platform === "win32") {
-            const copyPath = path.join(
-              os.tmpdir(),
-              `wirescript-lsp-${Date.now()}.exe`,
-            );
-            fs.copyFileSync(sourceBinaryPath, copyPath);
-            newPath = copyPath;
-          }
-          if (client) await client.stop();
-          startClient(newPath);
+          await stopClient();
+          startClient();
           console.log("wirescript-lsp: restarted after binary change");
         } catch (e: any) {
           console.error("wirescript-lsp: restart failed:", e.message);
@@ -561,5 +562,5 @@ export function activate(context: ExtensionContext) {
 }
 
 export function deactivate(): Thenable<void> | undefined {
-  return client?.stop();
+  return stopClient();
 }

@@ -543,7 +543,7 @@ pub(super) fn type_user_symbol_call(
         // `Ref(Param(T))`, but a var passed to it infers to its already-auto-
         // derefed inner type (`Int`, not `Ref(Int)`), so the Ref layers are
         // asymmetric: strip a leading Ref off BOTH so `*T` vs `int` collects
-        // as `Param(T)` vs `int` → `Eq(T, int)`, exactly like a value `T`.
+        // as `Param(T)` vs `int` -> `Eq(T, int)`, exactly like a value `T`.
         let param_types: Vec<Type> = sig.params.iter().map(|p| p.ty.clone()).collect();
         let arg_types = if has_spread {
             std::borrow::Cow::Owned(spread_arg_types(ctx, args, positional_arg_types))

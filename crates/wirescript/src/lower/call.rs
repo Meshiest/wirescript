@@ -108,6 +108,47 @@ pub(in crate::lower) fn expand_spread_args<'a>(
     std::borrow::Cow::Owned(out)
 }
 
+/// A `mod`/`chip` call with its named arguments moved to their parameters'
+/// positions, so the positional binding below sees `scale(n, by = 3)` as
+/// `scale(n, 3)`. A parameter skipped before a named one takes its default.
+/// Named args that name no parameter (`exec = ...`) stay as they are, and a
+/// call with a spread is left alone: its positions are only known once the
+/// spread is expanded.
+fn named_args_in_place<'a>(decl: &ChipDecl, args: &'a [CallArg]) -> std::borrow::Cow<'a, [CallArg]> {
+    let param_of = |name: &str| decl.inputs.iter().position(|p| p.name == name);
+    let moves = args.iter().any(|a| matches!(a, CallArg::Named { name, .. } if param_of(name).is_some()));
+    if !moves || args.iter().any(|a| matches!(a, CallArg::Spread(_))) {
+        return std::borrow::Cow::Borrowed(args);
+    }
+    let positional = positional_args(args);
+    let mut slots: Vec<Option<&Expr>> = vec![None; decl.inputs.len()];
+    for (slot, e) in slots.iter_mut().zip(&positional) {
+        *slot = Some(e);
+    }
+    let mut kept = Vec::new();
+    for a in args {
+        match a {
+            CallArg::Named { name, value, .. } => match param_of(name) {
+                Some(i) if slots[i].is_none() => slots[i] = Some(value),
+                Some(_) => {}
+                None => kept.push(a.clone()),
+            },
+            CallArg::Positional(_) | CallArg::Spread(_) => {}
+        }
+    }
+    let given = slots.iter().rposition(Option::is_some).map_or(0, |i| i + 1);
+    let mut out = Vec::with_capacity(args.len());
+    for (slot, param) in slots[..given].iter().zip(&decl.inputs) {
+        match slot.or(param.default.as_ref()) {
+            Some(e) => out.push(CallArg::Positional(e.clone())),
+            None => break,
+        }
+    }
+    out.extend(positional.iter().skip(decl.inputs.len()).map(|e| CallArg::Positional((*e).clone())));
+    out.extend(kept);
+    std::borrow::Cow::Owned(out)
+}
+
 pub(super) fn lower_chip_call(
     ctx: &mut LowerCtx,
     chip_decl: &ChipDecl,
@@ -137,6 +178,7 @@ pub(super) fn lower_chip_call(
         ctx.chip_call_stack.push((chip_decl.range.clone(), false));
     }
 
+    let args = &*named_args_in_place(chip_decl, args);
     let result = if chip_decl.inline {
         lower_chip_call_inline(ctx, chip_decl, args, type_args, range)
     } else {

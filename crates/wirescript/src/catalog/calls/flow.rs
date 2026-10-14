@@ -264,11 +264,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             name: "Dampen",
             gate_class: gc::DAMPEN,
             params: vec![
-                CallParam::req("target", WirePort::Target, Type::Float),
+                CallParam::req("target", WirePort::Target, blend_variant()),
                 CallParam::req("smoothTime", WirePort::SmoothTime, Type::Float),
             ],
             exec: false,
-            outputs: vec![CallOutput::plain(WirePort::Value, Type::Float)],
+            outputs: vec![CallOutput::plain(WirePort::Value, blend_variant())],
             receiver: None,
         },
     );

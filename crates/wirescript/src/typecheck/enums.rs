@@ -114,6 +114,9 @@ impl EnumRegistry {
                 if (crate::catalog::game_enum_schema_type(&def.name).is_some()) != game {
                     continue;
                 }
+                if game && !crate::catalog::resolves_bare_members(&def.name) {
+                    continue;
+                }
                 if variants.iter().all(|name| def.variants.iter().any(|v| v.name == *name)) {
                     if found.is_some() {
                         return Err(());

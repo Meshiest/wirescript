@@ -95,3 +95,29 @@ fn map_method_signature_metadata() {
         assert!(sig.config_gate.is_none());
     }
 }
+
+/// Every map method's return type is what its gate outputs: the catalog's
+/// value outputs minus the exec-out and the inputs' pass-throughs, the
+/// lowering's result first, a generic output carrying the map's value type.
+#[test]
+fn map_return_types_follow_the_inventory() {
+    let (key, value) = (Type::String, Type::Int);
+    for m in map_methods() {
+        let gate = crate::catalog::default_catalog().find_by_class(m.gate).expect("gate in the inventory");
+        let inputs: Vec<&str> = gate.component.inputs.iter().map(|p| p.name.as_str()).collect();
+        let mut fields: Vec<(String, Type)> = gate
+            .component
+            .outputs
+            .iter()
+            .filter(|p| p.ty != crate::catalog::RawPortType::Exec && !inputs.contains(&p.name.as_str()))
+            .map(|p| (crate::catalog::arrays::field_name(&p.name), p.ty.to_type(&value, &Type::Any)))
+            .collect();
+        if let crate::catalog::methods::Lowering::Generic { result, .. } = &m.lowering
+            && let Some(i) = fields.iter().position(|(n, _)| *n == crate::catalog::arrays::field_name(result.as_str()))
+        {
+            let f = fields.remove(i);
+            fields.insert(0, f);
+        }
+        assert_eq!(map_return_type(m.name, &key, &value), Some(Type::call_result(fields)), "map method `{}`", m.name);
+    }
+}

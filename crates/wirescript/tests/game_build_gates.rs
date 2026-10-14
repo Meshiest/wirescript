@@ -10,7 +10,7 @@ use wirescript::ir::{Module, Node};
 mod common;
 
 fn input(src: &str) -> CompileInput<'_> {
-    CompileInput { source: src, file: "game_build_gates.ws", module_name: None, fold_mode: FoldMode::Auto }
+    common::input(src, "game_build_gates.ws")
 }
 
 fn world(src: &str) -> brdb::World {

@@ -15,26 +15,8 @@ use crate::ir::Literal;
 /// compile. `deps` are the files `src` imports, as `(name, source)`.
 pub(super) fn save_dump(src: &str, deps: &[(&str, &str)], fold: bool) -> Result<Vec<String>, Vec<String>> {
     let out = compile_main(src, deps, fold)?;
-    let brz = brdb::Brz::read_slice(&out.brz).expect("read brz");
-    let folders = &brz.index_data.folder_names;
-    let grids: Vec<usize> = folders
-        .iter()
-        .zip(&brz.index_data.folder_parent_ids)
-        .filter(|(_, parent)| usize::try_from(**parent).is_ok_and(|p| folders.get(p).is_some_and(|n| n == "Grids")))
-        .map(|(name, _)| name.parse().unwrap_or_else(|_| panic!("grid folder {name}")))
-        .collect();
-    use brdb::IntoReader;
-    let reader = brz.into_reader();
-    let mut lines = Vec::new();
-    for &gid in &grids {
-        for chunk in reader.brick_chunk_index(gid).expect("read the grid's chunk index") {
-            if chunk.num_components == 0 {
-                continue;
-            }
-            let (_soa, comps) = reader.component_chunk_soa(gid, chunk.index).expect("read components");
-            lines.extend(comps.iter().map(|c| c.to_string()));
-        }
-    }
+    let mut lines: Vec<String> =
+        wirescript_ir::readback::Save::read(&out.brz).components().iter().map(|c| c.to_string()).collect();
     lines.sort();
     Ok(lines)
 }
@@ -86,29 +68,11 @@ fn values_in_save(
         }
     }
     let out = compile_main(src, deps, fold)?;
-    let brz = brdb::Brz::read_slice(&out.brz).expect("read brz");
-    let folders = &brz.index_data.folder_names;
-    let grids: Vec<usize> = folders
-        .iter()
-        .zip(&brz.index_data.folder_parent_ids)
-        .filter(|(_, parent)| usize::try_from(**parent).is_ok_and(|p| folders.get(p).is_some_and(|n| n == "Grids")))
-        .map(|(name, _)| name.parse().unwrap_or_else(|_| panic!("grid folder {name}")))
-        .collect();
-    use brdb::IntoReader;
-    let reader = brz.into_reader();
     let mut values = Vec::new();
-    for &gid in &grids {
-        for chunk in reader.brick_chunk_index(gid).expect("read the grid's chunk index") {
-            if chunk.num_components == 0 {
-                continue;
-            }
-            let (_soa, comps) = reader.component_chunk_soa(gid, chunk.index).expect("read components");
-            for c in comps {
-                match field {
-                    Some(name) => c.get(name).into_iter().for_each(|p| go(p, &mut values, narrow)),
-                    None => c.properties.values().for_each(|p| go(p, &mut values, narrow)),
-                }
-            }
+    for c in wirescript_ir::readback::Save::read(&out.brz).components() {
+        match field {
+            Some(name) => c.get(name).into_iter().for_each(|p| go(p, &mut values, narrow)),
+            None => c.properties.values().for_each(|p| go(p, &mut values, narrow)),
         }
     }
     Ok(values)
@@ -421,10 +385,7 @@ fn a_namespaced_alias_of_a_ref_binds_as_the_ref_it_names() {
 fn a_write_through_an_alias_of_a_ref_is_emitted() {
     let src = ref_row_alias(REF_ROWS[0].1, REF_ROWS[0].3);
     let module = super::compile(&src).module;
-    fn count(m: &crate::ir::Module, class: &str) -> usize {
-        m.nodes.values().filter(|n| n.gate_class == class).count() + m.chips.values().map(|c| count(c, class)).sum::<usize>()
-    }
-    let writes = count(&module, "BrickComponentType_Exec_Var_Increment") + count(&module, "BrickComponentType_Exec_Var_Set");
+    let writes = super::count_class(&module, "BrickComponentType_Exec_Var_Increment") + super::count_class(&module, "BrickComponentType_Exec_Var_Set");
     assert!(writes >= 2, "the write through `p` is missing\n{src}");
 }
 

@@ -972,42 +972,20 @@ fn bind_constructor_args(
         return Err(refuse());
     };
 
-    let mut bound: HashMap<&str, &Expr> = HashMap::default();
-    let mut next_pos = 0usize;
-    for a in args {
-        let (param, value) = match a {
-            CallArg::Positional(v) => {
-                let Some(p) = spec.params.get(next_pos) else {
-                    return Err(refuse()); // more positional args than parameters
-                };
-                next_pos += 1;
-                (p.name, v)
-            }
-            CallArg::Named { name, value, .. } => {
-                let Some(p) = spec.params.iter().find(|p| p.name == name) else {
-                    return Err(refuse()); // names no parameter of this constructor
-                };
-                (p.name, value)
-            }
-            // A spread has no constant form. Refused explicitly, like
-            // `Expr::Array`'s spread ELEMENT above — unwrapping it as an
-            // ordinary positional argument would bind an array literal to a
-            // scalar axis and lean on `fold_constructor` to reject it by
-            // accident.
-            CallArg::Spread(v) => {
-                return Err(ConstError {
-                    reason: ConstReason::Unsupported("a spread"),
-                    range: v.range().clone(),
-                });
-            }
-        };
-        if bound.insert(param, value).is_some() {
-            return Err(refuse()); // two arguments for one parameter
+    let names: Vec<&str> = spec.params.iter().map(|p| p.name).collect();
+    let slots = match super::interp::bind_args(&names, 0, args, super::interp::Arity::Strict) {
+        Ok(slots) => slots,
+        Err(super::interp::Misfit::Argument) => return Err(refuse()),
+        Err(super::interp::Misfit::Spread(v)) => {
+            return Err(ConstError {
+                reason: ConstReason::Unsupported("a spread"),
+                range: v.range().clone(),
+            });
         }
-    }
+    };
 
     let mut lits = Vec::with_capacity(spec.params.len());
-    for p in &spec.params {
+    for slot in slots {
         // `break`, NOT `continue`: skipping an unbound parameter would CLOSE
         // the hole, sliding every later argument one slot left onto the wrong
         // axis — `Color(0.5, 0.75, a = 0.25)` would fold to
@@ -1016,7 +994,7 @@ fn bind_constructor_args(
         // `fold_constructor` declines (see this function's doc comment for why
         // that is sound). Guarded by
         // `a_hole_in_a_constructors_arguments_is_refused_not_closed`.
-        let Some(&arg) = bound.get(p.name) else { break };
+        let Some(arg) = slot else { break };
         lits.push(eval_expr(arg, cx, budget)?);
     }
     Ok(lits)
@@ -1259,27 +1237,15 @@ fn eval_method_call(
     if spec.exec || spec.receiver.is_none() {
         return None;
     }
-    let first = spec.params.first()?;
-
-    let mut bound: HashMap<&str, &Expr> = HashMap::default();
-    bound.insert(first.name, obj);
-    let mut next_pos = 1usize;
-    for a in args {
-        match a {
-            CallArg::Named { name, value, .. } => {
-                if spec.params.iter().any(|p| p.name == name) {
-                    bound.insert(name.as_str(), value);
-                }
-            }
-            CallArg::Positional(value) => {
-                if let Some(p) = spec.params.get(next_pos) {
-                    bound.insert(p.name, value);
-                }
-                next_pos += 1;
-            }
-            CallArg::Spread(_) => {} // no constant form; unbound slot below refuses
-        }
+    if spec.params.is_empty() {
+        return None;
     }
+
+    let names: Vec<&str> = spec.params.iter().map(|p| p.name).collect();
+    let Ok(mut slots) = super::interp::bind_args(&names, 1, args, super::interp::Arity::Lenient) else {
+        unreachable!("lenient binding refuses nothing")
+    };
+    slots[0] = slots[0].or(Some(obj));
 
     let refuse = |why: String| {
         Some(Err(ConstError {
@@ -1289,8 +1255,8 @@ fn eval_method_call(
     };
 
     let mut inputs: Vec<Option<Value>> = Vec::with_capacity(spec.params.len());
-    for p in &spec.params {
-        let Some(&arg_expr) = bound.get(p.name) else {
+    for slot in slots {
+        let Some(arg_expr) = slot else {
             inputs.push(None); // unwired, exactly like an omitted optional arg
             continue;
         };
@@ -1339,40 +1305,16 @@ fn eval_interp(
     cx: &ConstCtx,
     budget: &mut Budget,
 ) -> Result<Literal, ConstError> {
-    const MAX_SLOTS: usize = 7; // mirrors lower/ops.rs::FORMAT_SLOTS.len()
-
-    let mut groups: Vec<(String, Vec<Value>)> = Vec::new();
-    let mut cur_fmt = String::new();
-    let mut cur_slots: Vec<Value> = Vec::new();
-    for p in parts {
-        match p {
-            InterpPart::Lit(s) => {
-                cur_fmt.push_str(&s.replace('{', "{{").replace('}', "}}"));
-            }
-            InterpPart::Expr(expr) => {
-                if cur_slots.len() == MAX_SLOTS {
-                    groups.push((std::mem::take(&mut cur_fmt), std::mem::take(&mut cur_slots)));
-                }
-                // A failing part propagates its OWN error verbatim — it
-                // already blames the right sub-range via the normal
-                // eval_expr -> reason_for path, so this function must not
-                // re-wrap or re-explain it.
-                let lit = eval_expr(expr, cx, budget)?;
-                let Some(value) = Value::from_literal(&lit) else {
-                    return Err(ConstError {
-                        reason: ConstReason::Refused(
-                            "this interpolated value has no certified constant text form"
-                                .to_string(),
-                        ),
-                        range: expr.range().clone(),
-                    });
-                };
-                cur_fmt.push_str(&format!("{{{}}}", cur_slots.len()));
-                cur_slots.push(value);
-            }
-        }
-    }
-    groups.push((cur_fmt, cur_slots));
+    let groups = fold_eval::interp_groups(parts, |expr| {
+        // A failing part propagates its OWN error verbatim — it already
+        // blames the right sub-range via the normal eval_expr -> reason_for
+        // path, so this function must not re-wrap or re-explain it.
+        let lit = eval_expr(expr, cx, budget)?;
+        Value::from_literal(&lit).ok_or_else(|| ConstError {
+            reason: ConstReason::Refused("this interpolated value has no certified constant text form".to_string()),
+            range: expr.range().clone(),
+        })
+    })?;
 
     let mut out = String::new();
     for (fmt, slots) in groups {

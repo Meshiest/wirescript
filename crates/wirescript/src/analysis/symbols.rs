@@ -282,7 +282,7 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
                     format!(" -> ({})", fields.join(", "))
                 }
             };
-            let label = if c.inline { "mod" } else { "chip" };
+            let label = c.kind_label();
             // Generic type parameters render before the arg list, e.g.
             // `mod square<T>(v: T) -> T` / `mod clamp<T: Scalar>(...)`.
             let generics = if c.type_params.is_empty() {
@@ -442,7 +442,7 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
 /// resolver allows through `import { … }` / `import * as`.
 fn namespace_member_decl(d: &TopDecl) -> Option<(String, &'static str)> {
     match d {
-        TopDecl::Chip(c) => Some((c.name.clone(), if c.inline { "mod" } else { "chip" })),
+        TopDecl::Chip(c) => Some((c.name.clone(), c.kind_label())),
         TopDecl::Fn(f) => Some((f.name.clone(), "fn")),
         TopDecl::Let(l) => match &l.binding {
             LetBinding::Ident { name, .. } => Some((name.clone(), "let")),

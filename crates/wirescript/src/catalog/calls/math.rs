@@ -23,7 +23,16 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
     m.insert("round", math_unary("round", gc::ROUND));
     m.insert("floor", math_unary("floor", gc::FLOOR));
     m.insert("ceil", math_unary("ceil", gc::CEIL));
-    m.insert("abs", math_unary("abs", gc::MATH_ABS));
+    m.insert(
+        "abs",
+        vec_expr(
+            "abs",
+            gc::MATH_ABS,
+            vec![CallParam::req("x", WirePort::Input, blend_variant())],
+            WirePort::Output,
+            blend_variant(),
+        ),
+    );
     m.insert("sqrt", math_unary("sqrt", gc::MATH_SQRT));
     m.insert("Deg2Rad", math_unary("Deg2Rad", gc::DEG2RAD));
     m.insert("Rad2Deg", math_unary("Rad2Deg", gc::RAD2DEG));
@@ -33,11 +42,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "min",
             gc::MATH_MIN,
             vec![
-                CallParam::req("a", WirePort::InputA, Type::Float),
-                CallParam::req("b", WirePort::InputB, Type::Float),
+                CallParam::req("a", WirePort::InputA, blend_variant()),
+                CallParam::req("b", WirePort::InputB, blend_variant()),
             ],
             WirePort::Output,
-            Type::Float,
+            blend_variant(),
         ),
     );
     m.insert(
@@ -46,11 +55,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "max",
             gc::MATH_MAX,
             vec![
-                CallParam::req("a", WirePort::InputA, Type::Float),
-                CallParam::req("b", WirePort::InputB, Type::Float),
+                CallParam::req("a", WirePort::InputA, blend_variant()),
+                CallParam::req("b", WirePort::InputB, blend_variant()),
             ],
             WirePort::Output,
-            Type::Float,
+            blend_variant(),
         ),
     );
     m.insert(
@@ -72,12 +81,12 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "clamp",
             gc::MATH_CLAMP,
             vec![
-                CallParam::req("x", WirePort::Input, Type::Float),
-                CallParam::req("min", WirePort::Min, Type::Float),
-                CallParam::req("max", WirePort::Max, Type::Float),
+                CallParam::req("x", WirePort::Input, blend_variant()),
+                CallParam::req("min", WirePort::Min, blend_variant()),
+                CallParam::req("max", WirePort::Max, blend_variant()),
             ],
             WirePort::Output,
-            Type::Float,
+            blend_variant(),
         ),
     );
     m.insert(
@@ -202,6 +211,8 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("inMax", WirePort::InputMax, Type::Float),
                 CallParam::req("outMin", WirePort::OutputMin, Type::Float),
                 CallParam::req("outMax", WirePort::OutputMax, Type::Float),
+                CallParam::opt("function", WirePort::Function, Type::Any),
+                CallParam::opt("direction", WirePort::Direction, Type::Any),
             ],
             exec: false,
             outputs: vec![CallOutput::plain(WirePort::Output, Type::Float)],

@@ -70,6 +70,30 @@ chip Outer(a: *int) -> () {
         assert!(outer.total_microchips >= 1, "a non-inline chip call is a microchip: {}", outer.total_microchips);
     }
 
+    #[test]
+    fn a_call_in_any_body_counts_as_a_microchip() {
+        let bodies = [
+            "for i in 0..3 { let x = Inner(a) }",
+            "if let E.B(v) = s { let x = Inner(v) }",
+            "let n = match s { E.A => Inner(a), E.B(v) => v }",
+            "let t = \"${Inner(a)}\"",
+        ];
+        for body in bodies {
+            let src = format!(
+                "enum E {{ A, B(int) }}
+chip Inner(a: int) -> (r: int) {{ out r = a + 1 }}
+                 chip Outer(a: *int) -> () {{
+  in run: exec
+  var s: E
+  on run {{ {body} }}
+}}"
+            );
+            let est = estimates_for(&src);
+            let outer = est.get("Outer").expect("should have Outer");
+            assert!(outer.total_microchips >= 1, "{body}: {}", outer.total_microchips);
+        }
+    }
+
     /// A `import * as ns` member is stored in `symbols` — and looked up by
     /// hover — under its qualified `ns.member` name, while estimates are
     /// collected under the bare one. Without the qualified alias, hovering
@@ -93,3 +117,38 @@ chip Outer(a: *int) -> () {
         assert_eq!(bare, qualified, "qualified alias must carry the expanded estimate");
         assert!(qualified > 0, "member should have gates, got {qualified}");
     }
+
+    #[test]
+    fn a_fn_call_costs_its_caller_one_gate_not_the_body() {
+        let body = "  let a = x * 2 + 1
+  let b = a * a - x
+  return b / 3 + a
+";
+        let fn_src = format!("fn work(x: int) -> int {{
+{body}}}
+");
+        let mod_src = format!("mod work(x: int) -> int {{
+{body}}}
+");
+        let caller = "in go: exec
+on go {
+  let p = work(1)
+  let q = work(p)
+  let r = work(q)
+}
+";
+        let fn_est = estimates_for(&format!("{fn_src}{caller}"));
+        let mod_est = estimates_for(&format!("{mod_src}{caller}"));
+        let handler = |est: &HashMap<String, ResourceEstimate>| {
+            est.iter().find(|(k, _)| k.as_str() != "work").map(|(_, e)| e.gates).expect("handler estimate")
+        };
+        let work = fn_est.get("work").expect("fn estimate");
+        assert!(work.is_fn && work.gates > 3, "the fn's own estimate is its body: {}", work.gates);
+        let body_gates = mod_est.get("work").expect("mod estimate").gates;
+        assert_eq!(
+            handler(&mod_est) - handler(&fn_est),
+            3 * body_gates - 3,
+            "three fn calls cost three Function Call gates where three mod calls inline three bodies"
+        );
+    }
+

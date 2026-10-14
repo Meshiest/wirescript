@@ -25,8 +25,8 @@
 //! idempotent and keeps it from double-pinning normal declared chip I/O.
 //! When the source and target modules are genuine siblings (neither owns
 //! the other, i.e. neither is the crossing's LCA), the middle segment is a
-//! direct MicrochipOutput → MicrochipInput wire held in the LCA module —
-//! the exact shape ordinary lowering already gives a declared pin→pin
+//! direct MicrochipOutput -> MicrochipInput wire held in the LCA module —
+//! the exact shape ordinary lowering already gives a declared pin->pin
 //! chip-call wire, so declared chip I/O keeps its shape class and the pass
 //! stays idempotent over it.
 
@@ -37,7 +37,7 @@ use crate::intern::sym;
 use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
 use crate::ir::{
-    GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, PortSpec, ROOT_SCOPE_ID, Type, Wire,
+    GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire,
 };
 
 /// Chip-node path from the root module; the root itself is `[]`.
@@ -50,7 +50,11 @@ pub fn synthesize_boundary_pins(root: &mut Module) {
     normalize_pin_ports(root);
 
     let mut owner: HashMap<NodeId, ModPath> = HashMap::default();
-    index_owners(root, &mut Vec::new(), &mut owner);
+    root.walk(&mut |path, m| {
+        for id in m.nodes.keys() {
+            owner.insert(*id, path.to_vec());
+        }
+    });
 
     let mut crossings: Vec<Wire> = Vec::new();
     extract_crossings(root, &owner, &mut crossings);
@@ -58,7 +62,7 @@ pub fn synthesize_boundary_pins(root: &mut Module) {
         return;
     }
 
-    // (owning module, feeding PortRef) → pin node id. Keying on the feeder
+    // (owning module, feeding PortRef) -> pin node id. Keying on the feeder
     // dedupes: N consumers of one external source share one pin per wall.
     let mut pins: HashMap<(ModPath, PortRef), NodeId> = HashMap::default();
     for wire in crossings {
@@ -131,19 +135,6 @@ fn refresh_scope_captures(m: &mut Module) {
         refresh_scope_captures(m.chips.get_mut(&k).unwrap());
     }
     m.scope_captures = crate::lower::call::compute_scope_captures(m);
-}
-
-fn index_owners(m: &Module, path: &mut ModPath, owner: &mut HashMap<NodeId, ModPath>) {
-    for id in m.nodes.keys() {
-        owner.insert(*id, path.clone());
-    }
-    let mut kids: Vec<NodeId> = m.chips.keys().copied().collect();
-    kids.sort();
-    for k in kids {
-        path.push(k);
-        index_owners(&m.chips[&k], path, owner);
-        path.pop();
-    }
 }
 
 /// Remove every rewirable crossing from all wire lists, in deterministic
@@ -237,7 +228,7 @@ fn rewire(
     for k in (lca + 1..=sp.len()).rev() {
         let mpath = sp[..k].to_vec();
         if mpath == sp
-            && module_at(root, &mpath)
+            && root.at(&mpath)
                 .nodes
                 .get(&wire.source.node_id)
                 .is_some_and(|n| n.gate_class == gc::MICROCHIP_OUTPUT)
@@ -276,7 +267,7 @@ fn rewire(
     for k in lca + 1..=tp.len() {
         let mpath = tp[..k].to_vec();
         if mpath == tp
-            && module_at(root, &mpath)
+            && root.at(&mpath)
                 .nodes
                 .get(&wire.target.node_id)
                 .is_some_and(|n| n.gate_class == gc::MICROCHIP_INPUT)
@@ -305,26 +296,11 @@ fn rewire(
     push_wire_at_lca(root, &feeder_path, &tp, feeder, wire.target);
 }
 
-fn module_at<'a>(root: &'a Module, path: &[NodeId]) -> &'a Module {
-    let mut m = root;
-    for c in path {
-        m = &m.chips[c];
-    }
-    m
-}
-fn module_at_mut<'a>(root: &'a mut Module, path: &[NodeId]) -> &'a mut Module {
-    let mut m = root;
-    for c in path {
-        m = m.chips.get_mut(c).unwrap();
-    }
-    m
-}
-
 /// New wires live in the LCA module of their endpoints — the parent for a
 /// parent<->child-pin hop, the module itself for a local hop.
 fn push_wire_at_lca(root: &mut Module, a: &[NodeId], b: &[NodeId], source: PortRef, target: PortRef) {
     let lca = a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count();
-    module_at_mut(root, &a[..lca.min(a.len())])
+    root.at_mut(&a[..lca.min(a.len())])
         .wires
         .push(Wire { source, target });
 }
@@ -353,22 +329,8 @@ fn pin_for(
     };
     let mut props = HashMap::default();
     props.insert(*sym::PORT_LABEL, Literal::String(label.to_string()));
-    let node = Node {
-        id,
-        kind,
-        gate_class,
-        properties: Arc::new(props),
-        ports: Arc::new(GateIO {
-            inputs: vec![PortSpec::new(*sym::RER_INPUT, ty.clone())],
-            outputs: vec![PortSpec::new(*sym::RER_OUTPUT, ty.clone())],
-        }),
-        source_range: Default::default(),
-        chip_id: None,
-        chain_id: None,
-        scope_id: ROOT_SCOPE_ID,
-        note: Some("boundary_pin"),
-    };
-    let m = module_at_mut(root, mpath);
+    let node = Node::new(id, kind, gate_class, GateIO::pin(ty.clone()), props, None, Some("boundary_pin"));
+    let m = root.at_mut(mpath);
     m.nodes.insert(id, node);
     if kind == NodeKind::Input {
         m.inputs.push(id);
@@ -382,14 +344,7 @@ fn pin_for(
 }
 
 fn source_port_type(root: &Module, sp: &[NodeId], src: PortRef) -> Option<Type> {
-    module_at(root, sp)
-        .nodes
-        .get(&src.node_id)?
-        .ports
-        .outputs
-        .iter()
-        .find(|p| WirePort::from_name(crate::intern::resolve(p.name)) == src.port)
-        .map(|p| p.ty.clone())
+    root.at(sp).nodes.get(&src.node_id)?.output_type(src.port)
 }
 
 /// The referenced identifier, when the source node has one — `NAME_LABEL`
@@ -402,7 +357,7 @@ fn source_port_type(root: &Module, sp: &[NodeId], src: PortRef) -> Option<Type> 
 /// any empty result into a synthetic name after all pins for this module
 /// have been created.
 fn derive_label(root: &Module, sp: &[NodeId], src: NodeId) -> String {
-    let Some(n) = module_at(root, sp).nodes.get(&src) else {
+    let Some(n) = root.at(sp).nodes.get(&src) else {
         return String::new();
     };
     let get_str = |k: crate::intern::Sym| match n.properties.get(&k) {

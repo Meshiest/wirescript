@@ -116,6 +116,7 @@ fn collect_sources(module: &Module, read: &mut HashSet<NodeId>) {
     read.extend(module.wires.iter().map(|w| w.source.node_id));
     read.extend(module.dynamic_labels.values().map(|p| p.node_id));
     read.extend(module.root_dynamic_label.iter().map(|p| p.node_id));
+    read.extend(module.style_sources().map(|p| p.node_id));
     for child in module.chips.values() {
         collect_sources(child, read);
     }

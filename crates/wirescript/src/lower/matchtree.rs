@@ -254,7 +254,7 @@ fn clone_cols<'a>(cols: &[Col<'a>]) -> Vec<Col<'a>> {
 /// the leftmost column the first row constrains: one case per constructor
 /// present, plus a `default` (the recursion on the default matrix - which is
 /// `Fail` when nothing wildcard-like remains) whenever the cases do not cover
-/// every variant.
+/// every variant or a wildcard-like row is left to catch a stray tag.
 fn compile(cols: &[Col], rows: &[Row], enums: Enums<'_>) -> Decision {
     let Some(first) = rows.first() else {
         return Decision::Fail;
@@ -306,8 +306,10 @@ fn compile(cols: &[Col], rows: &[Row], enums: Enums<'_>) -> Decision {
         cases.push((v.discriminant, compile(&sub_cols, &sub_rows, enums)));
     }
 
+    // A wildcard-like row after cases covering every variant still catches a
+    // runtime tag that names none of them.
     let complete = by_variant.iter().all(|g| !g.is_empty());
-    let default = if complete {
+    let default = if complete && wilds.is_empty() {
         None
     } else {
         let (def_cols, def_rows) = default_matrix_rows(cols, rows, idx, &wilds);

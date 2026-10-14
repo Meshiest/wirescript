@@ -129,31 +129,19 @@ fn fuse_nand_buffer_in_chip_with_param() {
 
 #[test]
 fn namespace_import_buffer_initializer_is_wired() {
-    use crate::resolve::{MemLoader, resolve};
+    use crate::resolve::MemLoader;
     let lib_src = "var e: bool = true\nbuffer t: bool = !(t && e)";
     let main_src = "import * as lib from \"lib\"\nout r = 1";
     let mut files = std::collections::HashMap::default();
     files.insert("lib.ws".to_string(), lib_src.into());
     let loader = MemLoader { files };
-    let resolved = resolve(main_src, "test", &loader);
+    let crate::compile::FrontEnd { resolved, lowered: r, .. } =
+        crate::compile::front_end(main_src, "test", None, FoldMode::Auto, &loader);
     assert!(
         resolved.diagnostics.is_empty(),
         "import should resolve: {:?}",
         resolved.diagnostics
     );
-    let tc = crate::typecheck::typecheck(&resolved.ast, "test", &crate::typecheck::CeSlotMap::default());
-    let r = crate::lower::lower(crate::lower::LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test",
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: FoldMode::Auto,
-        ce_slots: &crate::typecheck::CeSlotMap::default(),
-    });
     let gates: Vec<_> = r.module.nodes.values().map(|n| n.gate_class).collect();
     let buffer = r
         .module

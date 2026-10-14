@@ -24,7 +24,7 @@
         // unwraps to whichever field matches the target
         assert_ne!(coerce(&rec, &Type::Int), CoerceRule::Mismatch);
         assert_ne!(coerce(&rec, &Type::Bool), CoerceRule::Mismatch);
-        // no field matches → still a mismatch
+        // no field matches -> still a mismatch
         assert_eq!(coerce(&rec, &Type::Vector), CoerceRule::Mismatch);
         // a record target is not unwrapped
         assert_eq!(coerce(&rec, &Type::Record(vec![])), CoerceRule::Mismatch);
@@ -111,14 +111,14 @@
     fn string_coerces_to_bool() {
         // The coercion means exactly `s != ""` (empty false, everything
         // else true): lowering inserts a `CompareNotEqual(s, "")` gate at
-        // every string-typed-source → bool-typed-destination wire, so this
+        // every string-typed-source -> bool-typed-destination wire, so this
         // rule just tells typecheck the pair is legal.
         assert_eq!(coerce(&Type::String, &Type::Bool), CoerceRule::Coerce);
     }
     #[test]
     fn bool_to_string_stays_via_format() {
-        // bool → string still renders "true"/"false" text through the
-        // format-text path, distinct from the string→bool truthiness rule
+        // bool -> string still renders "true"/"false" text through the
+        // format-text path, distinct from the string->bool truthiness rule
         // above.
         assert_eq!(coerce(&Type::Bool, &Type::String), CoerceRule::ViaString);
     }

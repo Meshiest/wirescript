@@ -40,7 +40,7 @@ fn main() {
             file: &file_str,
             module_name: None,
             fold_mode: FoldMode::Auto,
-        });
+        }, &wirescript::FsLoader);
         // Diagnostics from an imported module are reported too, against the file
         // they came from. Dropping them printed "no errors" for programs the
         // compiler rejects outright, and every real project here is multi-file.
@@ -55,15 +55,7 @@ fn main() {
                 Severity::Warning => { total_warnings += 1; ("WARN", "\x1b[33m") }
                 _ => { ("INFO", "\x1b[36m") }
             };
-            let origin = if d.range.file.is_empty() {
-                file_arg.as_str().into()
-            } else {
-                wirescript::diagnostic::display_path(&d.range.file)
-            };
-            eprintln!(
-                "{}{}\x1b[0m [{}] {} ({}:{}:{})",
-                color, label, d.code, d.message, origin, d.range.start.line, d.range.start.col
-            );
+            eprintln!("{color}{label}\x1b[0m [{}] {} ({})", d.code, d.message, d.location_or(file_arg));
         }
     }
 

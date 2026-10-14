@@ -1,36 +1,9 @@
 #!/usr/bin/env node
 // wirescript type checker — run with: node check.mjs <file.ws>
 
-import { readFileSync, readdirSync } from 'fs';
-import { resolve, dirname, join, basename } from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-async function loadWasm() {
-  const mod = await import('./pkg/wasm.js');
-  // nodejs-target pkg exports directly; web-target pkg needs init().
-  if (typeof mod.default === 'function') {
-    const wasmBytes = readFileSync(join(__dirname, 'pkg', 'wasm_bg.wasm'));
-    await mod.default({ module_or_path: wasmBytes });
-  }
-  const wirescript_diagnostics = mod.wirescript_diagnostics ?? mod.default?.wirescript_diagnostics;
-  return { wirescript_diagnostics };
-}
-
-function buildFileMap(file) {
-  const dir = dirname(resolve(file));
-  const name = basename(resolve(file));
-  const map = {};
-  try {
-    for (const entry of readdirSync(dir)) {
-      if (entry.endsWith('.ws') && entry !== name) {
-        map[entry] = readFileSync(join(dir, entry), 'utf-8');
-      }
-    }
-  } catch {}
-  return JSON.stringify(map);
-}
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+import { fileMapJson, loadWasm } from './lib.mjs';
 
 async function main() {
   const file = process.argv[2];
@@ -40,9 +13,9 @@ async function main() {
   }
 
   const source = readFileSync(resolve(file), 'utf-8');
-  const { wirescript_diagnostics } = await loadWasm();
+  const wirescript_diagnostics = (await loadWasm())('wirescript_diagnostics');
 
-  const json = wirescript_diagnostics(source, buildFileMap(file));
+  const json = wirescript_diagnostics(source, fileMapJson(file));
   const diags = JSON.parse(json);
 
   if (diags.length === 0) {

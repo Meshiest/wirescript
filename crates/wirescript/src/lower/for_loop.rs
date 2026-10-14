@@ -209,8 +209,8 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
                 Some(ContainerSource::Ref(p)) => Some(p),
                 Some(ContainerSource::Columns(cols)) => {
                     let driver = match kind {
-                        LoopKind::ForEachArray => crate::lower::access::leaf_arrays(&cols).into_iter().next(),
-                        _ => crate::lower::access::leaf_maps(&cols).into_iter().next(),
+                        LoopKind::ForEachArray => leaf_columns(Columns::Array, &cols).into_iter().next(),
+                        _ => leaf_columns(Columns::Map, &cols).into_iter().next(),
                     };
                     columns = Some(cols);
                     driver.map(|v| {
@@ -238,6 +238,10 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
     let mut shell_props = HashMap::default();
     if s.sliced {
         shell_props.insert(crate::intern::intern(RUN_ACROSS_TICKS), Literal::Bool(true));
+    }
+    let consts = ctx.const_lookup();
+    if let Some(label) = crate::lower::predeclare::resolve_label_text(s.label.as_deref(), s.label_expr.as_ref(), &consts) {
+        shell_props.insert(*crate::intern::sym::NAME_LABEL, Literal::String(label));
     }
     let shell = ctx.add_gate(AddNodeOpts {
         gate_class: spec.shell_class,
@@ -317,11 +321,11 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
             let fields = match kind {
                 LoopKind::ForEachArray => {
                     let index = entry.port(WirePort::Index);
-                    crate::lower::access::record_array_index_read(ctx, cols, index, &s.range)
+                    record_column_read(ctx, Columns::Array, cols, index, &s.range)
                 }
                 _ => {
                     let key = entry.port(WirePort::Key);
-                    crate::lower::access::record_map_key_read(ctx, cols, key, &s.range)
+                    record_column_read(ctx, Columns::Map, cols, key, &s.range)
                 }
             };
             ctx.scope.insert(name, Binding::Record(fields));
@@ -744,13 +748,21 @@ fn fold_builtin(spec: &crate::catalog::calls::CallSpec, vals: &[PinVal]) -> Opti
     let mut inputs: Vec<Option<Value>> = Vec::with_capacity(vals.len());
     for (v, param) in vals.iter().zip(&spec.params) {
         let PinVal::Const(lit) = v else { return None };
-        let lit = match (lit, &param.ty) {
+        let lit = match (lit, float_param(&param.ty)) {
             (Literal::Int(n), Type::Float) => Literal::Float(*n as f64),
             (other, _) => other.clone(),
         };
         inputs.push(Value::from_literal(&lit));
     }
     Some(super::fold::eval::eval(spec.gate_class, &inputs)?.to_literal())
+}
+
+/// A math-variant port (`max`'s) as the `float` the bounds are computed in.
+fn float_param(t: &Type) -> Type {
+    match t {
+        Type::Union(m) if m.contains(&Type::Float) => Type::Float,
+        t => t.clone(),
+    }
 }
 
 /// Build the gate for a synthesized builtin call, wiring each argument into
@@ -768,12 +780,12 @@ fn build_builtin(
             inputs: spec
                 .params
                 .iter()
-                .map(|p| PortSpec::new(p.port.sym(), p.ty.clone()))
+                .map(|p| PortSpec::new(p.port.sym(), float_param(&p.ty)))
                 .collect(),
             outputs: spec
                 .outputs
                 .iter()
-                .map(|o| PortSpec::new(o.port.sym(), o.ty.clone()))
+                .map(|o| PortSpec::new(o.port.sym(), float_param(&o.ty)))
                 .collect(),
         },
         ..Default::default()
@@ -871,7 +883,7 @@ mod tests {
                         // an int-typed input to this gate class, so a raw
                         // `Value::Int` gets a `None` refusal instead of the
                         // certified law.
-                        let lit = match (eval_pin(a, count), &param.ty) {
+                        let lit = match (eval_pin(a, count), float_param(&param.ty)) {
                             (Literal::Int(n), Type::Float) => Literal::Float(n as f64),
                             (lit, _) => lit,
                         };

@@ -10,7 +10,6 @@ use wirescript::{
     emit::{EmitOptions, Placement},
     emit_brdb, emit_brz,
     ir::{GateIO, Module, Node, NodeId, NodeKind, PortRef, PortSpec, SourceRange, Type, Wire},
-    template_cache::TemplateCache,
 };
 
 #[test]
@@ -59,12 +58,11 @@ fn phase1_sample() {
         placements,
         ..Default::default()
     };
-    let template_cache = Arc::new(TemplateCache::new());
-    let bytes = emit_brz(&module, &lr, &EmitOptions::default(), &template_cache).expect("emit brz");
+    let bytes = emit_brz(&module, &Default::default(), &lr, &EmitOptions::default()).expect("emit brz");
     fs::write("/tmp/wirescript_phase1.brz", &bytes).expect("write brz file");
     let brdb_path = "/tmp/wirescript_phase1.brdb";
     let _ = fs::remove_file(brdb_path);
-    emit_brdb(&module, &lr, &EmitOptions::default(), &template_cache, brdb_path).expect("emit brdb");
+    emit_brdb(&module, &Default::default(), &lr, &EmitOptions::default(), brdb_path).expect("emit brdb");
     println!(
         "Wrote /tmp/wirescript_phase1.brz ({} bytes) + /tmp/wirescript_phase1.brdb.\nLoad in-game with:\n  BR.World.LoadAdditive wirescript_phase1",
         bytes.len(),

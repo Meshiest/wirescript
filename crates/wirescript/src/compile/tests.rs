@@ -104,7 +104,7 @@
                 file: &file,
                 module_name: None,
                 fold_mode: FoldMode::Auto,
-            })
+            }, &crate::resolve::FsLoader)
         };
 
         // A named import leaves the module's `on` handler behind, which is WS014.
@@ -204,7 +204,7 @@
         }
 
         let check = |src: &str| {
-            diagnostics_only(CompileInput { source: src, file: "main", module_name: None, fold_mode: FoldMode::Auto })
+            diagnostics_only(CompileInput { source: src, file: "main", module_name: None, fold_mode: FoldMode::Auto }, &crate::resolve::FsLoader)
         };
         let alone = check(&format!("{head}on go {{ n = k.nosuch() }}"));
         assert!(
@@ -237,7 +237,7 @@
                 other => panic!("{what}: compiled: {:?}", other.map(|r| r.diagnostics)),
             }
             let diags =
-                diagnostics_only(CompileInput { source: &src, file: "main", module_name: None, fold_mode: FoldMode::Auto });
+                diagnostics_only(CompileInput { source: &src, file: "main", module_name: None, fold_mode: FoldMode::Auto }, &crate::resolve::FsLoader);
             assert!(
                 diags.iter().any(|d| d.code == "WSP001" && matches!(d.severity, Severity::Error)),
                 "{what}: diagnostics_only: {diags:?}"
@@ -279,4 +279,38 @@
                 assert!(!m.contains("`let`"), "{what}: a `let` does not help: {m}");
             }
         }
+    }
+
+    /// Each `@layout` annotation selects its engine, and only code layout
+    /// carries the source map, which nothing else reads.
+    #[test]
+    fn layout_annotation_maps_to_its_settings() {
+        let settings = |src: &str| program_settings(&resolve(src, "test", &FsLoader), "test");
+        let code = settings("@layout(\"code\")\n\nin a: int\nout b = a\n");
+        assert_eq!(code.layout, LayoutMode::Code);
+        assert!(code.source_map.is_some());
+        assert!(!code.no_gate_labels);
+        let cube = settings("@layout(\"cube\")\n\nin a: int\nout b = a\n");
+        assert_eq!(cube.layout, LayoutMode::Cube);
+        assert!(cube.no_gate_labels);
+        assert!(cube.source_map.is_none());
+        let dag = settings("in a: int\nout b = a\n");
+        assert_eq!(dag.layout, LayoutMode::Dag);
+        assert!(dag.source_map.is_none());
+    }
+
+    /// `--emit-ir main.wsir` names a file with no directory part; its prefab
+    /// paths are then relative to the current directory, like the source's.
+    #[test]
+    fn prefab_paths_for_a_bare_ir_file_name() {
+        use crate::ir::Literal;
+        let mut b = crate::ir::ProgramBuilder::new("main");
+        let root = b.root();
+        let g = b.gate(root, "Expr_LogicalAND").unwrap();
+        b.set(g, "Prefab", Literal::PrefabRef { path: "./child.ws".into() }).unwrap();
+        let mut program = b.build();
+        prepare_program_for_text(&mut program, "main.ws", std::path::Path::new("main.wsir"), FoldMode::Auto)
+            .expect("a bare file name is in the current directory");
+        let path = &program.module.nodes.values().next().unwrap().properties[&crate::intern::intern("Prefab")];
+        assert_eq!(path, &Literal::PrefabRef { path: "child.ws".into() });
     }

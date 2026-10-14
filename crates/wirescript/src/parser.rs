@@ -10,6 +10,7 @@ mod types;
 mod desugar;
 use desugar::*;
 mod anns;
+use anns::set_style;
 mod expr;
 mod handler;
 use handler::*;
@@ -74,6 +75,10 @@ struct Parser<'a> {
     /// triggers.  The surrounding `parse_block` / `parse_script` loops drain
     /// this before inserting the handler itself.
     pending_stmts: Vec<Stmt>,
+    /// Each `let name = on <trigger>` alias parsed so far (no body), by name:
+    /// the trigger and its config args, which an `on name` handler takes in
+    /// place of the name.
+    event_aliases: HashMap<String, (Trigger, Vec<HandlerConfigArg>)>,
     /// When true, a trailing `{ ... }` after a path expression is NOT parsed as
     /// braced enum-variant construction (`Enum.Variant { f: v }`) - the `{` is
     /// left for the surrounding block header instead. Set only while parsing a
@@ -96,6 +101,11 @@ struct Parser<'a> {
     /// reaches a diagnostic instead of parsing as a conversion to a type
     /// `run`. Reset inside any bracketed sub-expression, like `stop_at_dotdot`.
     stop_at_as: bool,
+    /// The operator of the outermost `BinOp` the last `parse_binary` call built
+    /// itself, or `None` when its result came from a single operand (a
+    /// parenthesized group included). Lets the caller tell `a & b == c` from
+    /// `a & (b == c)` (WS117).
+    binary_top_op: Option<String>,
     /// Token positions where [`Parser::split_closing_angle`] split a `>>` into
     /// two `>`s, newest last, so a speculative parse can put them back.
     angle_splits: Vec<usize>,
@@ -130,9 +140,11 @@ impl<'a> Parser<'a> {
             doc_comments: HashMap::default(),
             expr_trigger_counter: 0,
             pending_stmts: Vec::new(),
+            event_aliases: HashMap::default(),
             no_brace_construct: false,
             stop_at_dotdot: false,
             stop_at_as: false,
+            binary_top_op: None,
             angle_splits: Vec::new(),
             depth: 0,
             depth_exceeded: false,
@@ -390,6 +402,20 @@ impl<'a> Parser<'a> {
         });
     }
 
+    /// A parse-stage warning carrying a specific `WSxxx` code: code that means
+    /// something, but almost never what it looks like.
+    fn warn_code(&mut self, code: &str, message: impl Into<String>, range: SourceRange) {
+        if self.depth_exceeded {
+            return;
+        }
+        self.diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            code: code.to_string(),
+            message: message.into(),
+            range,
+        });
+    }
+
     fn warn(&mut self, message: impl Into<String>, start: Pos, end: Pos) {
         if self.depth_exceeded {
             return;
@@ -446,7 +472,7 @@ impl<'a> Parser<'a> {
         // into it.
         let module_doc = self.collect_module_doc();
         let module_anns = self.collect_module_annotations();
-        let module_label = self.collect_module_label();
+        let module_exprs = self.collect_module_label();
         while self.peek().kind != TokenKind::Eof {
             let doc = self.collect_doc_comment();
             let before = self.pos;
@@ -500,7 +526,9 @@ impl<'a> Parser<'a> {
             layout: module_anns.layout,
             flat: module_anns.flat,
             invisible: module_anns.invisible,
-            module_label,
+            module_label: module_exprs.label,
+            module_color: module_exprs.color,
+            module_material: module_exprs.material,
             imports: Default::default(),
         }
     }

@@ -1,0 +1,255 @@
+{
+  "vars": {
+    "4000": {
+      "resolve": 8.38,
+      "typecheck": 12.58,
+      "lower": 51.4,
+      "layout": 0.5458,
+      "build_world": 29.42
+    },
+    "8000": {
+      "resolve": 18.29,
+      "typecheck": 26.05,
+      "lower": 166.17,
+      "layout": 1.1,
+      "build_world": 50.17
+    },
+    "16000": {
+      "resolve": 34.49,
+      "typecheck": 59.84,
+      "lower": 594.43,
+      "layout": 3.72,
+      "build_world": 116.78
+    }
+  },
+  "chain": {
+    "4000": {
+      "resolve": 5.18,
+      "typecheck": 8.13,
+      "lower": 12.29,
+      "layout": 2.86,
+      "build_world": 20.1
+    },
+    "8000": {
+      "resolve": 8.79,
+      "typecheck": 13.8,
+      "lower": 27.32,
+      "layout": 0.5881000000000001,
+      "build_world": 30.79
+    },
+    "16000": {
+      "resolve": 20.7,
+      "typecheck": 27.78,
+      "lower": 61.56,
+      "layout": 1.22,
+      "build_world": 52.59
+    }
+  },
+  "lets": {
+    "4000": {
+      "resolve": 6.73,
+      "typecheck": 20.85,
+      "lower": 61.18,
+      "layout": 0.7178,
+      "build_world": 21.24
+    },
+    "8000": {
+      "resolve": 13.42,
+      "typecheck": 39.65,
+      "lower": 134.72,
+      "layout": 1.85,
+      "build_world": 31.14
+    },
+    "16000": {
+      "resolve": 27.33,
+      "typecheck": 93.46,
+      "lower": 318.17,
+      "layout": 8.33,
+      "build_world": 69.31
+    }
+  },
+  "handlers": {
+    "4000": {
+      "resolve": 12.83,
+      "typecheck": 13,
+      "lower": 101.81,
+      "layout": 0.5977,
+      "build_world": 26.21
+    },
+    "8000": {
+      "resolve": 26.39,
+      "typecheck": 29.19,
+      "lower": 397.11,
+      "layout": 1.35,
+      "build_world": 53.43
+    },
+    "16000": {
+      "resolve": 56.15,
+      "typecheck": 63.54,
+      "lower": 1460,
+      "layout": 4.5,
+      "build_world": 108.45
+    }
+  },
+  "ifs": {
+    "4000": {
+      "resolve": 13.08,
+      "typecheck": 18.98,
+      "lower": 47.56,
+      "layout": 1.1,
+      "build_world": 36.76
+    },
+    "8000": {
+      "resolve": 24.71,
+      "typecheck": 42.02,
+      "lower": 125.14,
+      "layout": 4.22,
+      "build_world": 77.14
+    },
+    "16000": {
+      "resolve": 55.38,
+      "typecheck": 93.01,
+      "lower": 306.14,
+      "layout": 13.62,
+      "build_world": 184.18
+    }
+  },
+  "calls": {
+    "4000": {
+      "resolve": 6.33,
+      "typecheck": 10.34,
+      "lower": 24.3,
+      "layout": 2.83,
+      "build_world": 19.45
+    },
+    "8000": {
+      "resolve": 13.31,
+      "typecheck": 17.27,
+      "lower": 53.27,
+      "layout": 0.5721,
+      "build_world": 28.56
+    },
+    "16000": {
+      "resolve": 28.03,
+      "typecheck": 35.16,
+      "lower": 114.62,
+      "layout": 1.22,
+      "build_world": 52.54
+    }
+  },
+  "chips": {
+    "4000": {
+      "resolve": 20.57,
+      "typecheck": 21.52,
+      "lower": 152.85,
+      "layout": 12.68,
+      "build_world": 44.16
+    },
+    "8000": {
+      "resolve": 41.76,
+      "typecheck": 48.61,
+      "lower": 537.77,
+      "layout": 23.03,
+      "build_world": 84.73
+    },
+    "16000": {
+      "resolve": 79.98,
+      "typecheck": 104.68,
+      "lower": 2250,
+      "layout": 51.07,
+      "build_world": 181.61
+    }
+  },
+  "decl_writes": {
+    "4000": {
+      "resolve": 8.64,
+      "typecheck": 12.61,
+      "lower": 53.58,
+      "layout": 0.5312,
+      "build_world": 27.99
+    },
+    "8000": {
+      "resolve": 18.52,
+      "typecheck": 21.63,
+      "lower": 175.55,
+      "layout": 1.14,
+      "build_world": 48.93
+    },
+    "16000": {
+      "resolve": 36.41,
+      "typecheck": 50.98,
+      "lower": 599.48,
+      "layout": 3.86,
+      "build_world": 108.16
+    }
+  },
+  "lets_writes": {
+    "4000": {
+      "resolve": 9.24,
+      "typecheck": 24,
+      "lower": 76.86,
+      "layout": 2.85,
+      "build_world": 20.22
+    },
+    "8000": {
+      "resolve": 19.92,
+      "typecheck": 46.59,
+      "lower": 218.32,
+      "layout": 0.6011000000000001,
+      "build_world": 27.89
+    },
+    "16000": {
+      "resolve": 44.21,
+      "typecheck": 110.19,
+      "lower": 682.87,
+      "layout": 3.3,
+      "build_world": 57.01
+    }
+  },
+  "code": {
+    "4000": {
+      "resolve": 11.43,
+      "typecheck": 15.92,
+      "lower": 56.68,
+      "layout": 7.47,
+      "build_world": 28.43
+    },
+    "8000": {
+      "resolve": 20.41,
+      "typecheck": 34.66,
+      "lower": 187.87,
+      "layout": 20.9,
+      "build_world": 53.02
+    },
+    "16000": {
+      "resolve": 39.4,
+      "typecheck": 63.92,
+      "lower": 617.88,
+      "layout": 55.34,
+      "build_world": 94.44
+    }
+  },
+  "cube": {
+    "4000": {
+      "resolve": 8.65,
+      "typecheck": 12.62,
+      "lower": 54.82,
+      "layout": 0.5352,
+      "build_world": 29.03
+    },
+    "8000": {
+      "resolve": 18.49,
+      "typecheck": 26.75,
+      "lower": 173.06,
+      "layout": 1.18,
+      "build_world": 50.84
+    },
+    "16000": {
+      "resolve": 33.65,
+      "typecheck": 61.53,
+      "lower": 588.29,
+      "layout": 3.93,
+      "build_world": 105.7
+    }
+  }
+}

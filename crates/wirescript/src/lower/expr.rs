@@ -799,7 +799,7 @@ fn asset_reference_gate(asset_type: &str) -> &'static str {
         "BrickWheelEngineAudioDescriptor" => {
             "BrickComponentType_WheelEngineAudioReference"
         }
-        // Unknown/other categories → the generic entity-type reference.
+        // Unknown/other categories -> the generic entity-type reference.
         _ => "BrickComponentType_EntityTypeReference",
     }
 }
@@ -969,7 +969,7 @@ pub(crate) fn wire_type_of_literal(lit: &Literal) -> Option<Type> {
         // `build_const_env` folds it independently of `lower_let_decl`'s own
         // no-scope-binding early return for the very same decl) and as a
         // `const` parameter read bare.
-        Literal::PrefabRef { .. } | Literal::NestedPrefab { .. } => Some(Type::PrefabRef),
+        Literal::PrefabRef { .. } | Literal::NestedPrefab { .. } | Literal::PrefabBytes(_) => Some(Type::PrefabRef),
         // No SCALAR wire type — collections, a compile-time record, and an
         // external asset reference, not values a single wire pin carries.
         // All four are reachable through the `const`-PARAMETER path described
@@ -1016,6 +1016,17 @@ pub(super) fn literal_node_range(
         });
         return node_id.port(WirePort::Output);
     }
+    raw_literal(ctx, range, ty, lit, None)
+}
+
+/// A `_Literal` gate holding `lit` as a `ty`: its `Output` port.
+pub(super) fn raw_literal(
+    ctx: &mut LowerCtx,
+    range: &SourceRange,
+    ty: Type,
+    lit: Literal,
+    note: Option<&'static str>,
+) -> PortRef {
     let mut props = HashMap::default();
     props.insert(*sym::VALUE, lit);
     let node_id = ctx.add_gate(AddNodeOpts {
@@ -1023,6 +1034,7 @@ pub(super) fn literal_node_range(
         source_range: range.clone(),
         ports: GateIO::source(ty),
         properties: props,
+        note,
         ..Default::default()
     });
     node_id.port(WirePort::Output)
@@ -1099,14 +1111,12 @@ pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -
                 return var_rec.node_id.port(WirePort::MapVarRef);
             }
             if let Some(exec) = ctx.current_exec {
-                if let Some(cached) = var_rec.get_node_for_handler {
+                if let Some(cached) = ctx.var_gets.get(&var_rec.node_id) {
                     return cached.port(WirePort::Value);
                 }
                 let props = var_get_seed_props(&var_rec.inner_type);
                 let get_id = chain_var_get(ctx, &var_rec, exec, range, props, None);
-                if let Some(Binding::Var(v)) = ctx.scope.get_mut(name) {
-                    v.get_node_for_handler = Some(get_id);
-                }
+                ctx.var_gets.insert(var_rec.node_id, get_id);
                 return get_id.port(WirePort::Value);
             }
             var_rec.node_id.port(WirePort::Value)
@@ -1302,7 +1312,7 @@ pub(super) fn lower_if_expr(
             ],
             outputs: vec![PortSpec::new(*sym::OUTPUT, result_ty.clone())],
         },
-        note: Some("if-expr select".into()),
+        note: Some("if-expr select"),
         ..Default::default()
     });
     ctx.connect(cond_port, node_id.port(WirePort::BSelectB));
@@ -1731,7 +1741,7 @@ pub(super) fn emit_disc_eq(ctx: &mut LowerCtx, disc_port: PortRef, k: i64, range
             ],
             outputs: vec![PortSpec::new(*sym::B_OUTPUT, Type::Bool)],
         },
-        note: Some("match disc compare".into()),
+        note: Some("match disc compare"),
         ..Default::default()
     });
     ctx.connect(disc_port, cmp.port(WirePort::InputA));
@@ -1760,7 +1770,7 @@ fn emit_select(
             ],
             outputs: vec![PortSpec::new(*sym::OUTPUT, result_ty.clone())],
         },
-        note: Some("match-expr select".into()),
+        note: Some("match-expr select"),
         ..Default::default()
     });
     ctx.connect(cond_port, node_id.port(WirePort::BSelectB));
@@ -1769,7 +1779,7 @@ fn emit_select(
     node_id.port(WirePort::Output)
 }
 
-/// Compile-time arm of the string → bool coercion: a String literal baked
+/// Compile-time arm of the string -> bool coercion: a String literal baked
 /// into a Bool destination converts to `Literal::Bool(!s.is_empty())`.
 /// CONSISTENCY LAW: this must equal the runtime semantics of the
 /// `CompareNotEqual(s, "")` gate that `LowerCtx::wrap_string_to_bool`
@@ -1778,37 +1788,11 @@ fn emit_select(
 /// left raw on a Bool destination would either miscompile (a Bool
 /// `InitialValue` read through the gate's NATIVE content-aware truthiness,
 /// where "0"/"false" are falsy) or crash emit (UnimplementedCast on a Bool
-/// data field). Non-(String → Bool) pairs pass through untouched.
+/// data field). Non-(String -> Bool) pairs pass through untouched.
 pub(super) fn bake_string_bool(lit: Literal, ty: &Type) -> Literal {
     match (&lit, ty) {
         (Literal::String(s), Type::Bool) => Literal::Bool(!s.is_empty()),
         _ => lit,
-    }
-}
-
-/// Bake a scalar `InitialValue` literal in its DECLARED type's shape, for the
-/// storage slots whose wire-variant member is chosen by the literal's own kind
-/// (a `Pseudo_Var`'s `WireVariant` — see `emit::module`'s `Pseudo_Var` arm,
-/// which only falls back to the port type when there is NO literal). Without
-/// this, `var x: float = 0` bakes `Int(0)` and ships an INTEGER variable for a
-/// `float` declaration; the annotation is silently lost.
-///
-/// bool/int/float coerce bidirectionally in the type system
-/// (`types::coerce::is_prim_number`), so all six ordered pairs reach here.
-/// The conversions match the element-wise table `emit::variants`'s
-/// `wire_array_variant_from_literals` already applies to ARRAY initializers,
-/// so `var a: int[] = [1.5]` and `var s: int = 1.5` agree: float → int
-/// truncates, bool → number is 1/0, and number → bool is `!= 0`. String → bool
-/// keeps its `!= ""` law via [`bake_string_bool`]. Every other pair — and every
-/// non-scalar type — passes through untouched.
-pub(super) fn bake_literal_for_type(lit: Literal, ty: &Type) -> Literal {
-    match (&lit, ty) {
-        (Literal::Int(_), Type::Float) | (Literal::Float(_), Type::Int) => crate::const_eval::number_in_type(lit, ty),
-        (Literal::Bool(b), Type::Float) => Literal::Float(if *b { 1.0 } else { 0.0 }),
-        (Literal::Bool(b), Type::Int) => Literal::Int(*b as i64),
-        (Literal::Int(n), Type::Bool) => Literal::Bool(*n != 0),
-        (Literal::Float(f), Type::Bool) => Literal::Bool(*f != 0.0),
-        _ => bake_string_bool(lit, ty),
     }
 }
 
@@ -1843,8 +1827,8 @@ pub(super) fn literal_for_property_port(
 ) -> Option<Literal> {
     // Return the literal without type promotion — the emit layer handles the
     // native type (i32/f64/str) from the data struct schema — EXCEPT the
-    // string → bool coercion, which must apply its `!= ""` law at compile
-    // time here (see `bake_string_bool`): emit has no String→bool cast, and
+    // string -> bool coercion, which must apply its `!= ""` law at compile
+    // time here (see `bake_string_bool`): emit has no String->bool cast, and
     // a raw String on a Bool data field is an UnimplementedCast crash.
     //
     // The env-less fold first: bare literals, negated literals, and constructor calls on constant
@@ -1957,7 +1941,7 @@ pub(super) fn synthesise_unsupported_no_warn(
         gate_class: gc::UNSUPPORTED,
         source_range: range.clone(),
         ports: GateIO::source(Type::Any),
-        note: Some("unsupported expression".into()),
+        note: Some("unsupported expression"),
         ..Default::default()
     });
     node_id.port(WirePort::Output)

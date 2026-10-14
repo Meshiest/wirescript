@@ -64,28 +64,30 @@ impl<'a> Parser<'a> {
             let anns = self.parse_annotations();
             let t2 = self.peek().clone();
             let kw = |k: &str| t2.kind == TokenKind::Kw && t2.text == k;
-            if let Some(r) = &anns.sliced {
-                let alone = anns.side.is_none()
-                    && anns.label.is_none()
-                    && anns.label_expr.is_none()
+            // A loop's microchip takes `@sliced` and a `@label`, nothing else.
+            if kw("for") || self.at_let_for() {
+                let fits = anns.side.is_none()
                     && anns.closed.is_none()
                     && anns.nofold.is_none()
-                    && anns.invisible.is_none();
-                if kw("for") || self.at_let_for() {
-                    if !alone {
-                        self.error(
-                            "a `for` loop takes no annotation besides @sliced".to_string(),
-                            t.start,
-                            t2.start,
-                        );
-                    }
-                    let mut s =
-                        if kw("for") { self.parse_for_stmt() } else { self.parse_let_for() };
-                    if let Stmt::For(f) = &mut s {
-                        f.sliced = true;
-                    }
-                    return Some(s);
+                    && anns.invisible.is_none()
+                    && anns.color.is_none()
+                    && anns.material.is_none();
+                if !fits {
+                    self.error(
+                        "a `for` loop takes no annotation besides @sliced and @label".to_string(),
+                        t.start,
+                        t2.start,
+                    );
                 }
+                let mut s = if kw("for") { self.parse_for_stmt() } else { self.parse_let_for() };
+                if let Stmt::For(f) = &mut s {
+                    f.sliced = anns.sliced.is_some();
+                    f.label = anns.label.map(|(l, _)| l);
+                    f.label_expr = anns.label_expr.map(|(e, _)| e);
+                }
+                return Some(s);
+            }
+            if let Some(r) = &anns.sliced {
                 self.error(
                     "@sliced must be followed by a `for` loop".to_string(),
                     r.start,
@@ -100,6 +102,7 @@ impl<'a> Parser<'a> {
                         r.end,
                     );
                 }
+                self.reject_style(&anns, "'in'/'out' declarations");
                 let side = anns.side.map(|(s, _)| s);
                 let label = anns.label.map(|(l, _)| l);
                 let label_expr = anns.label_expr.map(|(e, _)| e);
@@ -123,10 +126,7 @@ impl<'a> Parser<'a> {
                     self.parse_out_binding(side, label, label_expr, invisible, no_fold),
                 ));
             }
-            let next_is_open_chip = kw("open")
-                && self.peek_at(1).kind == TokenKind::Kw
-                && self.peek_at(1).text == "chip";
-            if kw("chip") || next_is_open_chip {
+            if kw("chip") {
                 if let Some((_, r)) = &anns.side {
                     self.error(
                         "a side annotation must be followed by an 'in' or 'out' declaration"
@@ -137,21 +137,13 @@ impl<'a> Parser<'a> {
                 }
                 let label = anns.label.map(|(l, _)| l);
                 let label_expr = anns.label_expr.map(|(e, _)| e);
+                let color = anns.color.map(|(e, _)| e);
+                let material = anns.material.map(|(e, _)| e);
                 let no_fold = anns.nofold.is_some();
-                let (open, closed) = if next_is_open_chip {
-                    if let Some(r) = &anns.closed {
-                        self.error(
-                            "@closed cannot be combined with 'open chip'".to_string(),
-                            r.start,
-                            r.end,
-                        );
-                    }
-                    self.advance(); // consume "open"
-                    (true, false)
-                } else {
-                    (false, anns.closed.is_some())
-                };
-                match self.parse_chip_decl(open, label, label_expr, closed, no_fold) {
+                let mut decl =
+                    self.parse_chip_decl(label, label_expr, anns.closed.is_some(), no_fold);
+                set_style(&mut decl, color, material);
+                match decl {
                     TopDecl::AnonChip(ac) => {
                         if let Some(r) = &anns.nofold {
                             self.warn(
@@ -170,37 +162,43 @@ impl<'a> Parser<'a> {
             // `var` / `static var` / `let` / `on`, at any nesting depth. `@label`
             // (string or constant expression) is additionally legal directly on
             // `var` / `static var` — it overrides the var's name-derived
-            // floating label, same as on a port. Any other annotation combined
-            // with these still falls through to the generic "must be followed
-            // by ..." error below, unchanged.
+            // floating label, same as on a port — and so are `@color` and
+            // `@material`. Any other annotation combined with these still falls
+            // through to the generic "must be followed by ..." error below,
+            // unchanged.
             let is_static_var = kw("static")
                 && self.peek_at(1).kind == TokenKind::Kw
                 && self.peek_at(1).text == "var";
             let no_side_closed_invisible =
                 anns.side.is_none() && anns.closed.is_none() && anns.invisible.is_none();
+            let styled = anns.color.is_some() || anns.material.is_some();
             let var_ann_ok = no_side_closed_invisible
-                && (anns.nofold.is_some() || anns.label.is_some() || anns.label_expr.is_some());
+                && (anns.nofold.is_some() || anns.label.is_some() || anns.label_expr.is_some() || styled);
             let bare_nofold = no_side_closed_invisible
                 && anns.nofold.is_some()
                 && anns.label.is_none()
-                && anns.label_expr.is_none();
+                && anns.label_expr.is_none()
+                && !styled;
             if (var_ann_ok && (kw("var") || is_static_var)) || (bare_nofold && (kw("let") || kw("on")))
             {
                 let no_fold = anns.nofold.is_some();
                 let label = anns.label.map(|(l, _)| l);
                 let label_expr = anns.label_expr.map(|(e, _)| e);
+                let color = anns.color.map(|(e, _)| e);
+                let material = anns.material.map(|(e, _)| e);
                 if is_static_var {
                     self.advance(); // consume "static"
-                    if let TopDecl::Var(v) = self.parse_var_decl(true, no_fold, label, label_expr)
-                    {
+                    let mut decl = self.parse_var_decl(true, no_fold, label, label_expr);
+                    set_style(&mut decl, color, material);
+                    if let TopDecl::Var(v) = decl {
                         return Some(Stmt::Var(v));
                     }
                     return None;
                 }
                 if kw("var") {
-                    if let TopDecl::Var(v) =
-                        self.parse_var_decl(false, no_fold, label, label_expr)
-                    {
+                    let mut decl = self.parse_var_decl(false, no_fold, label, label_expr);
+                    set_style(&mut decl, color, material);
+                    if let TopDecl::Var(v) = decl {
                         return Some(Stmt::Var(v));
                     }
                     return None;
@@ -251,7 +249,7 @@ impl<'a> Parser<'a> {
             if matches!(t2.kind, TokenKind::Eof | TokenKind::RBrace) {
                 return None;
             }
-            return self.parse_stmt(); // annotations consumed → guaranteed progress
+            return self.parse_stmt(); // annotations consumed -> guaranteed progress
         }
         if t.kind == TokenKind::Kw {
             match t.text.as_str() {
@@ -334,7 +332,7 @@ impl<'a> Parser<'a> {
                             kw.end,
                         );
                         self.advance(); // consume "const"
-                        match self.parse_chip_decl(false, None, None, false, false) {
+                        match self.parse_chip_decl(None, None, false, false) {
                             TopDecl::AnonChip(ac) => return Some(Stmt::AnonChip(ac)),
                             TopDecl::Chip(c) => return Some(Stmt::ChipDecl(c)),
                             _ => {}
@@ -447,21 +445,11 @@ impl<'a> Parser<'a> {
                         expr,
                     }));
                 }
-                "chip" => match self.parse_chip_decl(false, None, None, false, false) {
+                "chip" => match self.parse_chip_decl(None, None, false, false) {
                     TopDecl::AnonChip(ac) => return Some(Stmt::AnonChip(ac)),
                     TopDecl::Chip(c) => return Some(Stmt::ChipDecl(c)),
                     _ => {}
                 },
-                "open" => {
-                    if self.peek_at(1).kind == TokenKind::Kw && self.peek_at(1).text == "chip" {
-                        self.advance();
-                        if let TopDecl::AnonChip(ac) =
-                            self.parse_chip_decl(true, None, None, false, false)
-                        {
-                            return Some(Stmt::AnonChip(ac));
-                        }
-                    }
-                }
                 "mod" => {
                     if let TopDecl::Chip(c) = self.parse_mod_decl(false) {
                         return Some(Stmt::ChipDecl(c));
@@ -777,6 +765,8 @@ impl<'a> Parser<'a> {
             source,
             result,
             sliced: false,
+            label: None,
+            label_expr: None,
             body,
             range: self.make_range(start, end),
         })

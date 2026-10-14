@@ -2076,6 +2076,45 @@ fn inventory_family_carries_asset_properties() {
 }
 
 #[test]
+fn adv_inventory_projectile_scale_reaches_its_port() {
+    use crate::ir::port_registry::WirePort;
+    let r = compile(
+        "in p: character\nin s: float\non p {\n  p.AddInventoryItemAdv($BRItemBase/Weapon_Pistol, projectileScale = 2.0)\n  p.SetInventoryItemAdv($BRItemBase/Weapon_Bow, 1, projectileScale = 2.0)\n  p.AddInventoryItemAdv($BRItemBase/Weapon_Bow, projectileScale = s)\n}",
+    );
+    assert_no_errors(&r);
+    let port = crate::intern::intern("ProjectileScaleMultiplier");
+    let scale_of = |id: &crate::ir::NodeId, n: &crate::ir::Node| {
+        let wired = r
+            .module
+            .wires
+            .iter()
+            .any(|w| w.target.node_id == *id && w.target.port == WirePort::ProjectileScaleMultiplier);
+        (n.properties.get(&port).cloned(), wired)
+    };
+    for class in [
+        "BrickComponentType_Exec_Character_AddInventoryItemAdv",
+        "BrickComponentType_Exec_Character_SetInventoryItemAdv",
+    ] {
+        assert!(
+            r.module
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.gate_class == class)
+                .any(|(id, n)| scale_of(id, n) == (Some(crate::ir::Literal::Float(2.0)), false)),
+            "{class} should carry ProjectileScaleMultiplier = 2.0"
+        );
+    }
+    assert!(
+        r.module
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.gate_class == "BrickComponentType_Exec_Character_AddInventoryItemAdv")
+            .any(|(id, n)| scale_of(id, n).1),
+        "a runtime projectileScale should wire into ProjectileScaleMultiplier"
+    );
+}
+
+#[test]
 fn damage_and_zone_events_lower_to_event_gates() {
     let r = compile(
         "on CharacterDamaged() -> { character: char, damage: dmg } {\n  char.DisplayText(\"ouch ${dmg}\")\n}\non EntityZoneEntered() -> { entity: e } {\n  e.SetTag(\"inside\")\n}\non ProjectileZoneEntered() -> { character: shooter } {\n  shooter.DisplayText(\"hit!\")\n}",
@@ -2981,4 +3020,20 @@ fn sort_multiple_never_wires_an_array_argument_into_descending() {
         "sortMultiple reorders its parallel arrays, so a const one is rejected: {:?}",
         r.diagnostics
     );
+}
+
+#[test]
+fn a_number_into_a_string_port_goes_through_format_text() {
+    // types.md "String Coercion": a number wired into a `string` destination
+    // arrives as its text, through one FormatText("{0}") each.
+    let r = compile(
+        "in n: int\nvar label: string = \"\"\nout text: string = n\nout shown = label.Value\non n { label = n * 2 }",
+    );
+    assert_no_errors(&r);
+    let formats = r.module.nodes.values().filter(|n| n.gate_class.ends_with("FormatText")).count();
+    assert_eq!(formats, 2, "one for the out pin, one for the var store");
+    // `..` takes the number as it is: its gate types the operand itself.
+    let r = compile("in n: int\nin s: string\nout t = s .. n");
+    assert_no_errors(&r);
+    assert!(!r.module.nodes.values().any(|n| n.gate_class.ends_with("FormatText")));
 }

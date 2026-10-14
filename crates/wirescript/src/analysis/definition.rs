@@ -47,7 +47,7 @@ pub fn definition_at(
         return Some(loc);
     }
 
-    // Cursor on a `SendCustomEvent("name", ...)` channel-name string → jump to the
+    // Cursor on a `SendCustomEvent("name", ...)` channel-name string -> jump to the
     // matching `on CustomEvent("name") -> (...)` receiver in this file.
     if let Some(loc) = custom_event_send_definition(pre_resolve_ast, source, line, col) {
         return Some(loc);
@@ -529,7 +529,7 @@ fn resolve_field_definition(
     Some(source_range_to_location(&type_sym.range, file))
 }
 
-// ---------- custom-event send-site → receiver navigation ----------
+// ---------- custom-event send-site -> receiver navigation ----------
 
 /// If `call` is a `SendCustomEvent(...)` / `SendGlobalCustomEvent(...)` send and
 /// `off` sits on its channel-name string literal, return that channel name plus

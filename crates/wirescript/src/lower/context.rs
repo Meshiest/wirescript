@@ -6,9 +6,14 @@ use super::*;
 pub(super) struct VarRecord {
     pub(super) node_id: NodeId,
     pub(super) inner_type: Type,
-    /// Cached Var_Get node for this handler (reuse within one handler body).
-    pub(super) get_node_for_handler: Option<NodeId>,
     pub(super) storage: VarStorage,
+}
+
+impl VarRecord {
+    /// The record of the storage gate `node_id`, holding `inner_type`.
+    pub(super) fn new(node_id: NodeId, inner_type: Type, storage: VarStorage) -> Self {
+        Self { node_id, inner_type, storage }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,10 +251,10 @@ pub(super) fn same_binding(a: &Binding, b: &Binding) -> bool {
 }
 
 /// One active generic-mod inline: the callee's type-param names and the
-/// substitution (`Type::Param → concrete`) inferred from this call's args.
+/// substitution (`Type::Param -> concrete`) inferred from this call's args.
 /// Pushed on `LowerCtx::mono_stack` while the generic mod's body is lowered so
 /// that `T`-typed storage/return annotations in the body resolve to the
-/// concrete monomorph (`pick<int>` → int gates) instead of leaking `Type::Param`
+/// concrete monomorph (`pick<int>` -> int gates) instead of leaking `Type::Param`
 /// (or a wrong `Any`/last-combo type) to emit. Nested generic inlines push/pop;
 /// the innermost frame (`mono_stack.last()`) governs annotation resolution.
 #[derive(Clone, Debug)]
@@ -463,6 +468,13 @@ pub(super) struct LowerCtx<'a> {
     /// runtime ref) this lowering has emitted. A `for` body compares it before
     /// and after, since such a write draws no wire out of the storage it hits.
     pub(super) dyn_ref_writes: u32,
+    /// The `Var_Get` each var's storage was last read through on the current
+    /// exec chain, by the storage gate's id: a later read on the same chain
+    /// reuses it until a write, a branch join or a new chain drops it.
+    pub(super) var_gets: HashMap<NodeId, NodeId>,
+    /// The chip of `builder.module` each node of an instantiated chip sits in,
+    /// at any depth, by the chip's key (see [`find_node`](Self::find_node)).
+    pub(super) chip_of: HashMap<NodeId, NodeId>,
     pub(super) handler_entry_exec: Option<PortRef>,
     pub(super) captured_events: HashMap<String, PortRef>,
     pub(super) next_chain_id: u32,
@@ -552,7 +564,7 @@ pub(super) struct LowerCtx<'a> {
     pub(super) unsequenced_reads: HashMap<NodeId, (String, SourceRange, usize)>,
     /// The next id for `unsequenced_reads`.
     pub(super) unsequenced_calls: usize,
-    /// Type alias map: `Name → TypeExpr::Record { ... }` for dissolving
+    /// Type alias map: `Name -> TypeExpr::Record { ... }` for dissolving
     /// record params at chip boundaries.
     pub(super) type_aliases: HashMap<String, crate::ast::TypeExpr>,
     /// Enum registry: `Name -> EnumDef` (variants, each with its assigned
@@ -582,7 +594,7 @@ pub(super) struct LowerCtx<'a> {
     /// before the hub — a parallel arm races the awaiting `Var_Get`).
     pub(super) pending_emits: HashMap<String, Vec<(PortRef, Option<u32>)>>,
     /// Outputs value-driven from more than one `emit out = v` site get a backing
-    /// PseudoVar (name → its var record): each site does a `Var_Set` into it and
+    /// PseudoVar (name -> its var record): each site does a `Var_Set` into it and
     /// the var's value feeds the output once (no fan-in). Populated by a pre-scan
     /// before handler lowering; empty for single-site outputs and chip bodies.
     pub(super) output_backing_vars: HashMap<String, VarRecord>,
@@ -597,10 +609,18 @@ pub(super) struct LowerCtx<'a> {
     /// gives a forward-referenceable trigger port so `on x` works regardless
     /// of whether it appears before or after the emits in source.
     pub(super) exec_signal_hubs: HashMap<String, NodeId>,
-    /// Reverse map: hub node → its unique signal key. Emit/await sites resolve
-    /// a surface name to its key through the *scope* (name → hub port → key),
+    /// Reverse map: hub node -> its unique signal key. Emit/await sites resolve
+    /// a surface name to its key through the *scope* (name -> hub port -> key),
     /// so shadowed / same-named signals in different bodies stay distinct.
     pub(super) exec_signal_keys: HashMap<NodeId, String>,
+    /// The exec `if` depth (`exec_branch_depth`) each local exec signal was
+    /// declared at, by signal key.
+    pub(super) exec_signal_depths: HashMap<String, usize>,
+    /// Each `await` inside an `if` whose signal is declared outside that
+    /// branch, so emits do not re-arm it: its armed flag, chain and range, by
+    /// signal key. An emit of the signal after it on the same chain is a
+    /// back-edge that finds it unarmed (WS118).
+    pub(super) branch_awaits: HashMap<String, Vec<(NodeId, Option<u32>, SourceRange)>>,
     /// Inside `await`, the armed flag's Value port. `_` in the exec expression
     /// resolves to this, allowing `await Sleep(_, 1.0)` to wire the armed flag
     /// as Sleep's input.
@@ -630,7 +650,7 @@ pub(super) struct LowerCtx<'a> {
     pub(super) in_handler_body: bool,
     /// Pre-compiled template cache for standalone chip instances.
     pub(super) template_cache: Arc<crate::template_cache::TemplateCache>,
-    /// Field→source-port record produced by the most recent multi-output inline
+    /// Field->source-port record produced by the most recent multi-output inline
     /// mod call. Its internal output nodes are removed, so `let s = mod(...)`
     /// consumes this to bind `s` as a record (`s.field` reads the source port).
     pub(super) pending_inline_record: Option<HashMap<crate::intern::Sym, Binding>>,
@@ -659,13 +679,13 @@ pub(super) struct LowerCtx<'a> {
     /// lets a module's body reach its OWN alias (see `ns_mod_scopes`).
     pub(super) ns_by_file:
         HashMap<std::sync::Arc<str>, HashMap<String, Binding>>,
-    /// Field→binding map stashed by a `return { ... }` record literal while an
+    /// Field->binding map stashed by a `return { ... }` record literal while an
     /// inline mod body is being lowered. A record literal is not a standalone
     /// expression, and `-> { a, b }` is a single record-typed output, so the
     /// call consumes this (instead of the removed output node) to bind the
     /// caller's record. Set only by a record-literal return; taken by the call.
     pub(super) pending_return_record: Option<HashMap<crate::intern::Sym, Binding>>,
-    /// Output name → the record bound to it by `out <name> = <record>` inside a
+    /// Output name -> the record bound to it by `out <name> = <record>` inside a
     /// mod body. A record has no single value port, so wiring it into the
     /// output's `RerInput` lowered to an `_Unsupported` placeholder that read a
     /// default. The inline-call machinery consults this to hand the caller the
@@ -689,8 +709,8 @@ pub(super) struct LowerCtx<'a> {
     /// Every chip/mod name declared anywhere in the (import-merged) program.
     /// Chips/mods are registered into scope in source order, so a call to one
     /// not yet registered fails to resolve. Distinguishing "declared later"
-    /// (a use-before-declaration → WS021 error) from "not a function at all"
-    /// (e.g. an unimplemented builtin → placeholder) needs the full name set.
+    /// (a use-before-declaration -> WS021 error) from "not a function at all"
+    /// (e.g. an unimplemented builtin -> placeholder) needs the full name set.
     /// Shared (Arc) so child contexts clone it cheaply.
     pub(super) known_fn_names: std::sync::Arc<crate::collections::HashSet<String>>,
     /// Which imported declarations each file named (see
@@ -852,6 +872,107 @@ pub(super) struct LowerCtx<'a> {
     pub(super) fn_building: Vec<(std::sync::Arc<str>, usize)>,
 }
 
+/// An exec chain driven by either `a` or `b`: an `Exec_Union` of the two
+/// (`a` on `ExecA`), or whichever one there is.
+pub(super) fn merge_exec(ctx: &mut LowerCtx, a: Option<PortRef>, b: Option<PortRef>, range: &SourceRange) -> Option<PortRef> {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            let union = ctx.add_gate(AddNodeOpts {
+                gate_class: gc::UNION,
+                source_range: range.clone(),
+                ports: GateIO::exec_join(),
+                ..Default::default()
+            });
+            ctx.connect(a, union.port(WirePort::ExecA));
+            ctx.connect(b, union.port(WirePort::ExecB));
+            Some(union.port(WirePort::ExecOut))
+        }
+        (a, b) => a.or(b),
+    }
+}
+
+/// The var a mod with several `return`s stores its one `out_type` value into:
+/// each `return` sets it and [`read_return_value`] reads it once they merge.
+pub(super) fn return_value_var(ctx: &mut LowerCtx, out_type: Type, range: &SourceRange) -> VarRecord {
+    let node_id = make_scalar_var_gate(ctx, &out_type, HashMap::default(), range, Some("ret_val"));
+    VarRecord::new(node_id, out_type, VarStorage::Var)
+}
+
+/// Read `ret_var` on `exec`, after a mod's returns merge, and with
+/// `drive_output`, wire the value into the mod's output when it has exactly
+/// one. Returns the value.
+pub(super) fn read_return_value(ctx: &mut LowerCtx, ret_var: &VarRecord, exec: PortRef, drive_output: bool) -> PortRef {
+    let var_ref = ret_var.node_id.port(WirePort::VarRef);
+    let get_id = chain_var_read(
+        ctx,
+        exec,
+        var_ref,
+        ret_var.inner_type.clone(),
+        SourceRange::default(),
+        HashMap::default(),
+        Some("ret_get"),
+    );
+    let value = get_id.port(WirePort::Value);
+    if drive_output && ctx.output_count() == 1 {
+        let out = ctx.first_output().unwrap().1.clone();
+        ctx.connect(value, out.node_id.port(WirePort::RerInput));
+    }
+    value
+}
+
+/// Add the exec gate `opts`, drive its `Exec` from `exec`, wire each
+/// `(source, input port)` into it in order, and move the exec chain on to its
+/// `ExecOut`.
+pub(super) fn chain_gate(ctx: &mut LowerCtx, opts: AddNodeOpts, exec: PortRef, inputs: &[(PortRef, WirePort)]) -> NodeId {
+    let id = ctx.add_gate(opts);
+    ctx.connect(exec, id.port(WirePort::Exec));
+    for &(source, port) in inputs {
+        ctx.connect(source, id.port(port));
+    }
+    ctx.current_exec = Some(id.port(WirePort::ExecOut));
+    id
+}
+
+/// A `Var_Set` (with `increment`, a `Var_Increment` adding `value`) storing
+/// `value` into the var of type `inner` behind `var_ref`, chained after
+/// `exec`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn chain_var_write(
+    ctx: &mut LowerCtx,
+    exec: PortRef,
+    var_ref: PortRef,
+    inner: Type,
+    value: PortRef,
+    increment: bool,
+    range: SourceRange,
+    note: Option<&'static str>,
+) -> NodeId {
+    let opts = AddNodeOpts {
+        gate_class: if increment { gc::VAR_INCREMENT } else { gc::VAR_SET },
+        source_range: range,
+        ports: GateIO::var_write(inner),
+        note,
+        ..Default::default()
+    };
+    chain_gate(ctx, opts, exec, &[(var_ref, WirePort::VarRef), (value, WirePort::Value)])
+}
+
+/// A `Var_Get` reading the var of type `inner` behind `var_ref`, chained after
+/// `exec`; `properties` seed its data. The value is on its `Value` port.
+pub(super) fn chain_var_read(
+    ctx: &mut LowerCtx,
+    exec: PortRef,
+    var_ref: PortRef,
+    inner: Type,
+    range: SourceRange,
+    properties: HashMap<crate::intern::Sym, Literal>,
+    note: Option<&'static str>,
+) -> NodeId {
+    let opts =
+        AddNodeOpts { gate_class: gc::VAR_GET, source_range: range, properties, ports: GateIO::var_read(inner), note, ..Default::default() };
+    chain_gate(ctx, opts, exec, &[(var_ref, WirePort::VarRef)])
+}
+
 /// Chain an exec-driven `Var_Get` onto the current exec chain: the gate reads
 /// `var_rec` through its ref port, and `ctx.current_exec` advances to the
 /// gate's `ExecOut`. Callers read the value off the returned node's `Value`
@@ -868,21 +989,8 @@ pub(super) fn chain_var_get(
     properties: HashMap<crate::intern::Sym, Literal>,
     note: Option<&'static str>,
 ) -> NodeId {
-    let get_id = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::VAR_GET,
-        source_range: range.clone(),
-        properties,
-        ports: GateIO::var_read(var_rec.inner_type.clone()),
-        note,
-        ..Default::default()
-    });
-    ctx.connect(exec, get_id.port(WirePort::Exec));
-    ctx.connect(
-        var_rec.node_id.port(WirePort::VarRef),
-        get_id.port(WirePort::VarRef),
-    );
-    ctx.current_exec = Some(get_id.port(WirePort::ExecOut));
-    get_id
+    let var_ref = var_rec.node_id.port(WirePort::VarRef);
+    chain_var_read(ctx, exec, var_ref, var_rec.inner_type.clone(), range.clone(), properties, note)
 }
 
 /// `chain_var_get` for a ref that arrives on a wire: a `Var_Get` whose `VarRef`
@@ -895,17 +1003,7 @@ pub(super) fn chain_var_get_through(
     exec: PortRef,
     range: &SourceRange,
 ) -> NodeId {
-    let get_id = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::VAR_GET,
-        source_range: range.clone(),
-        ports: GateIO::var_read(inner.clone()),
-        note: Some("get through ref"),
-        ..Default::default()
-    });
-    ctx.connect(exec, get_id.port(WirePort::Exec));
-    ctx.connect(ref_port, get_id.port(WirePort::VarRef));
-    ctx.current_exec = Some(get_id.port(WirePort::ExecOut));
-    get_id
+    chain_var_read(ctx, exec, ref_port, inner.clone(), range.clone(), HashMap::default(), Some("get through ref"))
 }
 
 /// Write `value` through a ref that arrives on a wire: a `Var_Set`, or with
@@ -922,17 +1020,7 @@ pub(super) fn write_through_ref(
     let Some(exec_in) = ctx.current_exec else {
         return;
     };
-    let node = ctx.add_gate(AddNodeOpts {
-        gate_class: if increment { gc::VAR_INCREMENT } else { gc::VAR_SET },
-        source_range: range.clone(),
-        ports: GateIO::var_write(inner.clone()),
-        note: Some("set through ref"),
-        ..Default::default()
-    });
-    ctx.connect(exec_in, node.port(WirePort::Exec));
-    ctx.connect(ref_port, node.port(WirePort::VarRef));
-    ctx.connect(value, node.port(WirePort::Value));
-    ctx.current_exec = Some(node.port(WirePort::ExecOut));
+    chain_var_write(ctx, exec_in, ref_port, inner.clone(), value, increment, range.clone(), Some("set through ref"));
     note_dynamic_write(ctx);
 }
 
@@ -996,6 +1084,8 @@ impl<'a> LowerCtx<'a> {
             handler_end_execs: Vec::new(),
             current_exec: None,
             dyn_ref_writes: 0,
+            var_gets: HashMap::default(),
+            chip_of: HashMap::default(),
             handler_entry_exec: None,
             captured_events: HashMap::default(),
             next_chain_id: 0,
@@ -1030,6 +1120,8 @@ impl<'a> LowerCtx<'a> {
             output_record_backing: HashMap::default(),
             exec_signal_hubs: HashMap::default(),
             exec_signal_keys: HashMap::default(),
+            exec_signal_depths: HashMap::default(),
+            branch_awaits: HashMap::default(),
             await_armed_port: None,
             signal_awaits: HashMap::default(),
             exec_branch_depth: 0,
@@ -1105,20 +1197,33 @@ impl<'a> LowerCtx<'a> {
     /// into chips because the source may live in a nested module; NodeIds come
     /// from one allocator and are globally unique.
     pub(super) fn source_port_type(&self, src: PortRef) -> Option<Type> {
-        fn find_node(m: &crate::ir::Module, id: NodeId) -> Option<&crate::ir::Node> {
-            if let Some(n) = m.nodes.get(&id) {
-                return Some(n);
-            }
-            m.chips.values().find_map(|c| find_node(c, id))
+        self.find_node(src.node_id)?.output_type(src.port)
+    }
+
+    /// Add the instantiated chip `module` under `key`, recording where each of
+    /// its nodes sits.
+    pub(super) fn insert_chip(&mut self, key: NodeId, module: crate::ir::Module) {
+        fn note(m: &crate::ir::Module, key: NodeId, out: &mut HashMap<NodeId, NodeId>) {
+            out.extend(m.nodes.keys().map(|id| (*id, key)));
+            m.chips.values().for_each(|c| note(c, key, out));
         }
-        let n = find_node(&self.builder.module, src.node_id)?;
-        n.ports
-            .find_output(src.port.sym())
-            .map(|p| p.ty.clone())
+        note(&module, key, &mut self.chip_of);
+        self.builder.module.chips.insert(key, module);
+    }
+
+    /// The node `id` in this module or any chip under it. NodeIds come from
+    /// one allocator and are globally unique, so where `chip_of` places a
+    /// node only decides where to look first.
+    pub(super) fn find_node(&self, id: NodeId) -> Option<&crate::ir::Node> {
+        let m = &self.builder.module;
+        m.nodes
+            .get(&id)
+            .or_else(|| m.chips.get(self.chip_of.get(&id)?)?.find_deep(id))
+            .or_else(|| m.find_deep(id))
     }
 
     /// Resolve a surface name to its exec-signal key, via the scope binding
-    /// (name → hub port → key). `None` when the name isn't a local exec
+    /// (name -> hub port -> key). `None` when the name isn't a local exec
     /// signal in the current scope.
     pub(super) fn signal_key(&self, name: &str) -> Option<String> {
         match self.scope.get(name) {
@@ -1728,6 +1833,9 @@ impl<'a> LowerCtx<'a> {
                 // it held at the declaration: a name bound since is dropped,
                 // and one bound again since gets the declaration's binding.
                 let frames = self.scope.detach_above(0);
+                // A binding the declaration saw that has been replaced since
+                // starts with no cached read.
+                let mut replaced: Vec<NodeId> = Vec::new();
                 let wanted: Vec<_> = frames
                     .frames()
                     .take(index)
@@ -1740,9 +1848,8 @@ impl<'a> LowerCtx<'a> {
                                         let b = match now.get(k) {
                                             Some(n) if self.same_declaration(n, s) => n.clone(),
                                             _ => {
-                                                let mut b = s.clone();
-                                                reset_cache_in_binding(&mut b);
-                                                b
+                                                var_nodes(s, &mut replaced);
+                                                s.clone()
                                             }
                                         };
                                         (*k, b)
@@ -1753,6 +1860,9 @@ impl<'a> LowerCtx<'a> {
                         (tag, id, entries)
                     })
                     .collect();
+                for id in &replaced {
+                    self.var_gets.remove(id);
+                }
                 for (tag, id, entries) in wanted {
                     let mut local = Vec::with_capacity(entries.len());
                     for (k, mut b) in entries {
@@ -2307,33 +2417,32 @@ impl<'a> LowerCtx<'a> {
             .get(&(r.file.clone(), r.start.offset, r.end.offset))
     }
 
-    pub(super) fn add_gate(&mut self, mut opts: AddNodeOpts) -> NodeId {
+    /// `opts` placed in the current anonymous chip when it names none, and
+    /// marked `_nofold` inside a `@nofold` region.
+    fn stamped(&self, mut opts: AddNodeOpts) -> AddNodeOpts {
         if opts.chip_id.is_none() {
             opts.chip_id = self.current_anon_chip;
         }
         if self.nofold_depth > 0 {
             opts.properties.insert(*sym::NO_FOLD, Literal::Bool(true));
         }
+        opts
+    }
+
+    pub(super) fn add_gate(&mut self, opts: AddNodeOpts) -> NodeId {
+        let opts = self.stamped(opts);
         self.builder.add_gate(opts)
     }
 
-    pub(super) fn add_event(&mut self, mut opts: AddNodeOpts) -> NodeId {
-        if opts.chip_id.is_none() {
-            opts.chip_id = self.current_anon_chip;
-        }
-        if self.nofold_depth > 0 {
-            opts.properties.insert(*sym::NO_FOLD, Literal::Bool(true));
-        }
+    pub(super) fn add_event(&mut self, opts: AddNodeOpts) -> NodeId {
+        let opts = self.stamped(opts);
         self.builder.add_event(opts)
     }
 
-    /// Wraps `ModuleBuilder::add_input` so a chip's boundary `MicrochipInput`
-    /// rerouter node gets stamped with `_nofold` the same way `add_gate`/
-    /// `add_event` stamp regular gates — `add_input`/`add_output` live on
-    /// `ModuleBuilder`, not `LowerCtx`, so they don't see `nofold_depth`
-    /// unless called through here.
-    pub(super) fn add_input(&mut self, port_name: &str, ty: Type, source_range: SourceRange) -> NodeId {
-        let id = self.builder.add_input(port_name, ty, source_range);
+    /// Mark the boundary rerouter `id` `_nofold` inside a `@nofold` region,
+    /// as [`LowerCtx::add_gate`] does a gate: `add_input`/`add_output` live on
+    /// `ModuleBuilder`, which does not see `nofold_depth`.
+    fn stamp_pin(&mut self, id: NodeId) -> NodeId {
         if self.nofold_depth > 0
             && let Some(node) = self.builder.module.nodes.get_mut(&id)
         {
@@ -2342,19 +2451,20 @@ impl<'a> LowerCtx<'a> {
         id
     }
 
-    /// Wraps `ModuleBuilder::add_output` — see `add_input` above.
+    /// A chip's boundary `MicrochipInput` rerouter (see [`LowerCtx::stamp_pin`]).
+    pub(super) fn add_input(&mut self, port_name: &str, ty: Type, source_range: SourceRange) -> NodeId {
+        let id = self.builder.add_input(port_name, ty, source_range);
+        self.stamp_pin(id)
+    }
+
+    /// A chip's boundary `MicrochipOutput` rerouter (see [`LowerCtx::stamp_pin`]).
     pub(super) fn add_output(&mut self, port_name: &str, ty: Type, source_range: SourceRange) -> NodeId {
         let id = self.builder.add_output(port_name, ty, source_range);
-        if self.nofold_depth > 0
-            && let Some(node) = self.builder.module.nodes.get_mut(&id)
-        {
-            std::sync::Arc::make_mut(&mut node.properties).insert(*sym::NO_FOLD, Literal::Bool(true));
-        }
-        id
+        self.stamp_pin(id)
     }
 
     pub(super) fn connect(&mut self, src: PortRef, dst: PortRef) {
-        // Language-level string → bool coercion: a string-typed source wired
+        // Language-level string -> bool coercion: a string-typed source wired
         // into a bool-typed destination routes through an inserted
         // `CompareNotEqual(src, "")` gate, so the coercion means exactly
         // `src != ""` — empty is false, EVERYTHING else (including "0" and
@@ -2367,6 +2477,10 @@ impl<'a> LowerCtx<'a> {
         // so this interception never sees it) or via the logical operators,
         // whose string overloads are native gate behavior, not coercions.
         if let Some(coerced) = self.wrap_string_to_bool(src, dst) {
+            self.builder.connect(coerced, dst);
+            return;
+        }
+        if let Some(coerced) = self.wrap_to_string(src, dst) {
             self.builder.connect(coerced, dst);
             return;
         }
@@ -2441,21 +2555,15 @@ impl<'a> LowerCtx<'a> {
         // string call argument into a chip's bool-typed `MicrochipInput`
         // pin), so the lookup recurses. NodeIds come from one allocator and
         // are globally unique.
-        fn find_node(m: &crate::ir::Module, id: NodeId) -> Option<&crate::ir::Node> {
-            if let Some(n) = m.nodes.get(&id) {
-                return Some(n);
-            }
-            m.chips.values().find_map(|c| find_node(c, id))
-        }
         let src_range = {
-            let n = find_node(&self.builder.module, src.node_id)?;
+            let n = self.find_node(src.node_id)?;
             if n.ports.find_output(src.port.sym())?.ty != Type::String {
                 return None;
             }
             n.source_range.clone()
         };
         {
-            let n = find_node(&self.builder.module, dst.node_id)?;
+            let n = self.find_node(dst.node_id)?;
             if n.ports.find_input(dst.port.sym())?.ty != Type::Bool {
                 return None;
             }
@@ -2478,6 +2586,40 @@ impl<'a> LowerCtx<'a> {
         });
         self.builder.connect(src, ne.port(WirePort::InputA));
         Some(ne.port(WirePort::BOutput))
+    }
+
+    /// Language-level coercion to `string` (types.md "String Coercion"): a
+    /// number, bool, vector, rotation, color or player value wired into a
+    /// `string`-typed destination (an annotated `out`, a string `var`, a
+    /// string parameter) goes through one `FormatText("{0}")`, so it arrives
+    /// as its text rather than relying on the port to convert it.
+    fn wrap_to_string(&mut self, src: PortRef, dst: PortRef) -> Option<PortRef> {
+        let src_range = {
+            let n = self.find_node(src.node_id)?;
+            let formats = matches!(
+                n.ports.find_output(src.port.sym())?.ty,
+                Type::Bool
+                    | Type::Int
+                    | Type::Float
+                    | Type::Vector
+                    | Type::Rotator
+                    | Type::Color
+                    | Type::Entity
+                    | Type::Character
+                    | Type::Controller
+            );
+            if !formats {
+                return None;
+            }
+            n.source_range.clone()
+        };
+        {
+            let n = self.find_node(dst.node_id)?;
+            if n.ports.find_input(dst.port.sym())?.ty != Type::String {
+                return None;
+            }
+        }
+        Some(crate::lower::ops::build_format_text(self, "{0}".to_string(), vec![src], &src_range))
     }
 
     /// Run `f` with `nofold_depth` incremented for its duration when `active`
@@ -2552,13 +2694,6 @@ impl<'a> LowerCtx<'a> {
     /// being shadowed, which needs its own fresh storage gate).
     pub(super) fn lookup_var_current_frame(&self, name: &str) -> Option<&VarRecord> {
         match self.scope.get_current(name) {
-            Some(Binding::Var(r)) => Some(r),
-            _ => None,
-        }
-    }
-
-    pub(super) fn lookup_var_mut(&mut self, name: &str) -> Option<&mut VarRecord> {
-        match self.scope.get_mut(name) {
             Some(Binding::Var(r)) => Some(r),
             _ => None,
         }
@@ -2684,135 +2819,50 @@ impl<'a> LowerCtx<'a> {
     }
 }
 
-pub(super) fn reset_var_get_caches(ctx: &mut LowerCtx) {
-    for binding in ctx.scope.values_mut() {
-        reset_cache_in_binding(binding);
+/// The storage node of every var `binding` holds, its record fields' included.
+fn var_nodes(binding: &Binding, out: &mut Vec<NodeId>) {
+    match binding {
+        Binding::Var(v) => out.push(v.node_id),
+        Binding::Record(fields) => fields.values().for_each(|b| var_nodes(b, out)),
+        _ => {}
     }
 }
 
-fn reset_cache_in_binding(binding: &mut Binding) {
-    match binding {
-        Binding::Var(v) => {
-            v.get_node_for_handler = None;
-        }
-        Binding::Record(fields) => {
-            for b in fields.values_mut() {
-                reset_cache_in_binding(b);
-            }
-        }
-        _ => {}
-    }
+pub(super) fn reset_var_get_caches(ctx: &mut LowerCtx) {
+    // `take`, not `clear`: clearing costs the table's capacity on every reset.
+    std::mem::take(&mut ctx.var_gets);
 }
 
 pub(super) fn invalidate_var_cache(ctx: &mut LowerCtx, target_node_id: &NodeId) {
-    for binding in ctx.scope.values_mut() {
-        invalidate_cache_in_binding(binding, target_node_id);
-    }
+    ctx.var_gets.remove(target_node_id);
 }
 
-fn invalidate_cache_in_binding(binding: &mut Binding, target_node_id: &NodeId) {
-    match binding {
-        Binding::Var(v) => {
-            if v.node_id == *target_node_id {
-                v.get_node_for_handler = None;
-            }
-        }
-        Binding::Record(fields) => {
-            for b in fields.values_mut() {
-                invalidate_cache_in_binding(b, target_node_id);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// A snapshot of every in-scope var's `Var_Get` cache (recursing into record
-/// bindings), keyed by the var's gate node id. `lower_if` takes one before its
-/// branches so that, at the join, only the vars a branch actually TOUCHED are
-/// invalidated — an unwritten var's pre-branch read survives, instead of the
-/// whole cache being blanket-cleared.
-pub(super) type VarCacheSnapshot = HashMap<NodeId, Option<NodeId>>;
+/// The cached reads before a set of branches. `lower_if` takes one so that, at
+/// the join, only the vars a branch actually TOUCHED are invalidated — an
+/// unwritten var's pre-branch read survives, instead of the whole cache being
+/// blanket-cleared.
+pub(super) type VarCacheSnapshot = HashMap<NodeId, NodeId>;
 
 pub(super) fn snapshot_var_caches(ctx: &LowerCtx) -> VarCacheSnapshot {
-    let mut out = VarCacheSnapshot::default();
-    for (_, binding) in ctx.scope.iter_syms() {
-        snapshot_cache_in_binding(binding, &mut out);
-    }
-    out
+    ctx.var_gets.clone()
 }
 
-fn snapshot_cache_in_binding(binding: &Binding, out: &mut VarCacheSnapshot) {
-    match binding {
-        Binding::Var(v) => {
-            out.insert(v.node_id, v.get_node_for_handler);
-        }
-        Binding::Record(fields) => {
-            for b in fields.values() {
-                snapshot_cache_in_binding(b, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// The var node ids whose `Var_Get` cache CHANGED versus `snap` — every var a
-/// branch invalidated, no matter which code path cleared it (a direct write, a
+/// The vars whose cached read CHANGED versus `snap` — every var a branch
+/// invalidated, no matter which code path cleared it (a direct write, a
 /// nested `if`'s join, an inline mod's blanket reset, or a chip instance's
 /// ref-arg reset). Comparing actual cache state — rather than trusting each
 /// write site to journal — is what makes the branch merge safe: a stale
-/// pre-branch read can only survive when the cache is provably unchanged. A var
-/// absent from `snap` (declared inside the branch) is ignored — it's
-/// block-scoped and gone at the join.
+/// pre-branch read can only survive when the cache is provably unchanged. A
+/// var uncached in `snap` is left out: after a restore it is uncached anyway.
 pub(super) fn cache_touched_since(ctx: &LowerCtx, snap: &VarCacheSnapshot) -> HashSet<NodeId> {
-    let mut out = HashSet::default();
-    for (_, binding) in ctx.scope.iter_syms() {
-        cache_touched_in_binding(binding, snap, &mut out);
-    }
-    out
+    snap.iter().filter(|(var, get)| ctx.var_gets.get(var) != Some(get)).map(|(var, _)| *var).collect()
 }
 
-fn cache_touched_in_binding(binding: &Binding, snap: &VarCacheSnapshot, out: &mut HashSet<NodeId>) {
-    match binding {
-        Binding::Var(v) => {
-            if let Some(&pre) = snap.get(&v.node_id)
-                && pre != v.get_node_for_handler
-            {
-                out.insert(v.node_id);
-            }
-        }
-        Binding::Record(fields) => {
-            for b in fields.values() {
-                cache_touched_in_binding(b, snap, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Reset every in-scope var's `Var_Get` cache back to `snap` — used to discard a
-/// branch's scratch cache state (its own fresh reads live on that branch's exec
-/// chain and can't be reused elsewhere) before lowering the next branch and
-/// after the join.
+/// Put the cached reads back to `snap` — used to discard a branch's scratch
+/// cache state (its own fresh reads live on that branch's exec chain and can't
+/// be reused elsewhere) before lowering the next branch and after the join.
 pub(super) fn restore_var_caches(ctx: &mut LowerCtx, snap: &VarCacheSnapshot) {
-    for binding in ctx.scope.values_mut() {
-        restore_cache_in_binding(binding, snap);
-    }
-}
-
-fn restore_cache_in_binding(binding: &mut Binding, snap: &VarCacheSnapshot) {
-    match binding {
-        Binding::Var(v) => {
-            if let Some(&pre) = snap.get(&v.node_id) {
-                v.get_node_for_handler = pre;
-            }
-        }
-        Binding::Record(fields) => {
-            for b in fields.values_mut() {
-                restore_cache_in_binding(b, snap);
-            }
-        }
-        _ => {}
-    }
+    ctx.var_gets.clone_from(snap);
 }
 
 /// `t` written as the annotation that resolves to it. A record is written as

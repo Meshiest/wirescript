@@ -1,15 +1,6 @@
 use super::*;
 use crate::ir::gate_class as gc;
 
-fn no_errors(r: &LowerResult) {
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-}
-fn count_class(m: &crate::ir::Module, class: &str) -> usize {
-    let mut n = m.nodes.values().filter(|x| x.gate_class == class).count();
-    for c in m.chips.values() { n += count_class(c, class); }
-    n
-}
 // Unused by the current test set; kept because a bare literal often doesn't
 // survive the full pipeline when it feeds a dataless boundary port (see
 // `annihilator_folds_with_unknown_side`).
@@ -27,7 +18,7 @@ fn literal_values(m: &crate::ir::Module) -> Vec<crate::ir::Literal> {
 fn folds_arithmetic_chain_to_fixpoint() {
     // (2 + 3) * 4 == 20 -> single literal true; no Math/Compare gates left.
     let r = compile_folded("out y = (2 + 3) * 4 == 20");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 0);
     assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathMultiply"), 0);
     assert_eq!(count_class(&r.module, gc::COMPARE_EQUAL), 0);
@@ -37,7 +28,7 @@ fn folds_arithmetic_chain_to_fixpoint() {
 fn unfolded_helper_keeps_real_gates() {
     // The structural helper must NOT fold (guards the whole existing suite).
     let r = compile("out y = 2 + 3");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 1);
 }
 
@@ -52,7 +43,7 @@ fn opaque_blocks_folding() {
     // is never itself a `_Literal`, isolating what THIS test checks: the
     // `+ 3` must not fold.
     let r = compile_folded("var x: int = 2\nout y = Opaque(x) + 3");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 1);
     assert_eq!(count_class(&r.module, gc::REROUTER), 1);
 }
@@ -64,7 +55,7 @@ fn any_annotation_blocks_folding() {
     // pass as a real `Opaque(...)` probe: `t + 1` must stay a real gate
     // instead of folding away.
     let r = compile_folded("in t: any\nlet v = t + 1\nout y = v");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 1);
 }
 
@@ -73,7 +64,7 @@ fn nofold_subtree_is_not_folded_or_seen_through() {
     // The @nofold add must stay a real gate AND its downstream consumer must
     // not fold either (its input is Unknown, not the constant 5).
     let r = compile_folded("@nofold let a = 2 + 3\nout y = a * 2");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 1);
     assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathMultiply"), 1);
 }
@@ -85,7 +76,7 @@ fn annihilator_folds_with_unknown_side() {
     // unrelated carrier gate — see that test's comment).
     // Opaque cond is Unknown, but AND false is a certified annihilator.
     let r = compile_folded("var b: bool = true\nout y = Opaque(b) && false");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, "BrickComponentType_Expr_LogicalAND"), 0);
     // The folded `Bool(false)` feeds `out y` directly — a dataless boundary
     // port (MicrochipOutput has no data struct) — so
@@ -108,7 +99,7 @@ fn annihilator_folds_with_unknown_side() {
     // that the outer `||` stays a real gate (didn't fold to a literal), proving
     // `|| false` isn't annihilated.
     let r2 = compile_folded("var b: bool = true\nout y = Opaque(b) || false");
-    no_errors(&r2);
+    assert_no_errors(&r2);
     assert_eq!(count_class(&r2.module, "BrickComponentType_Expr_LogicalOR"), 1);
     assert!(
         r2.module.nodes.values().any(|n| n.gate_class
@@ -125,7 +116,7 @@ fn constant_bitwise_operand_inlines_not_carrier() {
     // constant operand (the `0` in `x | 0`) inlines into the gate's `InputB`
     // data rather than materializing a `MathAdd(0, 0)` carrier.
     let r = compile_folded("var x: int = 3\nout y = x | 0");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(
         count_class(&r.module, "BrickComponentType_Expr_BitwiseOR"),
         1
@@ -151,7 +142,7 @@ fn constant_string_operand_inlines_not_carrier() {
     // parts) bakes into the gate's data rather than materializing a
     // `String_Concatenate` carrier.
     let r = compile_folded("var x: string = \"\"\nout z = x.Contains(\"foo\")");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(
         count_class(&r.module, "BrickComponentType_Expr_String_Concatenate"),
         0,
@@ -169,10 +160,10 @@ fn constant_string_operand_inlines_not_carrier() {
 #[test]
 fn overflow_and_nonfinite_results_stay_unfolded() {
     let r = compile_folded("out y = 9223372036854775807 + 1");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 1);
     let r2 = compile_folded("out y = 1.0 / 0.0");
-    no_errors(&r2);
+    assert_no_errors(&r2);
     assert_eq!(count_class(&r2.module, "BrickComponentType_Expr_MathDivide"), 1);
 }
 
@@ -189,7 +180,7 @@ fn string_literal_equality_folds() {
     // (`fold/eval.rs`'s `eq()` handles `Str`/`Str` directly). Fixed by
     // teaching `collect_infos` to also recognize the portless-carrier shape.
     let r = compile_folded("out y = (\"hello\" == \"world\")");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::COMPARE_EQUAL), 0);
 }
 
@@ -202,7 +193,7 @@ fn string_literal_folds_across_chip_boundary() {
     // this also proves the in-chip `CompareEqual` collapsed.
     let src = "chip F(p: string) -> (r: bool) {\n  out r = (p == \"nope\")\n}\nout y = F(\"hello world\")";
     let r = compile_folded(src);
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::COMPARE_EQUAL), 0);
 }
 
@@ -217,7 +208,7 @@ fn cross_chip_constant_folds_inside_named_chip() {
     // becomes known via this pass's own fold-then-propagate fixpoint.
     let src = "chip Inc(v: int) -> (r: int) { out r = v + 1 }\nout y = Inc(2 + 2)";
     let r = compile_folded(src);
-    no_errors(&r);
+    assert_no_errors(&r);
     // Dead-feed pruning (boundary-delivery cleanup, Rule A + Rule B): `v`
     // folds away inside the chip (nothing left reads its wire), and `r`'s
     // only exterior consumer (root `y`) gets rewired by Rule B straight to a
@@ -283,7 +274,7 @@ fn chip_output_read_only_via_interpolation_leaves_no_boundary_carrier() {
                let score = Score(6 + 6)\n\
                out y = \"score=${score}\"";
     let r = compile_folded(src);
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(
         count_class(&r.module, gc::STRING_FORMAT_TEXT),
         0,
@@ -333,7 +324,7 @@ fn folded_result_flows_back_out_of_chip() {
     // regardless of how `v` got its value inside the chip.
     let src = "chip Inc(v: int) -> (r: int) { out r = v + 1 }\nout y = Inc(4) == 5";
     let r = compile_folded(src);
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::COMPARE_EQUAL), 0);
 }
 
@@ -349,7 +340,7 @@ fn no_fold_flag_matches_unfolded_compile() {
 fn module_level_nofold_disables_pass() {
     // `compile_folded` is ForceOn — @nofold must still win over it.
     let r = compile_folded("@nofold\n\nout y = 2 + 3");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 1);
 }
 
@@ -365,7 +356,7 @@ fn fold_runs_by_default_under_auto() {
     // count would stay 1 either way and never distinguish folded from
     // unfolded.
     let unannotated = compile_auto("out y = (2 + 3) * 4 == 20");
-    no_errors(&unannotated);
+    assert_no_errors(&unannotated);
     assert_eq!(
         count_class(&unannotated.module, gc::COMPARE_EQUAL),
         0,
@@ -374,7 +365,7 @@ fn fold_runs_by_default_under_auto() {
 
     // The legacy `@fold` opt-in is still accepted and behaves identically.
     let annotated = compile_auto("@fold\n\nout y = (2 + 3) * 4 == 20");
-    no_errors(&annotated);
+    assert_no_errors(&annotated);
     assert_eq!(
         count_class(&annotated.module, gc::COMPARE_EQUAL),
         0,
@@ -383,7 +374,7 @@ fn fold_runs_by_default_under_auto() {
 
     // Opting out with `@nofold` disables the pass even under Auto.
     let disabled = compile_auto("@nofold\n\nout y = (2 + 3) * 4 == 20");
-    no_errors(&disabled);
+    assert_no_errors(&disabled);
     assert_eq!(
         count_class(&disabled.module, gc::COMPARE_EQUAL),
         1,
@@ -418,25 +409,12 @@ fn module_nofold_beats_fold() {
     assert!(parsed.ast.fold, "the @fold annotation should still be recorded");
     assert!(parsed.ast.no_fold, "@nofold should win but is still recorded on the AST");
 
-    let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
-    let lower_with = |fold_mode: FoldMode| {
-        lower(LowerInput {
-            ast: &parsed.ast,
-            type_of_expr: &tc.type_of_expr,
-            op_resolutions: &tc.op_resolutions,
-            resolutions: &tc.resolutions,
-            file: "test",
-            module_name: None,
-            template_cache: std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
-            doc_comments: &parsed.doc_comments,
-            fold_mode,
-            ce_slots: &crate::typecheck::CeSlotMap::default(),
-        })
-    };
+    let lower_with =
+        |fold_mode: FoldMode| crate::compile::front_end(src, "test", None, fold_mode, &crate::resolve::FsLoader).lowered;
 
     // Auto folds by default, but `@nofold` (`ast.no_fold`) wins -> no fold.
     let r_auto = lower_with(FoldMode::Auto);
-    no_errors(&r_auto);
+    assert_no_errors(&r_auto);
     assert_eq!(
         count_class(&r_auto.module, gc::COMPARE_EQUAL),
         1,
@@ -445,7 +423,7 @@ fn module_nofold_beats_fold() {
 
     // ForceOn still respects @nofold ("don't require @fold", not "ignore @nofold").
     let r_force_on = lower_with(FoldMode::ForceOn);
-    no_errors(&r_force_on);
+    assert_no_errors(&r_force_on);
     assert_eq!(
         count_class(&r_force_on.module, gc::COMPARE_EQUAL),
         1,
@@ -480,7 +458,7 @@ fn imported_module_nofold_is_inert() {
     let lib = "@nofold\n\nmod inc(v: int) -> int {\n  return v + 1\n}";
     let main = "import { inc } from \"lib\"\nout y = inc(2) * 4 == 12";
     let r = compile_multi(main, &[("lib", lib)]);
-    no_errors(&r);
+    assert_no_errors(&r);
     // Folded: `inc(2)` inlines to `2 + 1`, `* 4`, `== 12` -> literal `true`,
     // leaving zero Compare gates. An imported `@nofold` that leaked would keep
     // the CompareEqual gate alive instead.
@@ -496,7 +474,7 @@ fn select_shorts_to_nonconstant_source() {
     // Constant-true selector passes the THEN side (InputB) through even
     // though that side is opaque; the Select gate itself disappears.
     let r = compile_folded("let v = Opaque(9)\nout y = if true then v else 3");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::SELECT), 0);
     assert_eq!(count_class(&r.module, gc::REROUTER), 1, "opaque source survives");
 }
@@ -507,7 +485,7 @@ fn select_with_unwired_chosen_input_stays() {
     // (Constructed via IR is awkward from source; assert instead that a
     // fully-constant select folds to its value.)
     let r = compile_folded("out y = if false then 1 else 2");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::SELECT), 0);
     // `out y`'s port (MicrochipOutput's RER_Input) has no data struct, so
     // `materialize_unfoldable_constants` re-wraps the shorted `_Literal(2)`
@@ -537,7 +515,7 @@ fn branch_truncates_untaken_side() {
     let src = "in t: exec\nvar a: int = 0\nvar b: int = 0\n\
                on t { if 1 == 1 { a = 1 } else { b = 2 } }";
     let r = compile_folded(src);
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::BRANCH), 0, "constant branch removed");
     // Exactly one Var_Set survives (the taken side's `a = 1`).
     assert_eq!(count_class(&r.module, gc::VAR_SET), 1);
@@ -554,7 +532,7 @@ fn branch_dead_side_with_external_exec_survives() {
                on u { emit tail }\n\
                on tail { b = 2 }";
     let r = compile_folded(src);
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::BRANCH), 0);
     assert_eq!(count_class(&r.module, gc::VAR_SET), 2, "shared tail survives");
 }
@@ -564,7 +542,7 @@ fn nofold_branch_stays() {
     let src = "in t: exec\nvar a: int = 0\n\
                @nofold on t { if 1 == 1 { a = 1 } else { a = 2 } }";
     let r = compile_folded(src);
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::BRANCH), 1);
 }
 
@@ -586,7 +564,7 @@ fn nofold_literal_condition_branch_stays() {
     let src = "in t: exec\nvar a: int = 0\nvar b: int = 0\n\
                @nofold on t { if true { a = 1 } else { b = 2 } }";
     let unfolded = compile(src);
-    no_errors(&unfolded);
+    assert_no_errors(&unfolded);
     assert_eq!(
         count_class(&unfolded.module, gc::BRANCH),
         1,
@@ -595,7 +573,7 @@ fn nofold_literal_condition_branch_stays() {
     assert_eq!(count_class(&unfolded.module, gc::VAR_SET), 2, "both arms lower under @nofold");
 
     let folded = compile_folded(src);
-    no_errors(&folded);
+    assert_no_errors(&folded);
     assert_eq!(
         count_class(&folded.module, gc::BRANCH),
         1,
@@ -612,7 +590,7 @@ fn literal_condition_shortcut_fires_without_nofold() {
     let src = "in t: exec\nvar a: int = 0\nvar b: int = 0\n\
                on t { if true { a = 1 } else { b = 2 } }";
     let r = compile_folded(src);
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::BRANCH), 0);
     assert_eq!(count_class(&r.module, gc::VAR_SET), 1, "only the taken arm's Var_Set exists");
 }
@@ -626,10 +604,10 @@ fn nofold_ident_bound_literal_condition_branch_stays() {
     let src = "in t: exec\nvar a: int = 0\nvar b: int = 0\n\
                @nofold on t { let c = true\nif c { a = 1 } else { b = 2 } }";
     let r = compile(src);
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::BRANCH), 1);
     let r2 = compile_folded(src);
-    no_errors(&r2);
+    assert_no_errors(&r2);
     assert_eq!(count_class(&r2.module, gc::BRANCH), 1);
 }
 
@@ -643,7 +621,7 @@ fn multi_hop_branch_truncation_chains() {
     let src = "in t: exec\nvar a: int = 0\n\
                on t { if 1 == 2 { a = 1 } else { if 2 == 2 { a = 2 } else { a = 3 } } }";
     let r = compile_folded(src);
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::BRANCH), 0, "both branches truncate away");
     assert_eq!(count_class(&r.module, gc::COMPARE_EQUAL), 0, "both compares fold to constants");
     assert_eq!(count_class(&r.module, gc::VAR_SET), 1, "only a = 2 survives");
@@ -654,7 +632,7 @@ fn demand_sweep_removes_orphaned_feeders() {
     // The annihilator kills the AND; the pure NOT feeding its unknown side
     // loses its only consumer and sweeps away; the Opaque rerouter STAYS.
     let r = compile_folded("out y = !Opaque(true) && false");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, "BrickComponentType_Expr_LogicalAND"), 0);
     assert_eq!(count_class(&r.module, gc::LOGICAL_NOT), 0, "orphaned NOT swept");
     assert_eq!(count_class(&r.module, gc::REROUTER), 1, "Opaque never elided");
@@ -671,7 +649,7 @@ fn emptied_unannotated_chip_is_elided() {
     // instead — those already live in `module.chips` during lowering
     // (`lower/call.rs`), so this actually exercises whole-chip elision.
     let r = compile_folded("chip Empty() { let dead = 2 + 3 }\nEmpty()\nout y = 1");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert!(r.module.chips.is_empty(), "unannotated empty chip must be elided");
     assert_eq!(count_class(&r.module, gc::MICROCHIP), 0);
 }
@@ -679,7 +657,7 @@ fn emptied_unannotated_chip_is_elided() {
 #[test]
 fn annotated_empty_chip_is_kept() {
     let r = compile_folded("@label(\"Keep\") chip Empty() { let dead = 2 + 3 }\nEmpty()\nout y = 1");
-    no_errors(&r);
+    assert_no_errors(&r);
     // The labeled chip node survives even though its contents folded away.
     let chip_nodes = r.module.nodes.values()
         .filter(|n| n.gate_class == gc::MICROCHIP || n.gate_class == gc::MICROCHIP_ALT)
@@ -708,7 +686,7 @@ fn cross_module_literal_inline_skips_orphan_deletion() {
                out y = Passthrough(2 + 2)";
 
     let folded = compile_folded(src);
-    no_errors(&folded);
+    assert_no_errors(&folded);
     let child = folded.module.chips.values().next().expect("one Passthrough instance");
     let mc_input = child
         .nodes
@@ -772,7 +750,7 @@ fn cross_module_literal_inline_skips_orphan_deletion() {
     // path was never exposed to the bug. Confirmed here as a baseline: the
     // value must reach `v` here too.
     let unfolded = compile(src);
-    no_errors(&unfolded);
+    assert_no_errors(&unfolded);
     let child2 = unfolded.module.chips.values().next().expect("one Passthrough instance");
     let mc_input2 = child2
         .nodes
@@ -798,7 +776,7 @@ fn float_prop(n: &crate::ir::Node, name: &str) -> Option<f64> {
 fn format_text_constant_interpolation_folds() {
     // `let n = 42` — no comma grouping needed below 1,000.
     let r = compile_folded("let n = 42\nout y = \"n=${n}\"");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::STRING_FORMAT_TEXT), 0);
     let carrier = r.module.nodes.values().find(|n| {
         n.gate_class == gc::STRING_CONCATENATE
@@ -811,7 +789,7 @@ fn format_text_constant_interpolation_folds() {
     // (`render_for_format`); this end-to-end test locks that law all the
     // way through FormatText template substitution, not just in isolation.
     let r2 = compile_folded("let n = 1000\nout y = \"n=${n}\"");
-    no_errors(&r2);
+    assert_no_errors(&r2);
     assert_eq!(count_class(&r2.module, gc::STRING_FORMAT_TEXT), 0);
     let carrier2 = r2.module.nodes.values().find(|n| {
         n.gate_class == gc::STRING_CONCATENATE
@@ -828,7 +806,7 @@ fn format_text_opaque_slot_does_not_fold() {
     // own armoring convention (see `probes/gate_semantics.ws`'s comment on
     // why FormatText's substitution slots are Opaque-wrapped there).
     let r = compile_folded("var x: int = 5\nout y = Fmt(\"n={0}\", Opaque(x))");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::STRING_FORMAT_TEXT), 1);
     assert_eq!(count_class(&r.module, gc::REROUTER), 1, "opaque source survives");
 }
@@ -839,7 +817,7 @@ fn format_text_nonascii_input_keeps_the_gate() {
     // refuses any non-ASCII string operand — the multibyte behavior was
     // never certified (see `eval::ascii_str`'s doc comment).
     let r = compile_folded("let s = \"\u{03c0}\"\nout y = \"v=${s}\"");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::STRING_FORMAT_TEXT), 1);
 }
 
@@ -851,7 +829,7 @@ fn vector_math_folds() {
     // `materialize_unfoldable_constants` already used for a hand-written
     // `Vec(...)` literal.
     let r = compile_folded("out v = Vec(1.0, 2.0, 3.0) + Vec(0.5, 0.5, 0.5)");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 0);
     assert_eq!(count_class(&r.module, gc::MAKE_VECTOR), 1);
     let carrier = r.module.nodes.values().find(|n| n.gate_class == gc::MAKE_VECTOR)
@@ -882,7 +860,7 @@ fn vector_math_folds() {
 #[test]
 fn call_argument_baked_vector_literals_fold_through_dot() {
     let r = compile_folded("out y = Dot(Vec(1.0, 2.0, 3.0), Vec(4.0, 5.0, 6.0))");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::VEC_DOT), 0);
     // A scalar Float result materializes via the `MathAdd(n, 0)` carrier
     // recipe (`materialize_unfoldable_constants`) for a dataless `out`
@@ -903,7 +881,7 @@ fn call_argument_baked_vector_literals_fold_through_dot() {
 #[test]
 fn call_argument_baked_vector_literals_fold_through_cross() {
     let r = compile_folded("out v = Cross(Vec(1.0, 0.0, 0.0), Vec(0.0, 1.0, 0.0))");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::VEC_CROSS), 0);
     assert_eq!(count_class(&r.module, gc::MAKE_VECTOR), 1);
     let carrier = r
@@ -939,7 +917,7 @@ fn call_argument_baked_vector_literals_fold_through_cross() {
 #[test]
 fn mixed_literal_and_computed_vector_components_fold() {
     let r = compile_folded("out v = Vec(0.5, -1.25, 1.0 / 3.0)");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathDivide"), 0);
     assert_eq!(count_class(&r.module, gc::MAKE_VECTOR), 1);
     let carrier = r
@@ -964,7 +942,7 @@ fn composite_value_folds_through_a_non_math_gate() {
     // scalar (`string`) — proving composite `known`-propagation drives
     // folding through gates beyond MathAdd/VecScale.
     let r = compile_folded("out y = Color(1.0, 0.5, 0.0).ToHex()");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::COLOR_TO_HEX), 0);
     let carrier = r.module.nodes.values().find(|n| {
         n.gate_class == gc::STRING_CONCATENATE
@@ -980,7 +958,7 @@ fn vec_normalize_deferred_does_not_fold() {
     // `deferredOps` chapter — see `eval::eval`'s `DEFERRED` list) even
     // though its Vector operand is fully known.
     let r = compile_folded("out v = Vec(1.0, 2.0, 3.0).Normalize()");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::VEC_NORMALIZE), 1);
 }
 
@@ -997,7 +975,7 @@ fn make_rotation_does_not_fold() {
     let r = compile_folded(
         "out r: rotator = Rotation(0.0 + 0.0, 90.0 + 0.0, 45.5 + 0.0)",
     );
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::MAKE_ROTATION), 1);
     // Each `X.0 + 0.0` operand is a FOLDED expression, not a bare source
     // literal, so it never reaches `inline_bare_scalar_literals` (which runs
@@ -1022,7 +1000,7 @@ fn string_concat_operator_form_folds() {
     // `Info.lit` comment) — both fold via the certified `Concatenate` law
     // into a single materialized carrier.
     let r = compile_folded("out y = (\"a\" .. \"b\")");
-    no_errors(&r);
+    assert_no_errors(&r);
     let carrier = r.module.nodes.values().find(|n| {
         n.gate_class == gc::STRING_CONCATENATE
             && n.properties.get(&*crate::intern::sym::INPUT_A)
@@ -1036,11 +1014,11 @@ fn nofold_blocks_format_text_and_vector_math() {
     // Two representative shapes, both gated by @nofold: FormatText constant
     // interpolation, and composite vector math.
     let r = compile_folded("@nofold\n\nlet n = 42\nout y = \"n=${n}\"");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::STRING_FORMAT_TEXT), 1);
 
     let r2 = compile_folded("@nofold\n\nout v = Vec(1.0, 2.0, 3.0) + Vec(0.5, 0.5, 0.5)");
-    no_errors(&r2);
+    assert_no_errors(&r2);
     assert_eq!(count_class(&r2.module, "BrickComponentType_Expr_MathAdd"), 1);
 }
 
@@ -1066,7 +1044,7 @@ fn quat_literal_constant_folds_to_carrier() {
         "let q = Quat(0.0 + 0.0, 0.0 + 0.0, 0.38 + 0.0, 0.92 + 0.0).SplitQuat()\n\
          out x = q.X"
     );
-    no_errors(&r);
+    assert_no_errors(&r);
     // All four MathAdd gates folded away — proves the fold pass actually
     // ran (not just that some MakeQuaternion happens to carry the right
     // data via the pre-existing bare-literal inline path).
@@ -1130,7 +1108,7 @@ fn format_text_call_argument_baked_slot_folds() {
     // so this also locks in that the pre-existing wired-slot path is
     // untouched by the fix.
     let r = compile_folded("out y = Fmt(\"{0}-{1}\", 1.0 + 2.0, 5)");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::STRING_FORMAT_TEXT), 0);
     let carrier = r.module.nodes.values().find(|n| {
         n.gate_class == gc::STRING_CONCATENATE
@@ -1166,7 +1144,7 @@ fn select_baked_true_condition_shorts_to_truthy_side() {
     // path from `out y` back through its chosen Rerouter to that Rerouter's
     // OWN carrier instead, which does prove which side was actually chosen.
     let r = compile_folded("out y = Select(true, Opaque(1000), Opaque(2000))");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, gc::SELECT), 0, "constant-conditioned select removed");
     let out_node = r
         .module
@@ -1199,7 +1177,7 @@ fn select_baked_true_condition_shorts_to_truthy_side() {
 #[test]
 fn string_condition_coercion_gate_blocks_folding_for_now() {
     // A string condition no longer reaches the Branch's `BCond` directly:
-    // the language-level string → bool coercion inserts a
+    // the language-level string -> bool coercion inserts a
     // `CompareNotEqual(s, "")` gate at lowering time, so `if "x"` means
     // exactly `"x" != ""` — empty is false, everything else (INCLUDING "0"
     // and "false", which the game's native port truthiness would call
@@ -1211,15 +1189,15 @@ fn string_condition_coercion_gate_blocks_folding_for_now() {
     // pass REFUSES the inserted gate and the Branch survives even under
     // @fold — correct-but-unoptimized until that signature is probed and
     // certified. When (str, str) coverage lands, this test should flip to
-    // asserting full truncation under the NEW law: "" → else arm survives,
-    // "0" → THEN arm survives ("0" != "" is true — deliberately different
-    // from native truthiness), "a" → then arm survives.
+    // asserting full truncation under the NEW law: "" -> else arm survives,
+    // "0" -> THEN arm survives ("0" != "" is true — deliberately different
+    // from native truthiness), "a" -> then arm survives.
     for cond in ["\"\"", "\"0\"", "\"a\""] {
         let src = format!(
             "in t: exec\nvar a: int = 0\nvar b: int = 0\non t {{ if {cond} {{ a = 1 }} else {{ b = 2 }} }}"
         );
         let r = compile_folded(&src);
-        no_errors(&r);
+        assert_no_errors(&r);
         assert_eq!(
             count_class(&r.module, gc::COMPARE_NOT_EQUAL),
             1,
@@ -1250,7 +1228,7 @@ fn fold_keeps_dynamic_root_label_source() {
     let r = compile_folded(
         "@label(\"root: ${who}\")\n\nvar who: string = \"\"\nin go: exec\non go { who = \"alice\" }",
     );
-    no_errors(&r);
+    assert_no_errors(&r);
     let src = r
         .module
         .root_dynamic_label
@@ -1272,7 +1250,7 @@ fn fold_keeps_dynamic_var_label_source() {
         "var who: string = \"\"\n@label(\"m: ${who}\") var mirror: string = \"\"\n\
          in go: exec\non go { who = \"alice\" mirror = \"alice\" }",
     );
-    no_errors(&r);
+    assert_no_errors(&r);
     assert!(
         !r.module.dynamic_labels.is_empty(),
         "per-var dynamic label recorded during lowering"
@@ -1294,7 +1272,7 @@ fn constant_string_operand_inlines_into_its_concat_consumer() {
     // those are native `str` fields, and a Concatenate reads an unwired input
     // from data, which is exactly how the wrapper itself supplies its text.
     let r = compile_folded("in n: int\nout s: string = \"n=\" .. n");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(
         count_class(&r.module, gc::STRING_CONCATENATE),
         1,
@@ -1377,7 +1355,7 @@ fn an_int_literal_in_a_float_slot_is_a_float_folded_or_not() {
     ] {
         let src = format!("{head}{body}");
         for r in [compile(&src), compile_folded(&src)] {
-            no_errors(&r);
+            assert_no_errors(&r);
             let lits = tree_literals(&r.module);
             assert!(!lits.contains(&crate::ir::Literal::Int(3)), "{src}\n{lits:?}");
             assert!(
@@ -1397,7 +1375,7 @@ fn an_int_literal_on_a_builtin_math_port_stays_an_int() {
         "in go: exec\nin n: int\nvar r: int = 0\nvar q: int = 0\nvar s: int = 0\n\
          on go {\n  r = clamp(n, 0, 8)\n  q = min(n, 4)\n  s = max(n, 1)\n}",
     );
-    no_errors(&r);
+    assert_no_errors(&r);
     let lits = tree_literals(&r.module);
     for v in [0, 8, 4, 1] {
         assert!(lits.contains(&crate::ir::Literal::Int(v)), "{v}: {lits:?}");

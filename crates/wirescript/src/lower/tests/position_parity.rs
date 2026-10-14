@@ -117,24 +117,6 @@ fn line_of(src: &str, text: &str) -> u32 {
     idx as u32 + 1
 }
 
-fn exec_reaches(m: &crate::ir::Module, from: crate::ir::NodeId, to: crate::ir::NodeId) -> bool {
-    let mut seen = crate::collections::HashSet::default();
-    let mut stack = vec![from];
-    while let Some(n) = stack.pop() {
-        if n == to {
-            return true;
-        }
-        if seen.insert(n) {
-            for w in &m.wires {
-                if w.source.node_id == n && w.target.port.as_str().starts_with("Exec") {
-                    stack.push(w.target.node_id);
-                }
-            }
-        }
-    }
-    false
-}
-
 /// Whether some exec root reaches `to` when the exec wires out of `cut` are
 /// removed. A root is a gate no exec wire enters.
 fn reached_without(m: &crate::ir::Module, cut: Option<crate::ir::PortRef>, to: crate::ir::NodeId) -> bool {
@@ -194,17 +176,6 @@ fn stores_on(m: &crate::ir::Module, line: u32) -> Vec<crate::ir::NodeId> {
         .filter(|n| n.gate_class == gc::VAR_SET && n.source_range.start.line == line)
         .map(|n| n.id)
         .collect()
-}
-
-/// Whether store `id` writes the integer `v`, held inline or wired from a
-/// literal.
-fn stores_value(m: &crate::ir::Module, id: crate::ir::NodeId, v: i64) -> bool {
-    let is_v = |n: &crate::ir::Node| matches!(n.properties.get(&*crate::intern::sym::VALUE), Some(crate::ir::Literal::Int(x)) if *x == v);
-    is_v(&m.nodes[&id])
-        || m.wires
-            .iter()
-            .filter(|w| w.target.node_id == id && w.target.port == WirePort::Value)
-            .any(|w| m.nodes.get(&w.source.node_id).is_some_and(|n| n.gate_class == gc::LITERAL && is_v(n)))
 }
 
 /// Whether output `name` is driven once, by its backing var.

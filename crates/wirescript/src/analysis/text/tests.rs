@@ -65,7 +65,7 @@
         // Receiver call: `.`-qualified name resolves to the method name.
         let src2 = "on t { ctrl.DisplayText(\"hi\", fontSize = 20) }";
         assert_eq!(find_enclosing_call(src2, 0, 40).as_deref(), Some("DisplayText"));
-        // Outside any call → None.
+        // Outside any call -> None.
         assert_eq!(find_enclosing_call("let x = 1", 0, 8), None);
     }
 
@@ -163,3 +163,34 @@
         // The line after a non-ASCII one still resolves its call.
         assert_eq!(find_enclosing_call(src, 1, 12).as_deref(), Some("f"));
     }
+
+    #[test]
+    fn rotators_and_quats_offer_their_components() {
+        assert_eq!(swizzle_fields("rotator"), &["pitch", "yaw", "roll"]);
+        assert_eq!(swizzle_fields("quat"), &["x", "y", "z", "w"]);
+    }
+
+    /// `LineIndex::line_col` counts as a scan from the top does: a line per
+    /// `\n` before the offset, a column per char after the last one (a `\r`
+    /// included), a multibyte char counted once.
+    #[test]
+    fn line_col_matches_a_scan_from_the_top() {
+        let src = "let a = 1\r\nlet \u{e9}t\u{e9} = \"\u{1F600}\"\n\nlet z = a\n";
+        let index = LineIndex::new(src);
+        for offset in 0..=src.len() + 2 {
+            let (mut line, mut col) = (0, 0);
+            for (i, ch) in src.char_indices() {
+                if i >= offset {
+                    break;
+                }
+                if ch == '\n' {
+                    line += 1;
+                    col = 0;
+                } else {
+                    col += 1;
+                }
+            }
+            assert_eq!(index.line_col(src, offset), (line, col), "offset {offset}");
+        }
+    }
+

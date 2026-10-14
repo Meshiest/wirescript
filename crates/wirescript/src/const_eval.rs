@@ -69,6 +69,20 @@ pub fn eval_let_value(
     cx: &ConstCtx,
     budget: &mut Budget,
 ) -> Result<crate::ir::Literal, error::ConstError> {
+    // An annotated `null` is the zero of its annotation's type.
+    if let (crate::ast::Expr::NullLit { .. }, Some(te)) = (&l.value, &l.typ) {
+        let types = cx.types.in_file(&l.range.file);
+        let t = crate::types::mono::unwrap_ref(&types.resolve_in(te, &cx.type_args));
+        use crate::ir::Type;
+        if matches!(
+            t,
+            Type::Int | Type::Float | Type::Bool | Type::String | Type::Vector | Type::Rotator | Type::Quat
+                | Type::Color | Type::Entity | Type::Character | Type::Controller
+        ) && let Some(lit) = crate::lower::default_literal_for_var_type(&t)
+        {
+            return Ok(lit);
+        }
+    }
     let lit = eval_expr(&l.value, cx, budget)?;
     Ok(match &l.typ {
         Some(te) => {
@@ -139,18 +153,7 @@ pub fn literal_is_integer(text: &str, n: i64) -> bool {
     sign_ok && (int_digits == want || (int_digits.is_empty() && n == 0))
 }
 
-/// A float constant as a diagnostic quotes it: a whole number from `1e10` up
-/// in exponent form, as such a number is usually written (`1e30`, not 31
-/// digits).
-pub fn written_float(f: f64) -> String {
-    if f.is_finite() && f.fract() == 0.0 && f.abs() >= 1e10 {
-        format!("{f:e}")
-    } else if f.fract() == 0.0 {
-        format!("{f:.1}")
-    } else {
-        format!("{f}")
-    }
-}
+pub use crate::ir::written_float;
 
 /// A number constant where its type is declared the number type `declared`:
 /// an integer is the float it names in a `float`, and a float the integer it
@@ -164,6 +167,26 @@ pub fn number_in_type(lit: crate::ir::Literal, declared: &crate::ir::Type) -> cr
             Some((n, _)) => Literal::Int(n),
             None => Literal::Float(f),
         },
+        (lit, _) => lit,
+    }
+}
+
+/// A scalar literal as a slot of scalar type `ty` holds it, by the gates'
+/// conversion laws: an int and a float convert as in [`number_in_type`], a
+/// bool is the number 1 or 0, a number is the bool `!= 0`, and a string is the
+/// bool `!= ""`. Any other pair, and any non-scalar type, is unchanged.
+///
+/// Emit applies the same laws to array elements (`wire_value_as`), so a value
+/// baked here and one converted there agree.
+pub fn scalar_in_type(lit: crate::ir::Literal, ty: &crate::ir::Type) -> crate::ir::Literal {
+    use crate::ir::{Literal, Type};
+    match (lit, ty) {
+        (lit @ (Literal::Int(_) | Literal::Float(_)), Type::Int | Type::Float) => number_in_type(lit, ty),
+        (Literal::Bool(b), Type::Float) => Literal::Float(if b { 1.0 } else { 0.0 }),
+        (Literal::Bool(b), Type::Int) => Literal::Int(b as i64),
+        (Literal::Int(n), Type::Bool) => Literal::Bool(n != 0),
+        (Literal::Float(f), Type::Bool) => Literal::Bool(f != 0.0),
+        (Literal::String(s), Type::Bool) => Literal::Bool(!s.is_empty()),
         (lit, _) => lit,
     }
 }
@@ -259,6 +282,53 @@ pub struct DeclaredTypes {
 
 /// How deep an alias may expand inside another before it is taken as `any`.
 const MAX_DECLARED_DEPTH: u32 = 32;
+
+/// What a type parameter stands for in a [`DeclaredScope`].
+#[derive(Clone, Copy)]
+enum Param<'a> {
+    /// Whatever the caller answers for a name at a range.
+    Fn(&'a dyn Fn(&str, &crate::diagnostic::SourceRange) -> Option<crate::ir::Type>),
+    /// A generic alias's arguments, by its parameter names.
+    Bound(&'a crate::collections::HashMap<String, crate::ir::Type>),
+}
+
+/// A [`DeclaredTypes`] table as the resolver reads it, with what its type
+/// parameters stand for. A parameter is read before anything else a name
+/// could mean, a primitive included.
+struct DeclaredScope<'a> {
+    table: &'a DeclaredTypes,
+    param: Param<'a>,
+}
+
+impl crate::types::resolve::TypeNames for DeclaredScope<'_> {
+    fn param(&self, name: &str, range: &crate::diagnostic::SourceRange) -> Option<crate::ir::Type> {
+        match self.param {
+            Param::Fn(f) => f(name, range),
+            Param::Bound(b) => b.get(name).cloned(),
+        }
+    }
+
+    fn alias(&self, name: &str) -> Option<crate::types::resolve::AliasDef<'_>> {
+        use crate::types::resolve::AliasDef;
+        let (params, body) = self.table.aliases.get(name)?;
+        Some(if params.is_empty() { AliasDef::Body(body) } else { AliasDef::Generic(params, body) })
+    }
+
+    fn enum_named(&self, name: &str, args: Vec<crate::ir::Type>) -> Option<crate::ir::Type> {
+        self.table.enum_defs.type_named(name, args)
+    }
+
+    /// An alias body is written at the top level of its own file, so it
+    /// reads its names there, with none of the type parameters of the place
+    /// that uses the alias.
+    fn body_scope<'s>(
+        &'s self,
+        bindings: &'s crate::collections::HashMap<String, crate::ir::Type>,
+        _: &'s [String],
+    ) -> Box<dyn crate::types::resolve::TypeNames + 's> {
+        Box::new(DeclaredScope { table: self.table, param: Param::Bound(bindings) })
+    }
+}
 
 impl DeclaredTypes {
     /// The declarations of the program whose top level is `decls`, and of
@@ -412,75 +482,7 @@ impl DeclaredTypes {
         te: &crate::ast::TypeExpr,
         param: &dyn Fn(&str, &crate::diagnostic::SourceRange) -> Option<crate::ir::Type>,
     ) -> crate::ir::Type {
-        self.resolve_at(te, param, 0)
-    }
-
-    fn resolve_at(
-        &self,
-        te: &crate::ast::TypeExpr,
-        param: &dyn Fn(&str, &crate::diagnostic::SourceRange) -> Option<crate::ir::Type>,
-        depth: u32,
-    ) -> crate::ir::Type {
-        use crate::ast::TypeExpr;
-        use crate::ir::Type;
-        if depth > MAX_DECLARED_DEPTH {
-            return Type::Any;
-        }
-        let top_level = |_: &str, _: &crate::diagnostic::SourceRange| None;
-        let each = |ts: &[TypeExpr]| ts.iter().map(|t| self.resolve_at(t, param, depth)).collect::<Vec<_>>();
-        match te {
-            TypeExpr::Name { name, range } => {
-                if let Some(t) = param(name, range) {
-                    return t;
-                }
-                if let Some(t) = crate::types::resolve::primitive(name) {
-                    return t;
-                }
-                match self.aliases.get(name) {
-                    Some((params, body)) if params.is_empty() => self.resolve_at(body, &top_level, depth + 1),
-                    Some(_) => Type::Any,
-                    None => self.enum_defs.type_named(name, Vec::new()).unwrap_or(Type::Any),
-                }
-            }
-            TypeExpr::Ref { inner, .. } => match self.resolve_at(inner, param, depth) {
-                t @ (Type::Record(_) | Type::Tuple(_)) => crate::types::resolve::distribute_ref(t),
-                t => Type::Ref(Box::new(t)),
-            },
-            TypeExpr::Array { inner, .. } => Type::Array(Box::new(self.resolve_at(inner, param, depth))),
-            TypeExpr::Tuple { fields, .. } => Type::Tuple(each(fields)),
-            TypeExpr::Union { options, .. } => Type::Union(each(options)),
-            TypeExpr::Record { fields, .. } => Type::Record(
-                fields.iter().map(|f| (f.name.clone(), self.resolve_at(&f.typ, param, depth))).collect(),
-            ),
-            // A declaration of the program's own named like a builtin generic
-            // (`type Map<K, V> = ..`) is what the name means, as in typecheck.
-            TypeExpr::Generic { name, args, .. } => {
-                // `Component<PointLight>` names its argument as a component, not a type.
-                if name == "Component"
-                    && !self.aliases.contains_key(name)
-                    && let [TypeExpr::Name { name: c, .. }] = args.as_slice()
-                {
-                    return crate::catalog::component_type(c)
-                        .map(|o| Type::Component(o.class.to_string()))
-                        .unwrap_or(Type::Any);
-                }
-                let args = each(args);
-                match self.aliases.get(name) {
-                    Some((params, body)) if params.len() == args.len() => {
-                        let inner: crate::types::infer::Subst = params.iter().cloned().zip(args).collect();
-                        self.resolve_at(body, &|n, _| inner.get(n).cloned(), depth + 1)
-                    }
-                    Some(_) => Type::Any,
-                    None if self.enum_defs.written_name(name).is_some() => Type::Enum { name: name.clone(), args },
-                    None => match (name.as_str(), args.as_slice()) {
-                        ("Array", [v]) => Type::Array(Box::new(v.clone())),
-                        ("Ref", [v]) => Type::Ref(Box::new(v.clone())),
-                        ("Map", [k, v]) => Type::Map(Box::new(k.clone()), Box::new(v.clone())),
-                        _ => Type::Any,
-                    },
-                }
-            }
-        }
+        crate::types::resolve::resolve_with(te, &DeclaredScope { table: self, param: Param::Fn(param) }, &mut Vec::new())
     }
 
     /// The declared type of each slot of the enum value `fields` (keyed

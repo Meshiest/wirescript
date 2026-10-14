@@ -3,6 +3,7 @@
 //! test at the bottom locks every table case to this implementation — table
 //! and evaluator cannot drift apart without breaking the build.
 use crate::ir::Literal;
+use crate::ir::port_registry::WirePort;
 use crate::lower::fold::table::InVariant;
 
 // `pub`: reachable as `wirescript::lower::fold::eval::Value` from the
@@ -620,7 +621,7 @@ fn math(gate: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
 // laws refuse a non-finite RESULT (`fold/mod.rs` also guards this); the probe
 // is written with clean, finite, in-domain inputs so `covers()` never presents
 // an edge case these laws would mishandle (domain errors, shift-by->=64, the
-// half-rounding tie direction), all of which stay unprobed → unfolded.
+// half-rounding tie direction), all of which stay unprobed -> unfolded.
 const EXTENDED_MATH: &[&str] = &[
     "MathSin", "MathCos", "MathTan", "MathAsin", "MathAcos", "MathAtan",
     "MathSinh", "MathCosh", "MathTanh", "MathAsinh", "MathAcosh", "MathAtanh",
@@ -646,7 +647,26 @@ fn as_int(v: Option<&Value>) -> Option<i64> {
     }
 }
 
+/// The extended-math gates whose result is the variant of their operands: an
+/// integer in, an integer out.
+const VARIANT_PRESERVING: &[&str] = &["MathAbs", "MathMin", "MathMax", "MathClamp"];
+
+fn integer_math(short: &str, a: Option<&Value>, b: Option<&Value>, c: Option<&Value>) -> Option<Value> {
+    Some(Value::Int(match short {
+        "MathAbs" => as_int(a)?.checked_abs()?,
+        "MathMin" => as_int(a)?.min(as_int(b)?),
+        "MathMax" => as_int(a)?.max(as_int(b)?),
+        "MathClamp" => as_int(a)?.max(as_int(b)?).min(as_int(c)?),
+        _ => return None,
+    }))
+}
+
 fn extended_math(short: &str, a: Option<&Value>, b: Option<&Value>, c: Option<&Value>) -> Option<Value> {
+    if VARIANT_PRESERVING.contains(&short)
+        && [a, b, c].into_iter().flatten().all(|v| matches!(v, Value::Int(_) | Value::Bool(_)))
+    {
+        return integer_math(short, a, b, c);
+    }
     let r: f64 = match short {
         "MathSin" => as_float(a)?.sin(),
         "MathCos" => as_float(a)?.cos(),
@@ -897,6 +917,44 @@ fn string_parse_number(s: Option<&Value>) -> Option<Value> {
 /// `${...}`-interpolation the same way `eval`/`Value` are already exposed
 /// for the rest of the predictor — see the visibility note on `pub mod fold`
 /// in `lower/mod.rs`.
+/// `FormatText`'s substitution slots, `InputA..InputG`, in template-index
+/// order (`{0}`..`{6}`).
+pub(crate) const FORMAT_SLOTS: [WirePort; 7] = [
+    WirePort::InputA, WirePort::InputB, WirePort::InputC,
+    WirePort::InputD, WirePort::InputE, WirePort::InputF,
+    WirePort::InputG,
+];
+
+/// The `FormatText` templates an interpolation `parts` renders through: each
+/// literal chunk with `{`/`}` escaped, each `${expr}` a `{N}` slot numbered
+/// from 0 within its group, paired with what `value` gives for that
+/// expression. A group holds at most [`FORMAT_SLOTS`] substitutions; one more
+/// starts the next.
+pub(crate) fn interp_groups<T, E>(
+    parts: &[crate::ast::InterpPart],
+    mut value: impl FnMut(&crate::ast::Expr) -> Result<T, E>,
+) -> Result<Vec<(String, Vec<T>)>, E> {
+    use crate::ast::InterpPart;
+    let mut groups: Vec<(String, Vec<T>)> = Vec::new();
+    let mut fmt = String::new();
+    let mut slots: Vec<T> = Vec::new();
+    for p in parts {
+        match p {
+            InterpPart::Lit(s) => fmt.push_str(&s.replace('{', "{{").replace('}', "}}")),
+            InterpPart::Expr(expr) => {
+                if slots.len() == FORMAT_SLOTS.len() {
+                    groups.push((std::mem::take(&mut fmt), std::mem::take(&mut slots)));
+                }
+                let v = value(expr)?;
+                fmt.push_str(&format!("{{{}}}", slots.len()));
+                slots.push(v);
+            }
+        }
+    }
+    groups.push((fmt, slots));
+    Ok(groups)
+}
+
 pub fn format_text(template: &str, inputs: &[Option<Value>]) -> Option<String> {
     if !template.is_ascii() { return None; }
     if !string_operands_foldable(&inputs.iter().map(Option::as_ref).collect::<Vec<_>>()) {
@@ -911,6 +969,19 @@ pub fn format_text(template: &str, inputs: &[Option<Value>]) -> Option<String> {
         if bytes[i] == b'{' {
             let Some(rel) = template[i + 1..].find('}') else { return None }; // unterminated — unprobed
             let tag = &template[i + 1..i + 1 + rel];
+            // The gate's own syntax, documented by its in-game tooltip but
+            // never probed: `{A}`..`{G}` name an input, `:` adds an option
+            // (`{A:,}`, `{A:.2}`, `{A:On=Off}`), and `|` after a tag picks a
+            // word form (`{A}|plural(...)`). Leave those to the game.
+            let names_input = tag.as_bytes().first().is_some_and(|c| (b'A'..=b'G').contains(c))
+                && (tag.len() == 1 || tag.as_bytes()[1] == b':');
+            let word_form = template[i + rel + 2..].strip_prefix('|').is_some_and(|rest| {
+                let name = rest.bytes().take_while(u8::is_ascii_alphabetic).count();
+                name > 0 && rest.as_bytes().get(name) == Some(&b'(')
+            });
+            if names_input || tag.contains(':') || word_form {
+                return None;
+            }
             let rendered = match tag.parse::<usize>() {
                 Ok(slot) if slot < 7 => match inputs.get(slot) {
                     Some(Some(v)) => render_for_format(v),

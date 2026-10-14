@@ -28,6 +28,20 @@ lsp:
 check-bin:
     cargo build --release -p wirescript --bin wirescript-check
 
+# Time every compile stage on generated programs at 4k/8k/16k and fail a stage
+# that grows faster than linearly (--update writes the baseline)
+scale-bench *ARGS:
+    node crates/wirescript/scripts/scale_bench.mjs {{ARGS}}
+
+# How the editor's per-request analysis grows with file size (2k / 4k / 8k
+# lines); fails a request whose 4k -> 8k ratio is above 2.6.
+editor-scale *ARGS:
+    cargo run --release -p wirescript --example editor_scale -- {{ARGS}}
+
+# Run the repository scripts' and the playground's JS tests
+js-test:
+    node --test "crates/wirescript/scripts/test/*.test.mjs" "crates/wasm/playground/test/*.test.mjs"
+
 # Regenerate the Contents list at the top of each docs/src page
 doc-toc:
     node crates/wirescript/scripts/gen_doc_toc.mjs
@@ -38,6 +52,12 @@ doc-check: check-bin
     node crates/wirescript/scripts/gen_doc_toc.mjs --check
     node crates/wirescript/scripts/gen_book_summary.mjs --check
     node crates/wirescript/scripts/gen_hljs_lang.mjs --check
+    cargo run -q -p wirescript --example gen_environment_doc -- --check
+
+# Regenerate the reference half of docs/src/environment.md from the game's
+# property map (after a game build's property map is refreshed)
+doc-environment:
+    cargo run -q -p wirescript --example gen_environment_doc
 
 # Regenerate the book's table of contents from the playground's page list
 doc-summary:
@@ -104,9 +124,13 @@ compile file:
 compile-brdb file:
     cargo run --release -p wirescript-cli -- compile {{file}} -o {{without_extension(file)}}.brdb
 
-# Dump the lowered IR for a .ws file
+# Print a .ws file's compiled program as .wsir text (stdout)
 ir file:
     cargo run --release -p wirescript-cli -- compile {{file}} --dump-ir
+
+# Build a .brz (or .brdb, by -o's extension) from a .wsir program
+assemble file *ARGS:
+    cargo run --release -p wirescript-cli -- assemble {{file}} {{ARGS}}
 
 # Rebuild VS Code extension (compile TS + formatter)
 [windows]
@@ -152,3 +176,32 @@ playground-docs:
 
 # Build everything (lib + lsp + cli + wasm + vscode)
 all: release wasm vscode
+
+# Build the wasm crate for wasm32 without wasm-pack (a build gate; writes nothing outside target/)
+wasm-check:
+    cargo build -p wasm --target wasm32-unknown-unknown --release
+
+# Compile the frozen oracle set (target/ir-oracle/src) and byte-compare every .brz
+# with the baseline. Exit 0 means 0 differences. `just ir-oracle --via-ir` goes
+# through `compile --emit-ir` + `assemble` instead.
+ir-oracle *ARGS:
+    cargo build --release -p wirescript-cli
+    node crates/wirescript/scripts/ir_oracle.mjs check {{ARGS}}
+
+# Rebuild the oracle baseline with a given compiler binary. Only before a refactor starts.
+ir-oracle-baseline bin:
+    node crates/wirescript/scripts/ir_oracle.mjs baseline --bin {{bin}}
+
+# Every gate the wirescript-ir refactor keeps green
+ir-gates: ir-oracle doc-check lsp wasm-check
+    cargo test -p wirescript
+    cargo test -p wirescript-ir
+    node crates/wirescript/scripts/ir_oracle.mjs check --via-ir
+    cargo run -p wirescript-ir --features test-internals --example and_gate
+
+# Parse and write throughput of the .wsir text form, on 2raab (the largest
+# program in the oracle set). Compiles it to .wsir first.
+ir-bench runs='5':
+    cargo build --release -p wirescript-cli
+    cargo run --release -p wirescript-cli -- compile target/ir-oracle/src/projects/2raab/src/main.ws -o target/ir-bench-2raab.brz --emit-ir target/ir-bench-2raab.wsir
+    cargo run --release -p wirescript-ir --example wsir_bench -- target/ir-bench-2raab.wsir {{runs}}

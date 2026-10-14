@@ -2,82 +2,19 @@ use super::*;
 use crate::typecheck::{CeNamespace, ce_slot_key};
 
 pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {
-    let body = match &d.captured_body {
-        Some(b) => b,
-        None => return, // alias form - deferred
+    // A captured body runs as the `on` handler of its trigger, config and
+    // output captures included, and its exit is the event. An alias has no
+    // body: each `on` of it is that trigger, written there.
+    let Some(h) = &d.captured else {
+        return;
     };
-    let source_name = match &d.source {
-        Expr::Ident { name, .. } => name.clone(),
-        _ => return,
-    };
-    let evt = match find_event(&source_name) {
-        Some(e) => e,
-        None => {
-            // Not a built-in Event: `let e = on go { … }` where `go` is an exec
-            // `in`put / `var` / `let` / event data param. Trigger the body off
-            // that source's port and capture its exit as `e`, exactly like a
-            // plain `on go` handler. Without this the whole captured body was
-            // silently dropped for every non-Event trigger.
-            if let Some(trig) = resolve_captured_source_port(ctx, &source_name) {
-                let saved_exec = ctx.current_exec;
-                let saved_entry = ctx.handler_entry_exec;
-                ctx.current_exec = Some(trig);
-                ctx.handler_entry_exec = Some(trig);
-                reset_var_get_caches(ctx);
-                lower_block(ctx, body);
-                if let Some(e) = ctx.current_exec {
-                    ctx.captured_events.insert(d.name.clone(), e);
-                }
-                ctx.current_exec = saved_exec;
-                ctx.handler_entry_exec = saved_entry;
-            }
-            return;
-        }
-    };
-    let mut outputs = vec![PortSpec::exec(intern(evt.exec_out))];
-    for d2 in &evt.data {
-        outputs.push(PortSpec::new(intern(d2.port), d2.ty.clone()));
-    }
-    let event_node = ctx.add_event(AddNodeOpts {
-        gate_class: evt.gate_class,
-        source_range: d.source.range().clone(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs,
-        },
-        ..Default::default()
-    });
-    let saved_exec = ctx.current_exec;
-    let saved_entry = ctx.handler_entry_exec;
-    ctx.current_exec = Some(port_ref(event_node, evt.exec_out));
-    ctx.handler_entry_exec = Some(port_ref(event_node, evt.exec_out));
-    reset_var_get_caches(ctx);
-    lower_block(ctx, body);
-    if let Some(e) = ctx.current_exec {
+    let before = ctx.handler_end_execs.len();
+    lower_handler(ctx, h);
+    let ends: Vec<PortRef> = ctx.handler_end_execs.drain(before..).collect();
+    let end = ends.into_iter().fold(None, |acc, e| merge_exec(ctx, acc, Some(e), &d.range));
+    if let Some(e) = end {
         ctx.captured_events.insert(d.name.clone(), e);
     }
-    ctx.current_exec = saved_exec;
-    ctx.handler_entry_exec = saved_entry;
-}
-
-/// Resolve a captured handler's non-event trigger source (`let e = on go { … }`)
-/// to its exec/value trigger port — an exec `in`put, a `let`/local, a `var`, or
-/// an enclosing event data param — the same sources a plain `on go` handler
-/// fires off.
-fn resolve_captured_source_port(ctx: &mut LowerCtx, name: &str) -> Option<PortRef> {
-    if let Some(rec) = ctx.lookup_input(name).cloned() {
-        return Some(rec.node_id.port(WirePort::RerOutput));
-    }
-    if let Some(rec) = ctx.lookup_local(name).cloned() {
-        return Some(rec.port);
-    }
-    if let Some(rec) = ctx.lookup_var(name).cloned() {
-        return Some(port_ref(rec.node_id, "Value"));
-    }
-    if let Some(Binding::EventParam(p)) = ctx.scope.get(name).cloned() {
-        return Some(p);
-    }
-    None
 }
 
 /// `on !x`: route the trigger through a LogicalNOT so the handler fires when
@@ -185,7 +122,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         }
         return;
     }
-    // Unwrap negated triggers: `on !foo { ... }` → lower `foo`, negate
+    // Unwrap negated triggers: `on !foo { ... }` -> lower `foo`, negate
     // Also handle `on var.value { ... }` field triggers.
     let (trigger_name, trigger_field, negated) = match &h.trigger {
         Trigger::Ident { name, .. } => (name.clone(), None, false),
@@ -446,13 +383,21 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
             // typecheck admits ANY `let` as a trigger, so a record-, tuple- or
             // multi-output-valued one lands here, and dropping it quietly takes
             // the whole handler with it without a single diagnostic.
+            let at = match &h.trigger {
+                Trigger::Not { inner, .. } => inner.as_ref(),
+                other => other,
+            };
+            let at = match at {
+                Trigger::Ident { range, .. } | Trigger::Field { range, .. } => range,
+                _ => &h.range,
+            };
             ctx.error(
                 "WS001",
                 format!(
                     "'{trigger_name}' is not an event and has no exec or value port to \
                      trigger on, so this handler would never run"
                 ),
-                &h.range,
+                at,
             );
             return;
         }
@@ -603,9 +548,27 @@ fn lower_block_inner(ctx: &mut LowerCtx, block: &Block) {
     // block ever runs, so each such statement gets one WS081 in place of
     // its own WS058.
     let mut dead_after_break = false;
+    // The chain a `buffer emit` in this block closed: an `await` right after
+    // it still arms on it.
+    let mut closed_chain: Option<PortRef> = None;
     for s in &block.stmts {
         if ctx.current_exec.is_some() {
             ctx.exec_closed_by_buffer_emit = false;
+            closed_chain = None;
+        }
+        if ctx.current_exec.is_none() && ctx.exec_closed_by_buffer_emit {
+            if matches!(s, Stmt::Await(_)) && closed_chain.is_some() {
+                ctx.current_exec = closed_chain.take();
+            } else if runs_on_chain(s) {
+                ctx.warn_code(
+                    "WS058",
+                    "this statement never runs: a `buffer emit` before it (or in a mod it \
+                     calls) closed the exec chain, and nothing after it on that chain runs. \
+                     Move the statement before that emit.",
+                    s.range(),
+                );
+                continue;
+            }
         }
         let is_handler_stmt = matches!(s, Stmt::Handler(_) | Stmt::AnonChip(_));
         // Flushing overwrites `current_exec` with the nested handlers' ends,
@@ -633,8 +596,33 @@ fn lower_block_inner(ctx: &mut LowerCtx, block: &Block) {
         if matches!(s, Stmt::Break { .. }) {
             dead_after_break = true;
         }
+        if closes_chain(ctx, s) && ctx.current_exec.is_some() {
+            closed_chain = ctx.current_exec.take();
+            ctx.exec_closed_by_buffer_emit = true;
+        }
     }
     close_on_trailing_buffered_emit(ctx, block);
+}
+
+/// Whether `s` only does something when the exec chain it stands on runs: a
+/// bare `emit`, an `if`, `if let`, `for` or expression statement, unless the
+/// statement's call names its own trigger (`exec = ...`).
+fn runs_on_chain(s: &Stmt) -> bool {
+    match s {
+        Stmt::Emit(e) => e.value.is_none(),
+        Stmt::If(_) | Stmt::IfLet(_) | Stmt::For(_) => true,
+        Stmt::ExprStmt(x) => !matches!(&x.expr, Expr::Call { args, .. }
+            if args.iter().any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"))),
+        _ => false,
+    }
+}
+
+/// Whether `s` is a `buffer emit` of a signal or output, which ends the exec
+/// chain it stands on: the emit crosses the buffer and continues from there,
+/// and nothing after it on the chain runs.
+fn closes_chain(ctx: &LowerCtx, s: &Stmt) -> bool {
+    matches!(s, Stmt::Emit(e) if e.buffer.is_some()
+        && (ctx.signal_key(&e.name).is_some() || ctx.lookup_output(&e.name).is_some()))
 }
 
 /// A BUFFERED `emit` as the block's final statement terminates this exec
@@ -696,7 +684,7 @@ pub(super) fn flush_handler_end_execs(ctx: &mut LowerCtx) {
         reset_var_get_caches(ctx);
         return;
     }
-    // Chain Union gates pairwise: Union(a, b) → Union(prev, c) → ...
+    // Chain Union gates pairwise: Union(a, b) -> Union(prev, c) -> ...
     let mut iter = ends.into_iter();
     let first = iter.next().unwrap();
     let second = iter.next().unwrap();

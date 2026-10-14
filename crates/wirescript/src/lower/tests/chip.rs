@@ -1,10 +1,10 @@
-use crate::{ir::port_registry::WirePort, template_cache::TemplateCache};
+use crate::ir::port_registry::WirePort;
 
 use super::*;
 
 // ── Recursion guard (WS020) ──
 
-/// Lower a main source plus in-memory imported modules (resolve → typecheck →
+/// Lower a main source plus in-memory imported modules (resolve -> typecheck ->
 /// lower) and return all diagnostics — for exercising cross-module scenarios
 /// the single-source `compile` helper can't reach.
 fn lower_with_imports(main_src: &str, files: &[(&str, &str)]) -> Vec<crate::diagnostic::Diagnostic> {
@@ -13,20 +13,8 @@ fn lower_with_imports(main_src: &str, files: &[(&str, &str)]) -> Vec<crate::diag
         .map(|(n, s)| (n.to_string(), s.to_string()))
         .collect();
     let loader = crate::resolve::MemLoader { files };
-    let resolved = crate::resolve::resolve(main_src, "main.ws", &loader);
-    let tc = crate::typecheck::typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
-    let lowered = lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "main.ws",
-        module_name: None,
-        template_cache: std::sync::Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: FoldMode::Auto,
-        ce_slots: &crate::typecheck::CeSlotMap::default(),
-    });
+    let crate::compile::FrontEnd { resolved, typecheck: tc, lowered, .. } =
+        crate::compile::front_end(main_src, "main.ws", None, FoldMode::Auto, &loader);
     let mut diags = resolved.diagnostics;
     diags.extend(tc.diagnostics);
     diags.extend(lowered.diagnostics);
@@ -37,7 +25,7 @@ fn lower_with_imports(main_src: &str, files: &[(&str, &str)]) -> Vec<crate::diag
 fn const_literal_reaches_into_anon_chip() {
     // Regression: a top-level const `let` referenced inside a `chip on` handler
     // must have its Literal cloned INTO the chip's child module. Otherwise the
-    // parent→chip data wire dangles (its target moved into the child during
+    // parent->chip data wire dangles (its target moved into the child during
     // partition_anon_chips) and the chip-side input silently reads the port
     // default (0) — exactly what broke every scalar const inside a `chip on`.
     // K has two consumers (the top-level `out` and the in-chip comparison), so
@@ -662,19 +650,21 @@ out sum = r1.result + r2.result + r3.result";
 
 #[test]
 fn namespace_chip_call_resolves() {
-    use crate::resolve::{MemLoader, resolve};
+    use crate::resolve::MemLoader;
     let lib_src = "chip Double(x: int) -> (result: int) { out result = x + x }";
     let main_src = "import * as math from \"lib\"\nlet r = math.Double(5)\nout result = r.result";
     let mut files = std::collections::HashMap::default();
     files.insert("lib.ws".to_string(), lib_src.into());
     let loader = MemLoader { files };
-    let resolved = resolve(main_src, "test", &loader);
+    // Structural resolution test; force folding off so the constant chip
+    // body isn't elided before the instantiation assert below.
+    let crate::compile::FrontEnd { resolved, typecheck: tc, lowered: lr, .. } =
+        crate::compile::front_end(main_src, "test", None, FoldMode::ForceOff, &loader);
     assert!(
         resolved.diagnostics.is_empty(),
         "import should resolve: {:?}",
         resolved.diagnostics
     );
-    let tc = crate::typecheck::typecheck(&resolved.ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics
             .iter()
@@ -682,20 +672,6 @@ fn namespace_chip_call_resolves() {
         "typecheck errors: {:?}",
         tc.diagnostics
     );
-    let lr = crate::lower::lower(crate::lower::LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test",
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        // Structural resolution test; force folding off so the constant chip
-        // body isn't elided before the instantiation assert below.
-        fold_mode: FoldMode::ForceOff,
-        ce_slots: &crate::typecheck::CeSlotMap::default(),
-    });
     assert!(
         lr.diagnostics
             .iter()
@@ -802,9 +778,9 @@ out key_state = pad.key_state",
     let lr = crate::layout::layout(&r.module);
     let brz = crate::emit::emit_brz(
         &r.module,
+        &Default::default(),
         &lr,
         &Default::default(),
-        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
     );
     assert!(
         brz.is_ok(),
@@ -1085,7 +1061,7 @@ on player {
 
 /// Regression: chip value params that require exec (Var_Get) must be read
 /// BEFORE the chip's auto-exec entry, not after. Otherwise the exec chain
-/// creates a cycle: chip._exec_out → Var_Get → ... → chip.param (data back-edge).
+/// creates a cycle: chip._exec_out -> Var_Get -> ... -> chip.param (data back-edge).
 #[test]
 fn chip_value_args_exec_before_chip_entry() {
     let src = "\
@@ -1164,8 +1140,7 @@ on player {
     let r = compile(src);
     assert_no_errors(&r);
     let lr = crate::layout::layout(&r.module);
-    let tc = std::sync::Arc::new(crate::template_cache::TemplateCache::new());
-    let brz = crate::emit::emit_brz(&r.module, &lr, &Default::default(), &tc);
+    let brz = crate::emit::emit_brz(&r.module, &Default::default(), &lr, &Default::default());
     assert!(
         brz.is_ok(),
         "string interpolation should emit valid brz: {:?}",
@@ -1194,8 +1169,7 @@ on t {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"), "map methods lowered to _Unsupported");
     let lr = crate::layout::layout(&r.module);
-    let tc = std::sync::Arc::new(crate::template_cache::TemplateCache::new());
-    let brz = crate::emit::emit_brz(&r.module, &lr, &Default::default(), &tc);
+    let brz = crate::emit::emit_brz(&r.module, &Default::default(), &lr, &Default::default());
     assert!(brz.is_ok(), "map program should emit valid brz: {:?}", brz.err());
 }
 
@@ -1232,8 +1206,7 @@ fn baked_map_literal_emits_brz() {
     let r = compile(src);
     assert_no_errors(&r);
     let lr = crate::layout::layout(&r.module);
-    let tc = std::sync::Arc::new(crate::template_cache::TemplateCache::new());
-    let brz = crate::emit::emit_brz(&r.module, &lr, &Default::default(), &tc);
+    let brz = crate::emit::emit_brz(&r.module, &Default::default(), &lr, &Default::default());
     assert!(brz.is_ok(), "baked map literal should emit valid brz: {:?}", brz.err());
     assert!(!brz.unwrap().is_empty(), "brz bytes should be non-empty");
 }
@@ -1883,7 +1856,7 @@ on go {
 fn standalone_chip_two_returns_route_through_pseudovar() {
     // A standalone (non-inline) chip with two `return expr` must route both
     // through a return PseudoVar (Var_Set per return, one Var_Get after the union
-    // → a single output wire), exactly like the inline path. `build_chip_module`
+    // -> a single output wire), exactly like the inline path. `build_chip_module`
     // never set `mod_return_var`, so both returns wired straight into the output
     // pin — a load-time fan-in failure with no diagnostic.
     let src = "\
@@ -2051,7 +2024,7 @@ on go {
 
 #[test]
 fn single_emit_to_output_keeps_direct_wire() {
-    // A single-site value-emit must keep the direct value→output wire and NOT
+    // A single-site value-emit must keep the direct value->output wire and NOT
     // grow a backing PseudoVar (no extra gate, unchanged behavior).
     let src = "\
 out result: int
@@ -2085,17 +2058,13 @@ fn exec_call_initializer_in_a_handler_nested_chip_runs_on_the_chain() {
          }\n",
     );
     assert_no_errors(&r);
-    fn count(m: &crate::ir::Module, class: &str) -> usize {
-        m.nodes.values().filter(|n| n.gate_class == class).count()
-            + m.chips.values().map(|c| count(c, class)).sum::<usize>()
-    }
     assert_eq!(
-        count(&r.module, "BrickComponentType_Exec_Var_Set"),
+        count_class(&r.module, "BrickComponentType_Exec_Var_Set"),
         1,
         "the initializer must write the var"
     );
     assert!(
-        count(&r.module, "BrickComponentType_Internal_ReadBrickGrid") > 0,
+        count_class(&r.module, "BrickComponentType_Internal_ReadBrickGrid") > 0,
         "the called chip must be instantiated"
     );
 }

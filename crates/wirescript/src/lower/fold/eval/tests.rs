@@ -27,9 +27,24 @@
         assert!(approx(got("MathClamp", f(5.0), f(0.0), f(1.0)), 1.0));
         assert!(approx(got("MathLogBase", f(8.0), f(2.0), None), 3.0));
         assert!(approx(got("MathModuloFloored", f(-1.0), f(3.0), None), 2.0)); // divisor-signed
-        // Domain error → non-finite result → refuse.
+        // Domain error -> non-finite result -> refuse.
         assert!(got("MathSqrt", f(-1.0), None, None).is_none());
         assert!(got("MathLn", f(-1.0), None, None).is_none());
+    }
+
+    #[test]
+    fn integer_operands_keep_an_integer_result() {
+        let i = |n: i64| Some(Value::Int(n));
+        let got = |g: &str, a: Option<Value>, b: Option<Value>, c: Option<Value>| {
+            extended_math(g, a.as_ref(), b.as_ref(), c.as_ref())
+        };
+        assert_eq!(got("MathMax", i(3), i(7), None), Some(Value::Int(7)));
+        assert_eq!(got("MathMin", i(3), i(7), None), Some(Value::Int(3)));
+        assert_eq!(got("MathAbs", i(-4), None, None), Some(Value::Int(4)));
+        assert_eq!(got("MathClamp", i(12), i(0), i(10)), Some(Value::Int(10)));
+        assert_eq!(got("MathAbs", Some(Value::Bool(true)), None, None), Some(Value::Int(1)));
+        assert_eq!(got("MathAbs", i(i64::MIN), None, None), None);
+        assert_eq!(got("MathMax", i(3), Some(Value::Float(7.5)), None), Some(Value::Float(7.5)));
     }
 
     #[test]
@@ -48,7 +63,7 @@
         assert_eq!(got("BitwiseShiftLeft", i(1), i(5)), Some(32));
         assert_eq!(got("BitwiseShiftRight", i(64), i(2)), Some(16));
         assert_eq!(got("BitwiseBitCount", i(255), None), Some(8));
-        // Out-of-range shift → refuse.
+        // Out-of-range shift -> refuse.
         assert_eq!(got("BitwiseShiftLeft", i(1), i(64)), None);
         assert_eq!(got("BitwiseShiftLeft", i(1), i(-1)), None);
     }
@@ -241,6 +256,27 @@
         assert_eq!(format_text("literal{a}brace", &[]), Some("literal0brace".into()));
         // `Fmt("{0}{1}", Opaque(1))` — slot 1 has no operand at all.
         assert_eq!(format_text("{0}{1}", &[i(Value::Int(1))]), Some("10".into()));
+    }
+
+    /// The gate's lettered inputs, colon options and `|` word forms are not
+    /// probed, so a template using them must stay a runtime gate.
+    #[test]
+    fn format_text_refuses_unprobed_gate_syntax() {
+        let i = |v: Value| Some(v);
+        assert_eq!(format_text("{A} apples", &[i(Value::Int(5))]), None);
+        assert_eq!(format_text("{G}", &[]), None);
+        assert_eq!(format_text("{A:,}", &[i(Value::Int(1234567))]), None);
+        assert_eq!(format_text("{0:.2} m/s", &[i(Value::Float(3.14159))]), None);
+        assert_eq!(format_text("Door: {A:Open=Closed}", &[i(Value::Bool(true))]), None);
+        assert_eq!(format_text("{0} {0}|plural(one=apple,other=apples)", &[i(Value::Int(3))]), None);
+        assert_eq!(format_text("{A}{A}|ordinal(one=st,two=nd,few=rd,other=th)", &[i(Value::Int(2))]), None);
+        // A lowercase or longer tag is not an input name and keeps its certified "0".
+        assert_eq!(format_text("{a}", &[]), Some("0".into()));
+        assert_eq!(format_text("{Apple}", &[]), Some("0".into()));
+        // A `|` that is not a word form is ordinary text, even right after a tag.
+        assert_eq!(format_text("a | {0}", &[i(Value::Int(1))]), Some("a | 1".into()));
+        assert_eq!(format_text("{0}|{0}", &[i(Value::Int(3))]), Some("3|3".into()));
+        assert_eq!(format_text("{0}|x", &[i(Value::Int(3))]), Some("3|x".into()));
     }
 
     #[test]

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Regenerate data/gate_semantics.json from a pasted probe console dump.
 // The ONLY writer of that file — hand-authored entries are not allowed.
-//   node scripts/gen_semantics.mjs dump.txt --build cl16xxx [--out data/gate_semantics.json]
+//   node scripts/gen_semantics.mjs dump.txt [--out data/gate_semantics.json]
 import { readFileSync, writeFileSync } from 'fs';
-import { pathToFileURL, fileURLToPath } from 'url';
+import { fileURLToPath } from 'url';
+import { isMain } from './lib.mjs';
 import { dirname, join } from 'path';
 
 // Defaults are anchored to this script's own directory (crates/wirescript/),
@@ -16,112 +17,26 @@ const DEFAULT_OUT = join(SCRIPT_DIR, '..', 'data', 'gate_semantics.json');
 
 export const EXPECTED_PROBE_VERSION = 5;
 
-const GATE_CLASS = {
-  CompareEqual: 'BrickComponentType_Expr_CompareEqual',
-  CompareNotEqual: 'BrickComponentType_Expr_CompareNotEqual',
-  LogicalAND: 'BrickComponentType_Expr_LogicalAND',
-  LogicalOR: 'BrickComponentType_Expr_LogicalOR',
-  LogicalNOT: 'BrickComponentType_Expr_LogicalNOT',
-  LogicalXOR: 'BrickComponentType_Expr_LogicalXOR',
-  CompareLess: 'BrickComponentType_Expr_CompareLess',
+// A probe names a gate by the short name `BrickComponentType_Expr_<short>`
+// is built from, except these.
+const GATE_CLASS_OVERRIDES = {
   CompareLessEqual: 'BrickComponentType_Expr_CompareLessOrEqual',
-  CompareGreater: 'BrickComponentType_Expr_CompareGreater',
   CompareGreaterEqual: 'BrickComponentType_Expr_CompareGreaterOrEqual',
-  Select: 'BrickComponentType_Expr_Select',
   Branch: 'BrickComponentType_Exec_Branch',
-  MathAdd: 'BrickComponentType_Expr_MathAdd',
-  MathSubtract: 'BrickComponentType_Expr_MathSubtract',
-  MathMultiply: 'BrickComponentType_Expr_MathMultiply',
-  MathDivide: 'BrickComponentType_Expr_MathDivide',
-  MathModulo: 'BrickComponentType_Expr_MathModulo',
-
-  // -- v3: strings chapter (crates/wirescript/src/ir/gate_class.rs) --------
-  String_Concatenate: 'BrickComponentType_Expr_String_Concatenate',
-  String_FormatText: 'BrickComponentType_Expr_String_FormatText',
-  String_Length: 'BrickComponentType_Expr_String_Length',
-  String_ToLower: 'BrickComponentType_Expr_String_ToLower',
-  String_ToUpper: 'BrickComponentType_Expr_String_ToUpper',
-  String_Trim: 'BrickComponentType_Expr_String_Trim',
-  String_Contains: 'BrickComponentType_Expr_String_Contains',
-  String_StartsWith: 'BrickComponentType_Expr_String_StartsWith',
-  String_EndsWith: 'BrickComponentType_Expr_String_EndsWith',
-  String_Substring: 'BrickComponentType_Expr_String_Substring',
-  String_Find: 'BrickComponentType_Expr_String_Find',
-  String_Replace: 'BrickComponentType_Expr_String_Replace',
-  String_ParseInt: 'BrickComponentType_Expr_String_ParseInt',
-  String_ParseNumber: 'BrickComponentType_Expr_String_ParseNumber',
-
-  // -- v3: compositeOps chapter ---------------------------------------------
-  MakeVector: 'BrickComponentType_Expr_MakeVector',
-  MakeRotation: 'BrickComponentType_Expr_MakeRotation',
-  MakeQuaternion: 'BrickComponentType_Expr_MakeQuaternion',
-  MakeColor: 'BrickComponentType_Expr_MakeColor',
-  MakeColorSRGB: 'BrickComponentType_Expr_MakeColorSRGB',
-  MakeColorHex: 'BrickComponentType_Expr_MakeColorHex',
-  ColorToHex: 'BrickComponentType_Expr_ColorToHex',
-  VecScale: 'BrickComponentType_Expr_VecScale',
-  VecDotProduct: 'BrickComponentType_Expr_VecDotProduct',
-  VecCrossProduct: 'BrickComponentType_Expr_VecCrossProduct',
-  VecMagnitudeSquared: 'BrickComponentType_Expr_VecMagnitudeSquared',
-  VecDistanceSquared: 'BrickComponentType_Expr_VecDistanceSquared',
-  RotateVector: 'BrickComponentType_Expr_RotateVector',
-  InvertRotation: 'BrickComponentType_Expr_InvertRotation',
-  QuatDotProduct: 'BrickComponentType_Expr_QuatDotProduct',
-
-  // -- v3: deferredOps chapter — parsed/collected like any other chapter,
-  // but gen_verifier.mjs skips every case here with a tally (never folded).
-  VecMagnitude: 'BrickComponentType_Expr_VecMagnitude',
-  VecNormalize: 'BrickComponentType_Expr_VecNormalize',
-  VecDistance: 'BrickComponentType_Expr_VecDistance',
-  QuatSlerp: 'BrickComponentType_Expr_QuatSlerp',
-  QuatFromAxisAngle: 'BrickComponentType_Expr_QuatFromAxisAngle',
-  QuatAngleBetween: 'BrickComponentType_Expr_QuatAngleBetween',
-  QuatBetween: 'BrickComponentType_Expr_QuatBetween',
-  DirectionToRotation: 'BrickComponentType_Expr_DirectionToRotation',
-  RotationToDirection: 'BrickComponentType_Expr_RotationToDirection',
-  ColorBlend: 'BrickComponentType_Expr_ColorBlend',
-
-  // -- v4: extendedMath / bitwise / rounding chapters ----------------------
-  MathSin: 'BrickComponentType_Expr_MathSin',
-  MathCos: 'BrickComponentType_Expr_MathCos',
-  MathTan: 'BrickComponentType_Expr_MathTan',
-  MathAsin: 'BrickComponentType_Expr_MathAsin',
-  MathAcos: 'BrickComponentType_Expr_MathAcos',
-  MathAtan: 'BrickComponentType_Expr_MathAtan',
-  MathSinh: 'BrickComponentType_Expr_MathSinh',
-  MathCosh: 'BrickComponentType_Expr_MathCosh',
-  MathTanh: 'BrickComponentType_Expr_MathTanh',
-  MathAsinh: 'BrickComponentType_Expr_MathAsinh',
-  MathAcosh: 'BrickComponentType_Expr_MathAcosh',
-  MathAtanh: 'BrickComponentType_Expr_MathAtanh',
-  MathExp: 'BrickComponentType_Expr_MathExp',
-  MathLn: 'BrickComponentType_Expr_MathLn',
-  MathSqrt: 'BrickComponentType_Expr_MathSqrt',
-  MathAbs: 'BrickComponentType_Expr_MathAbs',
-  MathSign: 'BrickComponentType_Expr_MathSign',
-  MathNegate: 'BrickComponentType_Expr_MathNegate',
-  MathDegreesToRadians: 'BrickComponentType_Expr_MathDegreesToRadians',
-  MathRadiansToDegrees: 'BrickComponentType_Expr_MathRadiansToDegrees',
-  MathAtan2: 'BrickComponentType_Expr_MathAtan2',
-  MathPow: 'BrickComponentType_Expr_MathPow',
-  MathMin: 'BrickComponentType_Expr_MathMin',
-  MathMax: 'BrickComponentType_Expr_MathMax',
-  MathLogBase: 'BrickComponentType_Expr_MathLogBase',
-  MathClamp: 'BrickComponentType_Expr_MathClamp',
-  MathModuloFloored: 'BrickComponentType_Expr_MathModuloFloored',
-  BitwiseAND: 'BrickComponentType_Expr_BitwiseAND',
-  BitwiseOR: 'BrickComponentType_Expr_BitwiseOR',
-  BitwiseXOR: 'BrickComponentType_Expr_BitwiseXOR',
-  BitwiseNOT: 'BrickComponentType_Expr_BitwiseNOT',
-  BitwiseNAND: 'BrickComponentType_Expr_BitwiseNAND',
-  BitwiseNOR: 'BrickComponentType_Expr_BitwiseNOR',
-  BitwiseShiftLeft: 'BrickComponentType_Expr_BitwiseShiftLeft',
-  BitwiseShiftRight: 'BrickComponentType_Expr_BitwiseShiftRight',
-  BitwiseBitCount: 'BrickComponentType_Expr_BitwiseBitCount',
-  Round: 'BrickComponentType_Expr_Round',
-  Floor: 'BrickComponentType_Expr_Floor',
-  Ceil: 'BrickComponentType_Expr_Ceil',
 };
+
+// The gate classes the backend's inventory knows.
+const INVENTORY_CLASSES = new Set(
+  JSON.parse(readFileSync(join(SCRIPT_DIR, '..', '..', 'wirescript-ir', 'data', 'logic_gate_inventory.simple.json'), 'utf8'))
+    .entries.map((e) => e.component?.class)
+    .filter(Boolean),
+);
+
+/** The gate class a probe's short name `short` names, if the inventory has it. */
+function gateClass(short) {
+  const cls = GATE_CLASS_OVERRIDES[short] ?? `BrickComponentType_Expr_${short}`;
+  return INVENTORY_CLASSES.has(cls) ? cls : undefined;
+}
 
 // FormatText renders bools as 1/0 and large ints with thousands separators —
 // normalize both so the table (and the verifier generated from it) carry
@@ -404,7 +319,7 @@ export function parseDump(text, expectedVersion) {
           render[label] = output;
         }
       } else {
-        const cls = GATE_CLASS[gateShort];
+        const cls = gateClass(gateShort);
         if (!cls) throw new Error(`unknown gate short name: ${gateShort}`);
         const inputs = operandTokens.map(parseOperand).filter(x => x !== null);
         const entry = (gates[cls] ??= { cases: [], rules: [] });
@@ -477,15 +392,20 @@ export function deriveRules(gateEntry, gateClass) {
   return rules;
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) {
-  const args = process.argv.slice(2);
-  const dumpPath = args.find(a => !a.startsWith('--'));
-  const out = args.includes('--out') ? args[args.indexOf('--out') + 1] : DEFAULT_OUT;
-  if (!dumpPath) {
+if (isMain(import.meta.url)) {
+  const usage = () => {
     console.error('usage: node scripts/gen_semantics.mjs <dump.txt> [--out <path>]');
     process.exit(1);
+  };
+  const args = process.argv.slice(2);
+  let dumpPath;
+  let out = DEFAULT_OUT;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--out' && i + 1 < args.length) out = args[++i];
+    else if (args[i].startsWith('--') || dumpPath) usage();
+    else dumpPath = args[i];
   }
+  if (!dumpPath) usage();
   const table = parseDump(readFileSync(dumpPath, 'utf8'), EXPECTED_PROBE_VERSION);
   for (const [cls, entry] of Object.entries(table.gates)) entry.rules = deriveRules(entry, cls);
   const doc = { generatedAt: new Date().toISOString(), ...table };

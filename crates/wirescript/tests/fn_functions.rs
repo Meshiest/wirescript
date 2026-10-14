@@ -2,9 +2,8 @@
 //! and outer storage reached through handles baked into vars inside the
 //! plane, with no wire across the plane's wall.
 
-use brdb::IntoReader;
 use brdb::schema::BrdbValue;
-use wirescript::compile::{CompileInput, FoldMode, compile, compile_to_world};
+use wirescript::compile::{FoldMode, compile, compile_to_world};
 use wirescript::ir::gate_class as gc;
 use wirescript::ir::{Module, Node};
 
@@ -19,10 +18,8 @@ fn lowered(src: &str) -> Module {
 }
 
 fn all_nodes(m: &Module) -> Vec<&Node> {
-    let mut out: Vec<&Node> = m.nodes.values().collect();
-    for c in m.chips.values() {
-        out.extend(all_nodes(c));
-    }
+    let mut out: Vec<&Node> = Vec::new();
+    m.walk(&mut |_, sub| out.extend(sub.nodes.values()));
     out
 }
 
@@ -31,7 +28,7 @@ fn count(m: &Module, class: &str) -> usize {
 }
 
 fn brz(src: &str) -> Vec<u8> {
-    compile(CompileInput { source: src, file: "fn.ws", module_name: None, fold_mode: FoldMode::Auto })
+    compile(common::input(src, "fn.ws"))
         .unwrap_or_else(|e| panic!("compile: {e:?}"))
         .brz
 }
@@ -148,41 +145,31 @@ fn reads_and_writes_go_through_handles() {
 /// Where a labelled brick is in a written save: (grid, chunk, index) plus the
 /// type index of each component on it.
 fn labelled(brz: &[u8]) -> Vec<(String, (u32, brdb::ChunkIndex, u32), Vec<(u16, String)>, Vec<BrdbValue>)> {
-    let path = std::env::temp_dir().join(format!("ws_fn_{}_{:?}.brz", std::process::id(), std::thread::current().id()));
-    std::fs::write(&path, brz).unwrap();
-    let db = brdb::Brz::open(&path).unwrap().into_reader();
-    let names: Vec<String> = db.global_data().unwrap().component_type_names.iter().cloned().collect();
+    let save = wirescript_ir::readback::Save::read(brz);
+    let names = save.component_type_names();
     let mut out = Vec::new();
-    for gid in 1..64usize {
-        let Ok(chunks) = db.brick_chunk_index(gid) else { continue };
-        for chunk in chunks {
-            if chunk.num_components == 0 {
-                continue;
+    for (gid, chunk, soa, comps) in save.component_chunks() {
+        let mut types: Vec<u32> = Vec::new();
+        for c in &soa.component_type_counters {
+            types.extend(std::iter::repeat_n(c.type_index, c.num_instances as usize));
+        }
+        let mut per: std::collections::BTreeMap<u32, (Option<String>, Vec<(u16, String)>, Vec<BrdbValue>)> = Default::default();
+        for (i, c) in comps.iter().enumerate() {
+            let e = per.entry(soa.component_brick_indices[i]).or_default();
+            e.1.push((types[i] as u16, names[types[i] as usize].clone()));
+            if let Some(BrdbValue::String(s)) = c.get("Text") {
+                e.0 = Some(s.clone());
             }
-            let (soa, comps) = db.component_chunk_soa(gid, chunk.index).unwrap();
-            let mut types: Vec<u32> = Vec::new();
-            for c in &soa.component_type_counters {
-                types.extend(std::iter::repeat_n(c.type_index, c.num_instances as usize));
+            if let Some(v) = c.get("Value") {
+                e.2.push(v.clone());
             }
-            let mut per: std::collections::BTreeMap<u32, (Option<String>, Vec<(u16, String)>, Vec<BrdbValue>)> = Default::default();
-            for (i, c) in comps.iter().enumerate() {
-                let e = per.entry(soa.component_brick_indices[i]).or_default();
-                e.1.push((types[i] as u16, names[types[i] as usize].clone()));
-                if let Some(BrdbValue::String(s)) = c.get("Text") {
-                    e.0 = Some(s.clone());
-                }
-                if let Some(v) = c.get("Value") {
-                    e.2.push(v.clone());
-                }
-            }
-            for (b, (label, tys, values)) in per {
-                if let Some(l) = label {
-                    out.push((l, (gid as u32, chunk.index, b), tys, values));
-                }
+        }
+        for (b, (label, tys, values)) in per {
+            if let Some(l) = label {
+                out.push((l, (gid as u32, chunk, b), tys, values));
             }
         }
     }
-    std::fs::remove_file(&path).ok();
     out
 }
 
@@ -230,7 +217,7 @@ fn no_wire_crosses_a_function_plane() {
         let src = std::fs::read_to_string(&path).unwrap();
         let file = path.to_string_lossy().to_string();
         let world = compile_to_world(
-            CompileInput { source: &src, file: &file, module_name: None, fold_mode: FoldMode::Auto },
+            common::input(&src, &file),
             Default::default(),
         )
         .unwrap_or_else(|e| panic!("{file}: {e:?}"))
@@ -339,7 +326,7 @@ fn a_mod_default_fills_an_omitted_argument() {
 fn ports_are_placed_top_to_bottom_in_slot_order() {
     let src = "fn swap(a: int, b: int, c: int) -> (x: int, y: int) { return (c + b, a) }\nin go: exec\nvar res: int = 0\non go { let r = swap(1, 2, 3)\n res = r.x + r.y }\n";
     let world = compile_to_world(
-        CompileInput { source: src, file: "fn.ws", module_name: None, fold_mode: FoldMode::Auto },
+        common::input(src, "fn.ws"),
         Default::default(),
     )
     .unwrap()

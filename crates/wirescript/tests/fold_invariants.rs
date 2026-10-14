@@ -12,13 +12,11 @@ use wirescript::Severity;
 /// module — the fold pass operates tree-wide (chip boundaries included), so
 /// the invariant must hold over the whole tree, not just the root module.
 fn count_module(m: &Module) -> (usize, usize) {
-    let mut nodes = m.nodes.len();
-    let mut wires = m.wires.len();
-    for chip in m.chips.values() {
-        let (n, w) = count_module(chip);
-        nodes += n;
-        wires += w;
-    }
+    let (mut nodes, mut wires) = (0, 0);
+    m.walk(&mut |_, sub| {
+        nodes += sub.nodes.len();
+        wires += sub.wires.len();
+    });
     (nodes, wires)
 }
 

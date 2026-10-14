@@ -2,16 +2,20 @@
 //!   cargo run --release -p wirescript --example profile_stages -- <file.ws>
 use std::time::Instant;
 use wirescript::emit::{EmitOptions, emit_brz};
-use wirescript::layout::layout;
 use wirescript::lower::{FoldMode, LowerInput, lower};
 use wirescript::resolve::{FsLoader, resolve};
 use wirescript::template_cache::TemplateCache;
-use wirescript::typecheck::typecheck;
 
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
+    // On the compiler's big stack, as the CLI and the language server run it:
+    // a deeply nested program overflows the main thread's.
+    wirescript::on_big_stack(run);
+}
+
+fn run() {
     let file = std::env::args().nth(1).expect("usage: profile_stages <file.ws>");
     let source = std::fs::read_to_string(&file).expect("read source");
 
@@ -20,7 +24,7 @@ fn main() {
     eprintln!("resolve (lex+parse+imports): {:>8.2?}", t.elapsed());
 
     let t = Instant::now();
-    let tc = typecheck(&resolved.ast, &file, &wirescript::typecheck::CeSlotMap::default());
+    let (tc, ce_slots) = wirescript::typecheck::typecheck_with_inference(&resolved.ast, &file);
     eprintln!("typecheck:                   {:>8.2?}", t.elapsed());
 
     let template_cache = std::sync::Arc::new(TemplateCache::new());
@@ -35,7 +39,7 @@ fn main() {
         template_cache: template_cache.clone(),
         doc_comments: &resolved.doc_comments,
         fold_mode: FoldMode::Auto,
-        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
+        ce_slots: &ce_slots,
     });
     eprintln!("lower:                       {:>8.2?}", t.elapsed());
     eprintln!(
@@ -64,14 +68,16 @@ fn main() {
     eprintln!("analyze_cycles:              {:>8.2?}", t.elapsed());
     let _ = cycles;
 
+    // The engine the program asks for (`@layout("code")`, `@layout("cube")`).
+    let settings = wirescript::program_settings(&resolved, &file);
     let t = Instant::now();
-    let lr = layout(&lowered.module);
+    let lr = wirescript::layout::layout_with_opts(&lowered.module, &wirescript::LayoutOptions::for_program(&settings));
     eprintln!("layout:                      {:>8.2?}", t.elapsed());
 
     let mut opts = EmitOptions::default();
     opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(&file, wirescript::lower::FoldMode::Auto));
     let t = Instant::now();
-    let world = wirescript::build_world(&lowered.module, &lr, &opts, &template_cache)
+    let world = wirescript::build_world(&lowered.module, &Default::default(), &lr, &opts)
         .expect("emit");
     eprintln!("build_world:                 {:>8.2?}", t.elapsed());
 

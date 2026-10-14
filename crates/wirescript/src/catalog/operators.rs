@@ -122,7 +122,7 @@ fn math_binary(op: &'static str, class_math: &'static str, vec: bool) -> OpSpec 
             gate_class: class_math,
             ports: BINARY_PORTS,
         },
-        // bool → int promotion (engine coerces bool wires to 0/1 on int ports).
+        // bool -> int promotion (engine coerces bool wires to 0/1 on int ports).
         // Both operands promote, so bool⊕bool is int-valued too — matching the
         // mixed forms below and the bitwise ops, which already allow it.
         OpRule {

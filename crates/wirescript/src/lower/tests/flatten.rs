@@ -1,7 +1,6 @@
 //! `@flat` — the chip tree is inlined onto one module before boundary pins.
 
 use crate::ir::{Module, NodeId, NodeKind, gate_class as gc};
-use crate::template_cache::TemplateCache;
 
 use super::*;
 
@@ -9,25 +8,13 @@ use super::*;
 /// `@flat` in `src` reaches the pipeline exactly as it would in a real
 /// compile.
 fn lowered(src: &str) -> LowerResult {
-    let parsed = crate::parser::parse(src, "test");
+    let crate::compile::FrontEnd { resolved: parsed, lowered: r, .. } =
+        crate::compile::front_end(src, "test", None, FoldMode::Auto, &crate::resolve::FsLoader);
     assert!(
         parsed.diagnostics.is_empty(),
         "parse diags: {:?}",
         parsed.diagnostics
     );
-    let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
-    let r = lower(LowerInput {
-        ast: &parsed.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test",
-        module_name: None,
-        template_cache: std::sync::Arc::new(TemplateCache::new()),
-        doc_comments: &parsed.doc_comments,
-        fold_mode: FoldMode::Auto,
-        ce_slots: &crate::typecheck::CeSlotMap::default(),
-    });
     assert_no_errors(&r);
     r
 }
@@ -376,23 +363,8 @@ fn merged_pins_stay_out_of_the_hosts_port_lists() {
 #[test]
 fn flat_drops_no_chip_port_wire_on_real_programs() {
     for src in [NESTED, DEEP_CHAIN] {
-        let parsed = crate::parser::parse(&flat(src), "test");
-        let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
-        let mut r = lower(LowerInput {
-            ast: &crate::ast::Script {
-                flat: false,
-                ..parsed.ast.clone()
-            },
-            type_of_expr: &tc.type_of_expr,
-            op_resolutions: &tc.op_resolutions,
-            resolutions: &tc.resolutions,
-            file: "test",
-            module_name: None,
-            template_cache: std::sync::Arc::new(TemplateCache::new()),
-            doc_comments: &parsed.doc_comments,
-            fold_mode: FoldMode::Auto,
-            ce_slots: &crate::typecheck::CeSlotMap::default(),
-        });
+        // The program without `@flat`: its chip tree, for `flatten_chips` to flatten.
+        let mut r = crate::compile::front_end(src, "test", None, FoldMode::Auto, &crate::resolve::FsLoader).lowered;
         assert!(!r.module.chips.is_empty(), "nothing to flatten");
         let mut diags = Vec::new();
         let stats = crate::lower::flatten::flatten_chips(&mut r.module, &mut diags);

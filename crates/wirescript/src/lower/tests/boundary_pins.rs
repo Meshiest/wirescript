@@ -1,31 +1,18 @@
 use crate::ir::{Module, NodeId, Type, gate_class as gc, port_registry::WirePort};
 use crate::lower::boundary_pins::synthesize_boundary_pins;
-use crate::template_cache::TemplateCache;
 
 use super::*;
 
 fn lowered(src: &str) -> LowerResult {
-    let parsed = crate::parser::parse(src, "test");
+    // These are boundary-structure tests; force folding off so the fold
+    // pass can't elide the constant chip bodies used as minimal fixtures.
+    let crate::compile::FrontEnd { resolved: parsed, lowered: r, .. } =
+        crate::compile::front_end(src, "test", None, FoldMode::ForceOff, &crate::resolve::FsLoader);
     assert!(
         parsed.diagnostics.is_empty(),
         "parse diags: {:?}",
         parsed.diagnostics
     );
-    let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
-    let r = lower(LowerInput {
-        ast: &parsed.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test",
-        module_name: None,
-        template_cache: std::sync::Arc::new(TemplateCache::new()),
-        doc_comments: &parsed.doc_comments,
-        // These are boundary-structure tests; force folding off so the fold
-        // pass can't elide the constant chip bodies used as minimal fixtures.
-        fold_mode: FoldMode::ForceOff,
-        ce_slots: &crate::typecheck::CeSlotMap::default(),
-    });
     assert_no_errors(&r);
     r
 }
@@ -90,7 +77,7 @@ fn is_declared_port(n: &crate::ir::Node) -> bool {
 /// common path prefix (the wire's LCA): each endpoint sits at most one
 /// nesting level below the LCA, and every endpoint that IS one level below
 /// must be a MicrochipInput/Output pin. This admits module-local wires,
-/// parent<->child-pin hops, and the sibling middle wire (outpin → inpin,
+/// parent<->child-pin hops, and the sibling middle wire (outpin -> inpin,
 /// both one level below their shared prefix on different branches), while
 /// still rejecting any wire spanning >1 wall on either side and any deep
 /// endpoint that isn't a pin. No (target node, target port) tuple may
@@ -116,7 +103,7 @@ fn assert_pin_adjacent(root: &Module) {
     // caller can check it's the pin kind the wire DIRECTION requires — a
     // wire's deep source endpoint is only legal through an output pin, and
     // its deep target endpoint only through an input pin (a backwards
-    // inpin→outpin wire at the deep end must fail).
+    // inpin->outpin wire at the deep end must fail).
     fn class_at(root: &Module, path: &[NodeId], id: NodeId) -> Option<&'static str> {
         let mut m = root;
         for c in path {
@@ -273,7 +260,7 @@ fn sibling_chips_chain_out_then_in() {
         .expect("consumer module");
     assert_eq!(producer.outputs.len(), 1, "producer keeps its single declared output pin");
     assert_eq!(consumer.inputs.len(), 1, "consumer keeps its single declared input pin");
-    // The middle segment is a DIRECT outpin→inpin wire held at the LCA (root).
+    // The middle segment is a DIRECT outpin->inpin wire held at the LCA (root).
     let producer_out = producer.outputs[0];
     let consumer_in = consumer.inputs[0];
     let direct = r
@@ -284,7 +271,7 @@ fn sibling_chips_chain_out_then_in() {
         .count();
     assert_eq!(
         direct, 1,
-        "exactly one direct outpin→inpin middle wire, held in the root (LCA) module"
+        "exactly one direct outpin -> inpin middle wire, held in the root (LCA) module"
     );
     fn has_rerouter(m: &Module) -> bool {
         m.nodes.values().any(|n| n.gate_class == gc::REROUTER)
@@ -293,7 +280,7 @@ fn sibling_chips_chain_out_then_in() {
     assert!(!has_rerouter(&r.module), "no bridge rerouter is created anywhere");
 }
 
-/// A normal chip call's declared outpin→inpin wire is already the approved
+/// A normal chip call's declared outpin->inpin wire is already the approved
 /// boundary shape, so the pass — which `lower()` runs unconditionally —
 /// must leave it alone on its real, first run: the middle wire still runs
 /// directly between the two DECLARED pins, and no pin was synthesized
@@ -334,7 +321,7 @@ fn declared_chip_call_wires_are_untouched() {
     assert_eq!(out_node.gate_class, gc::MICROCHIP_OUTPUT);
     assert_eq!(in_node.gate_class, gc::MICROCHIP_INPUT);
 
-    // The middle segment is a DIRECT outpin→inpin wire held at the LCA (root).
+    // The middle segment is a DIRECT outpin->inpin wire held at the LCA (root).
     let direct = r
         .module
         .wires
@@ -343,7 +330,7 @@ fn declared_chip_call_wires_are_untouched() {
         .count();
     assert_eq!(
         direct, 1,
-        "exactly one direct declared-outpin→declared-inpin middle wire, held in the root (LCA) module"
+        "exactly one direct declared-outpin -> declared-inpin middle wire, held in the root (LCA) module"
     );
 
     // Declared wiring needs no help, so the pass synthesized nothing.

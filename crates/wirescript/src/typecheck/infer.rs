@@ -49,17 +49,7 @@ fn check_ws_prefab_ref(ctx: &mut TypeCheckCtx, path: &str, range: &SourceRange) 
     }
     // Resolve `./rel` / `/abs` / `rel` against the referencing file's directory,
     // the same way `disk_prefab_resolver` does at compile time.
-    let base = std::path::Path::new(&*range.file)
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_default();
-    let full = if let Some(rel) = path.strip_prefix("./") {
-        base.join(rel)
-    } else if path.starts_with('/') {
-        std::path::PathBuf::from(path)
-    } else {
-        base.join(path)
-    };
+    let full = crate::compile::resolve_prefab_path(&range.file, path);
     let src = match std::fs::read_to_string(&full) {
         Ok(s) => s,
         Err(e) => {
@@ -2213,6 +2203,25 @@ fn ref_operator_type(
     Some(rule.result.clone())
 }
 
+/// The types of a binary operator's operands. `null` compared with `==` or
+/// `!=` takes the other operand's type: an unset object, an empty brick or
+/// ref, or the zero of a value type.
+fn infer_operands(ctx: &mut TypeCheckCtx, op: &str, left: &Expr, right: &Expr) -> (Type, Type) {
+    let is_null = |e: &Expr| matches!(e, Expr::NullLit { .. });
+    if !matches!(op, "==" | "!=") || is_null(left) == is_null(right) {
+        return (infer(ctx, left), infer(ctx, right));
+    }
+    let (null, other) = if is_null(left) { (left, right) } else { (right, left) };
+    let other_t = infer(ctx, other);
+    let null_t = if other_t.ref_kind().is_some() {
+        ctx.record_expr_type(null.range(), &other_t);
+        other_t.clone()
+    } else {
+        check_null(ctx, null, &op_operand_type(&other_t))
+    };
+    if is_null(left) { (null_t, other_t) } else { (other_t, null_t) }
+}
+
 /// Node dispatch, exhaustive over every `Expr` variant.
 fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     // The `check`-supplied expected type applies to THIS node only; take it
@@ -2632,8 +2641,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             right,
             range,
         } => {
-            let lt = infer(ctx, left);
-            let rt = infer(ctx, right);
+            let (lt, rt) = infer_operands(ctx, op, left, right);
             // An operand with no value at all reports THAT, rather than a
             // missing overload naming `never` - a type the author never wrote.
             for (t, e) in [(&lt, left.as_ref()), (&rt, right.as_ref())] {
@@ -2840,7 +2848,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             }
             // `x.Value` on a var/ref reads through to the inner type. A record
             // with its own `Value` field (a multi-output gate result such as
-            // `a.pop()` → `{ Value, IsEmpty }`) must project that field instead,
+            // `a.pop()` -> `{ Value, IsEmpty }`) must project that field instead,
             // or `.Value` yields the whole record and every use of it mistypes.
             if (field == "value" || field == "Value") && !matches!(ot, Type::Record(_) | Type::Outputs(_)) {
                 return unwrap_ref(&ot);
@@ -2941,12 +2949,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 return Type::Any;
             }
             match (&ot, field.as_str()) {
-                (Type::Vector, "x" | "X" | "y" | "Y" | "z" | "Z") => Type::Float,
-                (Type::Color, "r" | "R" | "g" | "G" | "b" | "B" | "a" | "A") => Type::Float,
-                (Type::Rotator, "pitch" | "Pitch" | "yaw" | "Yaw" | "roll" | "Roll") => {
-                    Type::Float
-                }
-                (Type::Quat, "x" | "X" | "y" | "Y" | "z" | "Z" | "w" | "W") => Type::Float,
+                (t, f) if crate::catalog::value_fields::field_of(t, f).is_some() => Type::Float,
                 // An array read yields the element plus a bounds flag, but it is
                 // typed as the bare element (see IndexAccess), so by the time the
                 // flag is projected - directly or through a `let` - the object is
@@ -3838,7 +3841,8 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         return t;
                     }
                     if !c.outputs.is_empty() {
-                        return output_record_type(ctx, c, args, range);
+                        let t = output_record_type(ctx, c, args, range);
+                        return variant_math_result(ctx, c, args, t);
                     }
                     if c.exec {
                         // `Never`, not `Any`: a void exec builtin has no
@@ -4056,10 +4060,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     .ns_members(ns_name, &ns_range.file)
                     .and_then(|ns_map| ns_map.get(field.as_str()))
                     .cloned();
-                // A generic member infers its type params from the arguments
-                // and types its outputs over them, as a flat call does.
+                // A `mod`/`chip`/`fn` member is checked as a flat call is:
+                // defaults, named args, and type params inferred from the
+                // arguments.
                 if let Some(info) = &member
-                    && let Some((sig, decl_range)) = &info.generic
+                    && let Some((sig, decl_range)) = &info.signature
                 {
                     let sym = SymbolInfo {
                         kind: info.kind,
@@ -4208,7 +4213,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         fa_range.clone(),
                     );
                 }
-                // sortMultiple is a true variadic (empty params → opt out of
+                // sortMultiple is a true variadic (empty params -> opt out of
                 // arity, else "expects at most 0, got N" would wrongly fire).
                 // Every other method arity-checks normally.
                 let check_arity = field.as_str() != "sortMultiple";
@@ -4872,6 +4877,39 @@ fn integer_math_result(ctx: &TypeCheckCtx, name: &str, args: &[CallArg]) -> Opti
         )
     });
     all_int.then_some(Type::Int)
+}
+
+/// `abs`/`min`/`max`/`clamp`/`Dampen` give the type of their math-value
+/// arguments (`float` when that is not one math value), so an integer or bool
+/// constant among them takes the call's numeric type: `clamp(f, 0, 10)` with a
+/// `float` `f` bakes `0.0` and `10.0`. A fixed-type argument (`Dampen`'s
+/// `smoothTime`) keeps its own type.
+fn variant_math_result(ctx: &mut TypeCheckCtx, c: &crate::catalog::calls::CallSpec, args: &[CallArg], result: Type) -> Type {
+    use crate::ir::gate_class as gc;
+    if !matches!(c.gate_class, gc::MATH_ABS | gc::MATH_MIN | gc::MATH_MAX | gc::MATH_CLAMP | gc::DAMPEN) {
+        return result;
+    }
+    let result = match op_operand_type(&result) {
+        t @ (Type::Int | Type::Float | Type::Vector | Type::Rotator | Type::Quat | Type::Color) => t,
+        _ => Type::Float,
+    };
+    if matches!(result, Type::Int | Type::Float) {
+        let mut pos = 0;
+        for a in args {
+            let (param, e) = match a {
+                CallArg::Positional(e) => {
+                    pos += 1;
+                    (c.params.get(pos - 1), e)
+                }
+                CallArg::Named { name, value, .. } => (c.params.iter().find(|p| p.name == name.as_str()), value),
+                CallArg::Spread(_) => continue,
+            };
+            if param.is_some_and(|p| matches!(p.ty, Type::Union(_))) {
+                int_constants_in_slot(ctx, e, &result);
+            }
+        }
+    }
+    result
 }
 
 /// The type a `match`, `if let` or `let ... else` reads from `scrutinee`: a

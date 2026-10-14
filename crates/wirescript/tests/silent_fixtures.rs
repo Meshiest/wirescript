@@ -10,7 +10,6 @@
 mod common;
 
 use std::collections::{BTreeSet, HashSet, VecDeque};
-use std::path::PathBuf;
 
 use wirescript::intern::resolve;
 use wirescript::ir::gate_class as gc;
@@ -28,18 +27,6 @@ const CHECKS: &[(&str, fn(&Fixture))] = &[
 ];
 
 const MODES: [(FoldMode, &str); 2] = [(FoldMode::ForceOff, "fold off"), (FoldMode::Auto, "fold auto")];
-
-fn fixtures() -> Vec<PathBuf> {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/silent");
-    let mut out: Vec<_> = std::fs::read_dir(dir)
-        .expect("fixtures/silent must exist")
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("ws"))
-        .collect();
-    out.sort();
-    assert!(!out.is_empty(), "no fixtures found; the suite must not silently pass empty");
-    out
-}
 
 fn file_name(path: &std::path::Path) -> &str {
     path.file_name().unwrap().to_str().unwrap()
@@ -93,10 +80,8 @@ fn lower_clean(path: &std::path::Path, src: &str, mode: FoldMode, label: &str) -
 // ── IR helpers ───────────────────────────────────────────────────────────────
 
 fn modules(m: &Module) -> Vec<&Module> {
-    let mut out = vec![m];
-    for c in m.chips.values() {
-        out.extend(modules(c));
-    }
+    let mut out = Vec::new();
+    m.walk(&mut |_, sub| out.push(sub));
     out
 }
 
@@ -455,14 +440,14 @@ fn enum_pins_carry_variant_tags(f: &Fixture) {
 
 #[test]
 fn every_fixture_has_a_structural_check() {
-    let found: BTreeSet<String> = fixtures().iter().map(|p| file_name(p).to_string()).collect();
+    let found: BTreeSet<String> = common::ws_fixtures("silent").iter().map(|p| file_name(p).to_string()).collect();
     let checked: BTreeSet<String> = CHECKS.iter().map(|(n, _)| n.to_string()).collect();
     assert_eq!(found, checked, "every fixture needs a row in CHECKS, and every row a fixture");
 }
 
 #[test]
 fn every_silent_fixture_compiles_without_diagnostics() {
-    for path in fixtures() {
+    for path in common::ws_fixtures("silent") {
         let src = std::fs::read_to_string(&path).unwrap();
         for (mode, label) in MODES {
             lower_clean(&path, &src, mode, label);
@@ -472,7 +457,7 @@ fn every_silent_fixture_compiles_without_diagnostics() {
 
 #[test]
 fn every_silent_fixture_emits_a_brz() {
-    for path in fixtures() {
+    for path in common::ws_fixtures("silent") {
         let src = std::fs::read_to_string(&path).unwrap();
         for (mode, label) in MODES {
             let r = wirescript::compile(CompileInput {
@@ -490,7 +475,7 @@ fn every_silent_fixture_emits_a_brz() {
 
 #[test]
 fn no_silent_fixture_has_a_placeholder_or_dangling_wire() {
-    for path in fixtures() {
+    for path in common::ws_fixtures("silent") {
         let src = std::fs::read_to_string(&path).unwrap();
         for (mode, label) in MODES {
             let root = lower_clean(&path, &src, mode, label);
@@ -516,7 +501,7 @@ fn no_silent_fixture_has_a_placeholder_or_dangling_wire() {
 
 #[test]
 fn each_silent_fixture_keeps_the_structure_its_miscompile_breaks() {
-    for path in fixtures() {
+    for path in common::ws_fixtures("silent") {
         let name = file_name(&path);
         let Some((_, check)) = CHECKS.iter().find(|(n, _)| *n == name) else {
             continue;

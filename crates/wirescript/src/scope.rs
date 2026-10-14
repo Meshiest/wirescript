@@ -50,6 +50,12 @@ pub struct Scope<V> {
     /// from one counter shared by every stack, so two states of any two stacks
     /// never share a value.
     rev: u64,
+    /// The `rev` of the last change other than an [`insert`](Self::insert),
+    /// and each insert since: its `rev` and the name it bound. A reader that
+    /// knew the stack at one of these revs can tell that only these names
+    /// were bound since (see [`inserted_since`](Self::inserted_since)).
+    base: u64,
+    inserts: Vec<(u64, Sym)>,
 }
 
 fn next_rev() -> u64 {
@@ -85,13 +91,41 @@ impl<V> Scope<V> {
         Self {
             frames: vec![Frame { tag: ScopeTag::ROOT, id: next_frame_id(), entries: HashMap::default() }],
             floor: 0,
-            rev: next_rev(),
+            rev: 0,
+            base: 0,
+            inserts: Vec::new(),
         }
+        .bumped()
+    }
+
+    fn bumped(mut self) -> Self {
+        self.bump();
+        self
+    }
+
+    /// Record a change that is not a plain insert: what a name resolves to may
+    /// have changed anywhere.
+    fn bump(&mut self) {
+        self.rev = next_rev();
+        self.base = self.rev;
+        self.inserts.clear();
+    }
+
+    /// The names bound by [`insert`](Self::insert) since the stack stood at
+    /// `rev`, when nothing else changed since; `None` when something else did,
+    /// or `rev` is not a state of this stack.
+    pub fn inserted_since(&self, rev: u64) -> Option<impl Iterator<Item = Sym> + '_> {
+        let from = if rev == self.base {
+            0
+        } else {
+            self.inserts.binary_search_by_key(&rev, |(r, _)| *r).ok()? + 1
+        };
+        Some(self.inserts[from..].iter().map(|(_, sym)| *sym))
     }
 
     pub fn push(&mut self, tag: ScopeTag) {
         self.frames.push(Frame { tag, id: next_frame_id(), entries: HashMap::default() });
-        self.rev = next_rev();
+        self.bump();
     }
 
     pub fn pop(&mut self) {
@@ -103,7 +137,7 @@ impl<V> Scope<V> {
         // otherwise leave `floor` past the top of the stack; clamp so lookups
         // stay well-defined.
         self.floor = self.floor.min(self.frames.len());
-        self.rev = next_rev();
+        self.bump();
     }
 
     /// See the `rev` field.
@@ -139,7 +173,7 @@ impl<V> Scope<V> {
     pub fn set_floor(&mut self, floor: usize) -> usize {
         let prev = self.floor;
         self.floor = floor.min(self.frames.len());
-        self.rev = next_rev();
+        self.bump();
         prev
     }
 
@@ -197,7 +231,7 @@ impl<V> Scope<V> {
     }
 
     pub fn get_mut_sym(&mut self, key: Sym) -> Option<&mut V> {
-        self.rev = next_rev();
+        self.bump();
         for frame in self.frames[self.floor..].iter_mut().rev() {
             if let Some(v) = frame.entries.get_mut(&key) {
                 return Some(v);
@@ -213,6 +247,7 @@ impl<V> Scope<V> {
     pub fn insert(&mut self, key: &str, value: V) -> Option<V> {
         let sym = crate::intern::intern(key);
         self.rev = next_rev();
+        self.inserts.push((self.rev, sym));
         self.frames.last_mut().unwrap().entries.insert(sym, value)
     }
 
@@ -220,7 +255,7 @@ impl<V> Scope<V> {
     /// `None`, returning what it bound there.
     pub fn set_root(&mut self, key: &str, value: Option<V>) -> Option<V> {
         let sym = crate::intern::intern(key);
-        self.rev = next_rev();
+        self.bump();
         let root = &mut self.frames[0].entries;
         match value {
             Some(v) => root.insert(sym, v),
@@ -231,24 +266,13 @@ impl<V> Scope<V> {
     /// Unbind `key` in the current frame, returning what it bound there.
     pub fn remove(&mut self, key: &str) -> Option<V> {
         let sym = crate::intern::intern(key);
-        self.rev = next_rev();
+        self.bump();
         self.frames.last_mut().unwrap().entries.remove(&sym)
-    }
-
-    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
-        self.rev = next_rev();
-        self.frames.iter_mut().flat_map(|f| f.entries.values_mut())
     }
 
     /// Iterate all entries across all frames (newest first).
     pub fn iter(&self) -> impl Iterator<Item = (&str, &V)> {
         self.frames.iter().rev().flat_map(|f| f.entries.iter().map(|(k, v)| (crate::intern::resolve(*k), v)))
-    }
-
-    /// Like [`iter`], but yields the interned key — the alloc-free form for
-    /// callers that re-insert entries into another scope.
-    pub fn iter_syms(&self) -> impl Iterator<Item = (Sym, &V)> {
-        self.frames.iter().rev().flat_map(|f| f.entries.iter().map(|(k, v)| (*k, v)))
     }
 
     /// Iterate every entry `get` can reach: the frames at or above the floor,
@@ -290,7 +314,7 @@ impl<V> Scope<V> {
         let at = (keep + 1).clamp(1, self.frames.len());
         let frames = self.frames.split_off(at);
         self.floor = self.floor.min(self.frames.len());
-        self.rev = next_rev();
+        self.bump();
         Detached { frames }
     }
 
@@ -298,14 +322,14 @@ impl<V> Scope<V> {
     /// whatever the stack holds now.
     pub fn reattach(&mut self, detached: Detached<V>) {
         self.frames.extend(detached.frames);
-        self.rev = next_rev();
+        self.bump();
     }
 
     /// Push a frame holding `entries` that stands for frame `id`: a copy of
     /// it, which a later [`frames`](Self::frames) reports under the same id.
     pub fn push_as(&mut self, tag: ScopeTag, id: u64, entries: impl IntoIterator<Item = (Sym, V)>) {
         self.frames.push(Frame { tag, id, entries: entries.into_iter().collect() });
-        self.rev = next_rev();
+        self.bump();
     }
 
     /// The bindings of the frame at `index`.
@@ -324,7 +348,7 @@ impl<V> Scope<V> {
     /// The first becomes the root whatever its tag; an empty list gives
     /// [`Scope::new`].
     pub fn from_frames(frames: Vec<FrameCopy<V>>) -> Self {
-        let mut scope = Self { frames: Vec::new(), floor: 0, rev: next_rev() };
+        let mut scope = Self { frames: Vec::new(), floor: 0, rev: 0, base: 0, inserts: Vec::new() }.bumped();
         for (tag, id, entries) in frames {
             scope.frames.push(Frame { tag, id, entries: entries.into_iter().collect() });
         }

@@ -25,7 +25,7 @@
     ///
     /// ```text
     ///  in_a (MicrochipInput)  ─┐
-    ///                          ├→ add (Gate) → out_r (MicrochipOutput)
+    ///                          ├-> add (Gate) -> out_r (MicrochipOutput)
     ///  in_b (MicrochipInput)  ─┘
     /// ```
     fn simple_add_module() -> Module {
@@ -99,7 +99,7 @@
         m.inputs.push(in_b_id);
         m.outputs.push(out_r_id);
 
-        // Wire: in_a.RER_Output → add.InputA
+        // Wire: in_a.RER_Output -> add.InputA
         m.wires.push(Wire {
             source: PortRef {
                 node_id: in_a_id,
@@ -110,7 +110,7 @@
                 port: input_a_pi,
             },
         });
-        // Wire: in_b.RER_Output → add.InputB
+        // Wire: in_b.RER_Output -> add.InputB
         m.wires.push(Wire {
             source: PortRef {
                 node_id: in_b_id,
@@ -121,7 +121,7 @@
                 port: input_b_pi,
             },
         });
-        // Wire: add.Output → out_r.RER_Input
+        // Wire: add.Output -> out_r.RER_Input
         m.wires.push(Wire {
             source: PortRef {
                 node_id: add_id,
@@ -432,7 +432,7 @@
             },
         );
 
-        // Wire ext_a → gate.InputA
+        // Wire ext_a -> gate.InputA
         m.wires.push(Wire {
             source: PortRef {
                 node_id: ext_a_id,
@@ -443,7 +443,7 @@
                 port: input_a_pi,
             },
         });
-        // Wire ext_b → gate.InputB
+        // Wire ext_b -> gate.InputB
         m.wires.push(Wire {
             source: PortRef {
                 node_id: ext_b_id,
@@ -454,7 +454,7 @@
                 port: input_b_pi,
             },
         });
-        // Wire ext_c → gate.Output (unusual, but exercises the path)
+        // Wire ext_c -> gate.Output (unusual, but exercises the path)
         m.wires.push(Wire {
             source: PortRef {
                 node_id: ext_c_id,

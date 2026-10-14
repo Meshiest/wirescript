@@ -7,18 +7,7 @@ use super::*;
 /// a string wires into the label's `Text` port directly; only a non-string is
 /// routed through a `FormatText` gate to coerce it.
 fn label_source_is_string(ctx: &LowerCtx, p: PortRef) -> bool {
-    ctx.builder
-        .module
-        .nodes
-        .get(&p.node_id)
-        .and_then(|n| {
-            n.ports
-                .outputs
-                .iter()
-                .find(|s| s.name == p.port.sym())
-        })
-        .map(|s| s.ty == Type::String)
-        .unwrap_or(false)
+    ctx.builder.module.get(p.node_id).and_then(|n| n.output_type(p.port)) == Some(Type::String)
 }
 
 /// Lower a label expression to a string-typed value port: the value directly if
@@ -37,7 +26,7 @@ fn lower_label_value(ctx: &mut LowerCtx, le: &Expr) -> PortRef {
 ///
 /// For each top-level var whose label doesn't fold to a constant (a constant
 /// baked its text statically in pass 1), lower the expression to a value port,
-/// string-coerce it if needed, and record `host_var → source_port` on the
+/// string-coerce it if needed, and record `host_var -> source_port` on the
 /// module. Emit turns each entry into a wire from that port into the var's
 /// label `Component_TextDisplay.Text` (see `emit.rs` Pass 3.5).
 ///
@@ -152,6 +141,8 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 inline: true,
                 label: None,
                 label_expr: None,
+                color_expr: None,
+                material_expr: None,
                 closed: false,
                 no_fold: false,
                 is_const: false,
@@ -634,7 +625,7 @@ pub(super) fn lower_buffer_body(ctx: &mut LowerCtx, d: &BufferDecl) {
         node.chain_id = Some(chain);
     }
     let rhs_port = lower_expr(ctx, &d.init);
-    // Through `ctx.connect` (not `builder.connect`) so the string → bool
+    // Through `ctx.connect` (not `builder.connect`) so the string -> bool
     // coercion choke point sees this wire — `buffer buf: bool = s` must get
     // its `!= ""` compare like every other bool-typed destination.
     ctx.connect(rhs_port, rec.node_id.port(WirePort::Input));
@@ -867,39 +858,10 @@ fn record_let_constants(ctx: &mut LowerCtx, d: &LetDecl, records: Vec<LetRecord>
     }
 }
 
-fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecord>) {
-    // Clear any leftover inline-mod record so only THIS statement's call can set
-    // it (an inline mod call within `d.value` sets it definitively at its end).
-    ctx.pending_inline_record = None;
-
-    // `let name: exec` — local exec signal, register as emit target. Checked
-    // first and returns unconditionally: an exec-typed `let` (parsed with a
-    // placeholder `0` value when it has no `= ...` initializer — see the
-    // parser) never names a constant, so it must not reach the const
-    // recording below.
-    if let Some(te @ TypeExpr::Name {
-        name: type_name,
-        ..
-    }) = &d.typ
-    {
-        // Through an alias only when written with no value: `let s: Sig =
-        // go` names `go` again.
-        if type_name == "exec" || (!d.has_initializer() && crate::lower::call::is_exec_type(ctx, te)) {
-            if let LetBinding::Ident { name, .. } = &d.binding {
-                // Top-level signals were already hubbed by the pre-declare
-                // pass; skip the pass-2 revisit (no exec context at top level).
-                // Body-level declarations always build a fresh hub — each
-                // mod/handler instance is its own signal, even under the same
-                // name (shadowing any outer signal).
-                if ctx.current_exec.is_none() && ctx.signal_key(name).is_some() {
-                    return;
-                }
-                build_exec_signal_hub(ctx, name, &d.range);
-            }
-            return;
-        }
-    }
-
+/// Record the constants `d` binds into `records`. Returns whether that leaves
+/// nothing to lower: a constant array or map, or a value only a `const mod`
+/// call yields.
+fn record_let_value(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecord>) -> bool {
     // A plain (non-`const`) `let` re-binding a name CLEARS the `const` mark
     // and value it shadows — for EVERY binding form, and using the FULL
     // evaluator, because that is exactly what `typecheck::stmt::record_let`
@@ -1056,7 +1018,7 @@ fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecor
             for (name, lit) in shadowing {
                 shadow_with_const_container(ctx, &name, lit, &d.value);
             }
-            return;
+            return true;
         }
     }
 
@@ -1082,7 +1044,7 @@ fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecor
         };
         if recorded {
             shadow_with_const_container(ctx, name, lit, &d.value);
-            return;
+            return true;
         }
     }
 
@@ -1215,8 +1177,47 @@ fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecor
                     }
                 }
             }
+            return true;
+        }
+    }
+    false
+}
+
+fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecord>) {
+    // Clear any leftover inline-mod record so only THIS statement's call can set
+    // it (an inline mod call within `d.value` sets it definitively at its end).
+    ctx.pending_inline_record = None;
+
+    // `let name: exec` — local exec signal, register as emit target. Checked
+    // first and returns unconditionally: an exec-typed `let` (parsed with a
+    // placeholder `0` value when it has no `= ...` initializer — see the
+    // parser) never names a constant, so it must not reach the const
+    // recording below.
+    if let Some(te @ TypeExpr::Name {
+        name: type_name,
+        ..
+    }) = &d.typ
+    {
+        // Through an alias only when written with no value: `let s: Sig =
+        // go` names `go` again.
+        if type_name == "exec" || (!d.has_initializer() && crate::lower::call::is_exec_type(ctx, te)) {
+            if let LetBinding::Ident { name, .. } = &d.binding {
+                // Top-level signals were already hubbed by the pre-declare
+                // pass; skip the pass-2 revisit (no exec context at top level).
+                // Body-level declarations always build a fresh hub — each
+                // mod/handler instance is its own signal, even under the same
+                // name (shadowing any outer signal).
+                if ctx.current_exec.is_none() && ctx.signal_key(name).is_some() {
+                    return;
+                }
+                build_exec_signal_hub(ctx, name, &d.range);
+            }
             return;
         }
+    }
+
+    if record_let_value(ctx, d, records) {
+        return;
     }
 
     // A prefab-only reference (`let pf = $./file.brz` / an inline nested-
@@ -1238,26 +1239,8 @@ fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecor
     if let Expr::RecordLit { fields, .. } = &d.value {
         let lit = ctx.type_of(&d.value);
         let record = lower_record_lit(ctx, fields, Slots::Of(&lit));
-        match &d.binding {
-            LetBinding::Ident { name, .. } => {
-                ctx.scope.insert(&name, Binding::Record(record));
-                return;
-            }
-            LetBinding::RecordDestruct {
-                fields: destruct_fields,
-                ..
-            } => {
-                install_record_destruct(ctx, &record, destruct_fields);
-                return;
-            }
-            LetBinding::Tuple { names, rest, .. } => {
-                install_tuple_value(ctx, &d.value, &record, names, rest.as_ref());
-                return;
-            }
-            _ => {
-                // Record name destructuring on a record lit — fall through
-                // to normal handling (unlikely but safe).
-            }
+        if install_record_binding(ctx, d, record) {
+            return;
         }
     }
 
@@ -1346,7 +1329,7 @@ fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecor
 
     // Record-shaped RHS: a multi-output inline mod call OR an enum CONSTRUCTION
     // (unit `Shape.Empty` / `None`, positional `Shape.Circle(x)`, or named-payload
-    // `Box.Dims { .. }`), each of which stashes its field→source-port map in
+    // `Box.Dims { .. }`), each of which stashes its field->source-port map in
     // `pending_inline_record` when lowered. Gated on the same
     // Call/VariantCtor/enum-typed condition `value_record_fields` uses, so every
     // construction spelling binds a `Binding::Record` rather than the bare
@@ -1363,45 +1346,17 @@ fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecor
             _ => record,
         }
     {
-        match &d.binding {
-            LetBinding::Ident { name, .. } => {
-                ctx.scope.insert(&name, Binding::Record(record));
-            }
-            LetBinding::RecordDestruct {
-                fields: destruct_fields,
-                ..
-            } => {
-                install_record_destruct(ctx, &record, destruct_fields);
-            }
-            LetBinding::Tuple { names, rest, .. } => {
-                install_tuple_value(ctx, &d.value, &record, names, rest.as_ref());
-            }
-            _ => {}
-        }
+        install_record_binding(ctx, d, record);
         return;
     }
 
     // Multi-output chip/call: the rhs_port points to the first output's
     // MicrochipOutput node. If the type is a Record, look up the chip node
-    // that owns these outputs and build field→port bindings.
+    // that owns these outputs and build field->port bindings.
     if let Type::Record(ref fields) = rhs_type {
         if let Expr::Call { .. } = &d.value {
             if let Some(record) = multi_output_chip_record(ctx, rhs_port, fields) {
-                match &d.binding {
-                    LetBinding::Ident { name, .. } => {
-                        ctx.scope.insert(&name, Binding::Record(record));
-                    }
-                    LetBinding::RecordDestruct {
-                        fields: destruct_fields,
-                        ..
-                    } => {
-                        install_record_destruct(ctx, &record, destruct_fields);
-                    }
-                    LetBinding::Tuple { names, rest, .. } => {
-                        install_tuple_value(ctx, &d.value, &record, names, rest.as_ref());
-                    }
-                    _ => {}
-                }
+                install_record_binding(ctx, d, record);
                 return;
             }
             // A builtin multi-output gate (e.g. `character.InputReader()`) owns

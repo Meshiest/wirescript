@@ -230,13 +230,12 @@ pub(in crate::lower) fn lower_chip_call_inline(
                     materialize_const_container(ctx, named);
                 }
                 match classify_ref_arg(ctx, ctx.ref_storage(Some(chip_decl), pt), arg_expr) {
-                    RefArg::Static(var_rec) => ref_bindings.push((
-                        param.name.clone(),
-                        VarRecord {
-                            get_node_for_handler: None,
-                            ..var_rec
-                        },
-                    )),
+                    RefArg::Static(var_rec) => {
+                        // The body reads its param afresh, not through a read
+                        // the caller cached before the call.
+                        ctx.var_gets.remove(&var_rec.node_id);
+                        ref_bindings.push((param.name.clone(), var_rec))
+                    }
                     RefArg::Input(inp) => input_bindings.push((param.name.clone(), inp)),
                     RefArg::Forward(d) => dyn_bindings.push((param.name.clone(), d)),
                     RefArg::Value => {
@@ -320,7 +319,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 ctx.pending_inline_record = None;
                 let val_port = lower_expr(ctx, arg_expr);
                 // A record-returning CALL as an argument (`Take(Make())`). The
-                // call just stashed its field→source-port record, exactly as it
+                // call just stashed its field->source-port record, exactly as it
                 // does for `let m = Make()`, which is what makes the hand-split
                 // `let m = Make()` / `Take(m.o)` work. Consume it here so the
                 // record param receives its fields.
@@ -561,8 +560,8 @@ pub(in crate::lower) fn lower_chip_call_inline(
     // resolving the outer declaration while an ordinary call beside it
     // resolved the inner one.
     fn pre_declare_block_vars(ctx: &mut LowerCtx, block: &Block) {
-        let stmts = &block.stmts;
-        for (at, s) in stmts.iter().enumerate() {
+        let stmts = &crate::lower::predeclare::Mentions::new(&block.stmts);
+        for (at, s) in block.stmts.iter().enumerate() {
             match s {
                 // Nested declaration shadows a same-named outer one for any
                 // LATER initializer in this body — see `pre_declare_chip_name`.
@@ -765,19 +764,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
             );
             ctx.mod_return_record = Some(fields);
         } else {
-            let var_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::VAR,
-                source_range: chip_decl.body.range.clone(),
-                ports: GateIO::var_storage(out_type.clone()),
-                note: Some("ret_val"),
-                ..Default::default()
-            });
-            ctx.mod_return_var = Some(VarRecord {
-                node_id: var_id,
-                inner_type: out_type,
-                get_node_for_handler: None,
-                storage: VarStorage::Var,
-            });
+            ctx.mod_return_var = Some(return_value_var(ctx, out_type, &chip_decl.body.range));
         }
     }
 
@@ -799,10 +786,14 @@ pub(in crate::lower) fn lower_chip_call_inline(
     let saved_subst = std::mem::replace(&mut ctx.resolution_subst, body_subst);
     lower_block(ctx, &chip_decl.body);
     ctx.resolution_subst = saved_subst;
-    // Several outputs, several returns and no exec chain: a branch holding a
-    // `return` is never lowered and its storage never written. The one-output
-    // case is reported below, after the call's value is resolved.
-    if !body_has_exec && num_return_values > 1 && chip_decl.outputs.len() > 1 {
+    // Several outputs (or one enum or record output, stored per field),
+    // several returns and no exec chain: a branch holding a `return` is never
+    // lowered and its storage never written. The one scalar output case is
+    // reported below, after the call's value is resolved.
+    if !body_has_exec
+        && num_return_values > 1
+        && (chip_decl.outputs.len() > 1 || ctx.mod_return_record.is_some())
+    {
         ctx.error(
             "WS007",
             format!(
@@ -819,56 +810,15 @@ pub(in crate::lower) fn lower_chip_call_inline(
         // Merge fallthrough (if any) with accumulated return paths
         let fallthrough = ctx.current_exec.take();
         let ret_path = ctx.mod_return_exec.take();
-        match (fallthrough, ret_path) {
-            (Some(fall), Some(ret)) => {
-                let union = ctx.add_gate(AddNodeOpts {
-                    gate_class: gc::UNION,
-                    source_range: chip_decl.body.range.clone(),
-                    ports: GateIO::exec_join(),
-                    ..Default::default()
-                });
-                ctx.connect(fall, union.port(WirePort::ExecA));
-                ctx.connect(ret, union.port(WirePort::ExecB));
-                ctx.current_exec = Some(union.port(WirePort::ExecOut));
-            }
-            (Some(fall), None) => ctx.current_exec = Some(fall),
-            (None, Some(ret)) => ctx.current_exec = Some(ret),
-            (None, None) => {}
-        }
+        ctx.current_exec = merge_exec(ctx, fallthrough, ret_path, &chip_decl.body.range);
     }
 
     // For multi-return mods: Var_Get the return value after the union,
     // then wire to the output node.
     let ret_var_clone = ctx.mod_return_var.clone();
-    let multi_return_port = if let Some(ref ret_var) = ret_var_clone {
-        if let Some(exec) = ctx.current_exec {
-            let inner = ret_var.inner_type.clone();
-            let get_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::VAR_GET,
-                source_range: SourceRange::default(),
-                note: Some("ret_get"),
-                ports: GateIO::var_read(inner.clone()),
-                ..Default::default()
-            });
-            ctx.connect(exec, get_id.port(WirePort::Exec));
-            ctx.connect(
-                ret_var.node_id.port(WirePort::VarRef),
-                get_id.port(WirePort::VarRef),
-            );
-            ctx.current_exec = Some(get_id.port(WirePort::ExecOut));
-            if ctx.output_count() == 1 {
-                let out = ctx.first_output().unwrap().1.clone();
-                ctx.connect(
-                    get_id.port(WirePort::Value),
-                    out.node_id.port(WirePort::RerInput),
-                );
-            }
-            Some(get_id.port(WirePort::Value))
-        } else {
-            None
-        }
-    } else {
-        None
+    let multi_return_port = match (&ret_var_clone, ctx.current_exec) {
+        (Some(ret_var), Some(exec)) => Some(read_return_value(ctx, ret_var, exec, true)),
+        _ => None,
     };
 
     // Capture the enum-return storage record (if any) before restoring the
@@ -1029,9 +979,9 @@ pub(in crate::lower) fn lower_chip_call_inline(
         if ctx.ref_or_array(Some(chip_decl), &param.typ)
             && let Some(arg_expr) = positional_args.get(i)
             && let Expr::Ident { name, .. } = arg_expr
-            && let Some(v) = ctx.lookup_var_mut(name.as_str())
+            && let Some(id) = ctx.lookup_var(name.as_str()).map(|v| v.node_id)
         {
-            v.get_node_for_handler = None;
+            ctx.var_gets.remove(&id);
         }
     }
 

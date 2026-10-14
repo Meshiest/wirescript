@@ -72,6 +72,26 @@
     }
 
     #[test]
+    fn let_inside_every_body_gets_a_hint() {
+        let bodies = [
+            "for i in 0..3 { let x = i + 1 }",
+            "if let E.B(v) = s { let x = v + 1 }",
+            "let n = match s { E.A => { let x = 1
+ x }, E.B(v) => v }",
+        ];
+        for body in bodies {
+            let src = format!("enum E {{ A, B(int) }}
+in start: exec
+var s: E
+on start {{
+{body}
+}}");
+            let hints = hints_for(&src);
+            assert!(hints.iter().any(|h| h.line == 4 && h.label.contains("int")), "{body}: {hints:?}");
+        }
+    }
+
+    #[test]
     fn let_inside_chip() {
         let src = "chip Foo(a: int) -> (r: int) {\n  let doubled = a + a\n  out r = doubled\n}";
         let hints = hints_for(src);

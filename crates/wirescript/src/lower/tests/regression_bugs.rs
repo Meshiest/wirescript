@@ -3,28 +3,13 @@
 
 use super::*;
 
-fn has_unsupported(r: &LowerResult) -> bool {
-    fn walk(m: &crate::ir::Module) -> bool {
-        m.nodes.values().any(|n| n.gate_class == "_Unsupported") || m.chips.values().any(walk)
-    }
-    walk(&r.module)
-}
-
-fn count_class(m: &crate::ir::Module, class: &str) -> usize {
-    let mut n = m.nodes.values().filter(|x| x.gate_class == class).count();
-    for c in m.chips.values() {
-        n += count_class(c, class);
-    }
-    n
-}
-
 /// A `let` aliasing an array var must resolve for `x[i]` (and array methods),
 /// exactly like the original.
 #[test]
 fn let_alias_of_array_var_resolves_index() {
     let r = compile("var a = [0]\nin go: exec\non go { let ar = a\n let v = ar[0] }");
     assert!(
-        !has_unsupported(&r),
+        !has_unsupported(&r.module),
         "aliased array index lowered to _Unsupported: {:?}",
         r.diagnostics
     );
@@ -48,7 +33,7 @@ fn imported_namespace_tuple_pick_resolves() {
         &[("test2", "let start = (1,2,3,4)")],
     );
     assert!(
-        !has_unsupported(&r),
+        !has_unsupported(&r.module),
         "imported-namespace tuple pick lowered to _Unsupported: {:?}",
         r.diagnostics
     );
@@ -77,7 +62,7 @@ fn imported_on_handler_generates() {
         "both the local and the imported handler bodies must generate"
     );
     assert!(
-        !has_unsupported(&r),
+        !has_unsupported(&r.module),
         "imported handler left an _Unsupported node: {:?}",
         r.diagnostics
     );
@@ -89,7 +74,7 @@ fn imported_on_handler_generates() {
 fn let_alias_of_input_array_resolves_index() {
     let r = compile("in a: int[]\nin go: exec\non go { let x = a\n let v = x[0] }");
     assert!(
-        !has_unsupported(&r),
+        !has_unsupported(&r.module),
         "aliased input-array index lowered to _Unsupported: {:?}",
         r.diagnostics
     );
@@ -191,7 +176,7 @@ fn match_expr_with_record_arms_writes_target_fields() {
                on go { r = match s { A => p, B => q } }";
     let r = compile(src);
     assert_no_errors(&r);
-    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
     assert_eq!(
         count_class(&r.module, "BrickComponentType_Expr_Select"),
         2,
@@ -219,7 +204,7 @@ fn match_expr_with_enum_arms_writes_target_slots() {
                on go { out1 = match s { A => d1, B => d2 } }";
     let r = compile(src);
     assert_no_errors(&r);
-    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
     assert_eq!(
         count_class(&r.module, "BrickComponentType_Expr_Select"),
         1,
@@ -244,7 +229,7 @@ fn match_expr_record_bound_to_let_reads_field() {
                on go { let m = match s { A => p, B => q }\n o = m.x }";
     let r = compile(src);
     assert_no_errors(&r);
-    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
     assert!(
         count_class(&r.module, "BrickComponentType_Expr_Select") >= 1,
         "the read field must come through a Select"
@@ -277,7 +262,7 @@ fn match_expr_record_resolves_in_every_value_position() {
                out sum = (match s { A => p, B => q }).x";
     let r = compile(src);
     assert_no_errors(&r);
-    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
 }
 
 /// A `mod` takes a record argument in every form its `chip` twin does. The
@@ -306,7 +291,7 @@ fn mod_record_argument_accepts_every_value_form() {
                }";
     let r = compile(src);
     assert_no_errors(&r);
-    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
 }
 
 /// `let m = if c then p else q` on records binds a per-field record, the same
@@ -323,7 +308,7 @@ fn record_valued_if_expr_binds_to_a_let() {
                on go { let m = if c then p else q\n o = m.y }";
     let r = compile(src);
     assert_no_errors(&r);
-    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
     assert!(
         count_class(&r.module, "BrickComponentType_Expr_Select") >= 1,
         "the read field must come through a Select"
@@ -349,7 +334,7 @@ fn multi_output_result_through_a_conditional_selects_per_port() {
                }";
     let r = compile(src);
     assert_no_errors(&r);
-    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
     assert_eq!(
         count_class(&r.module, "BrickComponentType_Expr_Select"),
         2,
@@ -403,7 +388,7 @@ fn single_record_output_mod_unwraps_to_its_fields() {
                }";
     let r = compile(src);
     assert_no_errors(&r);
-    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
     // Both of `r`'s fields, plus `a`.
     assert_eq!(
         count_class(&r.module, "BrickComponentType_Exec_Var_Set"),
@@ -427,7 +412,7 @@ fn record_returning_mod_in_both_conditional_arms_selects_per_field() {
                }";
     let r = compile(src);
     assert_no_errors(&r);
-    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
     assert_eq!(
         count_class(&r.module, "BrickComponentType_Expr_Select"),
         2,
@@ -559,7 +544,7 @@ fn array_index_capital_value_reads_the_array_get() {
         let r = compile(&src);
         assert_no_errors(&r);
         assert!(
-            !has_unsupported(&r),
+            !has_unsupported(&r.module),
             "regs[15].{field} lowered to _Unsupported: {:?}",
             r.diagnostics
         );
@@ -595,7 +580,7 @@ fn array_index_out_of_bounds_flag_accepts_every_capitalisation() {
         let r = compile(&src);
         assert_no_errors(&r);
         assert!(
-            !has_unsupported(&r),
+            !has_unsupported(&r.module),
             "regs[15].{field} lowered to _Unsupported: {:?}",
             r.diagnostics
         );
@@ -649,7 +634,7 @@ fn map_index_found_flag_accepts_every_capitalisation() {
         let r = compile(&src);
         assert_no_errors(&r);
         assert!(
-            !has_unsupported(&r),
+            !has_unsupported(&r.module),
             "m[1].{field} lowered to _Unsupported: {:?}",
             r.diagnostics
         );
@@ -676,7 +661,7 @@ fn found_on_an_array_index_stays_unsupported() {
          in go: exec\n\
          on go { let f = regs[0].Found\n hit = f }",
     );
-    assert!(has_unsupported(&r), "arr[i].Found must not resolve to a port the gate lacks");
+    assert!(has_unsupported(&r.module), "arr[i].Found must not resolve to a port the gate lacks");
 }
 
 /// A field naming no port on the object's gate still degrades to a placeholder
@@ -686,7 +671,7 @@ fn found_on_an_array_index_stays_unsupported() {
 fn value_on_a_gate_without_that_port_stays_unsupported() {
     let r = compile("in v: vector\nout o: float = v.MagnitudeSq().Value");
     assert!(
-        has_unsupported(&r),
+        has_unsupported(&r.module),
         "a `.Value` read of a gate with no Value port must not fabricate a wire"
     );
 }
@@ -760,7 +745,7 @@ fn let_of_a_ref_binds_the_variable() {
         let r = compile(&src);
         assert_no_errors(&r);
         assert!(
-            !has_unsupported(&r),
+            !has_unsupported(&r.module),
             "`let r = {sigil}someVar` lowered to _Unsupported: {:?}",
             r.diagnostics
         );

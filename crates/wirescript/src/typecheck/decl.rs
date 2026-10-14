@@ -184,7 +184,7 @@ pub(super) fn map_init_entries(init: &Expr) -> Option<&[MapLitEntry]> {
 /// nowhere to put its `FormatText` gate: only the coercions that hold at the
 /// literal itself (`Same`/`Coerce`) are valid. `Coerce` holds because lowering
 /// rewrites the literal in the declared type's shape as it bakes
-/// (`bake_string_bool`, `bake_literal_for_type`); `ViaString` has no such
+/// (`bake_string_bool`, `const_eval::scalar_in_type`); `ViaString` has no such
 /// rewrite, so it is baked raw and then destroyed at emit -
 /// `emit::variants` renders a non-`String` literal in a `string[]` as `""`,
 /// which is how `var s: string[] = [1, 2]` shipped two empty strings.
@@ -348,6 +348,10 @@ pub(super) fn infer_let_init(ctx: &mut TypeCheckCtx, l: &crate::ast::LetDecl) ->
         ctx.diagnostics.truncate(before);
         resolved
     });
+    // `null` takes the annotation's type, as it does in every other typed slot.
+    if let (Expr::NullLit { .. }, Some(slot)) = (&l.value, &annotated) {
+        return infer::check(ctx, &l.value, slot);
+    }
     let prev = annotated.clone().map(|a| ctx.expected_ty.replace(a));
     let t = infer::infer(ctx, &l.value);
     if let Some(prev) = prev {
@@ -767,7 +771,7 @@ fn check_decl_inner(
                 if let Some(te) = &b.typ {
                     let resolved = resolve_type_expr(ctx, te);
                     check_port_record(ctx, &b.name, &resolved, &b.range, true);
-                    warn_any_annotation(ctx, &resolved, type_expr_range(te));
+                    // A port cannot take a type parameter, so `any` here is no WS032.
                     // When out has ref type and value is a var, override to show "ref" in hover
                     if matches!(resolved, Type::Ref(_))
                         && let Expr::Ident { range, .. } = value
@@ -777,7 +781,7 @@ fn check_decl_inner(
                     }
                     // An annotated out must accept its value: `check` coerces it
                     // into the port type (WS003 on a genuine mismatch; the string
-                    // → bool `!= ""` compare and friends pass) AND resolves a
+                    // -> bool `!= ""` compare and friends pass) AND resolves a
                     // bidirectional literal like `null` to the port's type. A
                     // `*T` port carries a ref, so `out y: *int = &x` fits it and
                     // `out y: *int = x` (x's value) does not; an array or map
@@ -843,6 +847,7 @@ fn check_decl_inner(
         }
         TopDecl::Let(l) => {
             let t = ctx.in_pure(|ctx| infer_let_init(ctx, l));
+            super::stmt::reject_event_logic_trigger(ctx, l);
             if !reject_never_binding(ctx, l, &t) {
                 check_let_type_annotation(ctx, l, &t);
             }
@@ -1053,8 +1058,13 @@ fn check_decl_inner(
             check_anon_chip_stmts(ctx, &ac.body.stmts, true);
         }
         TopDecl::Event(e) => {
-            if let Some(body) = &e.captured_body {
-                ctx.in_exec(|ctx| check_block(ctx, body));
+            // A captured body is checked as the handler it runs as.
+            if let Some(h) = &e.captured {
+                ctx.push_scope();
+                bind_handler_trigger_params(ctx, h);
+                check_handler_input_wires(ctx, h);
+                ctx.in_exec(|ctx| check_block(ctx, &h.body));
+                ctx.pop_scope();
             } else {
                 ctx.in_pure(|ctx| {
                     infer::infer(ctx, &e.source);

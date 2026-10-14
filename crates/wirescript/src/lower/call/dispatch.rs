@@ -191,7 +191,7 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 path.insert(0, seg.clone());
                 root = parent;
             }
-            if let Some(rec) = resolve_record_array(ctx, root)
+            if let Some(rec) = resolve_record_columns(ctx, Columns::Array, root)
                 && let Some(port) = lower_record_array_field_sort(ctx, &rec, &path, args, range, e)
             {
                 return port;

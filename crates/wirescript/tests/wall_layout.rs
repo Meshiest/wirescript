@@ -2,7 +2,9 @@
 //! the wall layout instead of hovering above its shell brick.
 
 use wirescript::emit::EmitOptions;
-use wirescript::{CompileInput, FoldMode, compile_to_world};
+use wirescript::compile_to_world;
+
+mod common;
 
 const SRC: &str = "\
 in tick: exec\n\
@@ -18,12 +20,7 @@ out total = a.n\n";
 #[test]
 fn grids_are_upright_and_stacked() {
     let r = compile_to_world(
-        CompileInput {
-            source: SRC,
-            file: "wall.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input(SRC, "wall.ws"),
         EmitOptions::default(),
     )
     .expect("should compile");
@@ -74,12 +71,7 @@ chip Counter(t: exec) -> (n: int) {\n\
 let a = Counter(tick)\n\
 out total = a.n\n";
     let r = compile_to_world(
-        CompileInput {
-            source: src,
-            file: "wall.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input(src, "wall.ws"),
         EmitOptions::default(),
     )
     .expect("should compile");

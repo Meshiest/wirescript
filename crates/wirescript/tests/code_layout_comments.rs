@@ -5,7 +5,6 @@
 mod common;
 
 use brdb::schema::BrdbValue;
-use wirescript::{CompileInput, FoldMode};
 
 const SRC: &str = "@layout(\"code\")\n\
                    \n\
@@ -39,12 +38,7 @@ fn label_texts(brz: &[u8]) -> Vec<(String, Option<f32>)> {
 
 #[test]
 fn own_line_comments_render_as_left_anchored_labels() {
-    let cr = wirescript::compile::compile(CompileInput {
-        source: SRC,
-        file: "comments.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let cr = wirescript::compile::compile(common::input(SRC, "comments.ws"))
     .expect("should compile to brz");
 
     let labels = label_texts(&cr.brz);
@@ -68,12 +62,7 @@ fn own_line_comments_render_as_left_anchored_labels() {
 #[test]
 fn dag_layout_renders_no_comment_labels() {
     let src = SRC.replace("@layout(\"code\")\n", "");
-    let cr = wirescript::compile::compile(CompileInput {
-        source: &src,
-        file: "comments_dag.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let cr = wirescript::compile::compile(common::input(&src, "comments_dag.ws"))
     .expect("should compile to brz");
 
     let labels = label_texts(&cr.brz);

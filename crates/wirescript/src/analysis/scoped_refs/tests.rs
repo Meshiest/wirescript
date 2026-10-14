@@ -576,7 +576,7 @@ on go { let { x } = p
 fn destructure_alias_decl_is_coarse_not_shorthand() {
     // `let { src: bound } = p` binds `bound`: the decl RefSite is coarse
     // (range spans `src: bound `, narrowed to `bound` downstream) but NOT
-    // shorthand — rename plain-replaces the `bound` token → `{ src: new }`.
+    // shorthand — rename plain-replaces the `bound` token -> `{ src: new }`.
     let src = "\
 let { src: bound } = p
 in go: exec
@@ -682,9 +682,20 @@ fn builtin_type_position_is_not_renameable() {
 }
 
 #[test]
+fn every_primitive_type_name_never_resolves_to_a_shadowing_alias() {
+    for ty in ["quat", "prefab", "Component", "any", "never"] {
+        let src = format!("type {ty} = {{ x: int }}
+in p: {ty}");
+        let (name, sites) = rename_sites(&src, 0, 5);
+        assert_eq!(name, ty);
+        assert_eq!(sites.len(), 1, "`in p: {ty}` must not resolve to the alias: {sites:?}");
+    }
+}
+
+#[test]
 fn record_field_name_is_refused_for_now() {
     let src = "type P = { x: int }\nlet p: P = { x: 1 }\nlet a = p.x";
-    // cursor on `.x` field access (line 2) → refuse (deferred feature)
+    // cursor on `.x` field access (line 2) -> refuse (deferred feature)
     assert!(prepare_rename_at(&parse(src, "t.ws").ast, src, "t.ws", 2, 10).is_none());
 }
 

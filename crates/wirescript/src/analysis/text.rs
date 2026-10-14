@@ -49,6 +49,74 @@ pub fn byte_to_char_col(line_str: &str, b: usize) -> usize {
 /// char column `analysis` works in. Astral-plane characters, emoji, most
 /// notably, are two UTF-16 units and one char, so the two disagree on every
 /// line containing one.
+/// An editor's UTF-16 column on line `line` of `source` -> the 0-based char
+/// column `analysis::` takes.
+pub fn editor_col_to_char(source: &str, line: usize, utf16: usize) -> usize {
+    utf16_col_to_char_col(line_text(source, line), utf16)
+}
+
+/// A 0-based char column on line `line` of `source` -> the editor's UTF-16
+/// column.
+///
+/// A column past the end of the line it names is left alone rather than
+/// clamped: the two conventions agree for everything below U+10000, so passing
+/// it through is right whenever the line could not be read (a closed file that
+/// has since changed on disk), while clamping would collapse it onto the line's
+/// end.
+pub fn char_col_to_editor(source: &str, line: usize, col: usize) -> usize {
+    char_col_in_line_to_editor(line_text(source, line), col)
+}
+
+fn char_col_in_line_to_editor(l: &str, col: usize) -> usize {
+    if l.chars().count() < col {
+        return col;
+    }
+    char_col_to_utf16_col(l, col)
+}
+
+/// A byte column within line `line` of `source` (what the lexer's `Pos::col`
+/// and the raw-text scanners produce) -> the editor's UTF-16 column. Past the
+/// end of the line it passes through, as [`char_col_to_editor`] does.
+pub fn byte_col_to_editor(source: &str, line: usize, byte: usize) -> usize {
+    byte_col_in_line_to_editor(line_text(source, line), byte)
+}
+
+fn byte_col_in_line_to_editor(l: &str, byte: usize) -> usize {
+    if l.len() < byte {
+        return byte;
+    }
+    char_col_to_utf16_col(l, byte_to_char_col(l, byte))
+}
+
+/// A file's text with its [`LineIndex`], for converting many columns of one
+/// file in one request: [`editor_col_to_char`], [`char_col_to_editor`] and
+/// [`byte_col_to_editor`] each find their line by scanning from the top.
+pub struct Ruler<'a> {
+    pub source: &'a str,
+    index: LineIndex,
+}
+
+impl<'a> Ruler<'a> {
+    pub fn new(source: &'a str) -> Self {
+        Self { source, index: LineIndex::new(source) }
+    }
+
+    /// [`editor_col_to_char`] on this file.
+    pub fn editor_col_to_char(&self, line: usize, utf16: usize) -> usize {
+        utf16_col_to_char_col(self.index.line_text(self.source, line), utf16)
+    }
+
+    /// [`char_col_to_editor`] on this file.
+    pub fn char_col_to_editor(&self, line: usize, col: usize) -> usize {
+        char_col_in_line_to_editor(self.index.line_text(self.source, line), col)
+    }
+
+    /// [`byte_col_to_editor`] on this file.
+    pub fn byte_col_to_editor(&self, line: usize, byte: usize) -> usize {
+        byte_col_in_line_to_editor(self.index.line_text(self.source, line), byte)
+    }
+}
+
 pub fn utf16_col_to_char_col(line_str: &str, u16col: usize) -> usize {
     let mut units = 0usize;
     for (chars, c) in line_str.chars().enumerate() {
@@ -196,16 +264,12 @@ pub fn param_names(sig: &str) -> Option<Vec<String>> {
     Some(field_entry_names(&sig[open + 1..close?]))
 }
 
-/// Component field names a `vector` (`x`/`y`/`z`) or `color` (`r`/`g`/`b`/`a`)
-/// receiver can be swizzled by; empty for any other type. These desugar to a
-/// Split gate in lowering rather than being catalog methods, so they aren't in
-/// `receiver_methods` and must be offered separately.
+/// Component field names a value of the type named `ty` can be swizzled by
+/// ([`crate::catalog::value_fields`]); empty for any other type. These desugar
+/// to a Split gate in lowering rather than being catalog methods, so they
+/// aren't in `receiver_methods` and must be offered separately.
 pub fn swizzle_fields(ty: &str) -> &'static [&'static str] {
-    match ty {
-        "vector" => &["x", "y", "z"],
-        "color" => &["r", "g", "b", "a"],
-        _ => &[],
-    }
+    crate::catalog::value_fields::fields_of_named(ty)
 }
 
 /// A `$` reference token found in source: a prefab file reference
@@ -501,6 +565,15 @@ impl LineIndex {
     /// Byte offset where 0-based `line` starts, or the source length past the
     /// end. Matches [`line_start_byte`] exactly, including its CRLF handling:
     /// both count the bytes as they appear.
+    /// The 0-based line and char column of byte `offset`: the line breaks
+    /// before it, and the chars from its line's start that begin before it.
+    pub fn line_col(&self, source: &str, offset: usize) -> (usize, usize) {
+        let line = self.starts.partition_point(|s| (*s as usize) <= offset).saturating_sub(1);
+        let start = self.line_start_byte(line);
+        let col = source.get(start..).unwrap_or("").char_indices().take_while(|(i, _)| start + i < offset).count();
+        (line, col)
+    }
+
     pub fn line_start_byte(&self, line: usize) -> usize {
         self.starts.get(line).copied().unwrap_or(self.len) as usize
     }

@@ -115,6 +115,41 @@ pub(super) fn record_let(ctx: &mut TypeCheckCtx, l: &LetDecl, value: LetValue) {
 /// cannot fall through past it? Used by `let ... else` (WS062): the `else` must
 /// diverge, since the pattern's binding is unavailable on the non-match path.
 ///
+/// `on a || b` desugars to `let _on_expr_N = a || b` (see `parse_handler`).
+/// With an object operand that reads as "either event", but `||` makes one
+/// value instead, and an object is true for as long as it exists: `on reset
+/// || ReadBrickGrid()` turns true once at load and stays true, so it never
+/// fires on `reset`. Firing on either is `Union(a, b)` (WS116, a warning).
+/// `&&` with an object is the ordinary "is set" guard, and an `exec` operand
+/// pulses for a
+/// tick (`on reset || start` works), so neither is reported.
+pub(super) fn reject_event_logic_trigger(ctx: &mut TypeCheckCtx, l: &LetDecl) {
+    let LetBinding::Ident { name, .. } = &l.binding else { return };
+    if !name.starts_with("_on_expr_") {
+        return;
+    }
+    let Expr::BinOp { op, left, right, range } = &l.value else { return };
+    if op != "||" {
+        return;
+    }
+    let object = |e: &Expr| {
+        let r = e.range();
+        matches!(
+            ctx.type_of_expr.get(&(r.file.clone(), r.start.offset, r.end.offset)),
+            Some(Type::Entity | Type::Controller | Type::Character)
+        )
+    };
+    if object(left) || object(right) {
+        ctx.warn(
+            "WS116",
+            "`||` here makes one value, it does not wait for either side: an object is true for as \
+             long as it exists, so this handler fires once, when the object appears, and never again. \
+             To fire on either, write `on Union(a, b)`",
+            range.clone(),
+        );
+    }
+}
+
 /// Conservative: a block diverges when its LAST statement is a `return` or an
 /// `emit` (the exec ends there), or an `if`/`if let`/`match` whose branches ALL
 /// diverge. Anything else (including an empty block) does not.
@@ -436,6 +471,7 @@ fn check_stmt_inner(
         }
         Stmt::Let(l) => {
             let t = infer_let_init(ctx, l);
+            reject_event_logic_trigger(ctx, l);
             if !reject_never_binding(ctx, l, &t) {
                 check_let_type_annotation(ctx, l, &t);
             }
@@ -534,16 +570,15 @@ fn check_stmt_inner(
             let declared = !boundary
                 && ctx.out_ctx.last().is_some_and(|o| o.iter().any(|f| f.name == b.name));
             // An anon-chip's statement-level `out` carries a type annotation
-            // too (`chip { @bottom out done: any = 5 }`); mirror the top-level
-            // `TopDecl::Out` any-warn so `any` there is flagged like anywhere
-            // else.
+            // too (`chip { @bottom out done: any = 5 }`). Like the top-level
+            // `TopDecl::Out` it is a port, which cannot take a type parameter,
+            // so `any` there is no WS032.
             if let Some(te) = &b.typ {
                 let resolved = resolve_type_expr(ctx, te);
-                warn_any_annotation(ctx, &resolved, type_expr_range(te));
                 if let Some(value) = &b.value {
                     // An annotated out must accept its value (WS003 on a
-                    // genuine mismatch; coercions — including string → bool
-                    // and primitive → string — pass). A `*T` port carries a
+                    // genuine mismatch; coercions — including string -> bool
+                    // and primitive -> string — pass). A `*T` port carries a
                     // ref, never the value it points at; mirrors `TopDecl::Out`.
                     let value_ty = infer::infer(ctx, value);
                     if ctx.inline_body_depth == 0 && !declared {

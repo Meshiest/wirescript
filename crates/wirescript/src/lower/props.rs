@@ -5,7 +5,7 @@
 //! `typecheck::props`, which already reported any problem with it.
 
 use super::*;
-use crate::typecheck::props::{self, ResolvedProperty};
+use crate::typecheck::props::{self, PropertyError, ResolvedProperty};
 
 /// Whether the name `Environment` means the builtin here: a binding of the
 /// program's own by that name wins.
@@ -16,15 +16,14 @@ fn environment_unshadowed(ctx: &LowerCtx) -> bool {
 /// The resolved property `e` reads or writes, when it is an environment
 /// property path the program does not shadow.
 ///
-/// The outer `None` means `e` is not an environment property path; the inner
-/// one, that it is but names nothing (typecheck reported it, and nothing is
-/// lowered for it).
-fn environment_property(ctx: &LowerCtx, e: &Expr) -> Option<Option<ResolvedProperty>> {
+/// `None` means `e` is not an environment property path; an error, that it is
+/// but names nothing (typecheck reported it, and nothing is lowered for it).
+fn environment_property(ctx: &LowerCtx, e: &Expr) -> Option<Result<ResolvedProperty, PropertyError>> {
     let (env, property) = props::environment_path(e)?;
     if !environment_unshadowed(ctx) {
         return None;
     }
-    Some(props::resolve_environment(env, property).ok())
+    Some(props::resolve_environment(env, property))
 }
 
 /// The read gate's `Value` port type, and the value a program reads off it.
@@ -54,25 +53,28 @@ fn settings(r: &ResolvedProperty) -> HashMap<crate::intern::Sym, Literal> {
 /// A read of `Environment.<env>.<property>`, run on the exec chain. `None` when
 /// `e` is not one.
 pub(super) fn lower_environment_read(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
-    let Some(r) = environment_property(ctx, e)? else {
+    let Ok(r) = environment_property(ctx, e)? else {
         return Some(synthesise_unsupported_no_warn(ctx, e.range()));
     };
     let Some(exec) = ctx.current_exec else {
         return Some(synthesise_unsupported_range(ctx, "an environment read with no exec chain to run on", e.range()));
     };
-    let node = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::GET_ENVIRONMENT_PROPERTY,
-        source_range: e.range().clone(),
-        ports: GateIO {
-            inputs: vec![PortSpec::exec(*sym::EXEC)],
-            outputs: vec![PortSpec::exec(*sym::EXEC_OUT), PortSpec::new(*sym::VALUE, read_port_type(&r))],
+    let node = chain_gate(
+        ctx,
+        AddNodeOpts {
+            gate_class: gc::GET_ENVIRONMENT_PROPERTY,
+            source_range: e.range().clone(),
+            ports: GateIO {
+                inputs: vec![PortSpec::exec(*sym::EXEC)],
+                outputs: vec![PortSpec::exec(*sym::EXEC_OUT), PortSpec::new(*sym::VALUE, read_port_type(&r))],
+            },
+            properties: settings(&r),
+            note: Some("environment read"),
+            ..Default::default()
         },
-        properties: settings(&r),
-        note: Some("environment read"),
-        ..Default::default()
-    });
-    ctx.connect(exec, node.port(WirePort::Exec));
-    ctx.current_exec = Some(node.port(WirePort::ExecOut));
+        exec,
+        &[],
+    );
     Some(read_value(ctx, &r, node.port(WirePort::Value), e.range()))
 }
 
@@ -82,7 +84,7 @@ pub(super) fn lower_environment_write(ctx: &mut LowerCtx, s: &Assign) -> bool {
     let Some(r) = environment_property(ctx, &s.target) else {
         return false;
     };
-    let Some(r) = r else {
+    let Ok(r) = r else {
         return true;
     };
     // A constant member of the property's enum is written as its number.
@@ -94,20 +96,22 @@ pub(super) fn lower_environment_write(ctx: &mut LowerCtx, s: &Assign) -> bool {
         synthesise_unsupported_range(ctx, "an environment write with no exec chain to run on", &s.range);
         return true;
     };
-    let node = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::SET_ENVIRONMENT_PROPERTY,
-        source_range: s.range.clone(),
-        ports: GateIO {
-            inputs: vec![PortSpec::exec(*sym::EXEC), PortSpec::new(*sym::VALUE, r.ty.clone())],
-            outputs: vec![PortSpec::exec(*sym::EXEC_OUT)],
+    chain_gate(
+        ctx,
+        AddNodeOpts {
+            gate_class: gc::SET_ENVIRONMENT_PROPERTY,
+            source_range: s.range.clone(),
+            ports: GateIO {
+                inputs: vec![PortSpec::exec(*sym::EXEC), PortSpec::new(*sym::VALUE, r.ty.clone())],
+                outputs: vec![PortSpec::exec(*sym::EXEC_OUT)],
+            },
+            properties: settings(&r),
+            note: Some("environment write"),
+            ..Default::default()
         },
-        properties: settings(&r),
-        note: Some("environment write"),
-        ..Default::default()
-    });
-    ctx.connect(exec, node.port(WirePort::Exec));
-    ctx.connect(value, node.port(WirePort::Value));
-    ctx.current_exec = Some(node.port(WirePort::ExecOut));
+        exec,
+        &[(value, WirePort::Value)],
+    );
     true
 }
 
@@ -142,23 +146,25 @@ pub(super) fn lower_component_read(ctx: &mut LowerCtx, obj: &Expr, field: &str, 
     let Some(exec) = ctx.current_exec else {
         return Some(synthesise_unsupported_range(ctx, "a component read with no exec chain to run on", e.range()));
     };
-    let node = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::GET_COMPONENT_PROPERTY,
-        source_range: e.range().clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec::exec(*sym::EXEC),
-                PortSpec::new(WirePort::Component.sym(), Type::Component(class)),
-            ],
-            outputs: vec![PortSpec::exec(*sym::EXEC_OUT), PortSpec::new(*sym::VALUE, read_port_type(&r))],
+    let node = chain_gate(
+        ctx,
+        AddNodeOpts {
+            gate_class: gc::GET_COMPONENT_PROPERTY,
+            source_range: e.range().clone(),
+            ports: GateIO {
+                inputs: vec![
+                    PortSpec::exec(*sym::EXEC),
+                    PortSpec::new(WirePort::Component.sym(), Type::Component(class)),
+                ],
+                outputs: vec![PortSpec::exec(*sym::EXEC_OUT), PortSpec::new(*sym::VALUE, read_port_type(&r))],
+            },
+            properties: component_settings(&r),
+            note: Some("component read"),
+            ..Default::default()
         },
-        properties: component_settings(&r),
-        note: Some("component read"),
-        ..Default::default()
-    });
-    ctx.connect(exec, node.port(WirePort::Exec));
-    ctx.connect(component, node.port(WirePort::Component));
-    ctx.current_exec = Some(node.port(WirePort::ExecOut));
+        exec,
+        &[(component, WirePort::Component)],
+    );
     Some(read_value(ctx, &r, node.port(WirePort::Value), e.range()))
 }
 
@@ -179,24 +185,25 @@ pub(super) fn lower_component_write(ctx: &mut LowerCtx, s: &Assign) -> bool {
         synthesise_unsupported_range(ctx, "a component write with no exec chain to run on", &s.range);
         return true;
     };
-    let node = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::SET_COMPONENT_PROPERTY,
-        source_range: s.range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec::exec(*sym::EXEC),
-                PortSpec::new(WirePort::Component.sym(), Type::Component(class)),
-                PortSpec::new(*sym::VALUE, r.ty.clone()),
-            ],
-            outputs: vec![PortSpec::exec(*sym::EXEC_OUT)],
+    chain_gate(
+        ctx,
+        AddNodeOpts {
+            gate_class: gc::SET_COMPONENT_PROPERTY,
+            source_range: s.range.clone(),
+            ports: GateIO {
+                inputs: vec![
+                    PortSpec::exec(*sym::EXEC),
+                    PortSpec::new(WirePort::Component.sym(), Type::Component(class)),
+                    PortSpec::new(*sym::VALUE, r.ty.clone()),
+                ],
+                outputs: vec![PortSpec::exec(*sym::EXEC_OUT)],
+            },
+            properties: component_settings(&r),
+            note: Some("component write"),
+            ..Default::default()
         },
-        properties: component_settings(&r),
-        note: Some("component write"),
-        ..Default::default()
-    });
-    ctx.connect(exec, node.port(WirePort::Exec));
-    ctx.connect(component, node.port(WirePort::Component));
-    ctx.connect(value, node.port(WirePort::Value));
-    ctx.current_exec = Some(node.port(WirePort::ExecOut));
+        exec,
+        &[(component, WirePort::Component), (value, WirePort::Value)],
+    );
     true
 }

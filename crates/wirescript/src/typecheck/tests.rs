@@ -407,7 +407,7 @@
     fn fill_from_zone_requires_zone_not_entity() {
         // `fillFromZone*`'s zone param is `zone` ONLY — the `Zone` slot never
         // accepts a plain entity, only a zone rerouter reference (`in z: zone`
-        // → `Type::Zone`). The `z: zone` form, with and without the optional
+        // -> `Type::Zone`). The `z: zone` form, with and without the optional
         // tagFilter, type-checks clean:
         assert_no_diags(&tc(
             "in z: zone\nvar players: character[]\nin s: exec\non s { players.fillFromZonePlayers(z) }",
@@ -2032,7 +2032,7 @@
         );
     }
 
-    // ---- string → bool coercion (lowers to an inserted `!= ""` compare) ----
+    // ---- string -> bool coercion (lowers to an inserted `!= ""` compare) ----
 
     #[test]
     fn if_string_condition_compiles() {
@@ -2143,7 +2143,7 @@
 
     #[test]
     fn annotated_out_bool_from_string_coerces() {
-        // `out y: bool = s` is the string → bool coercion (the `!= ""`
+        // `out y: bool = s` is the string -> bool coercion (the `!= ""`
         // compare inserts at lowering) — no diagnostic.
         let r = tc("in s: string\nout y: bool = s");
         assert_no_diags(&r);
@@ -2166,7 +2166,7 @@
 
     #[test]
     fn annotated_out_string_from_int_formats() {
-        // Per the coercion table, int → string is `ViaString` (format
+        // Per the coercion table, int -> string is `ViaString` (format
         // gate), not a mismatch — an annotated string out accepts a
         // numeric value without diagnostics.
         let r = tc("in n: int\nout label: string = n");
@@ -2813,7 +2813,7 @@
 
     #[test]
     fn infer_ce_slots_adopts_sender_type_and_warns_when_absent() {
-        // A receiver with unannotated `amount`; an in-unit send of an int → amount:int.
+        // A receiver with unannotated `amount`; an in-unit send of an int -> amount:int.
         let src = "static var last: int = 0\n\
                    in go: exec\n\
                    on CustomEvent(\"dmg\") -> (amount) {\n  last = last + 1\n}\n\
@@ -2827,7 +2827,7 @@
         assert_eq!(slots.get(0).cloned().flatten(), Some(Type::Int));
         assert!(diags.is_empty(), "no WS042 when a sender exists: {:?}", diags);
 
-        // No in-unit sender → float + WS042.
+        // No in-unit sender -> float + WS042.
         let src2 = "static var last: int = 0\n\
                     on CustomEvent(\"ext\") -> (amount) {\n  last = last + 1\n}\n";
         let p2 = parse(src2, "test");
@@ -2943,7 +2943,7 @@
         // `out r = v` lowering resolves the output via `lookup_output` (a
         // disjoint namespace), so a wrong-typed value still wires into the
         // int output and must error. (Guards against a bogus "local shadows
-        // output → skip check" rule.)
+        // output -> skip check" rule.)
         let r = tc("chip Foo() -> (r: int) { var r: int = 0\n out r = \"bad\" }");
         assert!(
             r.diagnostics.iter().any(|d| d.code == "WS003"),
@@ -3964,26 +3964,14 @@
     }
 
     fn lowering_dropped(src: &str) -> Vec<crate::diagnostic::SourceRange> {
-        let p = parse(src, "test");
+        let crate::compile::FrontEnd { resolved: p, typecheck: tc_result, lowered: out, .. } =
+            crate::compile::front_end(src, "test", None, crate::lower::FoldMode::ForceOff, &crate::resolve::FsLoader);
         assert!(p.diagnostics.is_empty(), "parse diagnostics: {:?}", p.diagnostics);
-        let tc_result = typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
         assert!(
             tc_result.diagnostics.iter().all(|d| d.severity != Severity::Error),
             "typecheck errors: {:?}",
             tc_result.diagnostics
         );
-        let out = crate::lower::lower(crate::lower::LowerInput {
-            ast: &p.ast,
-            type_of_expr: &tc_result.type_of_expr,
-            op_resolutions: &tc_result.op_resolutions,
-            resolutions: &tc_result.resolutions,
-            file: "test",
-            module_name: None,
-            template_cache: std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
-            doc_comments: &p.doc_comments,
-            fold_mode: crate::lower::FoldMode::ForceOff,
-            ce_slots: &crate::typecheck::CeSlotMap::default(),
-        });
         assert!(
             out.diagnostics.iter().all(|d| d.severity != Severity::Error),
             "lower errors: {:?}",
@@ -4075,21 +4063,10 @@
     /// are deliberately rejected shapes whose whole point is that NEITHER side
     /// claims a port.
     fn lower_for_ports(src: &str) -> crate::lower::LowerResult {
-        let p = parse(src, "test");
+        let crate::compile::FrontEnd { resolved: p, lowered, .. } =
+            crate::compile::front_end(src, "test", None, crate::lower::FoldMode::ForceOff, &crate::resolve::FsLoader);
         assert!(p.diagnostics.is_empty(), "parse diagnostics: {:?}", p.diagnostics);
-        let tc_result = typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-        crate::lower::lower(crate::lower::LowerInput {
-            ast: &p.ast,
-            type_of_expr: &tc_result.type_of_expr,
-            op_resolutions: &tc_result.op_resolutions,
-            resolutions: &tc_result.resolutions,
-            file: "test",
-            module_name: None,
-            template_cache: std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
-            doc_comments: &p.doc_comments,
-            fold_mode: crate::lower::FoldMode::ForceOff,
-            ce_slots: &crate::typecheck::CeSlotMap::default(),
-        })
+        lowered
     }
 
     /// The `PortLabel` of every top-level (non-chip) `Output` node in `src`'s
@@ -6384,4 +6361,39 @@
             assert_eq!(ws003, wrong, "`{body}`: {:?}", r.diagnostics);
             assert!(wrong || r.diagnostics.iter().all(|d| d.severity != Severity::Error), "`{body}`: {:?}", r.diagnostics);
         }
+    }
+
+    #[test]
+    fn object_in_a_trigger_or_is_ws116() {
+        // `||` with an object makes one value that is true while the object
+        // exists, so the handler fires once and never on the other side.
+        // A warning, not an error: the code still means something.
+        let r = tc("in reset: bool\nvar n: int = 0\non reset || ReadBrickGrid() { n = 0 }");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS116" && d.severity == crate::diagnostic::Severity::Warning),
+            "expected a WS116 warning, got {:?}",
+            r.diagnostics
+        );
+        // Bools, exec pulses, the `&&` guard and `Union` are all fine.
+        for src in [
+            "in a: bool\nin b: bool\nvar n: int = 0\non a || b { n = 0 }",
+            "in a: exec\nin b: exec\nvar n: int = 0\non a || b { n = 0 }",
+            "in reset: bool\nvar n: int = 0\non Union(reset, ReadBrickGrid()) { n = 0 }",
+            "in who: character\nin ok: bool\nvar n: int = 0\non who && ok { n = 0 }",
+        ] {
+            let c = codes(src);
+            assert!(!c.iter().any(|c| c == "WS116"), "{src}: {c:?}");
+        }
+    }
+
+    #[test]
+    fn any_on_a_port_is_not_ws032() {
+        // A port cannot take a type parameter, so the advice has nothing to follow.
+        let c = codes("in probe: any\nout seen: any = probe");
+        assert!(!c.iter().any(|c| c == "WS032"), "a port's `any` is not WS032: {c:?}");
+        // A mod parameter can be generic, so it still is.
+        let c = codes("mod pass(x: any) -> any { return x }");
+        assert!(c.iter().any(|c| c == "WS032"), "a parameter's `any` is still WS032: {c:?}");
     }

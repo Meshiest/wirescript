@@ -2,9 +2,8 @@ use crate::collections::HashMap;
 
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::emit::Placement;
-use crate::emit::{EmitError, EmitOptions, PrefabResolver, build_world};
-use crate::ir::NodeId;
-use crate::layout::{layout_options_for, layout_with_opts};
+use crate::emit::{Assembly, EmitError, EmitOptions, PrefabResolver, assemble_with_phases};
+use crate::ir::{LayoutMode, NodeId, Program, ProgramSettings};
 use crate::lower::{LowerInput, lower};
 use crate::resolve::{FileLoader, FsLoader, resolve};
 use crate::template_cache::TemplateCache;
@@ -32,20 +31,14 @@ pub enum CompileError {
     Emit(EmitError),
 }
 
+impl std::error::Error for CompileError {}
+
 impl std::fmt::Display for CompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CompileError::HasErrors(diags) => {
                 for d in diags {
-                    write!(
-                        f,
-                        "[{}] {} ({}:{}:{}) ",
-                        d.code,
-                        d.message,
-                        crate::diagnostic::display_path(&d.range.file),
-                        d.range.start.line,
-                        d.range.start.col
-                    )?;
+                    write!(f, "{d} ")?;
                 }
                 Ok(())
             }
@@ -113,9 +106,25 @@ pub fn on_big_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
 /// (a runaway guard against a `.ws` prefab that references itself).
 const MAX_PREFAB_WS_DEPTH: usize = 8;
 
+/// Where the prefab file reference `path` (what follows the `$`) points, read
+/// from a file in `dir`: `./rel` and a bare `rel` relative to `dir`, `/abs`
+/// as written.
+pub fn prefab_path_in(dir: &std::path::Path, path: &str) -> std::path::PathBuf {
+    match path.strip_prefix("./") {
+        Some(rel) => dir.join(rel),
+        None if path.starts_with('/') => std::path::PathBuf::from(path),
+        None => dir.join(path),
+    }
+}
+
+/// [`prefab_path_in`] for a reference written in the file `entry_file`.
+pub fn resolve_prefab_path(entry_file: &str, path: &str) -> std::path::PathBuf {
+    prefab_path_in(std::path::Path::new(entry_file).parent().unwrap_or(std::path::Path::new("")), path)
+}
+
 /// A [`PrefabResolver`] that resolves `$./file` prefab references from disk.
 /// A `.brz` path is read as raw prefab bytes; a `.ws` path is **compiled on the
-/// spot** (its own source → `.brz` bytes), so `$./control.ws` embeds the
+/// spot** (its own source -> `.brz` bytes), so `$./control.ws` embeds the
 /// compiled result of `control.ws` exactly like `$./control.brz` embeds a
 /// prebuilt one. `$./rel` resolves relative to `entry_file`'s directory;
 /// `$/abs` is filesystem-absolute. (Relative refs in imported files also
@@ -137,13 +146,7 @@ fn disk_prefab_resolver_depth(entry_file: &str, fold_mode: FoldMode, depth: usiz
     let cache: std::sync::Mutex<HashMap<std::path::PathBuf, Vec<u8>>> =
         std::sync::Mutex::new(HashMap::default());
     PrefabResolver::new(move |path: &str| {
-        let full = if let Some(rel) = path.strip_prefix("./") {
-            base.join(rel)
-        } else if path.starts_with('/') {
-            std::path::PathBuf::from(path)
-        } else {
-            base.join(path)
-        };
+        let full = prefab_path_in(&base, path);
         if let Some(bytes) = cache.lock().unwrap().get(&full) {
             return Ok(bytes.clone());
         }
@@ -262,6 +265,67 @@ pub fn compile_with_loader(
     on_compile_stack(move || compile_with_opts_inner(input, opts, None, loader))
 }
 
+/// What the front end makes of one source file: each stage's result.
+pub struct FrontEnd {
+    pub resolved: crate::resolve::ResolveResult,
+    pub typecheck: crate::typecheck::TypeCheckResult,
+    /// The custom-event slot types inference found, which lowering read.
+    pub ce_slots: crate::typecheck::CeSlotMap,
+    pub lowered: crate::lower::LowerResult,
+}
+
+/// The front end every compile runs: resolve `source` as `file` through
+/// `loader`, type-check it with custom-event slot inference, and lower it with
+/// the slot types that inference found. Runs on the caller's stack; a caller
+/// on a small one goes through [`on_big_stack`].
+pub fn front_end(
+    source: &str,
+    file: &str,
+    module_name: Option<&str>,
+    fold_mode: FoldMode,
+    loader: &dyn FileLoader,
+) -> FrontEnd {
+    front_end_staged(source, file, module_name, fold_mode, loader, &mut |_| {})
+}
+
+/// A stage of the front end about to run.
+pub enum FrontEndStage<'a> {
+    Resolve,
+    Typecheck,
+    /// Lowering `resolved`, which type checking has seen.
+    Lower(&'a crate::resolve::ResolveResult),
+}
+
+/// [`front_end`], calling `stage` before each stage runs: for a caller that
+/// reports progress, or that names the stage a panic came from.
+pub fn front_end_staged(
+    source: &str,
+    file: &str,
+    module_name: Option<&str>,
+    fold_mode: FoldMode,
+    loader: &dyn FileLoader,
+    stage: &mut dyn FnMut(FrontEndStage<'_>),
+) -> FrontEnd {
+    stage(FrontEndStage::Resolve);
+    let resolved = resolve(source, file, loader);
+    stage(FrontEndStage::Typecheck);
+    let (typecheck, ce_slots) = typecheck_with_inference(&resolved.ast, file);
+    stage(FrontEndStage::Lower(&resolved));
+    let lowered = lower(LowerInput {
+        ast: &resolved.ast,
+        type_of_expr: &typecheck.type_of_expr,
+        op_resolutions: &typecheck.op_resolutions,
+        resolutions: &typecheck.resolutions,
+        file,
+        module_name,
+        template_cache: std::sync::Arc::new(TemplateCache::new()),
+        doc_comments: &resolved.doc_comments,
+        fold_mode,
+        ce_slots: &ce_slots,
+    });
+    FrontEnd { resolved, typecheck, ce_slots, lowered }
+}
+
 /// Run the front-end through lowering (resolve -> typecheck -> lower -> cycle
 /// analysis) and return EVERY diagnostic, without emitting. This is the diagnostic
 /// surface `wirescript-check` reports: it includes the lowering-stage `WSP001`
@@ -269,23 +333,10 @@ pub fn compile_with_loader(
 /// an `_Unsupported` gate is "no errors" to typecheck yet a real miscompile, so a
 /// check that stops at typecheck silently passes it. Runs on the big compile
 /// stack like the other entry points.
-pub fn diagnostics_only(input: CompileInput<'_>) -> Vec<Diagnostic> {
+pub fn diagnostics_only(input: CompileInput<'_>, loader: &(dyn FileLoader + Sync)) -> Vec<Diagnostic> {
     on_compile_stack(move || {
-        let resolved = resolve(input.source, input.file, &FsLoader);
-        let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, input.file);
-        let template_cache = std::sync::Arc::new(TemplateCache::new());
-        let lowered = lower(LowerInput {
-            ast: &resolved.ast,
-            type_of_expr: &tc.type_of_expr,
-            op_resolutions: &tc.op_resolutions,
-            resolutions: &tc.resolutions,
-            file: input.file,
-            module_name: input.module_name,
-            template_cache,
-            doc_comments: &resolved.doc_comments,
-            fold_mode: input.fold_mode,
-            ce_slots: &ce_slots,
-        });
+        let FrontEnd { resolved, typecheck: tc, lowered, .. } =
+            front_end(input.source, input.file, input.module_name, input.fold_mode, loader);
         let cycles = crate::analyze::analyze_cycles(&lowered.module);
         let mut all: Vec<_> = resolved
             .diagnostics
@@ -303,6 +354,38 @@ pub fn diagnostics_only(input: CompileInput<'_>) -> Vec<Diagnostic> {
         resolved.suppressions.apply(&mut all);
         all
     })
+}
+
+/// The module-level settings a resolved program asks for: its `@layout`
+/// engine, `@invisible`, the root plane's doc, and, for `@layout("code")`,
+/// the entry file's source map.
+pub fn program_settings(resolved: &crate::resolve::ResolveResult, file: &str) -> ProgramSettings {
+    let ast = &resolved.ast;
+    let layout = match ast.layout {
+        Some(crate::ast::LayoutName::Code) => LayoutMode::Code,
+        Some(crate::ast::LayoutName::Cube) => LayoutMode::Cube,
+        None => LayoutMode::Dag,
+    };
+    ProgramSettings {
+        source_file: Some(file.to_string()),
+        layout,
+        invisible: ast.invisible,
+        // `@layout("cube")` packs gates into an unreadable block, so the
+        // per-gate labels are dropped there as pure payload.
+        no_gate_labels: layout == LayoutMode::Cube,
+        // A compile option, not the source's: the compile sets it.
+        no_fold: false,
+        // An explicit top-of-file module doc (a `///` block separated from the
+        // first decl by a blank line) is the root header; otherwise fall back
+        // to the first declaration's doc comment.
+        module_doc: ast.module_doc.clone().or_else(|| {
+            ast.decls
+                .first()
+                .and_then(|d| resolved.doc_comments.get(&crate::parser::doc_key(d.range())))
+                .cloned()
+        }),
+        source_map: (layout == LayoutMode::Code).then(|| resolved.source_map.clone()),
+    }
 }
 
 /// Front end through emit, shared by every entry point that produces output.
@@ -355,58 +438,33 @@ fn compile_to_world_inner(
         opts.nested_compiler = Some(default_nested_compiler(1, file.to_string(), input.fold_mode));
     }
 
-    report("resolve");
-    let resolved = resolve(source, file, loader);
-    // Grow the progress total by the number of embedded prefabs (each `$./file`
-    // reference and each inline `$```…``` ` block is a sub-compile the emit step
-    // does), so the bar advances through them instead of stalling on emit. Only
-    // `total`, which nothing reads unless a callback is running, so the walk is
-    // skipped entirely when it is.
-    if progress.is_some() {
-        let mut n_prefabs = 0u32;
-        crate::analysis::visit_program(&resolved.ast, &mut |_| {}, &mut |e| {
-            if matches!(
-                e,
-                crate::ast::Expr::PrefabRef { .. } | crate::ast::Expr::NestedPrefab { .. }
-            ) {
-                n_prefabs += 1;
+    let fe = front_end_staged(source, file, module_name, input.fold_mode, loader, &mut |stage| match stage {
+        FrontEndStage::Resolve => report("resolve"),
+        FrontEndStage::Typecheck => {}
+        FrontEndStage::Lower(resolved) => {
+            // Grow the progress total by the number of embedded prefabs (each `$./file`
+            // reference and each inline `$```…``` ` block is a sub-compile the emit step
+            // does), so the bar advances through them instead of stalling on emit. Only
+            // `total`, which nothing reads unless a callback is running, so the walk is
+            // skipped entirely when it is.
+            if progress.is_some() {
+                let mut n_prefabs = 0u32;
+                crate::analysis::visit_program(&resolved.ast, &mut |_| {}, &mut |e| {
+                    if matches!(
+                        e,
+                        crate::ast::Expr::PrefabRef { .. } | crate::ast::Expr::NestedPrefab { .. }
+                    ) {
+                        n_prefabs += 1;
+                    }
+                });
+                total.store(BASE_STEPS + n_prefabs, Ordering::Relaxed);
             }
-        });
-        total.store(BASE_STEPS + n_prefabs, Ordering::Relaxed);
-    }
-    // An explicit top-of-file module doc (a `///` block separated from the first
-    // decl by a blank line) is the root header; otherwise fall back to the first
-    // declaration's doc comment.
-    opts.module_doc = resolved.ast.module_doc.clone().or_else(|| {
-        resolved
-            .ast
-            .decls
-            .first()
-            .and_then(|d| resolved.doc_comments.get(&crate::parser::doc_key(d.range())))
-            .cloned()
+            report("lower");
+        }
     });
-    // Top-of-file `@invisible` hides the emitted shell — see `EmitOptions::invisible`.
-    opts.invisible = resolved.ast.invisible;
-    // `@layout("cube")` packs gates into an unreadable block, so the per-gate
-    // labels are dropped there as pure payload. See `EmitOptions::no_gate_labels`.
-    opts.no_gate_labels = resolved.ast.layout == Some(crate::ast::LayoutName::Cube);
-    let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, file);
-
-    let template_cache = std::sync::Arc::new(TemplateCache::new());
-
-    report("lower");
-    let lowered = lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file,
-        module_name,
-        template_cache: template_cache.clone(),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: input.fold_mode,
-        ce_slots: &ce_slots,
-    });
+    let FrontEnd { resolved, typecheck: tc, lowered, .. } = fe;
+    let mut settings = program_settings(&resolved, file);
+    settings.no_fold = input.fold_mode == FoldMode::ForceOff;
 
     // Every wire-graph cycle must cross a tick barrier (Buffer/Queue) — an
     // unbarriered cycle (e.g. an emit/await loop back-edge without `buffer`)
@@ -435,9 +493,7 @@ fn compile_to_world_inner(
         return Err(CompileError::HasErrors(errors));
     }
 
-    report("layout");
-    let lopts = layout_options_for(&resolved.ast, Some(resolved.source_map.clone()));
-    let lr = layout_with_opts(&lowered.module, &lopts);
+    let program = Program { module: lowered.module, settings };
 
     if opts.description.is_empty() {
         opts.description = format!(
@@ -482,14 +538,14 @@ fn compile_to_world_inner(
         }
     }
 
-    report("emit");
-    let world =
-        build_world(&lowered.module, &lr, &opts, &template_cache).map_err(CompileError::Emit)?;
+    let Assembly { world, layout } =
+        assemble_with_phases(&program, &opts, &mut |phase| report(phase)).map_err(CompileError::Emit)?;
 
     Ok(CompileWorldResult {
         world,
         diagnostics: all_diags,
-        placements: lr.placements,
+        layout,
+        program,
         progress: progress.map(|cb| (cb, total)),
     })
 }
@@ -514,14 +570,18 @@ fn compile_with_opts_inner(
     Ok(CompileResult {
         brz,
         diagnostics: built.diagnostics,
-        placements: built.placements,
+        placements: built.layout.placements,
     })
 }
 
 pub struct CompileWorldResult {
     pub world: brdb::World,
     pub diagnostics: Vec<Diagnostic>,
-    pub placements: HashMap<NodeId, Placement>,
+    /// Where the world's bricks were laid out: every node's cell, chip
+    /// interiors and the bus included.
+    pub layout: crate::layout::LayoutResult,
+    /// The program the world was assembled from.
+    pub program: Program,
     /// Set only when the caller asked for progress, carrying the callback and
     /// the final step total so `compile` can send the terminal `done` event
     /// after the `.brz` encode rather than before it.
@@ -533,6 +593,150 @@ pub fn compile_to_world(
     opts: EmitOptions,
 ) -> Result<CompileWorldResult, CompileError> {
     on_compile_stack(move || compile_to_world_inner(input, opts, None, &FsLoader))
+}
+
+/// Make `program`, compiled from `entry_file`, stand on its own as text
+/// written to `ir_path`: every nested prefab block is compiled to its `.brz`
+/// bytes, so assembling it needs no front end, and every prefab file path is
+/// rewritten relative to `ir_path`'s directory, which is where `assemble`
+/// resolves it.
+pub fn prepare_program_for_text(
+    program: &mut Program,
+    entry_file: &str,
+    ir_path: &std::path::Path,
+    fold_mode: FoldMode,
+) -> Result<(), String> {
+    let nested = default_nested_compiler(1, entry_file.to_string(), fold_mode);
+    // A bare file name's parent is the empty path, which has no absolute
+    // form; it means the current directory.
+    let dir_of = |p: &std::path::Path| match p.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    let source_dir = dir_of(std::path::Path::new(entry_file));
+    let ir_dir = dir_of(ir_path);
+    let ctx = PrefabRewrite { nested, source_dir, ir_dir };
+    on_compile_stack(|| rewrite_module_prefabs(&mut program.module, &ctx))
+}
+
+struct PrefabRewrite {
+    nested: crate::emit::NestedCompiler,
+    source_dir: std::path::PathBuf,
+    ir_dir: std::path::PathBuf,
+}
+
+fn rewrite_module_prefabs(m: &mut crate::ir::Module, ctx: &PrefabRewrite) -> Result<(), String> {
+    for node in m.nodes.values_mut() {
+        if !node.properties.values().any(has_prefab) {
+            continue;
+        }
+        for lit in std::sync::Arc::make_mut(&mut node.properties).values_mut() {
+            rewrite_literal(lit, ctx)?;
+        }
+    }
+    for child in m.chips.values_mut() {
+        rewrite_module_prefabs(child, ctx)?;
+    }
+    Ok(())
+}
+
+fn has_prefab(lit: &crate::ir::Literal) -> bool {
+    use crate::ir::Literal;
+    match lit {
+        Literal::PrefabRef { .. } | Literal::NestedPrefab { .. } => true,
+        Literal::Array(items) => items.iter().any(has_prefab),
+        Literal::Map(entries) => entries.iter().any(|(k, v)| has_prefab(k) || has_prefab(v)),
+        Literal::Record(fields) => fields.iter().any(|(_, v)| has_prefab(v)),
+        _ => false,
+    }
+}
+
+fn rewrite_literal(lit: &mut crate::ir::Literal, ctx: &PrefabRewrite) -> Result<(), String> {
+    use crate::ir::Literal;
+    match lit {
+        Literal::NestedPrefab { source } => {
+            let bytes = (ctx.nested.0)(source, 1).map_err(|e| format!("nested prefab: {e}"))?;
+            *lit = Literal::PrefabBytes(bytes.into());
+        }
+        Literal::PrefabRef { path } => {
+            // Absolute references stay as written; the rest resolve against
+            // the source file's directory, exactly as `disk_prefab_resolver`
+            // does, and are re-expressed from the IR file's directory.
+            if !path.starts_with('/') {
+                let full = prefab_path_in(&ctx.source_dir, path);
+                *path = relative_path(&ctx.ir_dir, &full)?;
+            }
+        }
+        Literal::Array(items) => {
+            for it in items {
+                rewrite_literal(it, ctx)?;
+            }
+        }
+        Literal::Map(entries) => {
+            for (k, v) in entries {
+                rewrite_literal(k, ctx)?;
+                rewrite_literal(v, ctx)?;
+            }
+        }
+        Literal::Record(fields) => {
+            for (_, v) in fields {
+                rewrite_literal(v, ctx)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// `target` as a path relative to the directory `from`, with `/` separators.
+fn relative_path(from: &std::path::Path, target: &std::path::Path) -> Result<String, String> {
+    use std::path::Component;
+    // The absolute path as its components, with `.` and `..` folded away.
+    fn parts(p: &std::path::Path) -> Result<Vec<std::ffi::OsString>, String> {
+        let abs = std::path::absolute(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let mut out = Vec::new();
+        let mut anchor = 0;
+        for c in abs.components() {
+            match c {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if out.len() > anchor {
+                        out.pop();
+                    }
+                }
+                Component::Prefix(_) | Component::RootDir => {
+                    out.push(c.as_os_str().to_os_string());
+                    anchor = out.len();
+                }
+                Component::Normal(s) => out.push(s.to_os_string()),
+            }
+        }
+        Ok(out)
+    }
+    let from = parts(from)?;
+    let target = parts(target)?;
+    let common = from.iter().zip(&target).take_while(|(a, b)| a == b).count();
+    if common == 0 {
+        // Different drives: no relative path exists.
+        return Ok(std::path::absolute(target.iter().collect::<std::path::PathBuf>())
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .into_owned());
+    }
+    let mut out: Vec<String> = vec!["..".to_string(); from.len() - common];
+    out.extend(target[common..].iter().map(|c| c.to_string_lossy().into_owned()));
+    Ok(out.join("/"))
+}
+
+/// Emit options for assembling a program read from `ir_file`: prefab paths
+/// resolve against its directory, and a nested prefab block left as source
+/// is compiled by the front end.
+pub fn assemble_options(ir_file: &str, fold_mode: FoldMode) -> EmitOptions {
+    EmitOptions {
+        prefab_resolver: Some(disk_prefab_resolver(ir_file, fold_mode)),
+        nested_compiler: Some(default_nested_compiler(1, ir_file.to_string(), fold_mode)),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]

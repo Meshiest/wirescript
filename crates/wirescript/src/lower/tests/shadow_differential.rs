@@ -80,23 +80,10 @@ fn ir_shape(m: &Module, out: &mut Vec<String>) {
 
 /// Compile `src` (importing `deps`) in one fold mode.
 pub(super) fn outcome(src: &str, deps: &[(&str, &str)], fold: bool) -> Outcome {
-    use crate::resolve::{MemLoader, resolve};
+    use crate::resolve::MemLoader;
     let fold_mode = if fold { crate::FoldMode::ForceOn } else { crate::FoldMode::ForceOff };
     let loader = MemLoader { files: deps.iter().map(|(k, v)| (format!("{k}.ws"), v.to_string())).collect() };
-    let resolved = resolve(src, "main", &loader);
-    let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, "main");
-    let lowered = lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "main",
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode,
-        ce_slots: &ce_slots,
-    });
+    let lowered = crate::compile::front_end(src, "main", None, fold_mode, &loader).lowered;
     let mut shape = Vec::new();
     ir_shape(&lowered.module, &mut shape);
     shape.sort();
@@ -114,26 +101,8 @@ pub(super) fn outcome(src: &str, deps: &[(&str, &str)], fold: bool) -> Outcome {
 
 /// Every component of every grid of a save, each as text, sorted.
 pub(super) fn save_components(brz: &[u8]) -> Vec<String> {
-    use brdb::IntoReader;
-    let brz = brdb::Brz::read_slice(brz).expect("read brz");
-    let folders = &brz.index_data.folder_names;
-    let grids: Vec<usize> = folders
-        .iter()
-        .zip(&brz.index_data.folder_parent_ids)
-        .filter(|(_, parent)| usize::try_from(**parent).is_ok_and(|p| folders.get(p).is_some_and(|n| n == "Grids")))
-        .filter_map(|(name, _)| name.parse().ok())
-        .collect();
-    let reader = brz.into_reader();
-    let mut out = Vec::new();
-    for gid in grids {
-        for chunk in reader.brick_chunk_index(gid).expect("chunk index") {
-            if chunk.num_components == 0 {
-                continue;
-            }
-            let (_, comps) = reader.component_chunk_soa(gid, chunk.index).expect("components");
-            out.extend(comps.iter().map(|c| c.to_string()));
-        }
-    }
+    let mut out: Vec<String> =
+        wirescript_ir::readback::Save::read(brz).components().iter().map(|c| c.to_string()).collect();
     out.sort();
     out
 }

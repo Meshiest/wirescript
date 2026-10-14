@@ -1,0 +1,146 @@
+use lasso::{Spur, ThreadedRodeo};
+use std::sync::LazyLock;
+
+/// Fx-hashed interner: compiler symbols are non-adversarial, and the default
+/// SipHash showed up as measurable wall time in intern/resolve-heavy passes.
+type FxRodeo = ThreadedRodeo<Spur, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
+
+static INTERN: LazyLock<FxRodeo> = LazyLock::new(|| FxRodeo::with_hasher(Default::default()));
+
+/// Interned symbol handle. 4 bytes, Copy, cheap to hash and compare.
+pub type Sym = Spur;
+
+/// Intern a string, returning a handle. Thread-safe, idempotent.
+pub fn intern(s: &str) -> Sym {
+    INTERN.get_or_intern(s)
+}
+
+/// Intern a static string. Slightly faster path for compile-time-known strings.
+pub fn intern_static(s: &'static str) -> Sym {
+    INTERN.get_or_intern_static(s)
+}
+
+/// Resolve a handle back to its string.
+pub fn resolve(sym: Sym) -> &'static str {
+    INTERN.resolve(&sym)
+}
+
+/// Pre-interned constants for the most common port names and gate classes.
+/// Each constant is lazily initialized on first access via `intern_static`.
+pub mod sym {
+    use super::*;
+
+    macro_rules! def {
+        ($name:ident, $s:expr) => {
+            pub static $name: LazyLock<Sym> = LazyLock::new(|| intern_static($s));
+        };
+    }
+
+    // Port names
+    def!(EXEC, "Exec");
+    def!(EXEC_OUT, "ExecOut");
+    def!(EXEC_A, "ExecA");
+    def!(EXEC_B, "ExecB");
+    def!(VALUE, "Value");
+    def!(VAR_REF, "VarRef");
+    def!(INPUT, "Input");
+    def!(OUTPUT, "Output");
+    def!(INPUT_A, "InputA");
+    def!(INPUT_B, "InputB");
+    def!(INDEX, "Index");
+    def!(ARRAY_VAR_REF, "ArrayVarRef");
+    def!(MAP_VAR_REF, "MapVarRef");
+    def!(B_INPUT, "bInput");
+    def!(B_OUTPUT, "bOutput");
+    def!(B_COND, "bCond");
+    def!(RER_INPUT, "RER_Input");
+    def!(RER_OUTPUT, "RER_Output");
+    def!(TICKS_TO_WAIT, "TicksToWait");
+    def!(SECONDS_TO_WAIT, "SecondsToWait");
+    def!(ZERO_TICKS_TO_WAIT, "ZeroTicksToWait");
+    def!(ZERO_SECONDS_TO_WAIT, "ZeroSecondsToWait");
+    def!(INITIAL_VALUE, "InitialValue");
+    def!(EXEC_OUT_A, "ExecOutA");
+    def!(EXEC_OUT_B, "ExecOutB");
+    def!(B_INPUT_A, "bInputA");
+    def!(B_INPUT_B, "bInputB");
+    def!(B_SELECT_B, "bSelectB");
+    def!(B_OUT_OF_BOUNDS, "bOutOfBounds");
+    def!(PORT_LABEL, "PortLabel");
+    // Pseudo-property (not a game field): the declaration's source name,
+    // carried on Var/ArrayVar nodes so emit can attach a text label.
+    def!(NAME_LABEL, "_label");
+    // Pseudo-property (not a game field): a `let` binding's source name,
+    // carried on its value node so a cross-chip boundary pin can derive its
+    // label from the binding (`progress`, `init`) instead of a synthetic
+    // `ext1`/`ext2`. Read ONLY by `boundary_pins::derive_label` — emit's
+    // floating-label pass reads NAME_LABEL, so this never renders in-game.
+    def!(BINDING_NAME, "_bindname");
+    // Pseudo-property (not a game field): the `@side` port annotation,
+    // carried on MicrochipInput/Output nodes so emit can place an outer
+    // rerouter. Never written to the brick.
+    def!(REROUTE_SIDE, "_reroute_side");
+    // Pseudo-property (not a game field): the `@invisible` port annotation,
+    // carried on MicrochipInput/Output nodes so emit hides the outer
+    // rerouter. Never written to the brick.
+    def!(REROUTE_INVISIBLE, "_reroute_invisible");
+    // Pseudo-property (not a game field): `@closed` — emit this chip's inner
+    // grid collapsed. Absent = open (the default for non-root chips).
+    def!(CHIP_CLOSED, "_closed");
+    // Pseudo-property (not a game field): the `///` doc comment preceding the
+    // chip declaration, rendered under the title on the opened plane's header.
+    def!(DOC_TEXT, "_doc");
+    // Pseudo-properties (not game fields): a constant `@color` (a
+    // `Literal::Color`, sRGB bytes) and `@material` (a `Literal::Int`, the
+    // `EBrickMaterial` value) on a chip or var node. Emit writes them into a
+    // Brick Property Changer on the node's brick; never written to the gate.
+    def!(BRICK_COLOR, "_color");
+    def!(BRICK_MATERIAL, "_material");
+    def!(HANDLE_TARGET, crate::ir::HANDLE_TARGET);
+    // Pseudo-property (not a game field): set on every node lowered from a
+    // `@nofold` declaration subtree; the fold pass must skip these nodes.
+    def!(NO_FOLD, "_nofold");
+    // Pseudo-property (not a game field): the index into a procedural gate's
+    // catalog `variants` that `lower::gate_variants` chose from the ports the
+    // node uses. Layout and emit both size the brick from it.
+    def!(GATE_VARIANT, "_variant");
+    // Pseudo-property (not a game field): a Convert gate an `as` made, which
+    // `lower::convert::prune_unread_conversions` drops when nothing reads it.
+    def!(AS_CONVERT, "_as");
+
+    // Gate classes
+    def!(LITERAL, "_Literal");
+    def!(UNSUPPORTED, "_Unsupported");
+    def!(LAYOUT, "_layout");
+    def!(UNION, "BrickComponentType_Exec_Union");
+    def!(BRANCH, "BrickComponentType_Exec_Branch");
+    def!(VAR, "BrickComponentType_Var");
+    def!(VAR_GET, "BrickComponentType_Exec_Var_Get");
+    def!(VAR_SET, "BrickComponentType_Exec_Var_Set");
+    def!(
+        VAR_INCREMENT,
+        "BrickComponentType_Exec_Var_Increment"
+    );
+    def!(
+        ARRAY_SET_AT_INDEX,
+        "BrickComponentType_Exec_ArrayVar_SetAtIndex"
+    );
+    def!(
+        ARRAY_PUSH,
+        "BrickComponentType_Exec_ArrayVar_Push"
+    );
+    def!(ARRAY_POP, "BrickComponentType_Exec_ArrayVar_Pop");
+    def!(
+        ARRAY_GET_LENGTH,
+        "BrickComponentType_Exec_ArrayVar_GetLength"
+    );
+    def!(LOGICAL_NOT, "BrickComponentType_Expr_LogicalNOT");
+    def!(
+        STRING_LENGTH,
+        "BrickComponentType_Expr_String_Length"
+    );
+    def!(MICROCHIP, "Component_Internal_Microchip");
+}
+
+#[cfg(test)]
+mod tests;

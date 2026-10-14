@@ -21,7 +21,8 @@
 //
 //   node scripts/gen_assets.mjs            # regenerate in place
 //   node scripts/gen_assets.mjs --check    # don't write; report the diff only
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
+import { writeOrCheck } from "./lib.mjs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -113,9 +114,7 @@ for (const [type, t] of nowByType) {
 for (const type of prevByType.keys()) if (!nowByType.has(type)) console.log(`  - ${type}: REMOVED`);
 if (missingMeta) console.log(`  ${missingMeta} asset(s) without catalog metadata (not resident at dump time)`);
 
-if (checkOnly) {
-  console.log("--check: not writing");
-} else {
-  writeFileSync(OUT, JSON.stringify(out, null, 2) + "\n");
-  console.log(`wrote ${OUT}`);
+if (!writeOrCheck(OUT, JSON.stringify(out, null, 2) + "\n", { check: checkOnly, what: "asset_inventory.simple.json", fix: `node scripts/gen_assets.mjs` })) {
+  process.exit(1);
 }
+console.log(checkOnly ? `${OUT} is up to date` : `wrote ${OUT}`);

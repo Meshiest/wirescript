@@ -246,6 +246,51 @@ fn sliced_belongs_on_a_for_loop() {
     }
 }
 
+/// `@label` names a loop's microchip, as it names a `chip`'s: a string, or a
+/// constant expression, beside `@sliced` in either order and on `let run = for`.
+#[test]
+fn label_names_the_loop_chip() {
+    let named = |src: &str| {
+        let r = compile(src);
+        assert_no_errors(&r);
+        let sh = shell(&r);
+        let label = match sh.properties.get(&*crate::intern::sym::NAME_LABEL) {
+            Some(crate::ir::Literal::String(s)) => Some(s.clone()),
+            _ => None,
+        };
+        (label, sh.properties.contains_key(&crate::intern::intern("bRunAcrossTicks")))
+    };
+    let body = "var t: int = 0\nconst ROWS = \"Rows\"\nin go: exec\non go {\n";
+    assert_eq!(named(&format!("{body}  for i in 0..3 {{ t += i }}\n}}")), (None, false));
+    assert_eq!(named(&format!("{body}  @label(\"Spawner\") for i in 0..3 {{ t += i }}\n}}")), (Some("Spawner".into()), false));
+    assert_eq!(named(&format!("{body}  @label(ROWS) for i in 0..3 {{ t += i }}\n}}")), (Some("Rows".into()), false));
+    assert_eq!(named(&format!("{body}  @sliced @label(\"Tick\") for i in 0..3 {{ t += i }}\n}}")), (Some("Tick".into()), true));
+    assert_eq!(named(&format!("{body}  @label(\"Tick\")\n  @sliced\n  for i in 0..3 {{ t += i }}\n}}")), (Some("Tick".into()), true));
+    assert_eq!(
+        named(&format!("{body}  @label(\"Run\")\n  let run = for i in 0..3 {{ t += i }}\n  if run.aborted {{ t = 0 }}\n}}")),
+        (Some("Run".into()), false)
+    );
+}
+
+/// A loop's label must be a constant, and the annotations a loop chip has no
+/// use for stay errors.
+#[test]
+fn a_loop_label_is_constant_and_other_annotations_are_refused() {
+    let r = compile("var t: int = 0\nvar name: string = \"x\"\nin go: exec\non go {\n  @label(name) for i in 0..3 { t += i }\n}");
+    assert!(has_error(&r, "WS040"), "a runtime `@label` on a loop: {:?}", r.diagnostics);
+    for src in [
+        "var t: int = 0\nin go: exec\non go {\n  @closed for i in 0..3 { t += i }\n}",
+        "var t: int = 0\nin go: exec\non go {\n  @label(\"a\") @nofold for i in 0..3 { t += i }\n}",
+        "var t: int = 0\nin go: exec\non go {\n  @left for i in 0..3 { t += i }\n}",
+    ] {
+        let parsed = parse(src, "test");
+        assert!(
+            parsed.diagnostics.iter().any(|d| d.severity == crate::diagnostic::Severity::Error),
+            "expected an error for {src:?}"
+        );
+    }
+}
+
 #[test]
 fn a_var_written_in_the_body_is_re_read_after_the_loop() {
     // A read taken before the loop cannot be reused after it: the body writes
@@ -887,14 +932,6 @@ fn a_statement_with_no_preceding_break_is_still_ws058() {
 
 /// Every node of `class` anywhere in the chip tree (a loop body lands on the
 /// shell's own grid).
-fn tree_nodes<'a>(m: &'a crate::ir::Module, class: &str) -> Vec<&'a crate::ir::Node> {
-    let mut out: Vec<&crate::ir::Node> = m.nodes.values().filter(|n| n.gate_class == class).collect();
-    for c in m.chips.values() {
-        out.extend(tree_nodes(c, class));
-    }
-    out
-}
-
 /// A `for` over an array or map whose elements are enums (with or without a
 /// payload) or tuples binds each element whole: the loop runs off one of the
 /// element's columns and reads every column at the element's index or key,
@@ -935,8 +972,8 @@ fn a_for_loop_over_columnar_elements_binds_each_element() {
             "{src}\n{:?}",
             r.diagnostics
         );
-        assert!(tree_nodes(&r.module, gc::UNSUPPORTED).is_empty(), "{src}");
-        let shells = tree_nodes(&r.module, shell);
+        assert!(nodes_of(&r.module, gc::UNSUPPORTED).is_empty(), "{src}");
+        let shells = nodes_of(&r.module, shell);
         assert!(!shells.is_empty(), "{src}");
         // The driver pin takes a column's ref, and the body reads the columns.
         for s in &shells {
@@ -946,7 +983,7 @@ fn a_for_loop_over_columnar_elements_binds_each_element() {
             });
             assert!(driven, "{src}: the loop's driver pin is wired");
         }
-        let reads = tree_nodes(&r.module, read)
+        let reads = nodes_of(&r.module, read)
             .into_iter()
             .filter(|n| n.chip_id.is_some() || r.module.chips.values().any(|c| c.nodes.contains_key(&n.id)))
             .count();

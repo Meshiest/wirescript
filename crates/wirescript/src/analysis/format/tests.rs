@@ -5,6 +5,25 @@
     }
 
     #[test]
+    fn a_labelled_loop_keeps_its_annotations() {
+        let src = "on go {
+@label(\"Rows\") @sliced
+for i in 0..3 {
+t += i
+}
+}
+";
+        let want = "on go {
+  @label(\"Rows\") @sliced
+  for i in 0..3 {
+    t += i
+  }
+}
+";
+        assert_eq!(fmt(src), want);
+    }
+
+    #[test]
     fn multi_line_array_literal_indents_elements() {
         let src = "var names: string[] = [\n\"A\",\n\"B\",\n]\nlet x = 1\n";
         let want = "var names: string[] = [\n  \"A\",\n  \"B\",\n]\nlet x = 1\n";

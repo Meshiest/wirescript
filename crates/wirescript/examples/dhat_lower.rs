@@ -15,7 +15,7 @@ fn main() {
         let source = std::fs::read_to_string(&file).expect("read source");
 
         let resolved = wirescript::resolve::resolve(&source, &file, &wirescript::resolve::FsLoader);
-        let tc = wirescript::typecheck::typecheck(&resolved.ast, &file, &wirescript::typecheck::CeSlotMap::default());
+        let (tc, ce_slots) = wirescript::typecheck::typecheck_with_inference(&resolved.ast, &file);
         let cache = std::sync::Arc::new(wirescript::template_cache::TemplateCache::new());
 
         let _profiler = dhat::Profiler::new_heap();
@@ -29,7 +29,7 @@ fn main() {
             template_cache: cache.clone(),
             doc_comments: &resolved.doc_comments,
             fold_mode: wirescript::lower::FoldMode::Auto,
-            ce_slots: &wirescript::typecheck::CeSlotMap::default(),
+            ce_slots: &ce_slots,
         });
         drop(_profiler);
         eprintln!("lowered: {} nodes", lowered.module.nodes.len());

@@ -10,6 +10,7 @@
 import { readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
+import { mdLines } from '../../wirescript/scripts/lib.mjs';
 
 const DOCS_DIR = process.argv[2] || 'docs';
 const OUT = process.argv[3] || join(DOCS_DIR, 'search-index.json');
@@ -152,7 +153,6 @@ function tokenize(text) {
 // ── Parse sections from markdown ──
 function parseSections(md, page) {
   const sections = [];
-  const lines = md.split('\n');
   const headers = [];
   let currentText = [];
   let currentKind = 'body';
@@ -171,8 +171,8 @@ function parseSections(md, page) {
     currentText = [];
   }
 
-  for (const line of lines) {
-    if (line.startsWith('```')) {
+  for (const { line, fence } of mdLines(md)) {
+    if (fence) {
       if (inCode) {
         currentKind = 'code';
         flush();

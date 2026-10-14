@@ -10,7 +10,7 @@ use crate::ir::Type;
 pub enum CoerceRule {
     /// Wire-compatible without a coercion gate.
     Same,
-    /// Accepted but with an implicit coercion (e.g. int → float).
+    /// Accepted but with an implicit coercion (e.g. int -> float).
     Coerce,
     /// Routed through an `Expr_String_FormatText` gate inserted by emit.
     ViaString,
@@ -184,7 +184,7 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
         return coerce(&Record(fields.clone()), to);
     }
 
-    // Pulsing → exec: bool/int/float/vector trip an exec input when their value changes.
+    // Pulsing -> exec: bool/int/float/vector trip an exec input when their value changes.
     if matches!(to, Exec) && (is_pulsing(from) || matches!(from, Exec)) {
         return CoerceRule::Coerce;
     }
@@ -192,11 +192,11 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
         return CoerceRule::Same;
     }
 
-    // Character → Entity: character is a subtype of entity in Brickadia.
+    // Character -> Entity: character is a subtype of entity in Brickadia.
     if matches!((from, to), (Character, Entity)) {
         return CoerceRule::Coerce;
     }
-    // Controller → Entity: controller coerces to entity.
+    // Controller -> Entity: controller coerces to entity.
     if matches!((from, to), (Controller, Entity)) {
         return CoerceRule::Coerce;
     }
@@ -204,7 +204,7 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     if matches!((from, to), (Character, Controller) | (Controller, Character)) {
         return CoerceRule::Coerce;
     }
-    // Entity → Character/Controller: wires carry plain object refs and an
+    // Entity -> Character/Controller: wires carry plain object refs and an
     // entity can be a player (e.g. Sweep's HitEntity), so the downcast is
     // implicit — it wires directly, like character <-> controller (no adapter).
     if matches!((from, to), (Entity, Character) | (Entity, Controller)) {
@@ -224,7 +224,7 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
         return CoerceRule::Coerce;
     }
 
-    // String → Bool: the language-level coercion means exactly `s != ""` —
+    // String -> Bool: the language-level coercion means exactly `s != ""` —
     // lowering inserts a `CompareNotEqual(s, "")` gate wherever a
     // string-typed source wires into a bool-typed destination (see
     // `LowerCtx::wrap_string_to_bool` in lower/context.rs). Empty is false,
@@ -232,19 +232,19 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     // content-aware port truthiness (where "0" and "false" are also falsy;
     // certified in `data/gate_semantics.json`'s Branch/Select/AND chapters),
     // which stays reachable by wiring through `any` or the logical
-    // operators' native string overloads. Unidirectional: bool → string
+    // operators' native string overloads. Unidirectional: bool -> string
     // stays the existing `ViaString` format-text path below (renders
     // "true"/"false" text).
     if matches!((from, to), (String, Bool)) {
         return CoerceRule::Coerce;
     }
 
-    // Anything primitive → string via Expr_String_FormatText.
+    // Anything primitive -> string via Expr_String_FormatText.
     if matches!(to, String) && formats_to_string(from) {
         return CoerceRule::ViaString;
     }
 
-    // "numeric → vector" is explicitly disallowed (broadcast only happens
+    // "numeric -> vector" is explicitly disallowed (broadcast only happens
     // inside specific gates at the wire level, not at the type-coercion level).
     let _ = same_ref_inner; // keep helper alive for future extensions
 

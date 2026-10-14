@@ -136,7 +136,6 @@ fn read_save_values(
     fold: bool,
     narrow: bool,
 ) -> Result<(Vec<Literal>, usize), Vec<String>> {
-    use brdb::IntoReader;
     use brdb::schema::BrdbValue;
     fn go(v: &BrdbValue, out: &mut Vec<Literal>, narrow: bool) {
         match v {
@@ -173,30 +172,13 @@ fn read_save_values(
         Err(crate::CompileError::HasErrors(errors)) => return Err(errors.iter().map(|d| d.code.to_string()).collect()),
         Err(e) => panic!("{e:?}\n{src}"),
     };
-    let brz = brdb::Brz::read_slice(&out.brz).expect("read brz");
-    let folders = &brz.index_data.folder_names;
-    let grids: Vec<usize> = folders
-        .iter()
-        .zip(&brz.index_data.folder_parent_ids)
-        .filter(|(_, parent)| usize::try_from(**parent).is_ok_and(|p| folders.get(p).is_some_and(|n| n == "Grids")))
-        .map(|(name, _)| name.parse().unwrap_or_else(|_| panic!("grid folder {name}")))
-        .collect();
-    assert!(!grids.is_empty(), "no grid in the save\n{src}");
-    let reader = brz.into_reader();
+    let save = wirescript_ir::readback::Save::read(&out.brz);
+    assert!(!save.grid_ids().is_empty(), "no grid in the save\n{src}");
     let mut nums = Vec::new();
-    for &gid in &grids {
-        let chunks = reader.brick_chunk_index(gid).expect("read the grid's chunk index");
-        for chunk in chunks {
-            if chunk.num_components == 0 {
-                continue;
-            }
-            let (_soa, comps) = reader.component_chunk_soa(gid, chunk.index).expect("read components");
-            for c in comps {
-                c.properties.values().for_each(|p| walk(p, &mut nums));
-            }
-        }
+    for c in save.components() {
+        c.properties.values().for_each(|p| walk(p, &mut nums));
     }
-    Ok((nums, grids.len()))
+    Ok((nums, save.grid_ids().len()))
 }
 
 /// Whether the module's `index`th input feeds anything.

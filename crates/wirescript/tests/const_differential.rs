@@ -16,13 +16,17 @@ use wirescript::typecheck::typecheck;
 use wirescript::{resolve, FsLoader, Severity};
 
 fn count(m: &Module) -> usize {
-    m.nodes.len() + m.chips.values().map(count).sum::<usize>()
+    let mut n = 0;
+    m.walk(&mut |_, sub| n += sub.nodes.len());
+    n
 }
 
 /// Whether `m` or any of its nested chip modules contains a node of gate
-/// class `class`. Mirrors `count`'s recursion into `m.chips`.
+/// class `class`.
 fn has_gate_class(m: &Module, class: &str) -> bool {
-    m.nodes.values().any(|n| n.gate_class == class) || m.chips.values().any(|c| has_gate_class(c, class))
+    let mut found = false;
+    m.walk(&mut |_, sub| found |= sub.nodes.values().any(|n| n.gate_class == class));
+    found
 }
 
 /// Resolve, typecheck and lower `source`, asserting no errors at any stage.
@@ -71,18 +75,15 @@ fn error_codes(source: &str, file: &str) -> Vec<String> {
 /// `sym::` constant, so it is interned on the fly exactly as
 /// `lower/call/builtin.rs` does when baking it.
 fn event_names(m: &Module) -> Vec<String> {
-    let mut out: Vec<String> = m
-        .nodes
-        .values()
-        .filter(|n| n.gate_class == gate_class::SEND_CUSTOM_EVENT)
-        .filter_map(|n| match n.properties.get(&intern("EventName")) {
-            Some(Literal::String(s)) => Some(s.clone()),
-            _ => None,
-        })
-        .collect();
-    for chip in m.chips.values() {
-        out.extend(event_names(chip));
-    }
+    let mut out = Vec::new();
+    m.walk(&mut |_, sub| {
+        out.extend(sub.nodes.values().filter(|n| n.gate_class == gate_class::SEND_CUSTOM_EVENT).filter_map(|n| {
+            match n.properties.get(&intern("EventName")) {
+                Some(Literal::String(s)) => Some(s.clone()),
+                _ => None,
+            }
+        }))
+    });
     out
 }
 
@@ -966,14 +967,7 @@ fn baked_ints(m: &Module) -> Vec<i64> {
         }
     }
     let mut out = Vec::new();
-    for n in m.nodes.values() {
-        for lit in n.properties.values() {
-            push(lit, &mut out);
-        }
-    }
-    for chip in m.chips.values() {
-        out.extend(baked_ints(chip));
-    }
+    m.walk(&mut |_, sub| sub.nodes.values().flat_map(|n| n.properties.values()).for_each(|lit| push(lit, &mut out)));
     out
 }
 

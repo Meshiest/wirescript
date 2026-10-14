@@ -1,7 +1,7 @@
 use super::*;
 use crate::parser::parse;
 use crate::template_cache::TemplateCache;
-use crate::typecheck::{typecheck, typecheck_with_inference};
+use crate::typecheck::typecheck;
 
 mod alias_conversion;
 mod annotations;
@@ -43,6 +43,8 @@ mod records;
 mod ref_records;
 mod refs;
 mod regression_bugs;
+mod reported_fixes;
+mod styles;
 pub(in crate::lower) mod resolution;
 mod returns;
 mod scope;
@@ -52,93 +54,45 @@ mod types;
 mod varget_cache;
 mod wire_completeness;
 
-pub(super) fn compile(src: &str) -> LowerResult {
+/// The compiler's front end over `src` as `file` at `fold_mode`, imports
+/// loaded from `loader`: the lowering result, carrying every stage's
+/// diagnostics, with an internal error beside another error dropped as the
+/// compiler drops it.
+pub(crate) fn lower_with(src: &str, file: &str, fold_mode: FoldMode, loader: &dyn crate::resolve::FileLoader) -> LowerResult {
+    let crate::compile::FrontEnd { resolved, typecheck, mut lowered, .. } =
+        crate::compile::front_end(src, file, None, fold_mode, loader);
+    lowered.diagnostics.extend(resolved.diagnostics);
+    lowered.diagnostics.extend(typecheck.diagnostics);
+    crate::diagnostic::drop_internal_errors_beside_errors(&mut lowered.diagnostics);
+    lowered
+}
+
+/// [`lower_with`] for a single file that must parse cleanly.
+fn lower_single(src: &str, fold_mode: FoldMode) -> LowerResult {
     let parsed = parse(src, "test");
-    assert!(
-        parsed.diagnostics.is_empty(),
-        "parse diags: {:?}",
-        parsed.diagnostics
-    );
-    // Two-pass inference, like the real `compile` pipeline, so CE
-    // receiver tests (e.g. `gate_config.rs`) see sender-inferred slot types
-    // instead of the always-empty default map.
-    let (tc, ce_slots) = typecheck_with_inference(&parsed.ast, "test");
-    // Unfolded: existing lowering tests are structural microscopes that
-    // assert on real gates, not on what the certified fold pass would leave
-    // behind. `compile_folded` below is the fold-behavior twin. ForceOff
-    // (not Auto) so this stays unfolded regardless of whether `src` happens
-    // to carry a module-level `@fold`.
-    let mut r = lower(LowerInput {
-        ast: &parsed.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test",
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &parsed.doc_comments,
-        fold_mode: FoldMode::ForceOff,
-        ce_slots: &ce_slots,
-    });
-    r.diagnostics.extend(tc.diagnostics);
-    crate::diagnostic::drop_internal_errors_beside_errors(&mut r.diagnostics);
-    r
+    assert!(parsed.diagnostics.is_empty(), "parse diags: {:?}", parsed.diagnostics);
+    lower_with(src, "test", fold_mode, &crate::resolve::FsLoader)
+}
+
+/// Unfolded: lowering tests are structural microscopes that assert on real
+/// gates, not on what the certified fold pass would leave behind.
+/// `compile_folded` is the fold-behavior twin. ForceOff (not Auto) so this
+/// stays unfolded regardless of whether `src` carries a module-level `@fold`.
+pub(super) fn compile(src: &str) -> LowerResult {
+    lower_single(src, FoldMode::ForceOff)
 }
 
 /// Like `compile`, but with the certified fold pass enabled (ForceOn — not
 /// gated on a module-level `@fold`, since these are the fold-behavior tests
-/// themselves). Use for fold-behavior tests; `compile` stays unfolded so
-/// structural lowering tests keep asserting on real gates.
+/// themselves).
 pub(super) fn compile_folded(src: &str) -> LowerResult {
-    let parsed = parse(src, "test");
-    assert!(
-        parsed.diagnostics.is_empty(),
-        "parse diags: {:?}",
-        parsed.diagnostics
-    );
-    let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
-    let mut r = lower(LowerInput {
-        ast: &parsed.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test",
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &parsed.doc_comments,
-        fold_mode: FoldMode::ForceOn,
-        ce_slots: &crate::typecheck::CeSlotMap::default(),
-    });
-    r.diagnostics.extend(tc.diagnostics);
-    crate::diagnostic::drop_internal_errors_beside_errors(&mut r.diagnostics);
-    r
+    lower_single(src, FoldMode::ForceOn)
 }
 
 /// Like `compile`, but with `fold_mode: FoldMode::Auto` (the production
 /// default) — folds unless `src` opts out with a module-level `@nofold`.
 pub(super) fn compile_auto(src: &str) -> LowerResult {
-    let parsed = parse(src, "test");
-    assert!(
-        parsed.diagnostics.is_empty(),
-        "parse diags: {:?}",
-        parsed.diagnostics
-    );
-    let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
-    let mut r = lower(LowerInput {
-        ast: &parsed.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test",
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &parsed.doc_comments,
-        fold_mode: FoldMode::Auto,
-        ce_slots: &crate::typecheck::CeSlotMap::default(),
-    });
-    r.diagnostics.extend(tc.diagnostics);
-    crate::diagnostic::drop_internal_errors_beside_errors(&mut r.diagnostics);
-    r
+    lower_single(src, FoldMode::Auto)
 }
 
 /// Compile `entry_src` as the root file, resolving its `import`s against the
@@ -148,36 +102,10 @@ pub(super) fn compile_auto(src: &str) -> LowerResult {
 /// no-op; this also doubles as the harness for
 /// `imported_module_nofold_is_inert`-style entry-vs-import annotation tests.
 pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResult {
-    use crate::resolve::{MemLoader, resolve};
-    let loader = MemLoader {
-        files: deps
-            .iter()
-            .map(|(k, v)| (format!("{k}.ws"), v.to_string()))
-            .collect(),
+    let loader = crate::resolve::MemLoader {
+        files: deps.iter().map(|(k, v)| (format!("{k}.ws"), v.to_string())).collect(),
     };
-    let resolved = resolve(entry_src, "main", &loader);
-    let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
-    let mut r = lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "main",
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: FoldMode::Auto,
-        ce_slots: &crate::typecheck::CeSlotMap::default(),
-    });
-    // Merge resolve's and typecheck's diagnostics, as the single-file helper
-    // does. Without this every `assert_no_errors` on a multi-file program was
-    // blind to a resolve or typecheck error: a cross-file WS013 that made a
-    // real two-library program uncompilable sat green in this suite because
-    // the one test covering that shape could not see it.
-    r.diagnostics.extend(resolved.diagnostics);
-    r.diagnostics.extend(tc.diagnostics);
-    crate::diagnostic::drop_internal_errors_beside_errors(&mut r.diagnostics);
-    r
+    lower_with(entry_src, "main", FoldMode::Auto, &loader)
 }
 
 /// The error CODES a source type-checks to, in order. Typecheck only: these
@@ -210,9 +138,9 @@ pub(super) fn only_chip<'a>(r: &'a LowerResult, what: &str) -> &'a crate::ir::Mo
 pub(super) fn assert_emits(module: &crate::ir::Module, layout: &crate::layout::LayoutResult) {
     let brz = crate::emit::emit_brz(
         module,
+        &Default::default(),
         layout,
         &crate::emit::EmitOptions::default(),
-        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
     );
     assert!(brz.is_ok(), "should emit valid brz: {:?}", brz.err());
 }
@@ -231,6 +159,61 @@ pub(super) fn assert_no_errors(r: &LowerResult) {
         "unexpected errors: {:?}",
         r.diagnostics
     );
+}
+
+/// Whether `r` reports the error `code`.
+pub(super) fn has_error(r: &LowerResult, code: &str) -> bool {
+    r.diagnostics.iter().any(|d| d.code == code && d.severity == crate::diagnostic::Severity::Error)
+}
+
+/// Whether `m`, or a chip module below it, holds an `_Unsupported`
+/// placeholder.
+pub(super) fn has_unsupported(m: &crate::ir::Module) -> bool {
+    count_class(m, crate::ir::gate_class::UNSUPPORTED) > 0
+}
+
+/// The class of root-module node `id`.
+pub(super) fn class_of(r: &LowerResult, id: crate::ir::NodeId) -> &'static str {
+    r.module.nodes[&id].gate_class
+}
+
+/// The node wired into `node`'s `port`.
+pub(super) fn source_of(
+    r: &LowerResult,
+    node: crate::ir::NodeId,
+    port: crate::ir::port_registry::WirePort,
+) -> Option<crate::ir::NodeId> {
+    r.module.wires.iter().find(|w| w.target.node_id == node && w.target.port == port).map(|w| w.source.node_id)
+}
+
+/// Whether `to` runs after `from` in `m`: reachable along exec wires.
+pub(super) fn exec_reaches(m: &crate::ir::Module, from: crate::ir::NodeId, to: crate::ir::NodeId) -> bool {
+    let mut seen = crate::collections::HashSet::default();
+    let mut stack = vec![from];
+    while let Some(n) = stack.pop() {
+        if n == to {
+            return true;
+        }
+        if seen.insert(n) {
+            let next = m.wires.iter().filter(|w| w.source.node_id == n && w.target.port.as_str().starts_with("Exec"));
+            stack.extend(next.map(|w| w.target.node_id));
+        }
+    }
+    false
+}
+
+/// Whether store `id` writes the integer `v`, held inline or wired from a
+/// literal.
+pub(super) fn stores_value(m: &crate::ir::Module, id: crate::ir::NodeId, v: i64) -> bool {
+    use crate::ir::port_registry::WirePort;
+    let is_v = |n: &crate::ir::Node| {
+        matches!(n.properties.get(&*crate::intern::sym::VALUE), Some(crate::ir::Literal::Int(x)) if *x == v)
+    };
+    is_v(&m.nodes[&id])
+        || m.wires
+            .iter()
+            .filter(|w| w.target.node_id == id && w.target.port == WirePort::Value)
+            .any(|w| m.nodes.get(&w.source.node_id).is_some_and(|n| n.gate_class == crate::ir::gate_class::LITERAL && is_v(n)))
 }
 
 /// The gates and wires of `m`, ignoring node ids: each wire by the classes and
@@ -258,6 +241,19 @@ pub(super) fn has_gate(r: &LowerResult, class: &str) -> bool {
     r.module.nodes.values().any(|n| n.gate_class == class)
 }
 
+/// Every node of class `class` in `m` and its chip modules, a module's own
+/// before its chips'.
+pub(super) fn nodes_of<'a>(m: &'a crate::ir::Module, class: &str) -> Vec<&'a crate::ir::Node> {
+    let mut out = Vec::new();
+    m.walk(&mut |_, sub| out.extend(sub.nodes.values().filter(|n| n.gate_class == class)));
+    out
+}
+
+/// How many nodes of class `class` are in `m` and its chip modules.
+pub(super) fn count_class(m: &crate::ir::Module, class: &str) -> usize {
+    nodes_of(m, class).len()
+}
+
 pub(super) fn gate_count(r: &LowerResult, class: &str) -> usize {
     r.module
         .nodes
@@ -266,7 +262,7 @@ pub(super) fn gate_count(r: &LowerResult, class: &str) -> usize {
         .count()
 }
 
-/// Is `to` reachable from `from` by following wires source→target?
+/// Is `to` reachable from `from` by following wires source->target?
 pub(super) fn wired_reachable(
     r: &LowerResult,
     from: crate::ir::NodeId,

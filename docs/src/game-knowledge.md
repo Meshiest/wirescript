@@ -1,7 +1,7 @@
 # Game Knowledge
 
-Brickadia behaviour that the language does not define but that programs depend
-on. The language reference tells you what compiles; this page collects what the
+Brickadia behavior that the language does not define but that programs depend
+on. The language reference tells you what compiles. This page collects what the
 game does with the result, plus the practical tips that follow from it.
 
 <!-- toc -->
@@ -26,7 +26,7 @@ interpolation and `..` concatenation like any other text.
 | `<b>` | Bold |
 | `<i>` | Italic |
 | `<br>` | Line break. It is not a container, so it takes no close |
-| `<color="RRGGBB">` | Text colour, hex. `#` optional, `#RGB` shorthand works |
+| `<color="RRGGBB">` | Text color, hex. `#` optional, `#RGB` shorthand works |
 | `<size="N">` | Point size |
 | `<font="Name">` | Typeface, from the font list below |
 | `<icon>Name</>` | The named game icon, inline at text size |
@@ -49,13 +49,12 @@ on go {
 
 `<color>` does not have to be closed. An open tag applies until the next
 `<color>` replaces it, and it keeps applying across `<br>`. Emitting a tag only
-when the colour differs from the previous one is therefore correct, not a
-shortcut.
+when the color differs from the previous one is therefore correct.
 
 That matters at scale. A tag is 16 characters against one for a block
 character, so tagging every cell of a 60x40 grid costs about 40,000 characters
 while tagging only the changes costs a few thousand. Run-length encoding by
-colour is what makes a full screen fit in one `DisplayText`.
+color is what makes a full screen fit in one `DisplayText`.
 
 ```wirescript
 in go: exec
@@ -76,9 +75,9 @@ on go {
 }
 ```
 
-One caveat if the text is split across several displays: colour carries forward
+One caveat if the text is split across several displays: color carries forward
 within one string only. A chunk that begins mid-run needs its own opening tag,
-so reset the tracked colour at every boundary you might split on.
+so reset the tracked color at every boundary you might split on.
 
 Prefer single-quoted strings for anything containing markup. Both quote styles
 interpolate, and single quotes let the attribute's own double quotes stand
@@ -120,7 +119,7 @@ which is what makes grid and table rendering line up.
 ## Input Action Names
 
 Every name accepted by `<inputAction>` and `<inputAxis>`. A `*` marks an axis,
-which takes `<inputAxis>`; everything else takes `<inputAction>`.
+which takes `<inputAxis>`. Everything else takes `<inputAction>`.
 
 ### Special Functions
 
@@ -221,9 +220,9 @@ it looks identical to the text not drawing at all.
   `0.5` is center, `1` is right / bottom. This is the only pair that takes a
   `0..1` value.
 - **`positionX` / `positionY` are an offset from that anchor in slate units**,
-  which are roughly pixels at 1080p -- not a fraction. A realistic offset is in
-  the tens or hundreds. `positionX = 0.98` is not "98% across the screen", it is
-  one pixel from the anchor.
+  which are roughly pixels at 1080p. They are not a fraction. A realistic offset
+  is in the tens or hundreds. `positionX = 0.98` does not mean "98% across the
+  screen". It is one pixel from the anchor.
 
 Anchor to the corner you want, then offset *inward* with the sign that moves you
 away from that edge:
@@ -244,10 +243,10 @@ on show {
 }
 ```
 
-### Defaults worth knowing
+### Default values
 
-Unset parameters bake the gate's own defaults, which are sane -- an invisible
-overlay is a placement bug far more often than a scale or color one:
+Unset parameters bake the gate's own defaults, which are reasonable. An invisible
+overlay is far more often a placement bug than a scale or color one:
 
 | Field | Default | Note |
 |---|---|---|
@@ -259,31 +258,30 @@ overlay is a placement bug far more often than a scale or color one:
 | `FontSize` | `16` | |
 | `OutlineSize` | `2` | text has an outline unless you pass `0` |
 | `Lifetime` | `5.0` | seconds; **`0` means infinite**, not "vanish now" |
-| `TextId` | `0` | `0` uses the brick's persistent handle; a non-zero id is shared by every gate using it, which is how several gates update one piece of text |
+| `TextId` | `0` | `0` uses the brick's persistent handle. A non-zero id is shared by every gate using it, which is how several gates update one piece of text |
 
-`lifetime` interacts with how often you redraw. Text redrawn every tick wants a
-short lifetime so it disappears if the drawing chip stops; text redrawn only on
-a change wants `0` (infinite), or it blanks itself between updates.
+`lifetime` interacts with how often you redraw. Text redrawn every tick needs a
+short lifetime so it disappears if the drawing chip stops. Text redrawn only on
+a change needs `0` (infinite), or it blanks itself between updates.
 
 The 2D layout ports are `Vector2D` composites and the call feeds them one axis
 at a time, so every one of these is a `float` named `...X` / `...Y`. There is no
-`vector`-typed `position` or `anchor`; passing one is a `WS041` error.
+`vector`-typed `position` or `anchor`. Passing one is a `WS041` error.
 
 ## References in wire values
 
 Measured in game, with the probes that motivated ref values as a language
 feature (see [Reference values](types.md#reference-values)):
 
-- A component ref is stored in an ordinary var; a gate reading its `VarRef`
+- A component ref is stored in an ordinary var. A gate reading its `VarRef`
   from that var reads, writes and increments the target, and copying the ref
   var-to-var keeps it.
 - Handle containers are kind-strict: a `component_handle` array or map value
   keeps a component ref, a `brick_handle` array keeps a brick ref, and each
   only keeps its own kind.
 - A number container (an `i64`/`f64` array, or an `f64` map value) turns a
-  pushed ref into the plain number `1`. This is exactly the failure mode the
-  compiler's storage rules exist to prevent (a ref only ever picks a handle
-  container).
+  pushed ref into the plain number `1`. The compiler's storage rules exist to
+  prevent this: a ref only ever picks a handle container.
 - A non-ref value used where the game expects a ref halts the exec chain
   silently, with nothing logged.
 - `1 == <ref>` compares true in the native gate, which is why the language
@@ -295,7 +293,7 @@ feature (see [Reference values](types.md#reference-values)):
   an element read back out able to drive `Push`, `Get` and `GetLength` on the
   inner array.
 - A brick ref baked into a var's data survives paste and resolves under both
-  addressing forms -- the relative form (grid 0, chunk offset, index) and the
+  addressing forms. The relative form (grid 0, chunk offset, index) and the
   absolute form (saved grid id, chunk, index) of the same brick compare equal,
   and refs to two different bricks compare unequal.
 - No gate consumes or produces a brick: `GetLocation` on one returns the
@@ -313,7 +311,7 @@ the iterations over several ticks.
 
 The standing guidance to give each entity its own chip instance rather than
 sweep a central one in a loop (see
-[per-entity fan-out](best-practices.md#10-per-entity-fan-out-one-chip-each-not-one-loop-over-all))
+[per-entity fan-out](best-practices.md#10-per-entity-work-a-for-sweep-or-one-chip-each))
 exists because a back-edge loop, built from `emit`/`await` and a buffered
 edge, costs a tick per iteration. That is no longer the only option: a bounded
 sweep that must finish before the tick ends belongs in a `for` now. Keep the

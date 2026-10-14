@@ -6,7 +6,7 @@ passes, and prints what it needs to diagnose the failure when something does
 not.
 
 Type checking cannot do this job. It proves a program is well formed, not that
-a gate computes what you expected, and the gates are the part with the surprises.
+a gate computes what you expected, and most unexpected behavior comes from the gates.
 
 <!-- toc -->
 ## Contents
@@ -46,7 +46,7 @@ on ReadBrickGrid() {
 
 The file is [`examples/assert.ws`](../../examples/assert.ws), verified against
 `just check`. The later examples reuse this `assert`, `pass`, and `total` without
-repeating them. Five things are doing work.
+repeating them. Five parts of the example matter.
 
 **`on ReadBrickGrid()` as the trigger.** It fires when the grid loads, so the
 test runs by pasting it in. No separate binding: the handler reads the grid
@@ -58,19 +58,20 @@ summary line at the end is the whole result. `pass = pass + ok` relies on `bool`
 coercing to `int`, so there is no `if ok then 1 else 0`.
 
 **One generic `assert`.** `<T: int | float | string>` lets the same mod check
-ints, floats, and strings; the compiler monomorphizes each call to its argument
+ints, floats, and strings. The compiler monomorphizes each call to its argument
 type. `==` compares any variant, but the failure line stringifies the values
-with `${...}`, and only those three types support that, which is what the bound
-names. Widen it to plain `<T>` for a check that never prints the value.
+with `${...}`. Only those three types support that, so the bound names them.
+Widen it to plain `<T>` for a check that never prints the value.
 
-**It carries the value out.** A wrong value and a value that never arrived look
+**The failure line prints the values.** A wrong value and a value that never arrived look
 identical when all you print is a label. `want 1 got 0` tells them apart, and
 `assert` gives you that on every check without writing the interpolation by hand.
 
 **Silence on success.** Only failures print. A run that says
-`array checks: 12/12` and nothing else is a pass you can read at a glance;
-twelve lines of `OK: ...` is noise you have to scan. `BroadcastChatMessage`,
-not `PrintToConsole`, so it lands in chat where you are already looking.
+`array checks: 12/12` and nothing else is a pass you can read at a glance.
+Twelve lines of `OK: ...` would have to be scanned. The checks print with
+`BroadcastChatMessage` rather than `PrintToConsole`, so the output lands in chat
+where you are already looking.
 
 ## Compare two paths, not one path against a constant
 
@@ -134,9 +135,9 @@ on ReadBrickGrid() {
 ## What an in-game test cannot prove
 
 Running the circuit proves the values are right. It cannot prove how they were
-produced, and for anything about compilation that is the whole question. A
-compile-time evaluation that quietly fell back to emitting gates still computes
-the correct answer and still passes every check above.
+produced, which is what a test of a compiler feature needs to show. A compile-time evaluation that fell back to emitting gates
+without any diagnostic still computes the correct answer and still passes every
+check above.
 
 So the in-game program is one half. The other half is a compiler-side test that
 asserts the structure: that the gate count is what it should be, that a

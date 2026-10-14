@@ -1,4 +1,6 @@
-use wirescript::{compile, CompileInput, FoldMode};
+use wirescript::compile;
+
+mod common;
 
 /// Constant constructor folding must survive full emit: vector/rotator/quat/
 /// color vars carry their folded InitialValue through brz serialization
@@ -16,7 +18,7 @@ on start {
   v = Vec(4.0, 5.0, 6.0)
   tint = Color(0.0, 1.0, 0.0, 0.5)
 }";
-    let r = compile(CompileInput { source: src, file: "test", module_name: None, fold_mode: FoldMode::Auto });
+    let r = compile(common::input(src, "test"));
     assert!(r.is_ok(), "constant-folded vars should emit: {:?}", r.err());
 }
 
@@ -26,7 +28,7 @@ fn vector_array_initializer_emits_to_brz() {
 var pts: vector[] = [Vec(0.0, 0.0, 0.0), Vec(1.0, 2.0, 3.0)]
 in start: exec
 on start { pts.push(Vec(7.0, 8.0, 9.0)) }";
-    let r = compile(CompileInput { source: src, file: "test", module_name: None, fold_mode: FoldMode::Auto });
+    let r = compile(common::input(src, "test"));
     assert!(r.is_ok(), "vector array init should emit: {:?}", r.err());
 }
 
@@ -41,6 +43,6 @@ var quats: quat[]
 var n: int = 0
 in start: exec
 on start { n = rots.length() }";
-    let r = compile(CompileInput { source: src, file: "test", module_name: None, fold_mode: FoldMode::Auto });
+    let r = compile(common::input(src, "test"));
     assert!(r.is_ok(), "rotator/color/quat arrays should emit: {:?}", r.err());
 }

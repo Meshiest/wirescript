@@ -111,6 +111,9 @@ pub(super) fn build_chip_module(
         decl_later_storage: ctx.decl_later_storage.clone(),
         // A mod the body calls reads the top level as its declaration sees it.
         top_names: Arc::new(ctx.top_names.dups_only()),
+        // The body inherits the caller's frames, and with them the reads the
+        // caller has cached.
+        var_gets: ctx.var_gets.clone(),
         top_dup_bindings: ctx.top_dup_bindings.clone(),
         foreign_literals,
         // A chip instantiated inside a template build is part of that build.
@@ -263,12 +266,7 @@ pub(super) fn build_chip_module(
                 }
                 child_ctx.scope.insert(
                     &inp.name,
-                    Binding::Var(VarRecord {
-                        node_id: captured.node_id,
-                        inner_type: captured.inner_type.clone(),
-                        get_node_for_handler: None,
-                        storage: captured.storage,
-                    }),
+                    Binding::Var(VarRecord::new(captured.node_id, captured.inner_type.clone(), captured.storage)),
                 );
             } else {
                 let t = child_ctx.resolve_local_type(&inp.typ);
@@ -288,12 +286,7 @@ pub(super) fn build_chip_module(
                         inner_type: inner,
                     })
                 } else {
-                    Binding::Var(VarRecord {
-                        node_id,
-                        inner_type: inner,
-                        get_node_for_handler: None,
-                        storage,
-                    })
+                    Binding::Var(VarRecord::new(node_id, inner, storage))
                 };
                 child_ctx.scope.insert(&inp.name, binding);
             }
@@ -413,8 +406,8 @@ pub(super) fn build_chip_module(
     let sig_output_names: HashSet<&str> =
         chip_decl.outputs.iter().map(|o| o.name.as_str()).collect();
     crate::lower::predeclare::record_later_storage(&mut child_ctx, &chip_decl.body);
-    let stmts = &chip_decl.body.stmts;
-    for (at, stmt) in stmts.iter().enumerate() {
+    let stmts = &crate::lower::predeclare::Mentions::new(&chip_decl.body.stmts);
+    for (at, stmt) in chip_decl.body.stmts.iter().enumerate() {
         match stmt {
             // This chip's OWN nested chip/mod declarations overlay the
             // `pass1_chips` inherited from the caller above, so a chip-local
@@ -562,19 +555,7 @@ pub(super) fn build_chip_module(
         && child_ctx.mod_return_var.is_none()
     {
         let out_type = child_ctx.resolve_local_type(&chip_decl.outputs[0].typ);
-        let var_id = child_ctx.add_gate(AddNodeOpts {
-            gate_class: gc::VAR,
-            source_range: chip_decl.body.range.clone(),
-            ports: GateIO::var_storage(out_type.clone()),
-            note: Some("ret_val"),
-            ..Default::default()
-        });
-        child_ctx.mod_return_var = Some(VarRecord {
-            node_id: var_id,
-            inner_type: out_type,
-            get_node_for_handler: None,
-            storage: VarStorage::Var,
-        });
+        child_ctx.mod_return_var = Some(return_value_var(&mut child_ctx, out_type, &chip_decl.body.range));
     }
 
     for stmt in &chip_decl.body.stmts {
@@ -588,21 +569,8 @@ pub(super) fn build_chip_module(
         // inline-mod path does this same merge; without it here the body's exec
         // chain (e.g. from an array find) is orphaned and no exec output is made.
         if let Some(ret) = child_ctx.mod_return_exec.take() {
-            let merged = match child_ctx.current_exec.take() {
-                Some(fall) => {
-                    let union = child_ctx.add_gate(AddNodeOpts {
-                        gate_class: gc::UNION,
-                        source_range: chip_decl.range.clone(),
-                        ports: GateIO::exec_join(),
-                        ..Default::default()
-                    });
-                    child_ctx.connect(fall, union.port(WirePort::ExecA));
-                    child_ctx.connect(ret, union.port(WirePort::ExecB));
-                    union.port(WirePort::ExecOut)
-                }
-                None => ret,
-            };
-            child_ctx.current_exec = Some(merged);
+            let fall = child_ctx.current_exec.take();
+            child_ctx.current_exec = merge_exec(&mut child_ctx, fall, Some(ret), &chip_decl.range);
         }
         // Multi-return: Var_Get the accumulated return value on the merged exec
         // and wire it to the single value output — one wire, no fan-in. Mirrors
@@ -613,28 +581,9 @@ pub(super) fn build_chip_module(
             && !child_ctx.output_backing_vars.values().any(|v| v.node_id == ret_var.node_id)
             && let Some(exec) = child_ctx.current_exec
         {
-            let inner = ret_var.inner_type.clone();
-            let get_id = child_ctx.add_gate(AddNodeOpts {
-                gate_class: gc::VAR_GET,
-                source_range: SourceRange::default(),
-                note: Some("ret_get"),
-                ports: GateIO::var_read(inner.clone()),
-                ..Default::default()
-            });
-            child_ctx.connect(exec, get_id.port(WirePort::Exec));
-            child_ctx.connect(
-                ret_var.node_id.port(WirePort::VarRef),
-                get_id.port(WirePort::VarRef),
-            );
-            child_ctx.current_exec = Some(get_id.port(WirePort::ExecOut));
             // A backed output is driven by its backing var, wired below.
-            if child_ctx.output_count() == 1 && child_ctx.output_backing_vars.is_empty() {
-                let out = child_ctx.first_output().unwrap().1.clone();
-                child_ctx.connect(
-                    get_id.port(WirePort::Value),
-                    out.node_id.port(WirePort::RerInput),
-                );
-            }
+            let drive_output = child_ctx.output_backing_vars.is_empty();
+            read_return_value(&mut child_ctx, &ret_var, exec, drive_output);
         }
         if let Some(tail_exec) = child_ctx.current_exec {
             let exec_out = child_ctx.add_output("_exec_out", Type::Exec, chip_decl.range.clone());
@@ -706,12 +655,7 @@ fn explode_record_param_pins(
         {
             record_fields.insert(
                 crate::intern::intern(&field.name),
-                Binding::Var(VarRecord {
-                    node_id: captured.node_id,
-                    inner_type: captured.inner_type.clone(),
-                    get_node_for_handler: None,
-                    storage: captured.storage,
-                }),
+                Binding::Var(VarRecord::new(captured.node_id, captured.inner_type.clone(), captured.storage)),
             );
             continue;
         }
@@ -726,12 +670,7 @@ fn explode_record_param_pins(
                     inner_type: inner,
                 })
             } else {
-                Binding::Var(VarRecord {
-                    node_id,
-                    inner_type: inner,
-                    get_node_for_handler: None,
-                    storage,
-                })
+                Binding::Var(VarRecord::new(node_id, inner, storage))
             };
             record_fields.insert(crate::intern::intern(&field.name), binding);
             continue;

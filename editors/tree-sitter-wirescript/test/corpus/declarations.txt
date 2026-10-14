@@ -335,3 +335,41 @@ fn add(x: int, y: int = 1) -> int {
           (identifier)
           (identifier))))))
 
+
+================================================================================
+color and material annotations
+================================================================================
+
+@color(Color(1.0, 0.0, 0.0)) @material(Glow)
+var heat: int = 0
+
+@material(BrickMaterial.Glass) @label(name) chip { }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    (annotation
+      (annotation_name)
+      (call_expression
+        (identifier)
+        (argument_list
+          (float)
+          (float)
+          (float))))
+    (annotation
+      (annotation_name)
+      (identifier))
+    (identifier)
+    (type_identifier)
+    (integer))
+  (chip_declaration
+    (annotation
+      (annotation_name)
+      (field_expression
+        (identifier)
+        (identifier)))
+    (annotation
+      (annotation_name)
+      (identifier))
+    (block)))

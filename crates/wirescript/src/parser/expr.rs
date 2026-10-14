@@ -178,10 +178,14 @@ impl<'a> Parser<'a> {
         let mut levels = 1usize;
         if !self.enter_nesting() {
             self.leave_nesting(levels);
+            self.binary_top_op = None;
             let t = self.peek().clone();
             return Expr::Ident { name: String::new(), range: self.make_range(t.start, t.end) };
         }
         let mut lhs = self.parse_prefix();
+        // The operator of the `BinOp` this call last built around `lhs`; a
+        // parenthesized operand arrives here as a single prefix, so it has none.
+        let mut lhs_op: Option<String> = None;
         loop {
             // Skip newlines to allow line continuation after operators:
             //   let x = a +
@@ -225,6 +229,7 @@ impl<'a> Parser<'a> {
                 let start = lhs.range().start;
                 let end = ty.range().end;
                 lhs = Expr::As { value: Box::new(lhs), ty, range: self.make_range(start, end) };
+                lhs_op = None;
                 if !self.enter_nesting() {
                     break;
                 }
@@ -268,6 +273,7 @@ impl<'a> Parser<'a> {
                     path: Box::new(path),
                     range: self.make_range(start, end),
                 };
+                lhs_op = Some("is".to_string());
                 if !self.enter_nesting() {
                     break;
                 }
@@ -284,8 +290,29 @@ impl<'a> Parser<'a> {
             }
             levels += 1;
             let rhs = self.parse_binary(next_min);
+            let rhs_op = self.binary_top_op.take();
             let start = lhs.range().start;
             let end = rhs.range().end;
+            // `&`, `|` and `^` bind looser than a comparison, so `code & 4 == 4`
+            // is `code & (4 == 4)`: it tests bit 1, never bit 4. Unparenthesized,
+            // that is almost always a mistake (WS117, a warning).
+            let is_comparison = |o: &Option<String>| {
+                matches!(o.as_deref(), Some("==" | "!=" | "<" | "<=" | ">" | ">=" | "is"))
+            };
+            if matches!(tok.text.as_str(), "&" | "|" | "^") && (is_comparison(&lhs_op) || is_comparison(&rhs_op)) {
+                let cmp = if is_comparison(&rhs_op) { rhs_op.as_deref() } else { lhs_op.as_deref() }.unwrap_or("==");
+                self.warn_code(
+                    "WS117",
+                    format!(
+                        "`{op}` binds looser than `{cmp}`, so the comparison runs first and `{op}` gets its \
+                         true or false. Add parentheses to say which you meant: `(a {op} b) {cmp} c` to test \
+                         the bits, or `a {op} (b {cmp} c)` for the comparison's result",
+                        op = tok.text
+                    ),
+                    self.make_range(start, end),
+                );
+            }
+            lhs_op = Some(tok.text.clone());
             lhs = Expr::BinOp {
                 op: tok.text,
                 left: Box::new(lhs),
@@ -294,6 +321,7 @@ impl<'a> Parser<'a> {
             };
         }
         self.leave_nesting(levels);
+        self.binary_top_op = lhs_op;
         lhs
     }
 
@@ -1000,14 +1028,14 @@ impl<'a> Parser<'a> {
         // reachable here; expression-position `if` is the `if…then…else`
         // expression, itself a valid map key). Those three keywords cannot
         // begin a key expression, so a `{` opening with one is unambiguously
-        // a block, never a map → fast-reject O(1) without the scan. An empty
+        // a block, never a map -> fast-reject O(1) without the scan. An empty
         // `{}` is a record (handled at the call site) and not a map either.
         // EVERYTHING ELSE falls through to the bounded depth-0 `=>` scan
         // below, which is the sound test: a real map has a top-level `=>` (or
         // a literal/computed `:` key, checked after), a keyword-less
         // block-expr does not. This preserves exact map/record/block
-        // classification while keeping the wins (records → record-first O(1);
-        // `let`/`var`/`static` blocks → O(1) reject; unbalanced braces →
+        // classification while keeping the wins (records -> record-first O(1);
+        // `let`/`var`/`static` blocks -> O(1) reject; unbalanced braces ->
         // bounded scan).
         if first.kind == TokenKind::RBrace {
             return false; // empty `{}` — not a map (defensive; call site routes it to record)

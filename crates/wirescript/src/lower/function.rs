@@ -422,59 +422,11 @@ fn build_plane(ctx: &mut LowerCtx, decl: &ChipDecl) -> FnPlane {
 
 /// Where a handle var points, set on the handle by [`capture_through_handles`]
 /// and baked by emit once bricks have their addresses: the id of the storage
-/// gate or `fn` shell it names.
-pub(crate) const HANDLE_TARGET: &str = "_handle_target";
-
-/// Marks the var `GetMicrochipBrick()` lowers to; emit bakes it with a reference to
-/// the program's own microchip brick.
-pub(crate) const MICROCHIP_BRICK: &str = "_microchip_brick";
+/// gate or `fn` shell it names. `MICROCHIP_BRICK` marks the var
+/// `GetMicrochipBrick()` lowers to.
+pub(crate) use crate::ir::{HANDLE_TARGET, MICROCHIP_BRICK};
 
 type ModPath = Vec<NodeId>;
-
-fn module_at<'a>(root: &'a Module, path: &[NodeId]) -> &'a Module {
-    path.iter().fold(root, |m, c| &m.chips[c])
-}
-
-fn module_at_mut<'a>(root: &'a mut Module, path: &[NodeId]) -> &'a mut Module {
-    let mut m = root;
-    for c in path {
-        m = m.chips.get_mut(c).unwrap();
-    }
-    m
-}
-
-/// Every node's module path, and the path of every `fn` plane.
-fn index(m: &Module, path: &mut ModPath, owner: &mut HashMap<NodeId, ModPath>, planes: &mut Vec<ModPath>) {
-    for (id, n) in &m.nodes {
-        owner.insert(*id, path.clone());
-        if n.kind == NodeKind::Chip && n.gate_class == gc::MICROCHIP_FUNCTION_DEFINITION && m.chips.contains_key(id) {
-            let mut p = path.clone();
-            p.push(*id);
-            planes.push(p);
-        }
-    }
-    let mut kids: Vec<NodeId> = m.chips.keys().copied().collect();
-    kids.sort();
-    for k in kids {
-        path.push(k);
-        index(&m.chips[&k], path, owner, planes);
-        path.pop();
-    }
-}
-
-/// Every wire, with the module holding it and its index there.
-fn every_wire(m: &Module, path: &mut ModPath, out: &mut Vec<(ModPath, usize, Wire)>) {
-    for (i, w) in m.wires.iter().enumerate() {
-        out.push((path.clone(), i, *w));
-    }
-    let mut kids: Vec<NodeId> = m.chips.keys().copied().collect();
-    kids.sort();
-    for k in kids {
-        path.push(k);
-        every_wire(&m.chips[&k], path, out);
-        path.pop();
-    }
-}
 
 /// A node's own name, for a diagnostic or a handle's label.
 fn node_name(n: &crate::ir::Node) -> Option<String> {
@@ -501,17 +453,31 @@ pub(crate) fn is_definition_wire(src: &crate::ir::Node, w: &Wire) -> bool {
 pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<crate::diagnostic::Diagnostic>) {
     let mut owner: HashMap<NodeId, ModPath> = HashMap::default();
     let mut planes: Vec<ModPath> = Vec::new();
-    index(root, &mut Vec::new(), &mut owner, &mut planes);
+    // Every node's module path, and the path of every `fn` plane.
+    root.walk(&mut |path, m| {
+        for (id, n) in &m.nodes {
+            owner.insert(*id, path.to_vec());
+            if n.kind == NodeKind::Chip && n.gate_class == gc::MICROCHIP_FUNCTION_DEFINITION && m.chips.contains_key(id) {
+                planes.push([path, &[*id]].concat());
+            }
+        }
+    });
     if planes.is_empty() {
         return;
     }
-    let plane_of = |id: &NodeId| owner.get(id).and_then(|p| planes.iter().find(|pl| p.starts_with(pl)).cloned());
+    // A node's plane: of the planes its module path starts with, the first
+    // in `planes`.
+    let plane_index: HashMap<&[NodeId], usize> = planes.iter().enumerate().map(|(i, p)| (p.as_slice(), i)).collect();
+    let plane_of = |id: &NodeId| {
+        let p = owner.get(id)?;
+        (1..=p.len()).filter_map(|k| plane_index.get(&p[..k]).copied()).min().map(|i| planes[i].clone())
+    };
     let fn_name = |root: &Module, plane: &ModPath| {
-        node_name(&module_at(root, &plane[..plane.len() - 1]).nodes[plane.last().unwrap()]).unwrap_or_default()
+        node_name(&root.at(&plane[..plane.len() - 1]).nodes[plane.last().unwrap()]).unwrap_or_default()
     };
 
     let mut all = Vec::new();
-    every_wire(root, &mut Vec::new(), &mut all);
+    root.walk(&mut |path, m| all.extend(m.wires.iter().enumerate().map(|(i, w)| (path.to_vec(), i, *w))));
     let mut handles: HashMap<(ModPath, PortRef), NodeId> = HashMap::default();
     let mut removed: HashMap<ModPath, Vec<usize>> = HashMap::default();
     let mut added: Vec<(ModPath, Wire)> = Vec::new();
@@ -523,8 +489,8 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<c
         if sp == tp {
             continue;
         }
-        let src = module_at(root, &owner[&w.source.node_id]).nodes[&w.source.node_id].clone();
-        let tgt = module_at(root, &owner[&w.target.node_id]).nodes[&w.target.node_id].clone();
+        let src = root.at(&owner[&w.source.node_id]).nodes[&w.source.node_id].clone();
+        let tgt = root.at(&owner[&w.target.node_id]).nodes[&w.target.node_id].clone();
         if src.gate_class == gc::LITERAL {
             continue;
         }
@@ -564,30 +530,16 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<c
         let handle = match handles.get(&key) {
             Some(h) => *h,
             None => {
-                let ty = src
-                    .ports
-                    .outputs
-                    .iter()
-                    .find(|p| WirePort::from_name(crate::intern::resolve(p.name)) == w.source.port)
-                    .map(|p| p.ty.clone())
-                    .unwrap_or(Type::Any);
+                let ty = src.output_type(w.source.port).unwrap_or(Type::Any);
                 let id = NodeId::fresh();
                 let mut props = HashMap::default();
                 props.insert(*sym::NAME_LABEL, Literal::String(format!("&{}", node_name(&src).unwrap_or_default())));
                 props.insert(crate::intern::intern(HANDLE_TARGET), Literal::Int(src.id.0 as i64));
                 let node = crate::ir::Node {
-                    id,
-                    kind: NodeKind::Gate,
-                    gate_class: gc::VAR,
-                    properties: std::sync::Arc::new(props),
-                    ports: std::sync::Arc::new(GateIO::var_storage(ty)),
                     source_range: tgt.source_range.clone(),
-                    chip_id: None,
-                    chain_id: None,
-                    scope_id: crate::ir::ROOT_SCOPE_ID,
-                    note: Some("fn handle"),
+                    ..crate::ir::Node::new(id, NodeKind::Gate, gc::VAR, GateIO::var_storage(ty), props, None, Some("fn handle"))
                 };
-                module_at_mut(root, &plane).nodes.insert(id, node);
+                root.at_mut(&plane).nodes.insert(id, node);
                 handles.insert(key, id);
                 id
             }
@@ -595,14 +547,16 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<c
         removed.entry(holder).or_default().push(at);
         added.push((plane, Wire { source: PortRef { node_id: handle, port: WirePort::Value }, target: w.target }));
     }
-    for (path, mut at) in removed {
-        at.sort_unstable();
-        let m = module_at_mut(root, &path);
-        for i in at.into_iter().rev() {
-            m.wires.remove(i);
-        }
+    for (path, at) in removed {
+        let at: HashSet<usize> = at.into_iter().collect();
+        let m = root.at_mut(&path);
+        let mut i = 0;
+        m.wires.retain(|_| {
+            i += 1;
+            !at.contains(&(i - 1))
+        });
     }
     for (path, w) in added {
-        module_at_mut(root, &path).wires.push(w);
+        root.at_mut(&path).wires.push(w);
     }
 }

@@ -78,7 +78,7 @@
 
     #[test]
     fn top_doc_block_adjacent_to_decl_is_decl_doc_not_module() {
-        // No blank line → the block documents the first decl, so
+        // No blank line -> the block documents the first decl, so
         // `module_doc` is None and the first decl carries it.
         let src = "/// first decl doc\nvar x: int = 0";
         let r = parse(src, "test");
@@ -828,18 +828,6 @@
     }
 
     #[test]
-    fn closed_open_chip_contradiction_errors() {
-        let r = parse("@closed open chip { var a: int = 0 }", "test");
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.message.contains("@closed cannot be combined with 'open chip'")),
-            "diags: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
     fn annotation_on_mod_errors() {
         let r = parse("@label(\"x\") mod inc(v: int) -> int { return v + 1 }", "test");
         assert!(
@@ -858,7 +846,7 @@
         let r = parse("@middle in a: bool", "test");
         assert!(
             r.diagnostics[0].message.contains(
-                "expected @left, @right, @top, @bottom, @label, @closed, @invisible, @nofold, or @sliced"
+                "expected @left, @right, @top, @bottom, @label, @color, @material, @closed, @invisible, @nofold, or @sliced"
             ),
             "diags: {:?}",
             r.diagnostics
@@ -866,12 +854,24 @@
     }
 
     #[test]
-    fn open_chip_still_parses_as_noop() {
-        let r = parse("open chip { var a: int = 0 }", "test");
+    fn anonymous_chip_is_open_by_default() {
+        let r = parse("chip { var a: int = 0 }", "test");
         assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
         let TopDecl::AnonChip(ac) = &r.ast.decls[0] else { panic!() };
-        assert!(ac.open);
         assert!(!ac.closed);
+    }
+
+    #[test]
+    fn open_is_an_ordinary_identifier() {
+        let src = "@left in open: bool\nvar opened: bool = open\n\
+                   mod pass(open: int) -> int { return open }\n\
+                   chip { var open: int = pass(1) }";
+        let r = parse(src, "test");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let TopDecl::In(i) = &r.ast.decls[0] else {
+            panic!("decl 0: {:?}", r.ast.decls[0])
+        };
+        assert_eq!(i.name, "open");
     }
 
     #[test]
@@ -1078,7 +1078,7 @@
     #[test]
     fn decl_scoped_layout_errors() {
         let p = crate::parser::parse("@layout(\"code\")\nvar x: int = 0\n", "t");
-        // No blank line → decl-scoped → module-level-only error.
+        // No blank line -> decl-scoped -> module-level-only error.
         assert!(p.ast.layout.is_none());
         assert!(p.diagnostics.iter().any(|d| d.message.contains("module-level only")));
     }
@@ -1146,7 +1146,7 @@
 
     #[test]
     fn decl_scoped_flat_errors() {
-        // No blank line → decl-scoped → module-level-only error.
+        // No blank line -> decl-scoped -> module-level-only error.
         let p = crate::parser::parse("@flat\nvar x: int = 0\n", "t");
         assert!(!p.ast.flat);
         assert!(
@@ -1172,7 +1172,7 @@
 
     #[test]
     fn same_line_decl_scoped_annotations_still_hand_off() {
-        // No blank line before the declaration → decl-scoped, module flags unset.
+        // No blank line before the declaration -> decl-scoped, module flags unset.
         let p = crate::parser::parse("@nofold @left\nin x: exec\n", "t");
         assert!(!p.ast.no_fold);
     }
@@ -2645,5 +2645,33 @@ on go {
                 assert!(matches!(*left, Expr::BinOp { ref op, .. } if op == "<"));
             }
             other => panic!("expected `(a < c) >= d`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn comparison_as_a_bitwise_operand_is_ws117() {
+        // `&`, `|` and `^` bind looser than a comparison, so the comparison runs
+        // first: `code & 4 == 4` is `code & (4 == 4)`.
+        // A warning, not an error: the code still means something.
+        for src in ["out o = code & 4 == 4", "out o = code == 4 | 1", "out o = a ^ b != c", "out o = a & b < c"] {
+            let r = crate::parser::parse(src, "test");
+            assert!(
+                r.diagnostics
+                    .iter()
+                    .any(|d| d.code == "WS117" && d.severity == crate::diagnostic::Severity::Warning),
+                "{src}: {:?}",
+                r.diagnostics
+            );
+        }
+        // Parentheses say which was meant, either way.
+        for src in [
+            "out o = (code & 4) == 4",
+            "out o = code & (4 == 4)",
+            "out o = (a == 1) | (a == 2)",
+            "out o = a == b && c",
+            "out o = a & b",
+        ] {
+            let r = crate::parser::parse(src, "test");
+            assert!(!r.diagnostics.iter().any(|d| d.code == "WS117"), "{src}: {:?}", r.diagnostics);
         }
     }

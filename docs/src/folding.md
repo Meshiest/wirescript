@@ -57,7 +57,7 @@ taking their certified variant default (`0`, `0.0`, `false`, `""`).
 let x = 2 + 3 * 4          // folds to the literal 14
 ```
 
-**Constant-selector `Select`.** An `if`-expression compiles to a `Select` gate; when
+**Constant-selector `Select`.** An `if`-expression compiles to a `Select` gate. When
 its condition folds to a known `bool`, the gate is removed and consumers rewire
 directly to the chosen arm's source, even when that arm is not itself a constant.
 
@@ -65,18 +65,18 @@ directly to the chosen arm's source, even when that arm is not itself a constant
 let y = if true then f() else g()    // folds to f()'s output; g() is dropped
 ```
 
-**Dead exec-branch truncation.** An `if` statement compiles to a `Branch` gate; when
+**Dead exec-branch truncation.** An `if` statement compiles to a `Branch` gate. When
 its condition folds to a known `bool`, the branch is removed and incoming exec wires
 rewire straight to the taken side. This happens across chip boundaries too: a
 constant fed into a chip's input can truncate a branch inside it. Anything on the dead
-side still exec-reachable from elsewhere survives; a follow-up sweep also removes pure
+side still exec-reachable from elsewhere survives. A follow-up sweep also removes pure
 gates left feeding only the deleted branch.
 
 ```wirescript
 if false { heavy() }       // heavy()'s whole exec chain is dropped
 ```
 
-**Annihilators.** `&&` with either side certified `false` folds to `false`; `||` with
+**Annihilators.** `&&` with either side certified `false` folds to `false`, and `||` with
 either side certified `true` folds to `true`, even when the other side is unknown at
 compile time. This is the only case where a non-constant operand still lets a gate
 fold, and it draws solely from the table's whitelisted rules (nothing derived).
@@ -106,7 +106,7 @@ no-op.
 
 Folding now also covers `string` operators/methods and `vector`/`rotator`/`color`/`quat`
 math and constructors, certified the same way as everything else: an in-game probe
-records the real output, and only a (gate class, input-variant) pair the probe actually
+records the real output, and only a (gate class, input-variant) pair the probe
 observed is eligible to fold.
 
 **Strings.** `..` concatenation, `Length`/`Contains`/`StartsWith`/`EndsWith`/`ToLower`/
@@ -121,12 +121,13 @@ let n = "  42  ".Trim().Length()     // folds to the literal 2
 
 Interpolation folding is held to a **render-exactness guarantee**: the folded literal
 text must be byte-identical to what `FormatText` would print in-game for the same
-values, not just numerically equivalent. The certified render law: ints comma-group
-every 3 digits from `1,000` up; floats round to 3 decimals (ties to even), comma-group
-their integer part, and trim trailing fractional zeros (and a bare trailing `.`); bools
-print `1`/`0`; vectors print `X=%.3f Y=%.3f Z=%.3f`. `..` concatenation's own operand
-stringification differs on one point: a bool operand prints `true`/`false`, not `1`/`0`,
-matching the game's generic to-string conversion there instead of `FormatText`'s.
+values, not just numerically equivalent. The certified render law is as follows. Ints
+comma-group every 3 digits from `1,000` up. Floats round to 3 decimals (ties to even),
+comma-group their integer part, and trim trailing fractional zeros (and a bare trailing
+`.`). Bools print `1`/`0`. Vectors print `X=%.3f Y=%.3f Z=%.3f`. `..` concatenation's
+own operand stringification differs on one point: a bool operand prints `true`/`false`,
+not `1`/`0`, matching the game's generic to-string conversion there instead of
+`FormatText`'s.
 
 **Vector/rotation/color/quaternion math.** `Vec(...)` construction, component-wise and
 scalar-broadcast `+ - * /` on vectors, `.Scale()`/`.Dot()`/`.Cross()`, and `Quat(...)`
@@ -152,25 +153,25 @@ does not fold.
 
 - Any **non-ASCII** string operand or result: the certified behavior was only ever
   probed with ASCII text, so it never folds regardless of which model (character count
-  vs. UTF-16 code units) the game actually uses.
+  vs. UTF-16 code units) the game uses.
 - A string result longer than **8,192 characters**.
 - Any float operand whose magnitude exceeds **`1e15`** in a string/interpolation
   context, because the game cannot print a float that large at all (the console line is
   silently dropped), so folding refuses past that bound rather than bake unreproducible
-  text. `1e15` itself is certified to print fine; the bound is exclusive.
+  text. `1e15` itself is certified to print fine. The bound is exclusive.
 - A handful of composite-constructor gates whose *only* table evidence is a blank
   render and that have no transitive proof either (unlike `Quat(...)`/3-argument
   `Color(...)` above): a bare rotator constructor, the sRGB-byte and hex-string color
-  constructors, and rotation inversion. These hard-refuse regardless of how determined
-  their inputs are, until a future probe wave chains them through a value-bearing gate.
-- A fixed list of gates the probe recorded but deliberately never folds: vector
+  constructors, and rotation inversion. These always refuse, however constant their
+  inputs are, until a future probe wave chains them through a value-bearing gate.
+- A fixed list of gates the probe recorded but that are excluded from folding: vector
   magnitude/normalize/distance, spherical interpolation, axis-angle construction,
   angle- and rotation-between queries, direction/rotation conversions, and color
-  blending. Their math is meaningfully harder to reproduce exactly (square roots,
-  trig, arbitrary-axis construction) and wasn't certified for folding.
+  blending. Their math is harder to reproduce exactly (square roots, trig,
+  arbitrary-axis construction) and wasn't certified for folding.
 
-Per-build recertification is unchanged from the workflow below: these families ride
-the same probe/table/replay/verifier loop as everything else.
+Per-build recertification is unchanged from the workflow below. These families go
+through the same probe/table/replay/verifier loop as everything else.
 
 ## What never folds (barriers)
 
@@ -183,7 +184,7 @@ These are always treated as unknown, and folding never elides or sees through th
   wire carrying an object-typed value.
 - Any gate class or input-variant combination the probe never certified: absent from
   the table means permanently unknown, never folded.
-- Certified signatures whose specific VALUES the evaluator declines to compute, as a
+- Certified signatures whose specific values the evaluator declines to compute, as a
   safety net layered on top of coverage: math involving a `string` operand (the
   recorded observations rule out every parsing model), integer overflow, mixed-sign
   division/modulo with a nonzero remainder (truncation direction was never probed),
@@ -197,15 +198,15 @@ probing each gate combination in-game and recording its real output. Two things 
 the compiler to that table:
 
 - **Replay gate**: a build-time test feeds every table case through the compiler's
-  evaluator and asserts the recorded output; the table cannot drift from what the
+  evaluator and asserts the recorded output. The table cannot drift from what the
   compiler does without breaking the build.
 - **Coverage gate**: a gate only folds when its (gate class, input-variant
   signature) pair is present in the table. A combination the probe never ran stays
   unknown, even if the evaluator could compute an answer for it.
 
 A companion **probe invariant** test compiles the certification circuits themselves
-with folding on and off and asserts identical gate and wire counts, as proof the pass
-cannot touch the instruments that certify it.
+with folding on and off and asserts identical gate and wire counts. This shows the pass
+cannot change the circuits that certify it.
 
 When a game build changes gate behavior: re-run the probe, regenerate the table, and
 re-paste the generated verifier in-game. The replay gate then re-certifies (or fails
@@ -224,7 +225,7 @@ the build instead of silently folding wrong.
 ## Guarantee
 
 A gate is only value-folded when its class and input-variant signature are certified,
-and only using a law the evaluator implements for it; anything else is left as a real
+and only using a law the evaluator implements for it. Anything else is left as a real
 gate. `Opaque(...)`, `@nofold`, rerouters, variables, arrays, buffers, events,
 `ReadBrickGrid()`, and object-carrying wires are never folded, elided, or seen
 through. Nothing is removed that the certified table does not license.

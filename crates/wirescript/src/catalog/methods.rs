@@ -9,7 +9,7 @@
 
 use crate::ir::Type;
 use crate::ir::port_registry::WirePort;
-use crate::typecheck::ContainerKind;
+use crate::types::container::ContainerKind;
 
 /// The type of a value argument, written against the receiver's own types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,17 +85,17 @@ pub struct MethodArg {
 
 impl MethodArg {
     /// The typecheck parameter for this argument on a receiver of `kind`.
-    pub fn param(&self, kind: &ContainerKind) -> crate::typecheck::Param {
+    pub fn param(&self, kind: &ContainerKind) -> crate::types::signature::Param {
         let ty = match self.kind {
             ArgKind::Value(t) => t.ty(kind),
             ArgKind::ArrayRef(t) | ArgKind::DestArray(t) => Type::Array(Box::new(t.ty(kind))),
             ArgKind::MapRef => kind.as_type(),
         };
-        crate::typecheck::Param {
+        crate::types::signature::Param {
             name: self.name.to_string(),
             ty,
             optional: self.optional,
-            kind: crate::typecheck::ParamKind::Wire,
+            kind: crate::types::signature::ParamKind::Wire,
         }
     }
 
@@ -150,14 +150,48 @@ impl Lowering {
     }
 
     /// The typecheck parameters on a receiver of `kind`.
-    pub fn params(&self, kind: &ContainerKind) -> Vec<crate::typecheck::Param> {
+    pub fn params(&self, kind: &ContainerKind) -> Vec<crate::types::signature::Param> {
         self.args().iter().map(|a| a.param(kind)).collect()
+    }
+}
+
+/// The parameter list completion and hover show for the container method
+/// `name` lowered by `lowering`: its arguments in order, an optional one
+/// marked `?`. `length` shows its `int` result, and `sortMultiple`, which
+/// takes any number of parallel arrays, is written out.
+pub fn shown_signature(name: &str, lowering: &Lowering) -> String {
+    match name {
+        "length" => "() -> int".to_string(),
+        "sortMultiple" => "(other, ..., descending?)".to_string(),
+        _ => {
+            let args: Vec<String> =
+                lowering.args().iter().map(|a| format!("{}{}", a.name, if a.optional { "?" } else { "" })).collect();
+            format!("({})", args.join(", "))
+        }
     }
 }
 
 /// A `Generic` lowering with no port type overrides.
 pub const fn generic(args: &'static [MethodArg], result: WirePort) -> Lowering {
     Lowering::Generic { args, result, port_types: &[] }
+}
+
+/// The type a call of a container method gives on a receiver of `kind`: its
+/// gate's value outputs ([`gate_outputs`]) as a record, the lowering's result
+/// first, so a bare use unwraps to it. One output is that value; none is
+/// `Never`, so using a mutation's "result" is a type error. A `Custom`
+/// lowering reads `Value` first.
+pub fn method_return_type(gate: &str, lowering: &Lowering, kind: &ContainerKind) -> Type {
+    let (result, port_types) = match lowering {
+        Lowering::Generic { result, port_types, .. } => (*result, *port_types),
+        Lowering::Custom => (WirePort::Value, &[][..]),
+    };
+    Type::call_result(
+        gate_outputs(gate, kind, result, port_types)
+            .into_iter()
+            .map(|(port, ty)| (super::arrays::field_name(port.as_str()), ty))
+            .collect(),
+    )
 }
 
 /// The value outputs of `gate` on a receiver of `kind`, as lowering declares
@@ -191,7 +225,7 @@ pub fn gate_outputs(
             let ty = port_types
                 .iter()
                 .find(|(q, _)| *q == port)
-                .map_or_else(|| super::arrays::port_type(&p.ty, elem), |(_, t)| t.clone());
+                .map_or_else(|| p.ty.to_type(elem, &Type::Any), |(_, t)| t.clone());
             (port, ty)
         })
         .collect();

@@ -139,24 +139,21 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
             {
                 let init_val = v.init.as_ref().map(|e| lower_expr(ctx, e)).or_else(|| {
                     default_literal_for_var_type(&var_rec.inner_type)
-                        .map(|lit| literal_port(ctx, lit, var_rec.inner_type.clone(), &v.range))
+                        .map(|lit| raw_literal(ctx, &v.range, var_rec.inner_type.clone(), lit, None))
                 });
                 if let Some(val_port) = init_val {
                     let exec_in = ctx.current_exec.unwrap_or(exec);
                     let inner = var_rec.inner_type.clone();
-                    let set_node = ctx.add_gate(AddNodeOpts {
-                        gate_class: gc::VAR_SET,
-                        source_range: v.range.clone(),
-                        ports: GateIO::var_write(inner.clone()),
-                        ..Default::default()
-                    });
-                    ctx.connect(exec_in, set_node.port(WirePort::Exec));
-                    ctx.connect(
+                    chain_var_write(
+                        ctx,
+                        exec_in,
                         var_rec.node_id.port(WirePort::VarRef),
-                        set_node.port(WirePort::VarRef),
+                        inner.clone(),
+                        val_port,
+                        false,
+                        v.range.clone(),
+                        None,
                     );
-                    ctx.connect(val_port, set_node.port(WirePort::Value));
-                    ctx.current_exec = Some(set_node.port(WirePort::ExecOut));
                 }
             } // !is_static
         }),
@@ -401,7 +398,7 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                     && !first_of_gate_read
                 {
                     // `return make(x)` where `make` returns a record: the call
-                    // stashed a field→source map (its value "port" is a
+                    // stashed a field->source map (its value "port" is a
                     // placeholder, not a real node). Forward the record to the
                     // caller instead of wiring the placeholder.
                     let one_enum = ctx.output_count() == 1
@@ -413,20 +410,8 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                 }
             }
             if let Some(exec) = ctx.current_exec.take() {
-                if ctx.mod_return_exec.is_some() {
-                    let prev = ctx.mod_return_exec.take().unwrap();
-                    let union = ctx.add_gate(AddNodeOpts {
-                        gate_class: gc::UNION,
-                        source_range: SourceRange::default(),
-                        ports: GateIO::exec_join(),
-                        ..Default::default()
-                    });
-                    ctx.connect(prev, union.port(WirePort::ExecA));
-                    ctx.connect(exec, union.port(WirePort::ExecB));
-                    ctx.mod_return_exec = Some(union.port(WirePort::ExecOut));
-                } else {
-                    ctx.mod_return_exec = Some(exec);
-                }
+                let prev = ctx.mod_return_exec.take();
+                ctx.mod_return_exec = merge_exec(ctx, prev, Some(exec), &SourceRange::default());
             }
         }
         Stmt::For(f) => crate::lower::for_loop::lower_for(ctx, f),
@@ -461,24 +446,8 @@ fn return_one_value(ctx: &mut LowerCtx, val_port: PortRef) {
         // Multi-return: Var_Set to the return var
         if let Some(exec) = ctx.current_exec {
             let inner = var_rec.inner_type.clone();
-            let set_node = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::VAR_SET,
-                source_range: SourceRange::default(),
-                note: Some("ret_set"),
-                ports: GateIO {
-                    inputs: vec![
-                        PortSpec::exec(*sym::EXEC),
-                        PortSpec::new(*sym::VAR_REF, Type::Ref(Box::new(inner.clone()))),
-                        PortSpec::new(*sym::VALUE, inner.clone()),
-                    ],
-                    outputs: vec![PortSpec::exec(*sym::EXEC_OUT)],
-                },
-                ..Default::default()
-            });
-            ctx.connect(exec, set_node.port(WirePort::Exec));
-            ctx.connect(var_rec.node_id.port(WirePort::VarRef), set_node.port(WirePort::VarRef));
-            ctx.connect(val_port, set_node.port(WirePort::Value));
-            ctx.current_exec = Some(set_node.port(WirePort::ExecOut));
+            let var_ref = var_rec.node_id.port(WirePort::VarRef);
+            chain_var_write(ctx, exec, var_ref, inner, val_port, false, SourceRange::default(), Some("ret_set"));
         }
     } else if ctx.output_count() == 1 {
         // Single return: wire directly to output
@@ -610,11 +579,23 @@ pub(super) fn match_increment_self<'s>(ctx: &LowerCtx, s: &'s Assign) -> Option<
     }
 }
 
-/// `-delta` for a numeric literal `delta`, negated where it is written.
+/// `-delta` for a numeric literal `delta`, negated where it is written, or
+/// for an integer constant (`STEP`), the integer it negates to, as a negated
+/// integer constant is in `lower_unop`.
 fn negated_literal(ctx: &mut LowerCtx, delta: &Expr, range: &SourceRange) -> Option<PortRef> {
     match delta {
-        Expr::IntLit { value, .. } => Some(literal_port(ctx, Literal::Int(value.wrapping_neg()), Type::Int, range)),
-        Expr::FloatLit { value, .. } => Some(literal_port(ctx, Literal::Float(-value), Type::Float, range)),
+        Expr::IntLit { value, .. } => Some(raw_literal(ctx, range, Type::Int, Literal::Int(value.wrapping_neg()), None)),
+        Expr::FloatLit { value, .. } => Some(raw_literal(ctx, range, Type::Float, Literal::Float(-value), None)),
+        _ if unwrap_ref(&ctx.type_of(delta)) == Type::Int => {
+            let lookup = |n: &str| ctx.resolve_mod(n);
+            let cx = ctx.certified_const_ctx(Some(&lookup));
+            let mut budget = crate::const_eval::Budget::default();
+            let n = match crate::const_eval::eval_expr(delta, &cx, &mut budget) {
+                Ok(Literal::Int(n)) if !budget.uncertified => n.checked_neg()?,
+                _ => return None,
+            };
+            Some(raw_literal(ctx, range, Type::Int, Literal::Int(n), None))
+        }
         _ => None,
     }
 }
@@ -677,20 +658,16 @@ pub(super) fn set_scalar_var(ctx: &mut LowerCtx, var_rec: &VarRecord, value_port
         return;
     };
     let inner = var_rec.inner_type.clone();
-    let set_node = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::VAR_SET,
-        source_range: range.clone(),
-        ports: GateIO::var_write(inner.clone()),
-        note: None,
-        ..Default::default()
-    });
-    ctx.connect(exec_in, set_node.port(WirePort::Exec));
-    ctx.connect(
+    chain_var_write(
+        ctx,
+        exec_in,
         var_rec.node_id.port(WirePort::VarRef),
-        set_node.port(WirePort::VarRef),
+        inner.clone(),
+        value_port,
+        false,
+        range.clone(),
+        None,
     );
-    ctx.connect(value_port, set_node.port(WirePort::Value));
-    ctx.current_exec = Some(set_node.port(WirePort::ExecOut));
     invalidate_var_cache(ctx, &var_rec.node_id);
 }
 
@@ -728,7 +705,7 @@ pub(super) fn rebuild_from_constant(
             };
             let mut supply = |ctx: &mut LowerCtx, i: usize| {
                 let (k, v) = pairs[i].clone();
-                let key = literal_node_range(ctx, &at, key_ty.clone(), coerce_literal_to_type(k, &key_ty));
+                let key = literal_node_range(ctx, &at, key_ty.clone(), crate::const_eval::scalar_in_type(k, &key_ty));
                 Supplied::Entry(key, literal_element(ctx, target, v, &at))
             };
             rebuild_container(ctx, target, name, &value, range, &mut supply);
@@ -782,7 +759,7 @@ fn literal_element(ctx: &mut LowerCtx, target: &Binding, lit: Literal, at: &Sour
                 Binding::Var(v) => {
                     let ty = column_element_type(v);
                     if let Some(lit) = field.or_else(|| default_literal_for_var_type(&ty)) {
-                        let lit = coerce_literal_to_type(lit, &ty);
+                        let lit = crate::const_eval::scalar_in_type(lit, &ty);
                         let port = literal_node_range(ctx, at, ty, lit);
                         out.insert(*k, Binding::Local(LocalRecord { port }));
                     }
@@ -802,30 +779,11 @@ fn literal_element(ctx: &mut LowerCtx, target: &Binding, lit: Literal, at: &Sour
         }
         Binding::Var(v) => {
             let ty = column_element_type(v);
-            let lit = coerce_literal_to_type(lit, &ty);
+            let lit = crate::const_eval::scalar_in_type(lit, &ty);
             ElemValue::Scalar(literal_node_range(ctx, at, ty, lit))
         }
         _ => ElemValue::Scalar(literal_node_range(ctx, at, Type::Any, lit)),
     }
-}
-
-/// A `Literal` gate producing `lit` as a `ty`.
-fn literal_port(ctx: &mut LowerCtx, lit: Literal, ty: Type, range: &SourceRange) -> PortRef {
-    let lit_id = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::LITERAL,
-        source_range: range.clone(),
-        properties: {
-            let mut p = HashMap::default();
-            p.insert(*sym::VALUE, lit);
-            p
-        },
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![PortSpec::new(*sym::OUTPUT, ty)],
-        },
-        ..Default::default()
-    });
-    lit_id.port(WirePort::Output)
 }
 
 /// Reset every scalar leaf of a record var to the value its gate starts with,
@@ -849,7 +807,7 @@ fn reset_record_leaves(
                     .get(&v.node_id)
                     .and_then(|n| n.properties.get(&sym::INITIAL_VALUE).cloned());
                 if let Some(lit) = initial.or_else(|| default_literal_for_var_type(&v.inner_type)) {
-                    let port = literal_port(ctx, lit, v.inner_type.clone(), range);
+                    let port = raw_literal(ctx, range, v.inner_type.clone(), lit, None);
                     set_scalar_var(ctx, v, port, range);
                 }
             }
@@ -1123,14 +1081,14 @@ pub(super) fn value_record_fields(
     // source. A `pts[i].scalar` field goes through the scalar path instead
     // (this returns `None` for it), so only whole nested records land here.
     if matches!(value, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
-        && let Some(rec) = lower_record_array_field_path_value(ctx, value, value.range())
+        && let Some(rec) = lower_record_field_path_value(ctx, Columns::Array, value, value.range())
     {
         return Some(rec);
     }
     // `m[k].inner` / `m.get(k).inner` — the same for a NESTED record field of a
     // record MAP value (per-field MapGet).
     if matches!(value, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
-        && let Some(rec) = lower_record_map_field_path_value(ctx, value, value.range())
+        && let Some(rec) = lower_record_field_path_value(ctx, Columns::Map, value, value.range())
     {
         return Some(rec);
     }
@@ -1407,7 +1365,7 @@ pub(super) fn select_record_fields(
                         ],
                         outputs: vec![PortSpec::new(*sym::OUTPUT, ty.clone())],
                     },
-                    note: Some("record if-expr select".into()),
+                    note: Some("record if-expr select"),
                     ..Default::default()
                 });
                 // Same polarity as the scalar `lower_if_expr`: the THEN value is
@@ -1599,7 +1557,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     if ctx.current_exec.is_none() && !ctx.dead_after_break {
         let msg = if ctx.exec_closed_by_buffer_emit {
             "this assignment has no exec chain to run on, so it never happens. A `buffer \
-             emit` ending an earlier block (or a mod it calls) closed the chain, and nothing \
+             emit` before it (or in a mod it calls) closed the chain, and nothing \
              after it on that chain runs. Move the assignment before that emit."
         } else {
             "this assignment has no exec chain to run on, so it never happens. It sits in a \
@@ -1733,8 +1691,8 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         // `m[k] = rec` where `m` is a record map: fan the record value across the
         // parallel field maps at the shared key. Checked before the array path,
         // which resolves only single arrays / record arrays.
-        if let Some(fields) = resolve_record_map(ctx, obj)
-            && lower_record_map_key_set(ctx, &fields, index, &s.value, &s.range)
+        if let Some(fields) = resolve_record_columns(ctx, Columns::Map, obj)
+            && lower_record_position_set(ctx, Columns::Map, &fields, index, &s.value, &s.range)
         {
             return;
         }
@@ -1748,7 +1706,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     // the IndexAccess branch above nor the record field-chain branch below
     // reaches it.
     if matches!(&s.target, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
-        && lower_record_array_field_path_set(ctx, &s.target, &s.value, &s.range)
+        && lower_record_field_path_set(ctx, Columns::Array, &s.target, &s.value, &s.range)
     {
         return;
     }
@@ -1756,7 +1714,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     // `m[k].f1.f2… = v` — the same for a record MAP value, fanning across the
     // parallel maps at the shared key (the map spelling of the branch above).
     if matches!(&s.target, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
-        && lower_record_map_field_path_set(ctx, &s.target, &s.value, &s.range)
+        && lower_record_field_path_set(ctx, Columns::Map, &s.target, &s.value, &s.range)
     {
         return;
     }
@@ -1804,7 +1762,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     // record var, or a tuple-pick of a record all wire.
     if ctx.current_exec.is_some()
         && let Expr::Array { .. } = &s.value
-        && let Some(fields) = crate::lower::access::resolve_record_array(ctx, &s.target)
+        && let Some(fields) = resolve_record_columns(ctx, Columns::Array, &s.target)
     {
         let target = Binding::Record(fields);
         rebuild_container(ctx, &target, "", &s.value, &s.range, &mut lower_in_place(&s.value, true));
@@ -1813,7 +1771,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     // `m = { k: rec, .. }` on a RECORD map: the map spelling of the branch above.
     if ctx.current_exec.is_some()
         && let Expr::MapLit { .. } = &s.value
-        && let Some(fields) = crate::lower::access::resolve_record_map(ctx, &s.target)
+        && let Some(fields) = resolve_record_columns(ctx, Columns::Map, &s.target)
     {
         let target = Binding::Record(fields);
         rebuild_container(ctx, &target, "", &s.value, &s.range, &mut lower_in_place(&s.value, true));
@@ -1963,7 +1921,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         return;
     }
 
-    // Optimization: `x = x + <expr>` → Exec_Var_Increment
+    // Optimization: `x = x + <expr>` -> Exec_Var_Increment
     if let Some((delta_expr, negate)) = match_increment_self(ctx, s) {
         let (delta, increment) = increment_value(ctx, s, delta_expr, negate, Binding::Var(var_rec.clone()));
         if !increment {
@@ -1974,20 +1932,8 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         // have advanced the chain via Var_Get / nested exec-taking ops.
         let exec_in = ctx.current_exec.unwrap_or(current_exec);
         let inner = var_rec.inner_type.clone();
-        let node_id = ctx.add_gate(AddNodeOpts {
-            gate_class: gc::VAR_INCREMENT,
-            source_range: s.range.clone(),
-            ports: GateIO::var_write(inner.clone()),
-            note: None,
-            ..Default::default()
-        });
-        ctx.connect(exec_in, node_id.port(WirePort::Exec));
-        ctx.connect(
-            var_rec.node_id.port(WirePort::VarRef),
-            node_id.port(WirePort::VarRef),
-        );
-        ctx.connect(delta, node_id.port(WirePort::Value));
-        ctx.current_exec = Some(node_id.port(WirePort::ExecOut));
+        let var_ref = var_rec.node_id.port(WirePort::VarRef);
+        chain_var_write(ctx, exec_in, var_ref, inner, delta, true, s.range.clone(), None);
         invalidate_var_cache(ctx, &var_rec.node_id);
         return;
     }
@@ -1998,20 +1944,16 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     // advanced the chain via Var_Get / nested exec-taking ops.
     let exec_in = ctx.current_exec.unwrap_or(current_exec);
     let inner = var_rec.inner_type.clone();
-    let set_node = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::VAR_SET,
-        source_range: s.range.clone(),
-        ports: GateIO::var_write(inner.clone()),
-        note: None,
-        ..Default::default()
-    });
-    ctx.connect(exec_in, set_node.port(WirePort::Exec));
-    ctx.connect(
+    chain_var_write(
+        ctx,
+        exec_in,
         var_rec.node_id.port(WirePort::VarRef),
-        set_node.port(WirePort::VarRef),
+        inner.clone(),
+        value_port,
+        false,
+        s.range.clone(),
+        None,
     );
-    ctx.connect(value_port, set_node.port(WirePort::Value));
-    ctx.current_exec = Some(set_node.port(WirePort::ExecOut));
     invalidate_var_cache(ctx, &var_rec.node_id);
 }
 
@@ -2052,7 +1994,7 @@ pub(super) fn lower_container_assign(
         // generic Var_Set path would wire a nonexistent source port into the
         // gate, which does nothing and only shows up as a load failure in-game.
         // Since no fallback can ever satisfy it, this is a hard ERROR (mirrors
-        // WS021's "would silently produce a placeholder → error" policy), not a
+        // WS021's "would silently produce a placeholder -> error" policy), not a
         // droppable warning. `.copyFrom(src)` is the supported way to copy a
         // whole container.
         _ => ctx.diagnostics.push(Diagnostic::error(
@@ -2109,7 +2051,7 @@ pub(super) fn rebuild_container(
 ) {
     use crate::lower::access::{
         array_exec_op, lower_record_array_method, lower_record_map_method, map_exec_op,
-        record_array_value_op, record_map_set_walk,
+        record_array_value_op, record_set_walk,
     };
     match (target, value) {
         (Binding::Var(v), Expr::Array { elements, .. }) => {
@@ -2170,7 +2112,7 @@ pub(super) fn rebuild_container(
                 match supply(ctx, i) {
                     Supplied::Entry(k, ElemValue::Record(src)) => {
                         if let Some(src) = fit_record_value(ctx, "this entry's value", &e.value, cols, src) {
-                            record_map_set_walk(ctx, cols, &src, k, range);
+                            record_set_walk(ctx, Columns::Map, cols, &src, k, range);
                         }
                     }
                     Supplied::Missing => report_non_record_map_entry(ctx, e.value.range()),
@@ -2361,6 +2303,7 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     ctx.exec_branch_depth += 1;
     lower_block(ctx, &s.then_block);
     let then_end = ctx.current_exec;
+    let then_closed = then_end.is_none() && ctx.exec_closed_by_buffer_emit;
     let then_touched = cache_touched_since(ctx, &pre_branch_caches);
 
     // Restore scope so the else branch starts from the same state.
@@ -2389,6 +2332,7 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     }
     ctx.exec_branch_depth -= 1;
     let else_end = ctx.current_exec;
+    let else_closed = else_end.is_none() && ctx.exec_closed_by_buffer_emit;
     let else_touched = cache_touched_since(ctx, &pre_branch_caches);
 
     // Restore scope so post-if code sees the pre-branch state.
@@ -2397,6 +2341,15 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
 
     // The join/union below is post-branch flow; back to the outer scope.
     ctx.builder.current_scope_id = outer_scope;
+
+    // Both branches end in a `buffer emit`: the chain ends with them, and a
+    // statement after the `if` never runs (WS058), as after one in a block.
+    if then_closed && else_closed {
+        ctx.current_exec = None;
+        ctx.exec_closed_by_buffer_emit = true;
+        restore_var_caches(ctx, &pre_branch_caches);
+        return;
+    }
 
     let union = ctx.add_gate(AddNodeOpts {
         gate_class: gc::UNION,
@@ -2831,13 +2784,8 @@ pub(super) fn lower_match_value(
     }
     let mut props = HashMap::default();
     props.insert(*sym::NAME_LABEL, Literal::String("_match".to_string()));
-    let node = crate::lower::predeclare::make_scalar_var_gate(ctx, &ty, props, range);
-    let var = VarRecord {
-        node_id: node,
-        inner_type: ty,
-        get_node_for_handler: None,
-        storage: VarStorage::Var,
-    };
+    let node = crate::lower::predeclare::make_scalar_var_gate(ctx, &ty, props, range, None);
+    let var = VarRecord::new(node, ty, VarStorage::Var);
     let saved = ctx.match_value_store.replace(var.clone());
     lower_match_stmt(ctx, scrutinee, arms, range);
     ctx.match_value_store = saved;
@@ -2898,13 +2846,8 @@ pub(super) fn lower_if_value(
     };
     let mut props = HashMap::default();
     props.insert(*sym::NAME_LABEL, Literal::String("_if".to_string()));
-    let node = crate::lower::predeclare::make_scalar_var_gate(ctx, &ty, props, range);
-    let var = VarRecord {
-        node_id: node,
-        inner_type: ty,
-        get_node_for_handler: None,
-        storage: VarStorage::Var,
-    };
+    let node = crate::lower::predeclare::make_scalar_var_gate(ctx, &ty, props, range, None);
+    let var = VarRecord::new(node, ty, VarStorage::Var);
     let cond_port = lower_expr(ctx, cond);
     let branch_exec_in = ctx.current_exec.unwrap_or(entry);
     let branch = ctx.add_gate(AddNodeOpts {
@@ -2994,17 +2937,16 @@ fn store_mod_output(ctx: &mut LowerCtx, name: &str, value: &Expr, range: &Source
     if let Some(var) = ctx.mod_return_var.clone() {
         let port = lower_expr(ctx, value);
         if let Some(exec) = ctx.current_exec {
-            let set = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::VAR_SET,
-                source_range: range.clone(),
-                note: Some("ret_set"),
-                ports: GateIO::var_write(var.inner_type.clone()),
-                ..Default::default()
-            });
-            ctx.connect(exec, set.port(WirePort::Exec));
-            ctx.connect(var.node_id.port(WirePort::VarRef), set.port(WirePort::VarRef));
-            ctx.connect(port, set.port(WirePort::Value));
-            ctx.current_exec = Some(set.port(WirePort::ExecOut));
+            chain_var_write(
+                ctx,
+                exec,
+                var.node_id.port(WirePort::VarRef),
+                var.inner_type.clone(),
+                port,
+                false,
+                range.clone(),
+                Some("ret_set"),
+            );
         }
         return;
     }
@@ -3159,7 +3101,7 @@ pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
             // site does a Var_Set into it on its own exec chain; the var's value
             // feeds the output once, after all handlers (so no fan-in). Never
             // direct-wire a backed output — that wire would fan in with the
-            // var→output wire.
+            // var->output wire.
             if let Some(backing) = ctx.output_backing_vars.get(&s.name).cloned() {
                 if ctx.current_exec.is_some() {
                     let inner = backing.inner_type.clone();
@@ -3167,20 +3109,16 @@ pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
                     // After the value: its reads (an `Exec_Var_Get`) advance
                     // the chain, and the set must run after them.
                     let Some(exec) = ctx.current_exec else { return };
-                    let set_node = ctx.add_gate(AddNodeOpts {
-                        gate_class: gc::VAR_SET,
-                        source_range: SourceRange::default(),
-                        note: Some("out_set"),
-                        ports: GateIO::var_write(inner.clone()),
-                        ..Default::default()
-                    });
-                    ctx.connect(exec, set_node.port(WirePort::Exec));
-                    ctx.connect(
+                    chain_var_write(
+                        ctx,
+                        exec,
                         backing.node_id.port(WirePort::VarRef),
-                        set_node.port(WirePort::VarRef),
+                        inner.clone(),
+                        value_port,
+                        false,
+                        SourceRange::default(),
+                        Some("out_set"),
                     );
-                    ctx.connect(value_port, set_node.port(WirePort::Value));
-                    ctx.current_exec = Some(set_node.port(WirePort::ExecOut));
                 }
                 return;
             }
@@ -3406,14 +3344,7 @@ fn payload_store(ctx: &mut LowerCtx, sig: &str, field: &str, ty: Type) -> NodeId
     if let Some(lit) = default_literal_for_var_type(&ty) {
         props.insert(*sym::INITIAL_VALUE, lit);
     }
-    let store = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::VAR,
-        source_range: SourceRange::default(),
-        ports: GateIO::var_storage(ty.clone()),
-        properties: props,
-        note: Some("signal payload store"),
-        ..Default::default()
-    });
+    let store = make_scalar_var_gate(ctx, &ty, props, &SourceRange::default(), Some("signal payload store"));
     ctx.exec_signal_payloads
         .entry(sig.to_string())
         .or_default()
@@ -3426,22 +3357,21 @@ fn chain_var_set(ctx: &mut LowerCtx, var: NodeId, value_port: PortRef, ty: Type)
     let Some(exec_in) = ctx.current_exec else {
         return;
     };
-    let set = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::VAR_SET,
-        source_range: SourceRange::default(),
-        ports: GateIO::var_write(ty),
-        note: Some("signal payload write"),
-        ..Default::default()
-    });
-    ctx.connect(exec_in, set.port(WirePort::Exec));
-    ctx.connect(var.port(WirePort::VarRef), set.port(WirePort::VarRef));
-    ctx.connect(value_port, set.port(WirePort::Value));
-    ctx.current_exec = Some(set.port(WirePort::ExecOut));
+    chain_var_write(
+        ctx,
+        exec_in,
+        var.port(WirePort::VarRef),
+        ty,
+        value_port,
+        false,
+        SourceRange::default(),
+        Some("signal payload write"),
+    );
 }
 
-/// `Var_Get(<var>)` chained on the current exec (advances it); returns the
-/// Value port.
-fn chain_var_get(ctx: &mut LowerCtx, var: NodeId, ty: Type) -> PortRef {
+/// `Var_Get(<var>)` of a signal's payload, chained on the current exec when
+/// there is one (advancing it); returns the Value port.
+fn signal_payload_get(ctx: &mut LowerCtx, var: NodeId, ty: Type) -> PortRef {
     let exec_in = ctx.current_exec;
     let get = ctx.add_gate(AddNodeOpts {
         gate_class: gc::VAR_GET,
@@ -3533,32 +3463,13 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
     }
 
     // 1. Create a static bool var for the armed flag (initially false)
-    let armed_id = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::VAR,
-        source_range: a.range.clone(),
-        ports: GateIO::var_storage(Type::Bool),
-        properties: {
-            let mut p = HashMap::default();
-            p.insert(*sym::INITIAL_VALUE, Literal::Bool(false));
-            p
-        },
-        note: Some("await armed flag"),
-        ..Default::default()
-    });
+    let mut armed_props = HashMap::default();
+    armed_props.insert(*sym::INITIAL_VALUE, Literal::Bool(false));
+    let armed_id = make_scalar_var_gate(ctx, &Type::Bool, armed_props, &a.range, Some("await armed flag"));
 
     // 2. Arm: Var_Set(armed = true) on the current exec chain
     if let Some(exec_in) = ctx.current_exec {
-        let true_lit = ctx.add_gate(AddNodeOpts {
-            gate_class: gc::LITERAL,
-            source_range: a.range.clone(),
-            ports: GateIO::source(Type::Bool),
-            properties: {
-                let mut p = HashMap::default();
-                p.insert(*sym::VALUE, Literal::Bool(true));
-                p
-            },
-            ..Default::default()
-        });
+        let true_lit = raw_literal(ctx, &a.range, Type::Bool, Literal::Bool(true), None);
         let arm_set = ctx.add_gate(AddNodeOpts {
             gate_class: gc::VAR_SET,
             source_range: a.range.clone(),
@@ -3571,7 +3482,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             arm_set.port(WirePort::VarRef),
         );
         ctx.connect(
-            true_lit.port(WirePort::Output),
+            true_lit,
             arm_set.port(WirePort::Value),
         );
         // Exec chain ends here — pre-await code is done
@@ -3583,12 +3494,15 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
     // continuation), and loop back-edges must re-arm every iteration. Awaits
     // inside `if` branches don't register: their arm only fires when the branch
     // is taken, so same-chain emits stay flag-guarded (ordering is ambiguous by
-    // design there).
-    if ctx.exec_branch_depth == 0 {
-        if let Some(key) = signal_name_of(&a.exec_expr).and_then(|sig| ctx.signal_key(sig)) {
-            ctx.signal_awaits
-                .entry(key)
-                .or_insert((armed_id, ctx.builder.current_chain_id));
+    // design there). A signal declared in the await's own branch is the
+    // exception: every emit of it is inside that branch, so a back-edge loop
+    // there re-arms as it does at the top level.
+    if let Some(key) = signal_name_of(&a.exec_expr).and_then(|sig| ctx.signal_key(sig)) {
+        let chain = ctx.builder.current_chain_id;
+        if ctx.exec_branch_depth == 0 || ctx.exec_signal_depths.get(&key) == Some(&ctx.exec_branch_depth) {
+            ctx.signal_awaits.entry(key).or_insert((armed_id, chain));
+        } else {
+            ctx.branch_awaits.entry(key).or_default().push((armed_id, chain, a.range.clone()));
         }
     }
 
@@ -3629,17 +3543,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
     );
 
     // 6. Reset: Var_Set(armed = false) on the true branch
-    let false_lit = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::LITERAL,
-        source_range: a.range.clone(),
-        ports: GateIO::source(Type::Bool),
-        properties: {
-            let mut p = HashMap::default();
-            p.insert(*sym::VALUE, Literal::Bool(false));
-            p
-        },
-        ..Default::default()
-    });
+    let false_lit = raw_literal(ctx, &a.range, Type::Bool, Literal::Bool(false), None);
     let reset_set = ctx.add_gate(AddNodeOpts {
         gate_class: gc::VAR_SET,
         source_range: a.range.clone(),
@@ -3655,7 +3559,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
         reset_set.port(WirePort::VarRef),
     );
     ctx.connect(
-        false_lit.port(WirePort::Output),
+        false_lit,
         reset_set.port(WirePort::Value),
     );
 
@@ -3679,7 +3583,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
                     .map(|(_, id, ty)| (*id, ty.clone()))
             });
         let val_port = if let Some((store, ty)) = payload {
-            chain_var_get(ctx, store, ty)
+            signal_payload_get(ctx, store, ty)
         } else if let Some(ref val_expr) = a.value_expr {
             lower_expr(ctx, val_expr)
         } else if is_event_data_gate(ctx, exec_port.node_id) {
@@ -3760,7 +3664,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
                 );
                 continue;
             };
-            let val_port = chain_var_get(ctx, store, ty);
+            let val_port = signal_payload_get(ctx, store, ty);
             ctx.scope.insert(
                 &local,
                 Binding::Local(LocalRecord { port: val_port }),
@@ -3823,6 +3727,18 @@ pub(super) fn flush_pending_emits(ctx: &mut LowerCtx) {
             // re-arm every iteration. Emits from other chains enter directly,
             // guarded by the armed flag.
             let awaited = ctx.signal_awaits.get(&name).copied();
+            for (armed_var, chain, range) in ctx.branch_awaits.remove(&name).unwrap_or_default() {
+                if entries.iter().any(|(p, c)| *c == chain && p.node_id > armed_var) {
+                    ctx.warn_code(
+                        "WS118",
+                        "this `await` sits inside an `if`, but its signal is declared outside \
+                         that branch, so an emit after it on this chain does not re-arm it: a \
+                         back-edge loop here runs once. Declare the signal inside the branch, \
+                         or move the loop to a handler of its own.",
+                        &range,
+                    );
+                }
+            }
             let (armed, direct): (Vec<_>, Vec<_>) = entries
                 .into_iter()
                 .partition(|(_, chain)| awaited.is_some_and(|(_, ac)| *chain == ac));
@@ -3857,26 +3773,66 @@ pub(super) fn flush_pending_emits(ctx: &mut LowerCtx) {
     // A hub that ended up with a single input is a pass-through: splice it out
     // (its one source drives everything that hung off the hub's ExecOut).
     let hubs: Vec<NodeId> = ctx.exec_signal_hubs.values().copied().collect();
-    for hub in hubs {
-        splice_single_input_union(ctx, hub);
+    splice_single_input_unions(ctx, &hubs);
+}
+
+/// [`splice_single_input_union`] for every hub in `hubs`, in two passes over
+/// the chip tree instead of two per hub. Splicing one hub never changes how
+/// many wires feed another, and a reader of a spliced hub fed by another
+/// spliced hub ends at that one's source whichever goes first, so this is the
+/// result of splicing them one at a time. A cycle of hubs feeding each other
+/// is left to that one-at-a-time splice.
+fn splice_single_input_unions(ctx: &mut LowerCtx, hubs: &[NodeId]) {
+    fn count(m: &Module, hubs: &HashSet<NodeId>, feeds: &mut HashMap<NodeId, (usize, PortRef)>) {
+        for w in &m.wires {
+            if hubs.contains(&w.target.node_id) {
+                feeds.entry(w.target.node_id).or_insert((0, w.source)).0 += 1;
+            }
+        }
+        m.chips.values().for_each(|c| count(c, hubs, feeds));
     }
+    fn apply(m: &mut Module, spliced: &HashMap<NodeId, PortRef>) {
+        m.wires.retain(|w| !spliced.contains_key(&w.target.node_id));
+        for w in m.wires.iter_mut() {
+            if let Some(src) = spliced.get(&w.source.node_id) {
+                w.source = *src;
+            }
+        }
+        m.nodes.retain(|id, _| !spliced.contains_key(id));
+        m.chips.values_mut().for_each(|c| apply(c, spliced));
+    }
+    let set: HashSet<NodeId> = hubs.iter().copied().collect();
+    let mut feeds = HashMap::default();
+    count(&ctx.builder.module, &set, &mut feeds);
+    let single: HashMap<NodeId, PortRef> =
+        feeds.into_iter().filter(|(_, (n, _))| *n == 1).map(|(hub, (_, src))| (hub, src)).collect();
+    if single.is_empty() {
+        return;
+    }
+    let mut spliced = HashMap::default();
+    for (hub, src) in &single {
+        let mut src = *src;
+        let mut steps = 0;
+        while let Some(next) = single.get(&src.node_id) {
+            steps += 1;
+            if steps > single.len() {
+                for hub in hubs {
+                    splice_single_input_union(ctx, *hub);
+                }
+                return;
+            }
+            src = *next;
+        }
+        spliced.insert(*hub, src);
+    }
+    apply(&mut ctx.builder.module, &spliced);
 }
 
 /// `Var_Set(<armed_var> = true)` gate pair (literal + set) used to arm an
 /// await's flag on the emit path, sequenced upstream of the signal hub.
 /// Mirrors the arm built in `lower_await` step 2.
 fn build_arm_set(ctx: &mut LowerCtx, armed_var: NodeId) -> NodeId {
-    let true_lit = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::LITERAL,
-        source_range: SourceRange::default(),
-        ports: GateIO::source(Type::Bool),
-        properties: {
-            let mut p = HashMap::default();
-            p.insert(*sym::VALUE, Literal::Bool(true));
-            p
-        },
-        ..Default::default()
-    });
+    let true_lit = raw_literal(ctx, &SourceRange::default(), Type::Bool, Literal::Bool(true), None);
     let arm_set = ctx.add_gate(AddNodeOpts {
         gate_class: gc::VAR_SET,
         source_range: SourceRange::default(),
@@ -3889,7 +3845,7 @@ fn build_arm_set(ctx: &mut LowerCtx, armed_var: NodeId) -> NodeId {
         arm_set.port(WirePort::VarRef),
     );
     ctx.connect(
-        true_lit.port(WirePort::Output),
+        true_lit,
         arm_set.port(WirePort::Value),
     );
     arm_set
@@ -4012,17 +3968,16 @@ fn drive_enum_output(ctx: &mut LowerCtx, name: &str, value: &Expr, range: &Sourc
         return;
     };
     if let Some(exec) = ctx.current_exec {
-        let set_node = ctx.add_gate(AddNodeOpts {
-            gate_class: gc::VAR_SET,
-            source_range: range.clone(),
-            note: Some("out_set"),
-            ports: GateIO::var_write(backing.inner_type.clone()),
-            ..Default::default()
-        });
-        ctx.connect(exec, set_node.port(WirePort::Exec));
-        ctx.connect(backing.node_id.port(WirePort::VarRef), set_node.port(WirePort::VarRef));
-        ctx.connect(tag, set_node.port(WirePort::Value));
-        ctx.current_exec = Some(set_node.port(WirePort::ExecOut));
+        chain_var_write(
+            ctx,
+            exec,
+            backing.node_id.port(WirePort::VarRef),
+            backing.inner_type.clone(),
+            tag,
+            false,
+            range.clone(),
+            Some("out_set"),
+        );
         return;
     }
     let constant = ctx
@@ -4189,20 +4144,16 @@ pub(super) fn lower_out_binding(
         let value_port = lower_expr(ctx, value);
         // After the value: its reads advance the chain.
         let Some(exec) = ctx.current_exec else { return };
-        let set_node = ctx.add_gate(AddNodeOpts {
-            gate_class: gc::VAR_SET,
-            source_range: range.clone(),
-            note: Some("out_set"),
-            ports: GateIO::var_write(inner.clone()),
-            ..Default::default()
-        });
-        ctx.connect(exec, set_node.port(WirePort::Exec));
-        ctx.connect(
+        chain_var_write(
+            ctx,
+            exec,
             backing.node_id.port(WirePort::VarRef),
-            set_node.port(WirePort::VarRef),
+            inner.clone(),
+            value_port,
+            false,
+            range.clone(),
+            Some("out_set"),
         );
-        ctx.connect(value_port, set_node.port(WirePort::Value));
-        ctx.current_exec = Some(set_node.port(WirePort::ExecOut));
         return;
     }
     // A var-backed output (it is also emitted to) must NOT take a direct driver
@@ -4221,8 +4172,8 @@ pub(super) fn lower_out_binding(
         // Bake in the output's DECLARED type, exactly as a `var`'s
         // initializer does: the backing gate's wire variant is picked from
         // this literal's kind, so `out y: float = 0` would otherwise ship an
-        // integer variable (see `bake_literal_for_type`).
-        let lit = bake_literal_for_type(lit, &backing.inner_type);
+        // integer variable (see `const_eval::scalar_in_type`).
+        let lit = crate::const_eval::scalar_in_type(lit, &backing.inner_type);
         if let Some(node) = ctx.builder.module.nodes.get_mut(&backing.node_id) {
             let props = std::sync::Arc::make_mut(&mut node.properties);
             props.insert(*sym::INITIAL_VALUE, lit);
@@ -4403,14 +4354,21 @@ pub(super) enum Slot<'a> {
     Typed(Type),
 }
 
+/// What one field of a [`Slot`] takes.
+enum FieldSlot<'a> {
+    /// One value.
+    One,
+    /// A record, written into this slot.
+    Record(Slot<'a>),
+}
+
 impl Slot<'_> {
-    /// The field `name` of this slot: `Some(None)` where it takes one value,
-    /// `Some(Some(_))` where it takes a record, `None` where it has none.
-    fn field(&self, name: &str) -> Option<Option<Slot<'_>>> {
+    /// The field `name` of this slot, or `None` where it has none.
+    fn field(&self, name: &str) -> Option<FieldSlot<'_>> {
         match self {
             Slot::Storage(fields) => match fields.get(&crate::intern::intern(name))? {
-                Binding::Record(inner) => Some(Some(Slot::Storage(inner))),
-                _ => Some(None),
+                Binding::Record(inner) => Some(FieldSlot::Record(Slot::Storage(inner))),
+                _ => Some(FieldSlot::One),
             },
             Slot::Typed(t) => {
                 let ft = match unwrap_ref(t) {
@@ -4419,8 +4377,8 @@ impl Slot<'_> {
                     _ => None,
                 }?;
                 Some(match unwrap_ref(&ft) {
-                    Type::Record(_) | Type::Tuple(_) => Some(Slot::Typed(ft)),
-                    t if holds_one_value(&t) => None,
+                    Type::Record(_) | Type::Tuple(_) => FieldSlot::Record(Slot::Typed(ft)),
+                    t if holds_one_value(&t) => FieldSlot::One,
                     _ => return None,
                 })
             }
@@ -4446,12 +4404,12 @@ pub(super) fn held_reads_where_one_value(
         let key = crate::intern::intern(&name);
         let Some(Binding::Record(inner)) = src.get(&key).cloned() else { continue };
         match (unwrap_ref(&ty), slot.field(&name)) {
-            (Type::Outputs(outputs), Some(None)) => {
+            (Type::Outputs(outputs), Some(FieldSlot::One)) => {
                 if let Some(first) = inner.get(&crate::intern::intern(&outputs[0].0)).cloned() {
                     src.insert(key, first);
                 }
             }
-            (inner_ty @ (Type::Record(_) | Type::Tuple(_)), Some(Some(nested))) => {
+            (inner_ty @ (Type::Record(_) | Type::Tuple(_)), Some(FieldSlot::Record(nested))) => {
                 src.insert(key, Binding::Record(held_reads_where_one_value(&inner_ty, inner, nested)));
             }
             _ => {}

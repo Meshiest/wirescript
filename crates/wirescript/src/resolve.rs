@@ -3,7 +3,8 @@ use std::sync::Arc;
 use crate::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::diagnostic::{Diagnostic, SourceRange, Suppressions};
+use crate::ast::walk;
+use crate::diagnostic::{Diagnostic, Suppressions};
 use crate::parser::{ParseResult, parse};
 
 pub trait FileLoader {
@@ -191,8 +192,8 @@ fn decl_name(d: &TopDecl) -> Option<&str> {
 
 /// The accumulated import-merged declaration list, with the two indexes the
 /// per-import passes query: `used` is the union of every runtime identifier
-/// referenced by the decls so far (what `collect_runtime_idents_in_decls`
-/// recomputed from scratch per fixpoint sweep), and `bound` maps each bound
+/// referenced by the decls so far (what [`collect_idents`] with
+/// [`Uses::Code`] would recompute from scratch per fixpoint sweep), and `bound` maps each bound
 /// top-level name to the source files that bind it (what the diamond-dedup
 /// checks rescanned the whole list for). Declarations are only ever added, so
 /// both indexes update monotonically on `push`/`insert_front`.
@@ -214,7 +215,7 @@ struct DeclAccum {
 
 impl DeclAccum {
     fn index(&mut self, d: &TopDecl) {
-        collect_runtime_idents_in_decl(d, &mut self.used);
+        collect_idents(walk::Node::Decl(d), Uses::Code, &mut self.used);
         let file = d.range().file.clone();
         for n in decl_names(d) {
             self.bound.entry(n.clone()).or_default().push(file.clone());
@@ -857,8 +858,10 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
     // file OR another imported declaration references it — imported mods
     // reference their defining module's constants inside their bodies. A
     // `self` mod also counts when it is called with method syntax (`v.f()`).
-    let mut used_idents = collect_idents_in_decls(&main_decls);
-    used_idents.extend(collect_idents_in_decls(&merged.decls));
+    let mut used_idents = HashSet::default();
+    for d in main_decls.iter().chain(&merged.decls) {
+        collect_idents(walk::Node::Decl(d), Uses::All, &mut used_idents);
+    }
     let called_as_method = |name: &str| {
         used_idents.contains(&format!(".{name}"))
             && merged.decls.iter().any(|d| match d {
@@ -921,6 +924,10 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
             // Only the entry file's module `@label` labels the root chip; an
             // imported file's is inert. Cloned so the entry expr survives.
             module_label: parsed.ast.module_label.clone(),
+            // Same rule as the module `@label`: only the entry file's module
+            // `@color` / `@material` reach the root chip.
+            module_color: parsed.ast.module_color.clone(),
+            module_material: parsed.ast.module_material.clone(),
             imports: Arc::new(import_scope),
         },
         diagnostics,
@@ -934,118 +941,120 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
     }
 }
 
-fn collect_runtime_idents_in_decl(d: &TopDecl, idents: &mut HashSet<String>) {
-    match d {
-        TopDecl::Handler(h) => collect_runtime_idents_in_block(&h.body, idents),
-        TopDecl::AnonChip(ac) => collect_runtime_idents_in_block(&ac.body, idents),
-        TopDecl::Chip(c) => collect_runtime_idents_in_block(&c.body, idents),
-        TopDecl::Fn(f) => collect_idents_in_expr(&f.body, idents),
-        TopDecl::Var(v) => {
-            if let Some(e) = &v.init { collect_idents_in_expr(e, idents); }
-        }
-        TopDecl::Let(l) => collect_idents_in_expr(&l.value, idents),
-        // An array's initializer may name top-level constants
-        // (`var teams: int[] = [T_RED, T_BLUE]`). Those constants have to
-        // travel with the array through a named import, or the importing file
-        // sees the array but not the values it is built from.
-        TopDecl::Array(a) => {
-            for el in &a.init {
-                collect_idents_in_expr(el.expr(), idents);
-            }
-        }
-        TopDecl::Out(o) => {
-            if let Some(e) = &o.value { collect_idents_in_expr(e, idents); }
-        }
-        // A namespace's own declarations can call through a second namespace,
-        // so its body counts as a use site for the closure pass.
-        TopDecl::Namespace(n) => {
-            for d in &n.decls {
-                collect_runtime_idents_in_decl(d, idents);
-            }
-        }
-        _ => {}
-    }
+/// What [`collect_idents`] gathers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Uses {
+    /// The names code reads: identifiers, a method call's name as `.name`,
+    /// record shorthands and the target of an `as`. The closure pass pulls
+    /// the imported declarations these name.
+    Code,
+    /// Those, plus the names handler triggers and type annotations mention.
+    /// The unused-import check reads these; an `import * as` module's own
+    /// declarations are left to that module.
+    All,
 }
 
-fn collect_runtime_idents_in_block(block: &Block, idents: &mut HashSet<String>) {
-    for s in &block.stmts {
-        match s {
-            Stmt::Assign(a) => {
-                collect_idents_in_expr(&a.target, idents);
-                collect_idents_in_expr(&a.value, idents);
+/// Every name `node`, or anything below it, uses (see [`Uses`]).
+pub(crate) fn collect_idents(node: walk::Node, uses: Uses, idents: &mut HashSet<String>) {
+    let skipped = |n: walk::Node| uses == Uses::All && matches!(n, walk::Node::Decl(TopDecl::Namespace(_)));
+    if skipped(node) {
+        return;
+    }
+    leaf_idents(node, uses, idents);
+    walk::walk(node, walk::Ctx::default(), &mut |n, _| {
+        if skipped(n) {
+            return false;
+        }
+        leaf_idents(n, uses, idents);
+        true
+    });
+}
+
+/// The names `node` itself uses, not counting its children.
+fn leaf_idents(node: walk::Node, uses: Uses, idents: &mut HashSet<String>) {
+    let mut ty = |t: &TypeExpr| collect_idents_in_type_expr(t, idents);
+    match node {
+        walk::Node::Expr(e) => match e {
+            Expr::Ident { name, .. } => {
+                idents.insert(name.clone());
             }
-            Stmt::If(i) => {
-                collect_idents_in_expr(&i.cond, idents);
-                collect_runtime_idents_in_block(&i.then_block, idents);
-                if let Some(eb) = &i.else_block {
-                    collect_runtime_idents_in_block(eb, idents);
+            Expr::Call { callee, .. } => {
+                // A method call `v.dist(o)` names a `self` mod `dist`, recorded
+                // as `.dist` so it pulls in only such a mod.
+                if let Expr::FieldAccess { field, .. } = callee.as_ref() {
+                    idents.insert(format!(".{field}"));
                 }
             }
-            Stmt::ExprStmt(es) => collect_idents_in_expr(&es.expr, idents),
-            Stmt::Let(l) => collect_idents_in_expr(&l.value, idents),
-            Stmt::OutBinding(o) => {
-                if let Some(e) = &o.value { collect_idents_in_expr(e, idents); }
-            }
-            Stmt::Handler(h) => collect_runtime_idents_in_block(&h.body, idents),
-            Stmt::Return { value: Some(e), .. } => collect_idents_in_expr(e, idents),
-            Stmt::Var(v) => {
-                if let Some(e) = &v.init { collect_idents_in_expr(e, idents); }
-            }
-            Stmt::Emit(e) => {
-                if let Some(v) = &e.value { collect_idents_in_expr(v, idents); }
-            }
-            Stmt::Await(a) => {
-                if let Some(v) = &a.value_expr { collect_idents_in_expr(v, idents); }
-                collect_idents_in_expr(&a.exec_expr, idents);
-            }
-            Stmt::Buffer(b) => collect_idents_in_expr(&b.init, idents),
-            Stmt::AnonChip(ac) => collect_runtime_idents_in_block(&ac.body, idents),
-            Stmt::ChipDecl(c) => collect_runtime_idents_in_block(&c.body, idents),
-            // Branch forms, same as `if` above: a declaration named only
-            // inside one of these is still a dependency the closure pass has
-            // to pull in, or the import brings the caller without the callee.
-            Stmt::IfLet(i) => {
-                collect_idents_in_expr(&i.scrutinee, idents);
-                collect_runtime_idents_in_block(&i.then_block, idents);
-                if let Some(eb) = &i.else_block {
-                    collect_runtime_idents_in_block(eb, idents);
+            Expr::RecordLit { fields, .. } | Expr::VariantCtor { fields, .. } => {
+                for f in fields {
+                    if let RecordLitField::Shorthand { name, .. } = f {
+                        idents.insert(name.clone());
+                    }
                 }
             }
-            Stmt::LetElse(l) => {
-                collect_idents_in_expr(&l.scrutinee, idents);
-                collect_runtime_idents_in_block(&l.else_block, idents);
-            }
-            Stmt::Array(a) => {
-                for el in &a.init {
-                    collect_idents_in_expr(el.expr(), idents);
+            Expr::As { ty: t, .. } => ty(t),
+            _ => {}
+        },
+        _ if uses == Uses::Code => {}
+        walk::Node::Decl(d) => match d {
+            TopDecl::Handler(h) | TopDecl::Event(EventDecl { captured: Some(h), .. }) => handler_idents(h, idents),
+            TopDecl::Chip(c) => chip_idents(c, idents),
+            TopDecl::Fn(f) => {
+                for p in &f.params {
+                    ty(&p.typ);
                 }
             }
+            TopDecl::Var(v) => v.typ.iter().for_each(ty),
+            TopDecl::Let(l) => l.typ.iter().for_each(ty),
+            TopDecl::Out(o) => o.typ.iter().for_each(ty),
+            TopDecl::Array(a) => ty(&a.element_type),
+            TopDecl::Map(m) => {
+                ty(&m.key_type);
+                ty(&m.value_type);
+            }
+            TopDecl::Buffer(b) => b.typ.iter().for_each(ty),
+            TopDecl::In(i) => ty(&i.typ),
+            _ => {}
+        },
+        walk::Node::Stmt(s) => match s {
+            Stmt::Handler(h) => handler_idents(h, idents),
+            Stmt::ChipDecl(c) => chip_idents(c, idents),
+            Stmt::Var(v) => v.typ.iter().for_each(ty),
+            Stmt::Let(l) => l.typ.iter().for_each(ty),
+            Stmt::OutBinding(o) => o.typ.iter().for_each(ty),
+            Stmt::Array(a) => ty(&a.element_type),
             Stmt::Map(m) => {
-                if let Some(e) = &m.init {
-                    collect_idents_in_expr(e, idents);
-                }
+                ty(&m.key_type);
+                ty(&m.value_type);
             }
-            // Listed rather than caught by a wildcard: these name no runtime
-            // value, and a new statement kind should be a compile error here.
-            Stmt::In(_) | Stmt::Return { value: None, .. } => {}
-            // The source's expressions and the body are use sites like any
-            // other branch form's; the loop's own bindings name nothing
-            // importable.
-            Stmt::For(f) => {
-                collect_idents_in_for_source(&f.source, idents);
-                collect_runtime_idents_in_block(&f.body, idents);
-            }
-            Stmt::Break { .. } => {}
+            Stmt::Buffer(b) => b.typ.iter().for_each(ty),
+            Stmt::In(i) => ty(&i.typ),
+            _ => {}
+        },
+        walk::Node::Block(_) => {}
+    }
+}
+
+/// A handler's trigger and its capture params' types. `on trig { }` uses
+/// `trig`, `on A.done` uses `A`; a capture param may annotate its type with
+/// an imported alias (`on CustomEvent("x") -> (v: SomeType)`).
+fn handler_idents(h: &Handler, idents: &mut HashSet<String>) {
+    collect_idents_in_trigger(&h.trigger, idents);
+    if let Some((name, _)) = &h.alias {
+        idents.insert(name.clone());
+    }
+    for p in &h.params {
+        if let Some(t) = &p.ty {
+            collect_idents_in_type_expr(t, idents);
         }
     }
 }
 
-fn collect_idents_in_decls(decls: &[TopDecl]) -> HashSet<String> {
-    let mut idents = HashSet::default();
-    for d in decls {
-        collect_idents_in_decl(d, &mut idents);
+/// A chip's parameter types.
+fn chip_idents(c: &ChipDecl, idents: &mut HashSet<String>) {
+    for p in &c.inputs {
+        collect_idents_in_type_expr(&p.typ, idents);
     }
-    idents
 }
 
 /// A handler's trigger names a use of whatever it fires on: `on trig { }` uses
@@ -1065,87 +1074,6 @@ fn collect_idents_in_trigger(t: &Trigger, idents: &mut HashSet<String>) {
                 collect_idents_in_trigger(p, idents);
             }
         }
-    }
-}
-
-fn collect_idents_in_decl(d: &TopDecl, idents: &mut HashSet<String>) {
-    match d {
-        TopDecl::Handler(h) => {
-            collect_idents_in_trigger(&h.trigger, idents);
-            // The event's CONFIG args count as uses: `on Clock(interval = TICK)`
-            // reads TICK to configure the gate, not in the body. Missing these
-            // would report the import unused (WS014) — and Organize Imports
-            // would then delete it, breaking the handler it configures.
-            for arg in &h.config {
-                match arg {
-                    HandlerConfigArg::Positional(e) => collect_idents_in_expr(e, idents),
-                    HandlerConfigArg::Named { value, .. } => collect_idents_in_expr(value, idents),
-                }
-            }
-            // A capture param may annotate its type with an imported alias
-            // (`on CustomEvent("x") -> (v: SomeType)`).
-            for p in &h.params {
-                if let Some(t) = &p.ty {
-                    collect_idents_in_type_expr(t, idents);
-                }
-            }
-            collect_idents_in_block(&h.body, idents);
-        }
-        TopDecl::AnonChip(ac) => collect_idents_in_block(&ac.body, idents),
-        TopDecl::Chip(c) => {
-            for p in &c.inputs {
-                collect_idents_in_type_expr(&p.typ, idents);
-            }
-            collect_idents_in_block(&c.body, idents);
-        }
-        TopDecl::Fn(f) => {
-            for p in &f.params {
-                collect_idents_in_type_expr(&p.typ, idents);
-            }
-            collect_idents_in_expr(&f.body, idents);
-        }
-        TopDecl::Var(v) => {
-            if let Some(t) = &v.typ {
-                collect_idents_in_type_expr(t, idents);
-            }
-            if let Some(e) = &v.init {
-                collect_idents_in_expr(e, idents);
-            }
-        }
-        TopDecl::Let(l) => {
-            if let Some(t) = &l.typ {
-                collect_idents_in_type_expr(t, idents);
-            }
-            collect_idents_in_expr(&l.value, idents);
-        }
-        TopDecl::Out(o) => {
-            if let Some(t) = &o.typ {
-                collect_idents_in_type_expr(t, idents);
-            }
-            if let Some(e) = &o.value {
-                collect_idents_in_expr(e, idents);
-            }
-        }
-        TopDecl::Array(a) => {
-            collect_idents_in_type_expr(&a.element_type, idents);
-            // The initializer counts too: an element may name a top-level `let`
-            // constant (`var mask: int[] = [1 << C_FLAG]`). Missing these
-            // would report the import unused — and Organize Imports would then
-            // delete it, silently breaking the table it feeds.
-            for el in &a.init {
-                collect_idents_in_expr(el.expr(), idents);
-            }
-        }
-        TopDecl::Buffer(b) => {
-            if let Some(t) = &b.typ {
-                collect_idents_in_type_expr(t, idents);
-            }
-            collect_idents_in_expr(&b.init, idents);
-        }
-        TopDecl::In(i) => {
-            collect_idents_in_type_expr(&i.typ, idents);
-        }
-        _ => {}
     }
 }
 
@@ -1287,299 +1215,6 @@ fn expand_aliases(t: &mut TypeExpr, aliases: &HashMap<String, Alias>, params: &[
             let subst: HashMap<String, TypeExpr> = alias_params.iter().cloned().zip(args.iter().cloned()).collect();
             *t = crate::types::resolve::substitute_type_expr(&body, &subst);
         }
-    }
-}
-
-pub(crate) fn collect_idents_in_block(block: &Block, idents: &mut HashSet<String>) {
-    for s in &block.stmts {
-        match s {
-            Stmt::Assign(a) => {
-                collect_idents_in_expr(&a.target, idents);
-                collect_idents_in_expr(&a.value, idents);
-            }
-            Stmt::If(i) => {
-                collect_idents_in_expr(&i.cond, idents);
-                collect_idents_in_block(&i.then_block, idents);
-                if let Some(eb) = &i.else_block {
-                    collect_idents_in_block(eb, idents);
-                }
-            }
-            Stmt::ExprStmt(es) => collect_idents_in_expr(&es.expr, idents),
-            Stmt::Let(l) => {
-                if let Some(t) = &l.typ {
-                    collect_idents_in_type_expr(t, idents);
-                }
-                collect_idents_in_expr(&l.value, idents);
-            }
-            Stmt::OutBinding(o) => {
-                if let Some(e) = &o.value {
-                    collect_idents_in_expr(e, idents);
-                }
-                if let Some(t) = &o.typ {
-                    collect_idents_in_type_expr(t, idents);
-                }
-            }
-            // Same treatment as a top-level handler: the CONFIG args and the
-            // capture param types count as uses, not just the body. A handler
-            // nested in a chip body reaches this arm instead of the TopDecl
-            // one, so omitting them here would report `on CustomEvent(CH)`
-            // inside a chip as an unused import of CH — and Organize Imports
-            // would then delete it, breaking the handler it names.
-            Stmt::Handler(h) => {
-                collect_idents_in_trigger(&h.trigger, idents);
-                for arg in &h.config {
-                    match arg {
-                        HandlerConfigArg::Positional(e) => collect_idents_in_expr(e, idents),
-                        HandlerConfigArg::Named { value, .. } => {
-                            collect_idents_in_expr(value, idents)
-                        }
-                    }
-                }
-                for p in &h.params {
-                    if let Some(t) = &p.ty {
-                        collect_idents_in_type_expr(t, idents);
-                    }
-                }
-                collect_idents_in_block(&h.body, idents);
-            }
-            Stmt::Return { value: Some(e), .. } => collect_idents_in_expr(e, idents),
-            Stmt::Var(v) => {
-                if let Some(t) = &v.typ {
-                    collect_idents_in_type_expr(t, idents);
-                }
-                if let Some(e) = &v.init {
-                    collect_idents_in_expr(e, idents);
-                }
-            }
-            Stmt::AnonChip(ac) => collect_idents_in_block(&ac.body, idents),
-            Stmt::ChipDecl(c) => {
-                for p in &c.inputs {
-                    collect_idents_in_type_expr(&p.typ, idents);
-                }
-                collect_idents_in_block(&c.body, idents);
-            }
-            // `emit out = f(x)`, `await f(x)`, and `buffer b = f(x)` all reference
-            // whatever their value expression names. Omitting them here reports a
-            // genuinely-used import as unused (WS014), and Organize Imports would
-            // then delete it. Mirrors `collect_runtime_idents_in_block`.
-            Stmt::Emit(e) => {
-                if let Some(v) = &e.value {
-                    collect_idents_in_expr(v, idents);
-                }
-            }
-            Stmt::Await(a) => {
-                if let Some(v) = &a.value_expr {
-                    collect_idents_in_expr(v, idents);
-                }
-                collect_idents_in_expr(&a.exec_expr, idents);
-            }
-            Stmt::Buffer(b) => collect_idents_in_expr(&b.init, idents),
-            // `if let` / `let ... else` are branch forms like `if`, and their
-            // scrutinees and blocks are use sites. Missing them reported a
-            // genuinely-used import as unused (WS014), and Organize Imports
-            // then deleted it.
-            Stmt::IfLet(i) => {
-                collect_idents_in_expr(&i.scrutinee, idents);
-                collect_idents_in_block(&i.then_block, idents);
-                if let Some(eb) = &i.else_block {
-                    collect_idents_in_block(eb, idents);
-                }
-            }
-            Stmt::LetElse(l) => {
-                collect_idents_in_expr(&l.scrutinee, idents);
-                collect_idents_in_block(&l.else_block, idents);
-            }
-            Stmt::Array(a) => {
-                collect_idents_in_type_expr(&a.element_type, idents);
-                for el in &a.init {
-                    collect_idents_in_expr(el.expr(), idents);
-                }
-            }
-            Stmt::Map(m) => {
-                collect_idents_in_type_expr(&m.key_type, idents);
-                collect_idents_in_type_expr(&m.value_type, idents);
-                if let Some(e) = &m.init {
-                    collect_idents_in_expr(e, idents);
-                }
-            }
-            Stmt::In(i) => collect_idents_in_type_expr(&i.typ, idents),
-            // Listed rather than caught by a wildcard: a `return` with no
-            // value names nothing, and a new statement kind should be a
-            // compile error here, not a silently missed use site.
-            Stmt::Return { value: None, .. } => {}
-            // Same treatment as `collect_runtime_idents_in_block` above: the
-            // source's expressions and the body are use sites like any other
-            // branch form's.
-            Stmt::For(f) => {
-                collect_idents_in_for_source(&f.source, idents);
-                collect_idents_in_block(&f.body, idents);
-            }
-            Stmt::Break { .. } => {}
-        }
-    }
-}
-
-/// The identifiers a `for` source names, shared by both import-closure
-/// walkers above (`collect_runtime_idents_in_block`, `collect_idents_in_block`) -
-/// neither yet knows about the loop's own bindings, only what the source
-/// expressions reference.
-fn collect_idents_in_for_source(source: &ForSource, idents: &mut HashSet<String>) {
-    match source {
-        ForSource::Range(r) => {
-            match &r.extent {
-                RangeExtent::Bounds { start, end } => {
-                    collect_idents_in_expr(start, idents);
-                    collect_idents_in_expr(end, idents);
-                }
-                RangeExtent::Count { count, from } => {
-                    collect_idents_in_expr(count, idents);
-                    if let Some(from) = from {
-                        collect_idents_in_expr(from, idents);
-                    }
-                }
-            }
-            if let Some(step) = &r.step {
-                collect_idents_in_expr(step, idents);
-            }
-        }
-        ForSource::Collection { expr, .. } => collect_idents_in_expr(expr, idents),
-    }
-}
-
-fn collect_idents_in_expr(e: &Expr, idents: &mut HashSet<String>) {
-    match e {
-        Expr::Ident { name, .. } => {
-            idents.insert(name.clone());
-        }
-        Expr::BinOp { left, right, .. } => {
-            collect_idents_in_expr(left, idents);
-            collect_idents_in_expr(right, idents);
-        }
-        // The variant path names the enum, so an import used ONLY by a variant
-        // test still counts as used.
-        Expr::Is { value, path, .. } => {
-            collect_idents_in_expr(value, idents);
-            collect_idents_in_expr(path, idents);
-        }
-        Expr::As { value, ty, .. } => {
-            collect_idents_in_expr(value, idents);
-            collect_idents_in_type_expr(ty, idents);
-        }
-        Expr::UnOp { operand, .. } => collect_idents_in_expr(operand, idents),
-        Expr::Call { callee, args, .. } => {
-            // A method call `v.dist(o)` names a `self` mod `dist`, recorded
-            // as `.dist` so it pulls in only such a mod.
-            if let Expr::FieldAccess { field, .. } = callee.as_ref() {
-                idents.insert(format!(".{field}"));
-            }
-            collect_idents_in_expr(callee, idents);
-            for a in args {
-                match a {
-                    CallArg::Positional(e) | CallArg::Named { value: e, .. } | CallArg::Spread(e) => {
-                        collect_idents_in_expr(e, idents)
-                    }
-                }
-            }
-        }
-        Expr::FieldAccess { obj, .. } => collect_idents_in_expr(obj, idents),
-        Expr::IndexAccess { obj, index, .. } => {
-            collect_idents_in_expr(obj, idents);
-            collect_idents_in_expr(index, idents);
-        }
-        Expr::IfExpr {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            collect_idents_in_expr(cond, idents);
-            collect_idents_in_expr(then_branch, idents);
-            collect_idents_in_expr(else_branch, idents);
-        }
-        Expr::InterpLit { parts, .. } => {
-            for p in parts {
-                if let InterpPart::Expr(e) = p {
-                    collect_idents_in_expr(e, idents);
-                }
-            }
-        }
-        Expr::RecordLit { fields, .. } => {
-            for f in fields {
-                match f {
-                    RecordLitField::Named { value, .. } => collect_idents_in_expr(value, idents),
-                    // Shorthand `{ name }` references an identifier by that name.
-                    RecordLitField::Shorthand { name, .. } => {
-                        idents.insert(name.clone());
-                    }
-                    RecordLitField::Spread { value, .. } => collect_idents_in_expr(value, idents),
-                }
-            }
-        }
-        Expr::Array { elements, .. } => {
-            for el in elements {
-                match el {
-                    ArrayElem::Item(e) | ArrayElem::Spread(e) => collect_idents_in_expr(e, idents),
-                }
-            }
-        }
-        Expr::BlockExpr { stmts, value, .. } => {
-            let tmp_block = Block {
-                stmts: stmts.clone(),
-                range: SourceRange::default(),
-            };
-            collect_idents_in_block(&tmp_block, idents);
-            collect_idents_in_expr(value, idents);
-        }
-        Expr::MapLit { entries, .. } => {
-            for e in entries {
-                collect_idents_in_expr(&e.key, idents);
-                collect_idents_in_expr(&e.value, idents);
-            }
-        }
-        // A `match` arm's body is a use site like any other. Missing it
-        // reported a genuinely-used import as unused (WS014), and Organize
-        // Imports then deleted it.
-        Expr::MatchExpr { scrutinee, arms, .. } => {
-            collect_idents_in_expr(scrutinee, idents);
-            for a in arms {
-                match &a.body {
-                    MatchBody::Expr(e) => collect_idents_in_expr(e, idents),
-                    MatchBody::Block(b) => collect_idents_in_block(b, idents),
-                }
-            }
-        }
-        // The path names the enum, so `E.A { x: v }` uses `E` as well as `v`.
-        Expr::VariantCtor { path, fields, .. } => {
-            collect_idents_in_expr(path, idents);
-            for f in fields {
-                match f {
-                    RecordLitField::Named { value, .. } | RecordLitField::Spread { value, .. } => {
-                        collect_idents_in_expr(value, idents)
-                    }
-                    RecordLitField::Shorthand { name, .. } => {
-                        idents.insert(name.clone());
-                    }
-                }
-            }
-        }
-        Expr::Deref { operand, .. } | Expr::RefOf { operand, .. } => {
-            collect_idents_in_expr(operand, idents)
-        }
-        Expr::TuplePick { obj, .. } => collect_idents_in_expr(obj, idents),
-        Expr::Unsafe { inner, .. } => collect_idents_in_expr(inner, idents),
-        // Listed rather than caught by a wildcard: these name nothing, and a
-        // new expression kind should be a compile error here, not a silently
-        // missed use site.
-        Expr::IntLit { .. }
-        | Expr::AtomLit { .. }
-        | Expr::FloatLit { .. }
-        | Expr::StringLit { .. }
-        | Expr::BoolLit { .. }
-        | Expr::NullLit { .. }
-        | Expr::CurrentExec { .. }
-        | Expr::AssetRef { .. }
-        | Expr::PrefabRef { .. }
-        | Expr::NestedPrefab { .. } => {}
     }
 }
 

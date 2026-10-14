@@ -76,6 +76,10 @@ fn check_label_expr_stmt(ctx: &mut TypeCheckCtx, s: &Stmt) {
             }
         }
         Stmt::Handler(h) => check_label_exprs_in_block(ctx, &h.body),
+        Stmt::For(f) => {
+            check_one_label_expr(ctx, &f.label_expr);
+            check_label_exprs_in_block(ctx, &f.body);
+        }
         _ => {}
     }
 }

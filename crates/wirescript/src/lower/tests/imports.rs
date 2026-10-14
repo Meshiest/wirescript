@@ -505,16 +505,16 @@ fn a_generic_mod_called_through_a_namespace_infers_its_type_params() {
         n.ports.inputs.iter().chain(&n.ports.outputs).find(|p| p.name == port.sym()).map(|p| p.ty.clone())
     };
     // `u.id(a) + 1`: an int add of `a` itself.
-    let add = super::const_params::nodes_of(m, "BrickComponentType_Expr_MathAdd");
+    let add = super::nodes_of(m, "BrickComponentType_Expr_MathAdd");
     assert_eq!(add.len(), 1);
     assert_eq!(port_ty(add[0], WirePort::Output), Some(Type::Int));
     assert_eq!(source(add[0].id, WirePort::InputA), Some(input("a")));
     // `t = u.id(s)`: the string itself, stored as a string.
-    let sets = super::const_params::nodes_of(m, crate::ir::gate_class::VAR_SET);
+    let sets = super::nodes_of(m, crate::ir::gate_class::VAR_SET);
     let store_t = sets.iter().find(|n| source(n.id, WirePort::Value) == Some(input("s"))).expect("t = s");
     assert_eq!(port_ty(store_t, WirePort::Value), Some(Type::String));
     // `u.pick(c, f, 2.5)`: a float Select between `f` and 2.5 on `c`.
-    let select = super::const_params::nodes_of(m, crate::ir::gate_class::SELECT);
+    let select = super::nodes_of(m, crate::ir::gate_class::SELECT);
     assert_eq!(select.len(), 1);
     assert_eq!(port_ty(select[0], WirePort::Output), Some(Type::Float));
     let operands = [source(select[0].id, WirePort::InputA), source(select[0].id, WirePort::InputB)];
@@ -894,4 +894,112 @@ fn a_library_names_the_values_it_declares_or_imports() {
     }
     let unnamed = codes(&format!("{}{read}", main("import { mk } from \"lk\"")), &lib);
     assert!(!unnamed.contains(&"WS002".to_string()), "{unnamed:?}");
+}
+
+// ── Named arguments, defaults and `fn` across imports ──
+
+/// Lower `main_src` with in-memory imported files, folding off so argument
+/// values stay visible on the gates they reach.
+fn lower_files(main_src: &str, files: &[(&str, &str)]) -> (Vec<crate::diagnostic::Diagnostic>, LowerResult) {
+    let files: crate::collections::HashMap<String, String> =
+        files.iter().map(|(n, s)| (n.to_string(), s.to_string())).collect();
+    let loader = crate::resolve::MemLoader { files };
+    let crate::compile::FrontEnd { resolved, typecheck: tc, lowered, .. } =
+        crate::compile::front_end(main_src, "main.ws", None, FoldMode::ForceOff, &loader);
+    let mut diags = resolved.diagnostics;
+    diags.extend(tc.diagnostics);
+    diags.extend(lowered.diagnostics.iter().cloned());
+    (diags, lowered)
+}
+
+fn assert_clean(diags: &[crate::diagnostic::Diagnostic]) {
+    assert!(diags.is_empty(), "{:?}", diags.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>());
+}
+
+fn int_inputs(r: &LowerResult, class: &str, port: &str) -> Vec<i64> {
+    let port = crate::intern::intern(port);
+    let mut out: Vec<i64> = nodes_of(&r.module, class)
+        .iter()
+        .filter_map(|n| match n.properties.get(&port) {
+            Some(crate::ir::Literal::Int(v)) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+const BASE: &str = "\
+var total: int = 0
+fn add(x: int, y: int = 1) -> int {
+  total += x
+  return x + y
+}
+mod scale(v: int, by: int = 2) -> int {
+  return v * by
+}
+";
+
+const MUL: &str = "BrickComponentType_Expr_MathMultiply";
+
+/// A named argument binds the `mod` parameter it names. It was dropped, so
+/// `scale(n, by = 3)` multiplied by the default 2.
+#[test]
+fn a_named_mod_argument_binds_its_parameter() {
+    let (diags, r) = lower_files(
+        "mod scale(v: int, by: int = 2) -> int { return v * by }\nin go: exec\nin n: int\non go {\n  let a = scale(n, by = 3)\n  let b = scale(n)\n  let c = scale(n, 5)\n  BroadcastChatMessage(\"${a} ${b} ${c}\")\n}\n",
+        &[],
+    );
+    assert_clean(&diags);
+    assert_eq!(int_inputs(&r, MUL, "InputB"), vec![2, 3, 5]);
+}
+
+/// A namespaced call takes the member's defaults and named arguments, as a
+/// flat call does. `b.add(n)` was WS022 for the omitted defaulted parameter.
+#[test]
+fn a_namespaced_call_takes_defaults_and_named_arguments() {
+    let (diags, r) = lower_files(
+        "import * as b from \"base\"\nin go: exec\nin n: int\non go {\n  let p = b.scale(n)\n  let q = b.scale(n, by = 5)\n  let s = b.add(n)\n  let t = b.add(n, y = 7)\n  BroadcastChatMessage(\"${p} ${q} ${s} ${t}\")\n}\n",
+        &[("base.ws", BASE)],
+    );
+    assert_clean(&diags);
+    assert_eq!(int_inputs(&r, MUL, "InputB"), vec![2, 5]);
+    let call = crate::ir::gate_class::FUNCTION_CALL;
+    assert_eq!(nodes_of(&r.module, call).len(), 2);
+    assert_eq!(int_inputs(&r, call, "Input1"), vec![7], "only the named call supplies y");
+}
+
+/// A `fn` reached through a chain of imports, from another `fn`, a `mod` and
+/// a chip, compiles to one plane per `fn` and one call per call site, and the
+/// storage it uses stays a single var.
+#[test]
+fn a_fn_reached_through_nested_imports_is_one_plane_and_one_var() {
+    let mid = "\
+import { add } from \"base\"
+fn twice(x: int) -> int {
+  return add(add(x))
+}
+mod viaMod(x: int) -> int {
+  return add(x, 10)
+}
+chip Counter(tick: exec) -> (value: int) {
+  var n: int = 0
+  on tick {
+    n = add(n)
+  }
+  out value = n
+}
+";
+    let (diags, r) = lower_files(
+        "import \"mid\"\nin go: exec\non go {\n  let a = twice(3) + viaMod(1)\n  BroadcastChatMessage(\"${a}\")\n}\nlet c = Counter(go)\nout v: int = c.value\n",
+        &[("base.ws", BASE), ("mid.ws", mid)],
+    );
+    assert_clean(&diags);
+    // twice (1) + add twice inside twice (2) + add in viaMod (1) + add in Counter (1)
+    assert_eq!(nodes_of(&r.module, crate::ir::gate_class::FUNCTION_CALL).len(), 5);
+    let total_vars = nodes_of(&r.module, "BrickComponentType_Var")
+        .iter()
+        .filter(|n| matches!(n.properties.get(&*crate::intern::sym::NAME_LABEL), Some(crate::ir::Literal::String(s)) if s == "total"))
+        .count();
+    assert_eq!(total_vars, 1, "the imported fn's storage is one var");
 }

@@ -114,6 +114,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("scale", WirePort::ItemScale, Type::Float),
                 CallParam::opt("itemName", WirePort::ItemNameOverride, Type::String),
                 CallParam::opt("projectile", WirePort::ProjectileOverride, Type::Entity),
+                CallParam::opt("projectileScale", WirePort::ProjectileScaleMultiplier, Type::Float),
                 CallParam::opt("overrideColors", WirePort::BOverrideColors, Type::Bool),
                 // Config-only (settings menu, not wire inputs): `meshColors` is
                 // a color array (`Color[]`), `ammoOverride` the
@@ -138,6 +139,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("scale", WirePort::ItemScale, Type::Float),
                 CallParam::opt("itemName", WirePort::ItemNameOverride, Type::String),
                 CallParam::opt("projectile", WirePort::ProjectileOverride, Type::Entity),
+                CallParam::opt("projectileScale", WirePort::ProjectileScaleMultiplier, Type::Float),
                 CallParam::opt("overrideColors", WirePort::BOverrideColors, Type::Bool),
                 // Config-only (settings menu, not wire inputs): `meshColors` is
                 // a color array (`Color[]`), `ammoOverride` the

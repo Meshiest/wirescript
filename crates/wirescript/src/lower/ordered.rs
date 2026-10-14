@@ -129,6 +129,9 @@ impl Writes {
 #[derive(Default)]
 pub(super) struct ConeIndex {
     incoming: HashMap<NodeId, Vec<PortRef>>,
+    /// The module's own wires by the node they feed: the port fed and the
+    /// source, in wire order.
+    feeds: HashMap<NodeId, Vec<(WirePort, PortRef)>>,
     indexed: usize,
     last: Option<crate::ir::Wire>,
     /// Each chip reached, at every depth, by its node count, wire count and
@@ -141,6 +144,13 @@ pub(super) struct ConeIndex {
 
 impl ConeIndex {
     fn sync(&mut self, m: &crate::ir::Module) {
+        self.sync_wires(m);
+        self.add_chips(m, &mut Vec::new());
+    }
+
+    /// Index the module's wires added since the last sync, starting over when
+    /// the indexed ones were rewritten. Its chips are left to `add_chips`.
+    fn sync_wires(&mut self, m: &crate::ir::Module) {
         let wires = &m.wires;
         let valid = self.indexed <= wires.len()
             && (self.indexed == 0 || Some(wires[self.indexed - 1]) == self.last);
@@ -149,10 +159,10 @@ impl ConeIndex {
         }
         for w in &wires[self.indexed..] {
             self.incoming.entry(w.target.node_id).or_default().push(w.source);
+            self.feeds.entry(w.target.node_id).or_default().push((w.target.port, w.source));
         }
         self.indexed = wires.len();
         self.last = wires.last().copied();
-        self.add_chips(m, &mut Vec::new());
     }
 
     /// Index every chip under `m` that is new or has changed since, with the
@@ -198,10 +208,23 @@ impl ConeIndex {
         {
             *p = w.source;
         }
+        if let Some(from) = self.feeds.get_mut(&w.target.node_id)
+            && let Some((_, p)) = from.iter_mut().find(|(port, p)| *port == w.target.port && *p == old)
+        {
+            *p = w.source;
+        }
         if i + 1 == self.indexed {
             self.last = Some(w);
         }
     }
+}
+
+/// The sources of the module's own wires into `id`, each with the port it
+/// feeds.
+pub(super) fn feeds_of(ctx: &LowerCtx, id: NodeId) -> Vec<(WirePort, PortRef)> {
+    let mut index = ctx.cone_index.borrow_mut();
+    index.sync_wires(&ctx.builder.module);
+    index.feeds.get(&id).cloned().unwrap_or_default()
 }
 
 /// Whether the node `id` is in this module or one of its chips.
@@ -512,13 +535,8 @@ pub(super) fn hold(ctx: &mut LowerCtx, b: &Binding, t: Option<&Binding>, label: 
             };
             let mut props = HashMap::default();
             props.insert(*sym::NAME_LABEL, Literal::String(format!("_{label}")));
-            let node = crate::lower::predeclare::make_scalar_var_gate(ctx, &ty, props, range);
-            let var = VarRecord {
-                node_id: node,
-                inner_type: ty,
-                get_node_for_handler: None,
-                storage: VarStorage::Var,
-            };
+            let node = crate::lower::predeclare::make_scalar_var_gate(ctx, &ty, props, range, None);
+            let var = VarRecord::new(node, ty, VarStorage::Var);
             set_scalar_var(ctx, &var, port, range);
             Binding::Local(LocalRecord {
                 port: node.port(WirePort::Value),

@@ -91,7 +91,7 @@ pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx, expr: &Expr) -> Option<
     }
 }
 
-/// A `Binding` that names an ARRAY container → its ref port and element type.
+/// A `Binding` that names an ARRAY container -> its ref port and element type.
 /// The bare-`Ident` index path already accepts four spellings of "an array
 /// lives here": a `var` array (ref on `ArrayVarRef`), an `in X: T[]` input and
 /// an `out X: T[]` (ref rides the rerouter's `RER_Output`), and a `let` bound
@@ -144,7 +144,7 @@ fn is_placeholder_port(ctx: &LowerCtx, port: PortRef) -> bool {
 }
 
 /// The map analogue of [`binding_array_ref`]: a `Binding` that names a MAP
-/// container → its ref port and whole `Type::Map(K, V)`.
+/// container -> its ref port and whole `Type::Map(K, V)`.
 pub(super) fn binding_map_ref(
     ctx: &LowerCtx,
     binding: &Binding,
@@ -212,9 +212,6 @@ pub(super) fn binding_to_port(
                 return Some(var_rec.node_id.port(WirePort::MapVarRef));
             }
             if let Some(exec) = ctx.current_exec {
-                if let Some(cached) = var_rec.get_node_for_handler {
-                    return Some(cached.port(WirePort::Value));
-                }
                 let props = var_get_seed_props(&var_rec.inner_type);
                 let get_id = chain_var_get(ctx, var_rec, exec, range, props, Some("get rec_field"));
                 return Some(get_id.port(WirePort::Value));
@@ -355,16 +352,12 @@ fn index_result_port(field: &str) -> Option<WirePort> {
     }
 }
 
-/// A vector (`x`/`y`/`z`) or color (`r`/`g`/`b`/`a`) component name, in either
-/// case. These don't name gate ports — they desugar to a SplitVector /
-/// SplitColor gate, so access through a local must fall through to that logic.
+/// A vector, color, rotator or quat component name
+/// ([`crate::catalog::value_fields`]). These don't name gate ports — they
+/// desugar to a Split gate, so access through a local must fall through to
+/// that logic.
 fn is_swizzle_field(field: &str) -> bool {
-    matches!(
-        field,
-        "x" | "X" | "y" | "Y" | "z" | "Z" | "w" | "W"
-            | "r" | "R" | "g" | "G" | "b" | "B" | "a" | "A"
-            | "pitch" | "Pitch" | "yaw" | "Yaw" | "roll" | "Roll"
-    )
+    crate::catalog::value_fields::is_field_name(field)
 }
 
 /// A scalar can never be swizzled. A chip whose output is named `x`/`y`/`z`/
@@ -562,14 +555,14 @@ pub(super) fn lower_field_access(
     // claims `.x`/`.y` (and before it claims a genuine `.a`/`.b`/`.r`/`.g` record
     // field as a colour component). Uses the whole expr `e`, so a nested path
     // like `pts[i].inner.a` resolves rather than degrading to a placeholder.
-    if let Some(port) = lower_record_array_field_path(ctx, e, range) {
+    if let Some(port) = lower_record_field_path(ctx, Columns::Array, e, range) {
         return port;
     }
     // `m[k].f1.f2…` / `m.get(k).f1.f2…` — a field (possibly nested) of a record
     // map's value. Uses the whole expr `e`, so a nested path resolves rather than
     // degrading to a placeholder (and before the swizzle fallback claims a
     // genuine `.a`/`.b`/`.x`/`.y` record field as a colour/vector component).
-    if let Some(port) = lower_record_map_field_path(ctx, e, range) {
+    if let Some(port) = lower_record_field_path(ctx, Columns::Map, e, range) {
         return port;
     }
 
@@ -1176,7 +1169,7 @@ fn array_get(
                 PortSpec::exec(*sym::EXEC_OUT),
             ],
         },
-        note: Some("array get".into()),
+        note: Some("array get"),
         ..Default::default()
     });
     ctx.connect(current_exec, node_id.port(WirePort::Exec));
@@ -1186,9 +1179,121 @@ fn array_get(
     Some(node_id.port(WirePort::Value))
 }
 
-/// Build an ArrayVar exec gate with the standard `Exec` + `ArrayVarRef` inputs
-/// and `ExecOut` output, plus the supplied extra (already-lowered) inputs and
-/// extra outputs. Advances the exec chain and returns the `ret` port.
+/// How a record container stores its fields: an array of records keeps one
+/// parallel array per field, read and written at an index; a map of records
+/// keeps one parallel map per field, at a key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Columns {
+    Array,
+    Map,
+}
+
+impl Columns {
+    fn storage(self) -> VarStorage {
+        match self {
+            Columns::Array => VarStorage::Array,
+            Columns::Map => VarStorage::Map,
+        }
+    }
+
+    /// The port a column's ref arrives on, and the type its gates declare it.
+    fn ref_port(self) -> (WirePort, Type) {
+        match self {
+            Columns::Array => (WirePort::ArrayVarRef, Type::Array(Box::new(Type::Any))),
+            Columns::Map => (WirePort::MapVarRef, Type::Ref(Box::new(Type::Any))),
+        }
+    }
+
+    /// The port that picks one position of column `v`, and its type: the
+    /// index, or the key.
+    fn position(self, v: &VarRecord) -> (WirePort, Type) {
+        match self {
+            Columns::Array => (WirePort::Index, Type::Int),
+            Columns::Map => (WirePort::Key, map_kv(v).0),
+        }
+    }
+
+    /// The type one position of column `v` holds.
+    fn value_type(self, v: &VarRecord) -> Type {
+        match self {
+            Columns::Array => v.inner_type.clone(),
+            Columns::Map => map_kv(v).1,
+        }
+    }
+
+    /// The get gate, and the flag it reports beside the value.
+    fn get(self) -> (&'static str, WirePort) {
+        match self {
+            Columns::Array => (gc::ARRAY_GET, WirePort::BOutOfBounds),
+            Columns::Map => (gc::MAP_GET, WirePort::BFound),
+        }
+    }
+
+    fn set(self) -> &'static str {
+        match self {
+            Columns::Array => gc::ARRAY_SET_AT_INDEX,
+            Columns::Map => gc::MAP_SET,
+        }
+    }
+
+    /// What a record written into one position is called in a message.
+    fn written(self) -> &'static str {
+        match self {
+            Columns::Array => "the element written here",
+            Columns::Map => "the value written here",
+        }
+    }
+
+    /// What a read with no exec chain is called in a message.
+    fn read(self) -> &'static str {
+        match self {
+            Columns::Array => "an array read with no exec chain to run on",
+            Columns::Map => "a map read with no exec chain to run on",
+        }
+    }
+}
+
+/// An exec op on one array or map: wires the current exec, the container's
+/// ref `container` and `extra_in`, exposes `extra_out`, advances the exec
+/// chain, and returns the `ret` port.
+///
+/// With no exec chain there is no form for the op, so it is reported: handing
+/// back the ref would put the container REFERENCE where the consumer expects
+/// the VALUE. A read on a `const` map receiver reaches here that way, as it is
+/// exempt from the exec-context rule (`container_call_exec_exempt`) on the
+/// premise that it folds, and nothing else speaks up when the fold declines.
+/// Every array caller checks for an exec chain first.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn column_exec_op(
+    ctx: &mut LowerCtx,
+    cols: Columns,
+    range: &SourceRange,
+    container: PortRef,
+    gate_class: &'static str,
+    extra_in: Vec<(WirePort, Type, PortRef)>,
+    extra_out: Vec<(WirePort, Type)>,
+    ret: WirePort,
+    note: Option<&'static str>,
+) -> PortRef {
+    let Some(exec_in) = ctx.current_exec else {
+        return synthesise_unsupported_range(ctx, cols.read(), range);
+    };
+    let (ref_port, ref_type) = cols.ref_port();
+    let mut inputs = vec![PortSpec::exec(*sym::EXEC), PortSpec::new(ref_port.sym(), ref_type)];
+    for (port, ty, _) in &extra_in {
+        inputs.push(PortSpec::new(port.sym(), ty.clone()));
+    }
+    let mut outputs = vec![PortSpec::exec(*sym::EXEC_OUT)];
+    for (port, ty) in &extra_out {
+        outputs.push(PortSpec::new(port.sym(), ty.clone()));
+    }
+    let mut wired = vec![(container, ref_port)];
+    wired.extend(extra_in.into_iter().map(|(port, _, src)| (src, port)));
+    let opts = AddNodeOpts { gate_class, source_range: range.clone(), ports: GateIO { inputs, outputs }, note, ..Default::default() };
+    chain_gate(ctx, opts, exec_in, &wired).port(ret)
+}
+
+/// [`column_exec_op`] on an array.
 pub(super) fn array_exec_op(
     ctx: &mut LowerCtx,
     range: &SourceRange,
@@ -1198,34 +1303,306 @@ pub(super) fn array_exec_op(
     extra_out: Vec<(WirePort, Type)>,
     ret: WirePort,
 ) -> PortRef {
-    let exec_in = match ctx.current_exec {
-        Some(e) => e,
-        None => return array_ref,
+    column_exec_op(ctx, Columns::Array, range, array_ref, gate_class, extra_in, extra_out, ret, None)
+}
+
+/// [`column_exec_op`] on a map. `pub(super)` so the `m[k] = v` write desugar
+/// in `stmt.rs::lower_assign` can call it directly, mirroring the read desugar
+/// in `lower_index_access` below.
+pub(super) fn map_exec_op(
+    ctx: &mut LowerCtx,
+    range: &SourceRange,
+    map_ref: PortRef,
+    gate_class: &'static str,
+    extra_in: Vec<(WirePort, Type, PortRef)>,
+    extra_out: Vec<(WirePort, Type)>,
+    ret: WirePort,
+) -> PortRef {
+    column_exec_op(ctx, Columns::Map, range, map_ref, gate_class, extra_in, extra_out, ret, None)
+}
+
+/// The leaf columns of a record container's field map, name-sorted for a
+/// stable fan-out order, recursing through nested record fields: one parallel
+/// array (or map) per record field.
+pub(super) fn leaf_columns(cols: Columns, fields: &HashMap<crate::intern::Sym, Binding>) -> Vec<VarRecord> {
+    let names = sorted_field_names(fields);
+    let mut out = Vec::new();
+    for k in names {
+        match fields.get(&k) {
+            Some(Binding::Record(sub)) => out.extend(leaf_columns(cols, sub)),
+            Some(Binding::Var(v)) if v.storage == cols.storage() => out.push(v.clone()),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Resolve `base` (an identifier or a record field chain) to a record
+/// container's field map: a `Binding::Record` with at least one leaf column.
+pub(super) fn resolve_record_columns(
+    ctx: &LowerCtx,
+    cols: Columns,
+    base: &Expr,
+) -> Option<HashMap<crate::intern::Sym, Binding>> {
+    let binding = match base {
+        Expr::Ident { name, .. } => ctx.scope.get(name).cloned(),
+        _ => resolve_field_chain(ctx, base).cloned(),
+    }?;
+    match binding {
+        Binding::Record(f) if !leaf_columns(cols, &f).is_empty() => Some(f),
+        _ => None,
+    }
+}
+
+/// Decompose `c[p].f1.f2…` into the container base, the position expr and the
+/// trailing field path (source order). Both named fields (`.inner`) and tuple
+/// picks (`.0`) contribute a path segment, so a record whose field is itself a
+/// tuple decomposes the same way. A map's position is either key-access
+/// spelling, `m[k]` or `m.get(k)` ([`record_map_key_source`]). `None` unless
+/// field/tuple accesses wrap a position access.
+fn split_record_access(cols: Columns, e: &Expr) -> Option<(&Expr, &Expr, Vec<String>)> {
+    let mut path: Vec<String> = Vec::new();
+    let mut cur = e;
+    loop {
+        match cur {
+            Expr::FieldAccess { obj, field, .. } => {
+                path.push(field.clone());
+                cur = obj;
+            }
+            Expr::TuplePick { obj, index, .. } => {
+                path.push(index.to_string());
+                cur = obj;
+            }
+            _ => {
+                let (base, position) = match (cols, cur) {
+                    (Columns::Array, Expr::IndexAccess { obj, index, .. }) => (obj.as_ref(), index.as_ref()),
+                    (Columns::Map, _) => record_map_key_source(cur)?,
+                    _ => return None,
+                };
+                path.reverse();
+                return Some((base, position, path));
+            }
+        }
+    }
+}
+
+/// Read column `v` at `position`: the get gate's `Value` port.
+fn column_get(ctx: &mut LowerCtx, cols: Columns, v: &VarRecord, position: PortRef, range: &SourceRange) -> PortRef {
+    let (class, flag) = cols.get();
+    let (pos_port, pos_type) = cols.position(v);
+    let value_type = cols.value_type(v);
+    column_exec_op(
+        ctx,
+        cols,
+        range,
+        v.node_id.port(cols.ref_port().0),
+        class,
+        vec![(pos_port, pos_type, position)],
+        vec![(WirePort::Value, value_type), (flag, Type::Bool)],
+        WirePort::Value,
+        None,
+    )
+}
+
+/// Write `value` into column `v` at `position`.
+fn column_set(ctx: &mut LowerCtx, cols: Columns, v: &VarRecord, position: PortRef, value: PortRef, range: &SourceRange) {
+    let (pos_port, pos_type) = cols.position(v);
+    let value_type = cols.value_type(v);
+    column_exec_op(
+        ctx,
+        cols,
+        range,
+        v.node_id.port(cols.ref_port().0),
+        cols.set(),
+        vec![(pos_port, pos_type, position), (WirePort::Value, value_type, value)],
+        vec![],
+        WirePort::ExecOut,
+        None,
+    );
+}
+
+/// Read every leaf column at `position` into a `Binding::Record` of `Local`
+/// ports, recursing through nested records.
+pub(super) fn record_column_read(
+    ctx: &mut LowerCtx,
+    cols: Columns,
+    fields: &HashMap<crate::intern::Sym, Binding>,
+    position: PortRef,
+    range: &SourceRange,
+) -> HashMap<crate::intern::Sym, Binding> {
+    let mut out = HashMap::default();
+    let names = sorted_field_names(fields);
+    for k in names {
+        match fields.get(&k) {
+            Some(Binding::Record(sub)) => {
+                out.insert(k, Binding::Record(record_column_read(ctx, cols, sub, position, range)));
+            }
+            Some(Binding::Var(v)) if v.storage == cols.storage() => {
+                let port = column_get(ctx, cols, v, position, range);
+                out.insert(k, Binding::Local(LocalRecord { port }));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `pts[i] = rec` / `m[k] = rec` / `m.set(k, rec)` — write a whole record by
+/// fanning the record VALUE across the leaf columns at the shared position.
+/// Returns `true` when it handled the assignment.
+pub(super) fn lower_record_position_set(
+    ctx: &mut LowerCtx,
+    cols: Columns,
+    fields: &HashMap<crate::intern::Sym, Binding>,
+    position: &Expr,
+    value: &Expr,
+    range: &SourceRange,
+) -> bool {
+    if ctx.current_exec.is_none() {
+        return true;
+    }
+    let Some((position_port, src)) = keyed_record(ctx, position, value) else {
+        return false;
     };
-    let mut inputs = vec![
-        PortSpec::exec(*sym::EXEC),
-        PortSpec::new(*sym::ARRAY_VAR_REF, Type::Array(Box::new(Type::Any))),
-    ];
-    for (port, ty, _) in &extra_in {
-        inputs.push(PortSpec::new(port.sym(), ty.clone()));
+    if let Some(src) = crate::lower::stmt::fit_record_value(ctx, cols.written(), value, fields, src) {
+        record_set_walk(ctx, cols, fields, &src, position_port, range);
     }
-    let mut outputs = vec![PortSpec::exec(*sym::EXEC_OUT)];
-    for (port, ty) in &extra_out {
-        outputs.push(PortSpec::new(port.sym(), ty.clone()));
+    true
+}
+
+/// Write the record value `src` field by field into the leaf columns at
+/// `position`, recursing through nested records.
+pub(super) fn record_set_walk(
+    ctx: &mut LowerCtx,
+    cols: Columns,
+    fields: &HashMap<crate::intern::Sym, Binding>,
+    src: &HashMap<crate::intern::Sym, Binding>,
+    position: PortRef,
+    range: &SourceRange,
+) {
+    let names = sorted_field_names(fields);
+    for k in names {
+        let Some(sbind) = src.get(&k).cloned() else {
+            continue;
+        };
+        match fields.get(&k) {
+            Some(Binding::Record(tsub)) => {
+                if let Binding::Record(ssub) = &sbind {
+                    record_set_walk(ctx, cols, tsub, ssub, position, range);
+                }
+            }
+            Some(Binding::Var(v)) if v.storage == cols.storage() => {
+                let Some(val_port) = binding_to_port(ctx, &sbind, range) else {
+                    continue;
+                };
+                column_set(ctx, cols, v, position, val_port, range);
+            }
+            _ => {}
+        }
     }
-    let node_id = ctx.add_gate(AddNodeOpts {
-        gate_class,
-        source_range: range.clone(),
-        ports: GateIO { inputs, outputs },
-        ..Default::default()
-    });
-    ctx.connect(exec_in, node_id.port(WirePort::Exec));
-    ctx.connect(array_ref, node_id.port(WirePort::ArrayVarRef));
-    for (port, _, src) in extra_in {
-        ctx.connect(src, node_id.port(port));
+}
+
+/// `c[p].f1.f2…` — read a field of a record container's entry. A SCALAR-leaf
+/// path yields that field's column `Value` port; a path landing on a NESTED
+/// RECORD reads every leaf of that sub-record at the shared position into a
+/// `Binding::Record` value (stashed in `pending_inline_record` for a record
+/// consumer) and returns its first leaf port so a scalar consumer still
+/// auto-unwraps. `None` unless `e` is a record-container field path that
+/// resolves, with an exec context to read on.
+pub(super) fn lower_record_field_path(
+    ctx: &mut LowerCtx,
+    cols: Columns,
+    e: &Expr,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    let (base, position, path) = split_record_access(cols, e)?;
+    if path.is_empty() {
+        return None;
     }
-    ctx.current_exec = Some(node_id.port(WirePort::ExecOut));
-    node_id.port(ret)
+    let fields = resolve_record_columns(ctx, cols, base)?;
+    let binding = navigate_record_fields(&fields, &path)?.clone();
+    ctx.current_exec?;
+    let position_port = lower_expr(ctx, position);
+    match binding {
+        Binding::Var(v) if v.storage == cols.storage() => Some(column_get(ctx, cols, &v, position_port, range)),
+        Binding::Record(sub) => {
+            let rec = record_column_read(ctx, cols, &sub, position_port, range);
+            let primary = first_leaf_port(&rec)?;
+            ctx.pending_inline_record = Some(rec);
+            Some(primary)
+        }
+        _ => None,
+    }
+}
+
+/// `pts[i].inner` / `m[k].inner` as a record VALUE: a record-container field
+/// path landing on a nested record. `None` otherwise, or with no exec context
+/// to read on.
+pub(super) fn lower_record_field_path_value(
+    ctx: &mut LowerCtx,
+    cols: Columns,
+    e: &Expr,
+    range: &SourceRange,
+) -> Option<HashMap<crate::intern::Sym, Binding>> {
+    let (base, position, path) = split_record_access(cols, e)?;
+    if path.is_empty() {
+        return None;
+    }
+    let fields = resolve_record_columns(ctx, cols, base)?;
+    let Binding::Record(sub) = navigate_record_fields(&fields, &path)?.clone() else {
+        return None;
+    };
+    ctx.current_exec?;
+    let position_port = lower_expr(ctx, position);
+    Some(record_column_read(ctx, cols, &sub, position_port, range))
+}
+
+/// `c[p].f1.f2… = value` — write a field of a record container's entry. A
+/// SCALAR-leaf path writes that field's column; a NESTED-RECORD path fans the
+/// record value across the sub-record's columns at the shared position.
+/// Returns `true` when it handled the assignment.
+pub(super) fn lower_record_field_path_set(
+    ctx: &mut LowerCtx,
+    cols: Columns,
+    target: &Expr,
+    value: &Expr,
+    range: &SourceRange,
+) -> bool {
+    let Some((base, position, path)) = split_record_access(cols, target) else {
+        return false;
+    };
+    if path.is_empty() {
+        return false;
+    }
+    let Some(fields) = resolve_record_columns(ctx, cols, base) else {
+        return false;
+    };
+    let Some(binding) = navigate_record_fields(&fields, &path).cloned() else {
+        return false;
+    };
+    if ctx.current_exec.is_none() {
+        return true;
+    }
+    match binding {
+        Binding::Var(v) if v.storage == cols.storage() => {
+            let position_port = lower_expr(ctx, position);
+            let value_port = lower_expr(ctx, value);
+            column_set(ctx, cols, &v, position_port, value_port, range);
+            true
+        }
+        Binding::Record(sub) => {
+            let Some(src) = crate::lower::stmt::value_record_fields(ctx, value) else {
+                return false;
+            };
+            let Some(src) = crate::lower::stmt::fit_record_value(ctx, cols.written(), value, &sub, src) else {
+                return true;
+            };
+            let position_port = lower_expr(ctx, position);
+            record_set_walk(ctx, cols, &sub, &src, position_port, range);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Resolve an argument that names another array to its ref port (for
@@ -1340,8 +1717,8 @@ pub(super) fn container_ref(
     // An `in`/`out` port of columnar elements is one ref, not columns, so a
     // miss here falls through to the static binding.
     let columns = match kind {
-        ContainerKind::Array { elem } if columnar(elem) => resolve_record_array(ctx, obj),
-        ContainerKind::Map { value, .. } if columnar(value) => resolve_record_map(ctx, obj),
+        ContainerKind::Array { elem } if columnar(elem) => resolve_record_columns(ctx, Columns::Array, obj),
+        ContainerKind::Map { value, .. } if columnar(value) => resolve_record_columns(ctx, Columns::Map, obj),
         _ => None,
     };
     if let Some(fields) = columns {
@@ -1369,56 +1746,6 @@ pub(super) fn container_ref(
         return None;
     }
     Some(ContainerSource::Ref(lower_expr(ctx, obj)))
-}
-
-/// A `MapVar_*` exec op: wires the current exec + the map's `MapVarRef` plus
-/// `extra_in`, exposes `extra_out`, advances exec, and returns the `ret` port.
-/// The map analogue of [`array_exec_op`]. `pub(super)` so the `m[k] = v`
-/// write desugar in `stmt.rs::lower_assign` can call it directly, mirroring
-/// the read desugar in `lower_index_access` below.
-pub(super) fn map_exec_op(
-    ctx: &mut LowerCtx,
-    range: &SourceRange,
-    map_ref: PortRef,
-    gate_class: &'static str,
-    extra_in: Vec<(WirePort, Type, PortRef)>,
-    extra_out: Vec<(WirePort, Type)>,
-    ret: WirePort,
-) -> PortRef {
-    // No exec chain to sequence the gate on, so there is no form for this op
-    // here. Report it: handing back `map_ref` puts the container REFERENCE
-    // where the consumer expects the VALUE, and a read on a `const` receiver is
-    // exempt from the exec-context rule (`container_call_exec_exempt`) on the
-    // premise that it folds, so nothing else speaks up when the fold declines.
-    // Matches what the array path already does for the same shape.
-    let exec_in = match ctx.current_exec {
-        Some(e) => e,
-        None => return synthesise_unsupported_range(ctx, "a map read with no exec chain to run on", range),
-    };
-    let mut inputs = vec![
-        PortSpec::exec(*sym::EXEC),
-        PortSpec::new(*sym::MAP_VAR_REF, Type::Ref(Box::new(Type::Any))),
-    ];
-    for (port, ty, _) in &extra_in {
-        inputs.push(PortSpec::new(port.sym(), ty.clone()));
-    }
-    let mut outputs = vec![PortSpec::exec(*sym::EXEC_OUT)];
-    for (port, ty) in &extra_out {
-        outputs.push(PortSpec::new(port.sym(), ty.clone()));
-    }
-    let node_id = ctx.add_gate(AddNodeOpts {
-        gate_class,
-        source_range: range.clone(),
-        ports: GateIO { inputs, outputs },
-        ..Default::default()
-    });
-    ctx.connect(exec_in, node_id.port(WirePort::Exec));
-    ctx.connect(map_ref, node_id.port(WirePort::MapVarRef));
-    for (port, _, src) in extra_in {
-        ctx.connect(src, node_id.port(port));
-    }
-    ctx.current_exec = Some(node_id.port(WirePort::ExecOut));
-    node_id.port(ret)
 }
 
 /// The container backstop: an array/map operation whose receiver resolved to no
@@ -1471,14 +1798,11 @@ pub(super) fn is_immutable_container(ctx: &LowerCtx, node: NodeId) -> bool {
             gc::BUFFER_TICKS | gc::BUFFER_SECONDS => port == WirePort::Input,
             _ => false,
         };
-        stack.extend(
-            ctx.builder
-                .module
-                .wires
-                .iter()
-                .filter(|w| w.target.node_id == id && passes(w.target.port))
-                .map(|w| w.source.node_id),
-        );
+        if !matches!(class, gc::SELECT | gc::BUFFER_TICKS | gc::BUFFER_SECONDS) {
+            continue;
+        }
+        let feeds = crate::lower::ordered::feeds_of(ctx, id);
+        stack.extend(feeds.into_iter().filter(|(port, _)| passes(*port)).map(|(_, src)| src.node_id));
     }
     false
 }
@@ -1536,42 +1860,10 @@ fn sorted_field_names(fields: &HashMap<crate::intern::Sym, Binding>) -> Vec<crat
     names
 }
 
-/// The leaf map-backed vars of a record MAP's field map, name-sorted, recursing
-/// through nested record fields. Each leaf is one `VarStorage::Map` parallel map
-/// (`Map<K, fieldType>`) — a record map is stored as one map per record field.
-pub(super) fn leaf_maps(fields: &HashMap<crate::intern::Sym, Binding>) -> Vec<VarRecord> {
-    let names = sorted_field_names(fields);
-    let mut out = Vec::new();
-    for k in names {
-        match fields.get(&k) {
-            Some(Binding::Record(sub)) => out.extend(leaf_maps(sub)),
-            Some(Binding::Var(v)) if v.storage == VarStorage::Map => out.push(v.clone()),
-            _ => {}
-        }
-    }
-    out
-}
-
 pub(super) fn map_kv(v: &VarRecord) -> (Type, Type) {
     match &v.inner_type {
         Type::Map(k, val) => (k.as_ref().clone(), val.as_ref().clone()),
         _ => (Type::Any, Type::Any),
-    }
-}
-
-/// Resolve `base` to a record MAP's field map (a `Binding::Record` with at least
-/// one parallel map leaf). Mirrors [`resolve_record_array`].
-pub(super) fn resolve_record_map(
-    ctx: &LowerCtx,
-    base: &Expr,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
-    let binding = match base {
-        Expr::Ident { name, .. } => ctx.scope.get(name).cloned(),
-        _ => resolve_field_chain(ctx, base).cloned(),
-    }?;
-    match binding {
-        Binding::Record(f) if !leaf_maps(&f).is_empty() => Some(f),
-        _ => None,
     }
 }
 
@@ -1603,106 +1895,10 @@ pub(super) fn lower_record_map_key_value(
     range: &SourceRange,
 ) -> Option<HashMap<crate::intern::Sym, Binding>> {
     let (base, key) = record_map_key_source(expr)?;
-    let fields = resolve_record_map(ctx, base)?;
+    let fields = resolve_record_columns(ctx, Columns::Map, base)?;
     ctx.current_exec?;
     let key_port = lower_expr(ctx, key);
-    Some(record_map_key_read(ctx, &fields, key_port, range))
-}
-
-pub(super) fn record_map_key_read(
-    ctx: &mut LowerCtx,
-    fields: &HashMap<crate::intern::Sym, Binding>,
-    key_port: PortRef,
-    range: &SourceRange,
-) -> HashMap<crate::intern::Sym, Binding> {
-    let mut out = HashMap::default();
-    let names = sorted_field_names(fields);
-    for k in names {
-        match fields.get(&k) {
-            Some(Binding::Record(sub)) => {
-                out.insert(k, Binding::Record(record_map_key_read(ctx, sub, key_port, range)));
-            }
-            Some(Binding::Var(v)) if v.storage == VarStorage::Map => {
-                let (key_ty, val_ty) = map_kv(v);
-                let mref = v.node_id.port(WirePort::MapVarRef);
-                let port = map_exec_op(
-                    ctx,
-                    range,
-                    mref,
-                    gc::MAP_GET,
-                    vec![(WirePort::Key, key_ty, key_port)],
-                    vec![(WirePort::Value, val_ty), (WirePort::BFound, Type::Bool)],
-                    WirePort::Value,
-                );
-                out.insert(k, Binding::Local(LocalRecord { port }));
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-/// `m[k] = rec` / `m.set(k, rec)` — write a whole record value by fanning it
-/// across the parallel field maps at the shared key. Returns `true` when handled.
-pub(super) fn lower_record_map_key_set(
-    ctx: &mut LowerCtx,
-    fields: &HashMap<crate::intern::Sym, Binding>,
-    key: &Expr,
-    value: &Expr,
-    range: &SourceRange,
-) -> bool {
-    if ctx.current_exec.is_none() {
-        return true;
-    }
-    let Some((key_port, src)) = keyed_record(ctx, key, value) else {
-        return false;
-    };
-    if let Some(src) = crate::lower::stmt::fit_record_value(ctx, "the value written here", value, fields, src) {
-        record_map_set_walk(ctx, fields, &src, key_port, range);
-    }
-    true
-}
-
-pub(super) fn record_map_set_walk(
-    ctx: &mut LowerCtx,
-    fields: &HashMap<crate::intern::Sym, Binding>,
-    src: &HashMap<crate::intern::Sym, Binding>,
-    key_port: PortRef,
-    range: &SourceRange,
-) {
-    let names = sorted_field_names(fields);
-    for k in names {
-        let Some(sbind) = src.get(&k).cloned() else {
-            continue;
-        };
-        match fields.get(&k) {
-            Some(Binding::Record(tsub)) => {
-                if let Binding::Record(ssub) = &sbind {
-                    record_map_set_walk(ctx, tsub, ssub, key_port, range);
-                }
-            }
-            Some(Binding::Var(v)) if v.storage == VarStorage::Map => {
-                let (key_ty, val_ty) = map_kv(v);
-                let mref = v.node_id.port(WirePort::MapVarRef);
-                let Some(val_port) = binding_to_port(ctx, &sbind, range) else {
-                    continue;
-                };
-                map_exec_op(
-                    ctx,
-                    range,
-                    mref,
-                    gc::MAP_SET,
-                    vec![
-                        (WirePort::Key, key_ty, key_port),
-                        (WirePort::Value, val_ty, val_port),
-                    ],
-                    vec![],
-                    WirePort::ExecOut,
-                );
-            }
-            _ => {}
-        }
-    }
+    Some(record_column_read(ctx, Columns::Map, &fields, key_port, range))
 }
 
 /// Fan a record-map method across the parallel per-field maps. `set` decomposes
@@ -1717,7 +1913,7 @@ pub(super) fn lower_record_map_method(
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
-    let leaves = leaf_maps(fields);
+    let leaves = leaf_columns(Columns::Map, fields);
     if leaves.is_empty() {
         return synthesise_unsupported(ctx, e);
     }
@@ -1763,7 +1959,7 @@ pub(super) fn lower_record_map_method(
             match element_fields(ctx, fields, v) {
                 Some(src) => {
                     let key_port = lower_expr(ctx, k);
-                    record_map_set_walk(ctx, fields, &src, key_port, range);
+                    record_set_walk(ctx, Columns::Map, fields, &src, key_port, range);
                     ctx.current_exec
                         .unwrap_or_else(|| synthesise_unsupported(ctx, e))
                 }
@@ -1816,23 +2012,6 @@ pub(super) fn lower_record_map_method(
             synthesise_unsupported(ctx, e)
         }
     }
-}
-
-/// The leaf array-backed vars of a record container's field map, name-sorted for
-/// a stable fan-out order, recursing through nested record fields. Each leaf is
-/// one `VarStorage::Array` parallel array — a record ARRAY is stored as one
-/// array per record field.
-pub(super) fn leaf_arrays(fields: &HashMap<crate::intern::Sym, Binding>) -> Vec<VarRecord> {
-    let names = sorted_field_names(fields);
-    let mut out = Vec::new();
-    for k in names {
-        match fields.get(&k) {
-            Some(Binding::Record(sub)) => out.extend(leaf_arrays(sub)),
-            Some(Binding::Var(v)) if v.storage == VarStorage::Array => out.push(v.clone()),
-            _ => {}
-        }
-    }
-    out
 }
 
 fn nth_positional<'a>(args: &'a [CallArg], i: usize) -> Option<&'a Expr> {
@@ -1897,50 +2076,6 @@ pub(super) fn record_array_value_op(
     ret
 }
 
-/// Resolve `base` (an identifier or a record field chain) to a record array's
-/// field map — a `Binding::Record` with at least one parallel array leaf. Used
-/// to fan `base[i]` / `base[i].field` across the per-field arrays.
-pub(super) fn resolve_record_array(
-    ctx: &LowerCtx,
-    base: &Expr,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
-    let binding = match base {
-        Expr::Ident { name, .. } => ctx.scope.get(name).cloned(),
-        _ => resolve_field_chain(ctx, base).cloned(),
-    }?;
-    match binding {
-        Binding::Record(f) if !leaf_arrays(&f).is_empty() => Some(f),
-        _ => None,
-    }
-}
-
-/// Decompose `arr[i].f1.f2…` into the array base, the index expr, and the
-/// trailing field path (source order). Both named fields (`.inner`) and tuple
-/// picks (`.0`) contribute a path segment, so a record whose field is itself a
-/// tuple decomposes the same way. `None` unless `e` is field/tuple accesses
-/// wrapping an index access.
-fn split_record_array_access(e: &Expr) -> Option<(&Expr, &Expr, Vec<String>)> {
-    let mut path: Vec<String> = Vec::new();
-    let mut cur = e;
-    loop {
-        match cur {
-            Expr::FieldAccess { obj, field, .. } => {
-                path.push(field.clone());
-                cur = obj;
-            }
-            Expr::TuplePick { obj, index, .. } => {
-                path.push(index.to_string());
-                cur = obj;
-            }
-            Expr::IndexAccess { obj, index, .. } => {
-                path.reverse();
-                return Some((obj, index, path));
-            }
-            _ => return None,
-        }
-    }
-}
-
 /// Walk a record field map along `path`, returning the binding the LAST segment
 /// names. Every earlier segment must name a nested record to descend through;
 /// a non-record earlier segment (or any missing name) yields `None`. `path`
@@ -1995,128 +2130,6 @@ fn record_array_field(
     }
 }
 
-/// `pts[i].f1.f2…` — read a field of a record array's element by indexing the
-/// parallel arrays. A path landing on a SCALAR leaf yields that element's
-/// `Value` port; a path landing on a NESTED RECORD reads every leaf of that
-/// sub-record at the shared index into a `Binding::Record` value (stashed in
-/// `pending_inline_record` for a record consumer) and returns its first leaf
-/// port so a scalar consumer still auto-unwraps. `None` unless `e` is a
-/// record-array field path that resolves, with an exec context to read on.
-pub(super) fn lower_record_array_field_path(
-    ctx: &mut LowerCtx,
-    e: &Expr,
-    range: &SourceRange,
-) -> Option<PortRef> {
-    let (base, index, path) = split_record_array_access(e)?;
-    if path.is_empty() {
-        return None;
-    }
-    let fields = resolve_record_array(ctx, base)?;
-    let binding = navigate_record_fields(&fields, &path)?.clone();
-    ctx.current_exec?;
-    let index_port = lower_expr(ctx, index);
-    match binding {
-        Binding::Var(v) if v.storage == VarStorage::Array => Some(array_exec_op(
-            ctx,
-            range,
-            v.node_id.port(WirePort::ArrayVarRef),
-            gc::ARRAY_GET,
-            vec![(WirePort::Index, Type::Int, index_port)],
-            vec![
-                (WirePort::Value, v.inner_type.clone()),
-                (WirePort::BOutOfBounds, Type::Bool),
-            ],
-            WirePort::Value,
-        )),
-        Binding::Record(sub) => {
-            let rec = record_array_index_read(ctx, &sub, index_port, range);
-            let primary = first_leaf_port(&rec)?;
-            ctx.pending_inline_record = Some(rec);
-            Some(primary)
-        }
-        _ => None,
-    }
-}
-
-/// `pts[i].inner` as a record VALUE — the nested-record analogue of
-/// [`lower_record_array_index_value`]. `None` unless `e` is a record-array field
-/// path landing on a nested record, with an exec context to read on.
-pub(super) fn lower_record_array_field_path_value(
-    ctx: &mut LowerCtx,
-    e: &Expr,
-    range: &SourceRange,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
-    let (base, index, path) = split_record_array_access(e)?;
-    if path.is_empty() {
-        return None;
-    }
-    let fields = resolve_record_array(ctx, base)?;
-    let Binding::Record(sub) = navigate_record_fields(&fields, &path)?.clone() else {
-        return None;
-    };
-    ctx.current_exec?;
-    let index_port = lower_expr(ctx, index);
-    Some(record_array_index_read(ctx, &sub, index_port, range))
-}
-
-/// `pts[i].f1.f2… = value` — write a field of a record array's element. A
-/// SCALAR-leaf path writes that field's parallel array; a NESTED-RECORD path
-/// fans the record value across the sub-record's parallel arrays at the shared
-/// index. Returns `true` when it handled the assignment.
-pub(super) fn lower_record_array_field_path_set(
-    ctx: &mut LowerCtx,
-    target: &Expr,
-    value: &Expr,
-    range: &SourceRange,
-) -> bool {
-    let Some((base, index, path)) = split_record_array_access(target) else {
-        return false;
-    };
-    if path.is_empty() {
-        return false;
-    }
-    let Some(fields) = resolve_record_array(ctx, base) else {
-        return false;
-    };
-    let Some(binding) = navigate_record_fields(&fields, &path).cloned() else {
-        return false;
-    };
-    if ctx.current_exec.is_none() {
-        return true;
-    }
-    match binding {
-        Binding::Var(v) if v.storage == VarStorage::Array => {
-            let index_port = lower_expr(ctx, index);
-            let value_port = lower_expr(ctx, value);
-            array_exec_op(
-                ctx,
-                range,
-                v.node_id.port(WirePort::ArrayVarRef),
-                gc::ARRAY_SET_AT_INDEX,
-                vec![
-                    (WirePort::Index, Type::Int, index_port),
-                    (WirePort::Value, v.inner_type.clone(), value_port),
-                ],
-                vec![],
-                WirePort::ExecOut,
-            );
-            true
-        }
-        Binding::Record(sub) => {
-            let Some(src) = crate::lower::stmt::value_record_fields(ctx, value) else {
-                return false;
-            };
-            let Some(src) = crate::lower::stmt::fit_record_value(ctx, "the element written here", value, &sub, src) else {
-                return true;
-            };
-            let index_port = lower_expr(ctx, index);
-            record_array_set_walk(ctx, &sub, &src, index_port, range);
-            true
-        }
-        _ => false,
-    }
-}
-
 /// `value`'s fields as an element of the record or enum container whose
 /// columns are `columns`, fitted to them (see `stmt::fit_record_value`).
 fn element_fields(
@@ -2126,154 +2139,6 @@ fn element_fields(
 ) -> Option<HashMap<crate::intern::Sym, Binding>> {
     let src = crate::lower::stmt::value_record_fields(ctx, value)?;
     crate::lower::stmt::fit_record_value(ctx, "the element written here", value, columns, src)
-}
-
-/// Decompose `m[k].f1.f2…` / `m.get(k).f1.f2…` into the map base, the key expr,
-/// and the trailing field path. The map counterpart of
-/// [`split_record_array_access`]; the base recognises BOTH key-access spellings
-/// via [`record_map_key_source`]. `None` unless field/tuple accesses wrap a map
-/// key access.
-fn split_record_map_access(e: &Expr) -> Option<(&Expr, &Expr, Vec<String>)> {
-    let mut path: Vec<String> = Vec::new();
-    let mut cur = e;
-    loop {
-        match cur {
-            Expr::FieldAccess { obj, field, .. } => {
-                path.push(field.clone());
-                cur = obj;
-            }
-            Expr::TuplePick { obj, index, .. } => {
-                path.push(index.to_string());
-                cur = obj;
-            }
-            _ => {
-                let (base, key) = record_map_key_source(cur)?;
-                path.reverse();
-                return Some((base, key, path));
-            }
-        }
-    }
-}
-
-/// `m[k].f1.f2…` — read a field of a record map's value by keying the parallel
-/// maps. The map analogue of [`lower_record_array_field_path`]: a SCALAR-leaf
-/// path yields that field's `MapVar_Get` value; a NESTED-RECORD path reads every
-/// leaf of the sub-record at the shared key into a `Binding::Record` value
-/// (stashed in `pending_inline_record`) and returns its first leaf port.
-pub(super) fn lower_record_map_field_path(
-    ctx: &mut LowerCtx,
-    e: &Expr,
-    range: &SourceRange,
-) -> Option<PortRef> {
-    let (base, key, path) = split_record_map_access(e)?;
-    if path.is_empty() {
-        return None;
-    }
-    let fields = resolve_record_map(ctx, base)?;
-    let binding = navigate_record_fields(&fields, &path)?.clone();
-    ctx.current_exec?;
-    let key_port = lower_expr(ctx, key);
-    match binding {
-        Binding::Var(v) if v.storage == VarStorage::Map => {
-            let (key_ty, val_ty) = map_kv(&v);
-            Some(map_exec_op(
-                ctx,
-                range,
-                v.node_id.port(WirePort::MapVarRef),
-                gc::MAP_GET,
-                vec![(WirePort::Key, key_ty, key_port)],
-                vec![(WirePort::Value, val_ty), (WirePort::BFound, Type::Bool)],
-                WirePort::Value,
-            ))
-        }
-        Binding::Record(sub) => {
-            let rec = record_map_key_read(ctx, &sub, key_port, range);
-            let primary = first_leaf_port(&rec)?;
-            ctx.pending_inline_record = Some(rec);
-            Some(primary)
-        }
-        _ => None,
-    }
-}
-
-/// `m[k].inner` as a record VALUE — the nested-record analogue of
-/// [`lower_record_map_key_value`]. `None` unless `e` is a record-map field path
-/// landing on a nested record, with an exec context to read on.
-pub(super) fn lower_record_map_field_path_value(
-    ctx: &mut LowerCtx,
-    e: &Expr,
-    range: &SourceRange,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
-    let (base, key, path) = split_record_map_access(e)?;
-    if path.is_empty() {
-        return None;
-    }
-    let fields = resolve_record_map(ctx, base)?;
-    let Binding::Record(sub) = navigate_record_fields(&fields, &path)?.clone() else {
-        return None;
-    };
-    ctx.current_exec?;
-    let key_port = lower_expr(ctx, key);
-    Some(record_map_key_read(ctx, &sub, key_port, range))
-}
-
-/// `m[k].f1.f2… = value` — write a field of a record map's value. A SCALAR-leaf
-/// path writes that field's parallel map; a NESTED-RECORD path fans the record
-/// value across the sub-record's parallel maps at the shared key. Returns `true`
-/// when it handled the assignment.
-pub(super) fn lower_record_map_field_path_set(
-    ctx: &mut LowerCtx,
-    target: &Expr,
-    value: &Expr,
-    range: &SourceRange,
-) -> bool {
-    let Some((base, key, path)) = split_record_map_access(target) else {
-        return false;
-    };
-    if path.is_empty() {
-        return false;
-    }
-    let Some(fields) = resolve_record_map(ctx, base) else {
-        return false;
-    };
-    let Some(binding) = navigate_record_fields(&fields, &path).cloned() else {
-        return false;
-    };
-    if ctx.current_exec.is_none() {
-        return true;
-    }
-    match binding {
-        Binding::Var(v) if v.storage == VarStorage::Map => {
-            let (key_ty, val_ty) = map_kv(&v);
-            let key_port = lower_expr(ctx, key);
-            let value_port = lower_expr(ctx, value);
-            map_exec_op(
-                ctx,
-                range,
-                v.node_id.port(WirePort::MapVarRef),
-                gc::MAP_SET,
-                vec![
-                    (WirePort::Key, key_ty, key_port),
-                    (WirePort::Value, val_ty, value_port),
-                ],
-                vec![],
-                WirePort::ExecOut,
-            );
-            true
-        }
-        Binding::Record(sub) => {
-            let Some(src) = crate::lower::stmt::value_record_fields(ctx, value) else {
-                return false;
-            };
-            let Some(src) = crate::lower::stmt::fit_record_value(ctx, "the value written here", value, &sub, src) else {
-                return true;
-            };
-            let key_port = lower_expr(ctx, key);
-            record_map_set_walk(ctx, &sub, &src, key_port, range);
-            true
-        }
-        _ => false,
-    }
 }
 
 /// `pts[i]` as a record VALUE — read every parallel field array at the shared
@@ -2287,131 +2152,17 @@ pub(super) fn lower_record_array_index_value(
     index: &Expr,
     range: &SourceRange,
 ) -> Option<HashMap<crate::intern::Sym, Binding>> {
-    let fields = resolve_record_array(ctx, base)?;
+    let fields = resolve_record_columns(ctx, Columns::Array, base)?;
     ctx.current_exec?;
     let index_port = lower_expr(ctx, index);
-    Some(record_array_index_read(ctx, &fields, index_port, range))
-}
-
-pub(super) fn record_array_index_read(
-    ctx: &mut LowerCtx,
-    fields: &HashMap<crate::intern::Sym, Binding>,
-    index_port: PortRef,
-    range: &SourceRange,
-) -> HashMap<crate::intern::Sym, Binding> {
-    let mut out = HashMap::default();
-    let names = sorted_field_names(fields);
-    for k in names {
-        match fields.get(&k) {
-            Some(Binding::Record(sub)) => {
-                let inner = record_array_index_read(ctx, sub, index_port, range);
-                out.insert(k, Binding::Record(inner));
-            }
-            Some(Binding::Var(v)) if v.storage == VarStorage::Array => {
-                let elem = v.inner_type.clone();
-                let aref = v.node_id.port(WirePort::ArrayVarRef);
-                let port = array_exec_op(
-                    ctx,
-                    range,
-                    aref,
-                    gc::ARRAY_GET,
-                    vec![(WirePort::Index, Type::Int, index_port)],
-                    vec![
-                        (WirePort::Value, elem),
-                        (WirePort::BOutOfBounds, Type::Bool),
-                    ],
-                    WirePort::Value,
-                );
-                out.insert(k, Binding::Local(LocalRecord { port }));
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-/// `pts[i] = rec` — write a whole record element by fanning the record VALUE
-/// across the parallel field arrays at the shared index. Returns `true` when it
-/// handled the assignment.
-pub(super) fn lower_record_array_index_set(
-    ctx: &mut LowerCtx,
-    fields: &HashMap<crate::intern::Sym, Binding>,
-    index: &Expr,
-    value: &Expr,
-    range: &SourceRange,
-) -> bool {
-    if ctx.current_exec.is_none() {
-        return true;
-    }
-    let Some((index_port, src)) = keyed_record(ctx, index, value) else {
-        return false;
-    };
-    if let Some(src) = crate::lower::stmt::fit_record_value(ctx, "the element written here", value, fields, src) {
-        record_array_set_walk(ctx, fields, &src, index_port, range);
-    }
-    true
-}
-
-fn record_array_set_walk(
-    ctx: &mut LowerCtx,
-    fields: &HashMap<crate::intern::Sym, Binding>,
-    src: &HashMap<crate::intern::Sym, Binding>,
-    index_port: PortRef,
-    range: &SourceRange,
-) {
-    let names = sorted_field_names(fields);
-    for k in names {
-        let Some(sbind) = src.get(&k).cloned() else {
-            continue;
-        };
-        match fields.get(&k) {
-            Some(Binding::Record(tsub)) => {
-                if let Binding::Record(ssub) = &sbind {
-                    record_array_set_walk(ctx, tsub, ssub, index_port, range);
-                }
-            }
-            Some(Binding::Var(v)) if v.storage == VarStorage::Array => {
-                let elem = v.inner_type.clone();
-                let aref = v.node_id.port(WirePort::ArrayVarRef);
-                let Some(val_port) = binding_to_port(ctx, &sbind, range) else {
-                    continue;
-                };
-                array_exec_op(
-                    ctx,
-                    range,
-                    aref,
-                    gc::ARRAY_SET_AT_INDEX,
-                    vec![
-                        (WirePort::Index, Type::Int, index_port),
-                        (WirePort::Value, elem, val_port),
-                    ],
-                    vec![],
-                    WirePort::ExecOut,
-                );
-            }
-            _ => {}
-        }
-    }
+    Some(record_column_read(ctx, Columns::Array, &fields, index_port, range))
 }
 
 /// A fresh, unbound `Pseudo_ArrayVar` scratch gate of element type `elem` (for
 /// the multi-pass record sort's key copies). Not bound in scope — only its ref
 /// port is wired.
 fn make_scratch_array(ctx: &mut LowerCtx, elem: &Type, range: &SourceRange) -> PortRef {
-    let node = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::ARRAY_VAR,
-        source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![PortSpec::new(
-                              *sym::ARRAY_VAR_REF,
-                              Type::Ref(Box::new(Type::Array(Box::new(elem.clone())))),
-                          )],
-        },
-        note: Some("sort key copy".into()),
-        ..Default::default()
-    });
-    node.port(WirePort::ArrayVarRef)
+    make_array_var_gate(ctx, elem, HashMap::default(), range, Some("sort key copy")).port(WirePort::ArrayVarRef)
 }
 
 /// `soa.field.sort(descending?)` on a record array: sort the WHOLE record by
@@ -2443,7 +2194,7 @@ pub(super) fn lower_record_array_field_sort(
     let key = record_array_field(fields, path)?;
     let key_ref = key.node_id.port(WirePort::ArrayVarRef);
     let key_elem = key.inner_type.clone();
-    let parallels: Vec<VarRecord> = leaf_arrays(fields)
+    let parallels: Vec<VarRecord> = leaf_columns(Columns::Array, fields)
         .into_iter()
         .filter(|v| v.node_id != key.node_id)
         .collect();
@@ -2519,7 +2270,7 @@ pub(super) fn lower_record_array_method(
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
-    let leaves = leaf_arrays(fields);
+    let leaves = leaf_columns(Columns::Array, fields);
     if leaves.is_empty() {
         return synthesise_unsupported(ctx, e);
     }
@@ -2946,9 +2697,9 @@ fn lower_sort_multiple(ctx: &mut LowerCtx, array_ref: PortRef, args: &[CallArg],
                 }
                 let arg_ports: Vec<PortRef> = match resolve_array_ref_arg(ctx, expr) {
                     Some(port) => vec![port],
-                    None => resolve_record_array(ctx, expr)
+                    None => resolve_record_columns(ctx, Columns::Array, expr)
                         .map(|fields| {
-                            leaf_arrays(&fields)
+                            leaf_columns(Columns::Array, &fields)
                                 .iter()
                                 .map(|v| v.node_id.port(WirePort::ArrayVarRef))
                                 .collect()
@@ -3023,8 +2774,8 @@ pub(super) fn lower_array_set(
     // `pts[i] = rec` where `pts` is a record array: fan the record VALUE across
     // the parallel field arrays at the shared index. Checked before the single-
     // array resolution below, which would otherwise miss the `Binding::Record`.
-    if let Some(fields) = resolve_record_array(ctx, obj)
-        && lower_record_array_index_set(ctx, &fields, index, value, range)
+    if let Some(fields) = resolve_record_columns(ctx, Columns::Array, obj)
+        && lower_record_position_set(ctx, Columns::Array, &fields, index, value, range)
     {
         return;
     }
@@ -3063,31 +2814,20 @@ pub(super) fn lower_array_set(
         return;
     }
     let (index_port, value_port) = lower_pair(ctx, index, value);
-    let exec_in = ctx.current_exec.unwrap_or(current_exec);
-    let node_id = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::ARRAY_SET_AT_INDEX,
-        source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec::exec(*sym::EXEC),
-                PortSpec::new(*sym::ARRAY_VAR_REF, Type::Array(Box::new(Type::Any))),
-                PortSpec::new(*sym::INDEX, Type::Int),
-                PortSpec::new(*sym::VALUE, elem_ty),
-            ],
-            outputs: vec![
-                PortSpec::exec(*sym::EXEC_OUT),
-            ],
-        },
-        note: Some("array set".into()),
-        ..Default::default()
-    });
-    ctx.connect(exec_in, node_id.port(WirePort::Exec));
-    ctx.connect(array_ref, node_id.port(WirePort::ArrayVarRef));
-    ctx.connect(index_port, node_id.port(WirePort::Index));
-    ctx.connect(value_port, node_id.port(WirePort::Value));
-    ctx.current_exec = Some(node_id.port(WirePort::ExecOut));
-    if let Some(v) = ctx.lookup_var_mut(&var_name) {
-        v.get_node_for_handler = None;
+    ctx.current_exec.get_or_insert(current_exec);
+    column_exec_op(
+        ctx,
+        Columns::Array,
+        range,
+        array_ref,
+        gc::ARRAY_SET_AT_INDEX,
+        vec![(WirePort::Index, Type::Int, index_port), (WirePort::Value, elem_ty, value_port)],
+        vec![],
+        WirePort::ExecOut,
+        Some("array set"),
+    );
+    if let Some(id) = ctx.lookup_var(&var_name).map(|v| v.node_id) {
+        ctx.var_gets.remove(&id);
     }
 }
 

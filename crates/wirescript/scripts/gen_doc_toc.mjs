@@ -14,11 +14,10 @@
 // (`playground/docs.js` assigns heading ids with the same function) so a
 // Contents link works both on GitHub and in the doc browser.
 
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { mdLines, repoRoot, writeOrCheck } from "./lib.mjs";
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const docsDir = join(repoRoot, "docs", "src");
 
 const OPEN = "<!-- toc -->";
@@ -34,7 +33,7 @@ const SKIP = new Set(["README.md", "SUMMARY.md", "CHANGELOG.md"]);
 export function slug(heading) {
   return heading
     .replace(/`/g, "")
-    .replace(/\*\*|__|\*|_/g, "")
+    .replace(/\*\*|__|\*/g, "")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .trim()
     .toLowerCase()
@@ -47,17 +46,31 @@ function linkText(heading) {
   return heading.replace(/\*\*|__/g, "").trim();
 }
 
-/** `##` headings, skipping any inside a fenced code block. */
-function sections(lines) {
+/**
+ * The `##` headings outside fenced code blocks, each with its anchor: a
+ * heading whose slug an earlier `#`-`####` heading already took gets `-1`,
+ * `-2`, as GitHub and the playground number them.
+ */
+function sections(text) {
   const out = [];
-  let fenced = false;
-  for (const line of lines) {
-    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
-    if (fenced) continue;
-    const m = line.match(/^## +(.+?)\s*$/);
-    if (m && m[1] !== "Contents") out.push(m[1]);
+  const seen = new Map();
+  for (const { line, fence, fenced } of mdLines(text)) {
+    if (fence || fenced) continue;
+    const m = line.match(/^(#{1,4}) +(.+?)\s*$/);
+    if (!m) continue;
+    const base = slug(m[2]);
+    const n = seen.get(base) || 0;
+    seen.set(base, n + 1);
+    if (m[1] === "##" && m[2] !== "Contents") out.push({ name: m[2], anchor: n ? `${base}-${n}` : base });
   }
   return out;
+}
+
+/** `lines` without an existing Contents block. */
+function withoutToc(lines) {
+  const open = lines.indexOf(OPEN);
+  const close = open === -1 ? -1 : lines.indexOf(CLOSE, open);
+  return close === -1 ? lines : [...lines.slice(0, open), ...lines.slice(close + 1)];
 }
 
 /**
@@ -68,14 +81,15 @@ function sections(lines) {
 function withToc(text) {
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
   const lines = text.split(/\r?\n/);
-  const names = sections(lines);
+  // The Contents block's own heading is no section of the page.
+  const names = sections(withoutToc(lines).join("\n"));
   if (names.length < 2) return null; // a single-section page needs no index
 
   const block = [
     OPEN,
     "## Contents",
     "",
-    ...names.map((n) => `- [${linkText(n)}](#${slug(n)})`),
+    ...names.map((n) => `- [${linkText(n.name)}](#${n.anchor})`),
     CLOSE,
   ].join(eol);
 
@@ -86,15 +100,7 @@ function withToc(text) {
     return [...lines.slice(0, open), block, ...lines.slice(close + 1)].join(eol);
   }
 
-  let fenced = false;
-  let first = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (/^\s*(```|~~~)/.test(lines[i])) fenced = !fenced;
-    if (!fenced && /^## +/.test(lines[i])) {
-      first = i;
-      break;
-    }
-  }
+  const first = [...mdLines(text)].find((l) => !l.fence && !l.fenced && /^## +/.test(l.line))?.index ?? -1;
   if (first === -1) return null;
   return [...lines.slice(0, first), block, "", ...lines.slice(first)].join(eol);
 }
@@ -111,11 +117,9 @@ for (const page of pages) {
   const text = readFileSync(path, "utf8");
   const next = withToc(text);
   if (next === null || next === text) continue;
-  if (check) {
+  if (!writeOrCheck(path, next, { check, what: `doc-toc: ${page}'s Contents list` })) {
     stale++;
-    console.error(`doc-toc: ${page} has a stale or missing Contents list`);
   } else {
-    writeFileSync(path, next);
     written++;
     console.log(`doc-toc: updated ${page}`);
   }

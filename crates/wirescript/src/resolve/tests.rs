@@ -482,7 +482,7 @@ out hit = o is Option.Some",
             field(&node, "next")
         );
 
-        // Mutual recursion: `A` → `B` → back to `A`, which stops.
+        // Mutual recursion: `A` -> `B` -> back to `A`, which stops.
         let a = param("useA");
         let b = field(&a, "b");
         assert!(matches!(field(&b, "m"), TypeExpr::Name { ref name, .. } if name == "int"));

@@ -1,78 +1,9 @@
-//! Source positions + diagnostic reporting.
-//!
-//! table itself (WSP001, WS001, WS002, ...) is elsewhere; this module
-//! just holds the shared value types.
+//! Diagnostic reporting: the shared messages and the policy for which
+//! diagnostics a compile reports. The value types (`Pos`, `SourceRange`,
+//! `Diagnostic`, `Severity`) belong to the backend crate and are re-exported
+//! here.
 
-use std::sync::Arc;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Pos {
-    pub offset: usize,
-    pub line: u32,
-    pub col: u32,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct SourceRange {
-    pub file: Arc<str>,
-    pub start: Pos,
-    pub end: Pos,
-}
-
-/// A source file's path as a person reads it: an imported file's range
-/// carries its canonical path, which on Windows starts with the verbatim
-/// `\\?\` prefix (`\\?\UNC\` for a share).
-pub fn display_path(file: &str) -> std::borrow::Cow<'_, str> {
-    if let Some(share) = file.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{share}").into()
-    } else {
-        file.strip_prefix(r"\\?\").unwrap_or(file).into()
-    }
-}
-
-impl SourceRange {
-    pub fn new(file: impl Into<Arc<str>>, start: Pos, end: Pos) -> Self {
-        Self {
-            file: file.into(),
-            start,
-            end,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Severity {
-    Error,
-    Warning,
-    Info,
-}
-
-#[derive(Clone, Debug)]
-pub struct Diagnostic {
-    pub severity: Severity,
-    pub code: String,
-    pub message: String,
-    pub range: SourceRange,
-}
-
-impl Diagnostic {
-    pub fn error(code: impl Into<String>, message: impl Into<String>, range: SourceRange) -> Self {
-        Self {
-            severity: Severity::Error,
-            code: code.into(),
-            message: message.into(),
-            range,
-        }
-    }
-    pub fn warning(code: impl Into<String>, message: impl Into<String>, range: SourceRange) -> Self {
-        Self {
-            severity: Severity::Warning,
-            code: code.into(),
-            message: message.into(),
-            range,
-        }
-    }
-}
+pub use wirescript_ir::diagnostic::*;
 
 /// The code of an internal compiler error.
 pub const INTERNAL_ERROR: &str = "WS094";
@@ -186,9 +117,10 @@ pub fn placeholder_error(d: &Diagnostic) -> Option<Diagnostic> {
     })
 }
 
-/// Errors type checking and lowering each report for one call: a call before
-/// its `mod`'s declaration (`WS021`).
-const REPORTED_TWICE: &[&str] = &["WS021"];
+/// Errors type checking and lowering each report at one place: a call before
+/// its `mod`'s declaration (`WS021`), and a handler trigger that is not an
+/// event or a value (`WS001`). The first, type checking's, is kept.
+const REPORTED_TWICE: &[&str] = &["WS021", "WS001"];
 
 /// `ws-ignore` directives collected from a program's `//` comments.
 ///

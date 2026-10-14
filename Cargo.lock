@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "brdb"
-version = "0.11.0"
+version = "1.0.0"
 dependencies = [
  "blake3",
  "indexmap",
@@ -1736,7 +1736,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "wirescript"
-version = "1.12.0"
+version = "2.0.0"
 dependencies = [
  "bitflags 2.9.1",
  "brdb",
@@ -1748,6 +1748,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "wirescript-ir",
 ]
 
 [[package]]
@@ -1758,6 +1759,19 @@ dependencies = [
  "clap",
  "mimalloc",
  "wirescript",
+]
+
+[[package]]
+name = "wirescript-ir"
+version = "0.1.0"
+dependencies = [
+ "brdb",
+ "lasso",
+ "petgraph",
+ "rustc-hash 2.1.3",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

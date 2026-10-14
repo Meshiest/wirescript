@@ -19,19 +19,13 @@
 // fenced block consumes them.
 
 import { readFileSync, writeFileSync, mkdtempSync, readdirSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { binPath, mdLines, repoRoot } from "./lib.mjs";
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const docsDir = join(repoRoot, "docs", "src");
-const checkBin = join(
-  repoRoot,
-  "target",
-  "release",
-  process.platform === "win32" ? "wirescript-check.exe" : "wirescript-check",
-);
+const checkBin = binPath("wirescript-check");
 
 // Without this the gate reports "N checked, 0 failed" and exits 0 when the
 // checker was never built, which reads exactly like a pass.
@@ -44,47 +38,42 @@ const scratch = mkdtempSync(join(tmpdir(), "ws-doccheck-"));
 
 /** Parse a markdown file into checkable wirescript blocks. */
 function extractBlocks(text) {
-  // Split on either newline style: a CRLF doc file leaves a trailing `\r` on
-  // every line, which the fence regexes' `$` won't match — so a `\n`-only split
-  // silently skips every block in that file.
-  const lines = text.split(/\r?\n/);
   const blocks = [];
   let pendingPrelude = "";
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    // Hidden prelude comment: <!-- doc-check-prelude: ... -->
-    const pm = line.match(/^\s*<!--\s*doc-check-prelude:\s*$/);
-    if (pm) {
-      const buf = [];
-      i++;
-      while (i < lines.length && !/-->/.test(lines[i])) {
-        buf.push(lines[i]);
-        i++;
+  // The lines of an open `<!-- doc-check-prelude:` comment.
+  let prelude = null;
+  // The wirescript block being read.
+  let block = null;
+  for (const { line, index, fence, fenced, indent, info } of mdLines(text)) {
+    if (block) {
+      if (fence) {
+        blocks.push({ ...block, code: block.body.join("\n") });
+        block = null;
+      } else {
+        // A block inside a list item is indented, and its body carries that
+        // indent.
+        block.body.push(indent ? line.slice(indent.length) : line);
       }
-      i++; // consume the `-->`
-      pendingPrelude += buf.join("\n") + "\n";
       continue;
     }
-    // The indent is captured, not just tolerated: a block inside a list item
-    // is indented, and both the closing fence and the body carry that indent.
-    // Anchoring at column 0 skipped those blocks entirely rather than failing
-    // them, so they were never checked at all.
-    const fence = line.match(/^(\s*)```wirescript(.*)$/);
-    if (fence) {
-      const indent = fence[1];
-      const info = fence[2].trim();
-      const startLine = i + 1; // 1-based line of the ``` fence
-      const body = [];
-      i++;
-      while (i < lines.length && !new RegExp(`^${indent}\`\`\`\\s*$`).test(lines[i])) {
-        body.push(indent ? lines[i].slice(indent.length) : lines[i]);
-        i++;
+    if (prelude) {
+      if (/-->/.test(line)) {
+        pendingPrelude += prelude.join("\n") + "\n";
+        prelude = null;
+      } else {
+        prelude.push(line);
       }
-      i++; // consume closing ```
-      const ignore = /\bignore\b/.test(info);
-      blocks.push({ startLine, ignore, prelude: pendingPrelude, code: body.join("\n") });
+      continue;
+    }
+    if (fence && /^wirescript\b/.test(info)) {
+      // 1-based line of the ``` fence.
+      block = { startLine: index + 1, ignore: /\bignore\b/.test(info), prelude: pendingPrelude, body: [] };
       pendingPrelude = "";
+      continue;
+    }
+    // Hidden prelude comment: <!-- doc-check-prelude: ... -->
+    if (!fence && !fenced && /^\s*<!--\s*doc-check-prelude:\s*$/.test(line)) {
+      prelude = [];
       continue;
     }
     // A non-prelude, non-blank line clears a dangling prelude (prelude must
@@ -92,7 +81,6 @@ function extractBlocks(text) {
     if (line.trim() !== "" && pendingPrelude && !/^\s*<!--/.test(line)) {
       pendingPrelude = "";
     }
-    i++;
   }
   return blocks;
 }

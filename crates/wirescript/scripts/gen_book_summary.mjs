@@ -10,11 +10,11 @@
 // Both modes fail on a `.md` in `docs/src/` that is registered nowhere;
 // `--check` also fails when SUMMARY.md on disk is stale.
 
-import { readFileSync, readdirSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { readdirSync } from 'fs';
+import { join } from 'path';
+import { pathToFileURL } from 'url';
+import { repoRoot, writeOrCheck } from './lib.mjs';
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const docsDir = join(repoRoot, 'docs', 'src');
 const summaryPath = join(docsDir, 'SUMMARY.md');
 const docsJs = join(repoRoot, 'crates', 'wasm', 'playground', 'docs.js');
@@ -53,26 +53,19 @@ const unregistered = onDisk.filter((f) => !covered.has(f));
 if (unregistered.length) {
   console.error(
     `gen_book_summary: ${unregistered.join(', ')} in docs/src/ is not registered in ` +
-      `crates/wasm/playground/docs.js. Add it to DOC_MANIFEST, DOC_PAGES and DOC_TITLES ` +
+      `crates/wasm/playground/docs.js. Add it to DOCS ` +
       `so it appears in both the playground panel and the book.`,
   );
   process.exit(1);
 }
 
 const next = lines.join('\n');
-if (process.argv.includes('--check')) {
-  let current = '';
-  try {
-    current = readFileSync(summaryPath, 'utf8');
-  } catch {
-    /* missing counts as stale */
-  }
-  if (current !== next) {
-    console.error('gen_book_summary: docs/src/SUMMARY.md is stale, run `just doc-summary`');
-    process.exit(1);
-  }
-  console.log(`gen_book_summary: SUMMARY.md up to date (${covered.size} pages)`);
-} else {
-  writeFileSync(summaryPath, next);
-  console.log(`gen_book_summary: wrote docs/src/SUMMARY.md (${covered.size} pages)`);
+const check = process.argv.includes('--check');
+if (!writeOrCheck(summaryPath, next, { check, what: 'gen_book_summary: docs/src/SUMMARY.md', fix: 'just doc-summary' })) {
+  process.exit(1);
 }
+console.log(
+  check
+    ? `gen_book_summary: SUMMARY.md up to date (${covered.size} pages)`
+    : `gen_book_summary: wrote docs/src/SUMMARY.md (${covered.size} pages)`,
+);

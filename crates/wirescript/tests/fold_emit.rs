@@ -153,7 +153,7 @@ fn assert_pin_delivery(what: &str, src: &str, fold_mode: FoldMode, expected: i64
     let sum = math_add_input_sum(find_brick(&w, source.brick_id));
     assert_eq!(sum, expected, "{what}: delivered constant value");
     println!(
-        "{what}: delivered — brick {} {}({sum}) → brick {pin} {CHIP_IN}.RER_Input",
+        "{what}: delivered — brick {} {}({sum}) -> brick {pin} {CHIP_IN}.RER_Input",
         source.brick_id, source.component_type,
     );
 }
@@ -396,7 +396,7 @@ const FOLDED_EXPR: &str = "chip P(v: int) -> (r: int) { out r = v + Opaque(0) }\
                            out y = P(2 + 2)\n";
 
 /// Pre-existing (fold-independent) shape: a top-level literal alias passed
-/// to a named chip lowers to the same parent-literal → pin wire.
+/// to a named chip lowers to the same parent-literal -> pin wire.
 const LET_ALIAS: &str = "chip P(v: int) -> (r: int) { out r = v + Opaque(0) }\n\
                          let k = 4\n\
                          out y = P(k)\n";

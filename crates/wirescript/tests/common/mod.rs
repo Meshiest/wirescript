@@ -4,53 +4,17 @@
 //! here and be pulled in with `mod common;`. Not every test uses every helper.
 #![allow(dead_code)]
 
-use brdb::IntoReader;
 use brdb::schema::BrdbStruct;
 
-/// Every component in an emitted world, in grid then chunk order.
-///
-/// Going through a real `.brz` on disk is the point: what these tests check is
-/// what the game would load, not what the emitter thinks it wrote.
-///
-/// The scratch file is named per CALL, not per process. The tests in one file
-/// run on separate threads of one process, so a pid-keyed name has two of them
-/// writing and reading the same bytes, and whichever reads mid-write sees a
-/// truncated archive.
-///
-/// The `1..32` grid sweep stops at the first id the reader rejects: grids are
-/// numbered from 1 and allocated densely, so the first miss is the end, and no
-/// fixture in this suite comes near 32.
+/// Every component in an emitted world, in grid then chunk order: what the
+/// game would load, read back from the save's bytes.
 pub fn world_components(brz: &[u8]) -> Vec<BrdbStruct> {
-    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "ws_test_components_{}_{}.brz",
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    std::fs::write(&path, brz).expect("write brz");
-    let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
-
-    let mut out = Vec::new();
-    for gid in 1..32 {
-        let Ok(chunks) = reader.brick_chunk_index(gid) else {
-            break;
-        };
-        for chunk in chunks {
-            if chunk.num_components == 0 {
-                continue;
-            }
-            let (_soa, comps) = reader
-                .component_chunk_soa(gid, chunk.index)
-                .expect("read components");
-            out.extend(comps);
-        }
-    }
-    std::fs::remove_file(&path).ok();
-    out
+    wirescript_ir::readback::Save::read(brz).components()
 }
 
-/// Run the front end - resolve, typecheck, lower at `fold_mode` - and hand back
-/// all three stage results.
+/// Run the front end - resolve, typecheck with custom-event slot inference,
+/// lower at `fold_mode` - and hand back all three stage results, as a compile
+/// runs them.
 ///
 /// Asserts nothing on purpose. Several callers are checking that a stage DID
 /// produce a diagnostic, so a helper that panicked on one would make the test
@@ -64,23 +28,8 @@ pub fn run_stages(
     wirescript::typecheck::TypeCheckResult,
     wirescript::lower::LowerResult,
 ) {
-    use wirescript::typecheck::CeSlotMap;
-    let resolved = wirescript::resolve::resolve(source, file, &wirescript::resolve::FsLoader);
-    let slots = CeSlotMap::default();
-    let tc = wirescript::typecheck::typecheck(&resolved.ast, file, &slots);
-    let lowered = wirescript::lower::lower(wirescript::lower::LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file,
-        module_name: None,
-        template_cache: std::sync::Arc::new(wirescript::template_cache::TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode,
-        ce_slots: &slots,
-    });
-    (resolved, tc, lowered)
+    let fe = wirescript::front_end(source, file, None, fold_mode, &wirescript::resolve::FsLoader);
+    (fe.resolved, fe.typecheck, fe.lowered)
 }
 
 /// Every typecheck diagnostic code `src` produces, in order.
@@ -158,5 +107,65 @@ pub fn count_for_shell_data(brz: &[u8]) -> Vec<(i64, i64, i64)> {
         };
         out.push((*count, *first, *step));
     }
+    out
+}
+
+/// The compile input for `src` named `file`, folded as a compile folds by
+/// default.
+pub fn input<'a>(src: &'a str, file: &'a str) -> wirescript::CompileInput<'a> {
+    wirescript::CompileInput { source: src, file, module_name: None, fold_mode: wirescript::FoldMode::Auto }
+}
+
+/// `src` compiled to a world, or a panic.
+pub fn world(src: &str, file: &str) -> brdb::World {
+    wirescript::compile_to_world(input(src, file), wirescript::emit::EmitOptions::default())
+        .unwrap_or_else(|e| panic!("should compile to a world: {e:?}"))
+        .world
+}
+
+/// `src` compiled to `.brz` bytes, or a panic.
+pub fn brz(src: &str, file: &str) -> Vec<u8> {
+    wirescript::compile(input(src, file)).unwrap_or_else(|e| panic!("should compile to brz: {e:?}")).brz
+}
+
+/// Every diagnostic code compiling `src` produces, whether it compiles or
+/// fails with errors.
+pub fn compile_diag_codes(src: &str, file: &str) -> Vec<String> {
+    match wirescript::compile(input(src, file)) {
+        Ok(result) => result.diagnostics.iter().map(|d| d.code.clone()).collect(),
+        Err(wirescript::CompileError::HasErrors(errors)) => errors.iter().map(|d| d.code.clone()).collect(),
+        Err(wirescript::CompileError::Emit(e)) => panic!("unexpected emit error for src={src:?}: {e:?}"),
+    }
+}
+
+/// `src` lowered, with no diagnostic from typecheck or lowering.
+pub fn lowered(src: &str, file: &str) -> wirescript::ir::Module {
+    let (_, tc, lowered) = run_stages(src, file, wirescript::lower::FoldMode::Auto);
+    assert!(tc.diagnostics.is_empty(), "{:?}", tc.diagnostics);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    lowered.module
+}
+
+/// The property `name` of node `n`.
+pub fn prop(n: &wirescript::ir::Node, name: &str) -> Option<wirescript::ir::Literal> {
+    n.properties.get(&wirescript::intern::intern(name)).cloned()
+}
+
+/// Whether `c` is a text display.
+pub fn is_text_display(c: &Box<dyn brdb::BrdbComponent>) -> bool {
+    c.component_type().map(|t| t.to_string() == "Component_TextDisplay").unwrap_or(false)
+}
+
+/// The `.ws` fixtures in `tests/fixtures/<subdir>`, sorted. Panics when there
+/// are none, so a suite cannot pass by finding nothing to check.
+pub fn ws_fixtures(subdir: &str) -> Vec<std::path::PathBuf> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(subdir);
+    let mut out: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|_| panic!("fixtures/{subdir} must exist"))
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("ws"))
+        .collect();
+    out.sort();
+    assert!(!out.is_empty(), "no fixtures found; the suite must not silently pass empty");
     out
 }

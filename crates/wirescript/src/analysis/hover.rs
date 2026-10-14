@@ -12,7 +12,7 @@ use super::symbols::SymbolDef;
 use super::gate_docs::gate_docs;
 use super::resource_estimate::{ResourceEstimate, lookup_estimate};
 
-enum EstimateKind { Chip, Mod, Scope }
+enum EstimateKind { Chip, Mod, Fn, Scope }
 
 /// Byte offset of the start of `line` within `source`.
 fn line_offset_at(source: &str, line: usize) -> usize {
@@ -44,6 +44,14 @@ fn word_end_at_byte(line_str: &str, b: usize) -> usize {
         .map_or(line_str.len(), |i| b + i)
 }
 
+fn estimate_kind(sym_kind: &str) -> EstimateKind {
+    match sym_kind {
+        "mod" => EstimateKind::Mod,
+        "fn" => EstimateKind::Fn,
+        _ => EstimateKind::Chip,
+    }
+}
+
 fn format_estimate(est: &ResourceEstimate, kind: EstimateKind) -> String {
     // A `const mod` called from a const-required position is answered entirely
     // by the compile-time interpreter and contributes NO gates. The signature
@@ -66,8 +74,10 @@ fn format_estimate(est: &ResourceEstimate, kind: EstimateKind) -> String {
     if chips > 0 {
         parts.push(format!("{} chip{}", chips, if chips == 1 { "" } else { "s" }));
     }
-    if matches!(kind, EstimateKind::Mod) {
-        parts.push("inlined per call".into());
+    match kind {
+        EstimateKind::Mod => parts.push("inlined per call".into()),
+        EstimateKind::Fn => parts.push("built once, 1 gate per call".into()),
+        _ => {}
     }
     format!("*{}*", parts.join(", "))
 }
@@ -124,6 +134,7 @@ fn literal_display_inner(lit: &Literal) -> String {
         Literal::Asset { asset_type, asset_name } => format!("${asset_type}/{asset_name}"),
         Literal::PrefabRef { path } => format!("${path}"),
         Literal::NestedPrefab { .. } => "$```...```".to_string(),
+        Literal::PrefabBytes(bytes) => format!("<prefab, {} bytes>", bytes.len()),
     }
 }
 
@@ -477,6 +488,13 @@ pub fn hover_at(
 
     let word = word_at(source, line, col)?;
 
+    // `@color`, `@material`, `@label`: the word after an `@` is the
+    // annotation, never a symbol that happens to share its spelling (the
+    // `color` type, a pin named `material`).
+    if annotation_word_at(source, line, col) {
+        return hover_annotation(&word);
+    }
+
     None
         .or_else(|| hover_if_keyword(source, file, &word, if_contexts, resource_estimates, line, col))
         .or_else(|| hover_named_param(source, &word, line, col))
@@ -570,6 +588,62 @@ fn hover_atom(source: &str, file: &str, line: usize, col: usize) -> Option<Strin
     ))
 }
 
+/// Whether the identifier under the cursor is an annotation's name: the
+/// character right before it is `@`.
+fn annotation_word_at(source: &str, line: usize, col: usize) -> bool {
+    let Some(l) = source.lines().nth(line) else { return false };
+    let c = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
+    let start = l[..c].rfind(|ch: char| !ch.is_alphanumeric() && ch != '_').map(|i| i + 1);
+    start.is_some_and(|s| s > 0 && l.as_bytes()[s - 1] == b'@')
+}
+
+/// Hover for an annotation by name: what it does and where it goes.
+fn hover_annotation(name: &str) -> Option<String> {
+    let (sig, text) = match name {
+        "left" | "right" | "top" | "bottom" => (
+            format!("@{name}"),
+            "Puts a rerouter pin for this top-level `in` or `out` on that side of the compiled \
+             microchip, so the chip can be wired like a part.",
+        ),
+        "label" => (
+            "@label(text)".to_string(),
+            "Overrides the display text on a chip, a `var`, a port or the root microchip (at the top of \
+             the file). A constant is baked in; on the module and top-level `var`s a runtime value is \
+             wired live.",
+        ),
+        "color" => (
+            "@color(color)".to_string(),
+            "Sets the color of a chip's, a `var`'s or the root microchip's brick (at the top of the \
+             file). A constant is set on the brick itself. On the module and top-level `var`s a \
+             runtime value adds a Brick Property Changer to the brick and is wired into it live.",
+        ),
+        "material" => (
+            "@material(BrickMaterial)".to_string(),
+            "Sets the material of a chip's, a `var`'s or the root microchip's brick (at the top of the \
+             file): `Plastic`, `Glass`, `TranslucentPlastic`, `Glow`, `Metal` or `Hologram`, bare or as \
+             `BrickMaterial.Glow`. A constant is set on the brick itself. On the module and top-level \
+             `var`s a runtime value adds a Brick Property Changer to the brick and is wired into it live.",
+        ),
+        "closed" => ("@closed".to_string(), "Compiles this chip collapsed instead of open."),
+        "invisible" => (
+            "@invisible".to_string(),
+            "Hides a brick and turns off its collision: at the top of the file the root microchip, on \
+             a port its rerouter pin.",
+        ),
+        "nofold" => ("@nofold".to_string(), "Keeps these gates out of constant folding."),
+        "fold" => ("@fold".to_string(), "Constant folding, on by default."),
+        "layout" => (
+            "@layout(\"code\" | \"cube\")".to_string(),
+            "At the top of the file: places gates the way the source reads (`\"code\"`) or packs them \
+             into a compact cube (`\"cube\"`).",
+        ),
+        "flat" => ("@flat".to_string(), "At the top of the file: inlines every chip onto one grid."),
+        "sliced" => ("@sliced".to_string(), "Spreads a `for` loop's iterations across ticks."),
+        _ => return None,
+    };
+    Some(format!("```wirescript\n{sig}\n```\n\n**Annotation.** {text}"))
+}
+
 /// Hover for a `$` reference token under the cursor: a prefab file reference
 /// (`$./rel.brz`, `$/abs.brz`) or an external asset reference (`$Type/Name`).
 /// Scans the raw line for the `$`-prefixed token spanning the cursor, since
@@ -587,15 +661,7 @@ fn hover_asset_ref(source: &str, file: &str, line: usize, col: usize) -> Option<
 /// resolving the path the same way [`crate::compile::disk_prefab_resolver`]
 /// does and (natively) reporting whether the file is present.
 fn render_prefab_file_hover(path: &str, file: &str) -> String {
-    use std::path::{Path, PathBuf};
-    let base = Path::new(file).parent();
-    let resolved: PathBuf = if let Some(rel) = path.strip_prefix("./") {
-        base.map_or_else(|| PathBuf::from(rel), |b| b.join(rel))
-    } else if path.starts_with('/') {
-        PathBuf::from(path)
-    } else {
-        base.map_or_else(|| PathBuf::from(path), |b| b.join(path))
-    };
+    let resolved = crate::compile::resolve_prefab_path(file, path);
 
     let kind = if path.ends_with(".ws") {
         "Compiles a `.ws` source file and embeds the result"
@@ -1048,7 +1114,7 @@ fn hover_array_method_named(word: &str) -> Option<String> {
     let m = crate::catalog::arrays::ARRAY_METHODS
         .iter()
         .find(|m| m.name == word)?;
-    Some(format!("**array.{}**\n\n{}{} - {}", m.name, m.name, m.signature, m.doc))
+    Some(format!("**array.{}**\n\n{}{} - {}", m.name, m.name, m.shown_signature(), m.doc))
 }
 
 /// Render the map-method hover for `word` on a receiver whose type displays as
@@ -1059,7 +1125,7 @@ fn hover_map_method(word: &str, map_display: &str) -> Option<String> {
     let m = crate::catalog::maps::map_method(word)?;
     Some(format!(
         "**map.{}**\n\n{}{} - {}\n\n*{}*",
-        m.name, m.name, m.signature, m.doc, map_display,
+        m.name, m.name, m.shown_signature(), m.doc, map_display,
     ))
 }
 
@@ -1874,7 +1940,7 @@ fn defaults_table(spec: &crate::catalog::calls::CallSpec) -> Option<String> {
     Some(t)
 }
 
-/// `chip` or `mod` keyword: show exec/pure context and resource estimate.
+/// `chip`, `mod` or `fn` keyword: show exec/pure context and resource estimate.
 fn hover_chip_or_mod_keyword(
     source: &str,
     word: &str,
@@ -1882,13 +1948,13 @@ fn hover_chip_or_mod_keyword(
     resource_estimates: &HashMap<String, ResourceEstimate>,
     line: usize,
 ) -> Option<String> {
-    if word != "chip" && word != "mod" { return None; }
+    if !matches!(word, "chip" | "mod" | "fn") { return None; }
 
     let lo = line_offset_at(source, line);
     let line_end = lo + super::text::line_text(source, line).len() + 1;
 
     for sym in symbols {
-        if (sym.kind == "chip" || sym.kind == "mod")
+        if matches!(sym.kind, "chip" | "mod" | "fn")
             && sym.range.start.offset >= lo
             && sym.range.start.offset < line_end
         {
@@ -1902,7 +1968,7 @@ fn hover_chip_or_mod_keyword(
                 if sym.exec { "body runs as sequential exec chain" } else { "body is evaluated as signal-flow (combinational)" },
             );
             if let Some(est) = lookup_estimate(resource_estimates, &sym.name, sym.range.start.offset) {
-                let ek = if sym.kind == "mod" { EstimateKind::Mod } else { EstimateKind::Chip };
+                let ek = estimate_kind(sym.kind);
                 hover += &format!("\n\n{}", format_estimate(est, ek));
             }
             return Some(hover);
@@ -2105,7 +2171,7 @@ fn hover_generic_call(
     // The declaration symbol carries the kind/exec/const flags and the offsets
     // the doc-comment and estimate lookups key on; only its `ty` changes.
     let sym = super::resolve_symbol(symbols, source, word, line, col)?;
-    if sym.kind != "mod" && sym.kind != "chip" {
+    if !matches!(sym.kind, "mod" | "chip" | "fn") {
         return None;
     }
     let synth = SymbolDef {
@@ -2348,7 +2414,7 @@ fn render_decl_hover(
     }
     if matches!(sym.kind, "mod" | "chip" | "fn") {
         if let Some(est) = lookup_estimate(resource_estimates, &sym.name, sym.range.start.offset) {
-            let ek = if sym.kind == "mod" { EstimateKind::Mod } else { EstimateKind::Chip };
+            let ek = estimate_kind(sym.kind);
             v += &format!("\n\n{}", format_estimate(est, ek));
         }
     }
@@ -3069,19 +3135,7 @@ fn resolve_field_in_type(ty: &Type, field: &str) -> Option<Type> {
             }
             resolve_field_in_type(inner, field)
         }
-        Type::Vector => match field {
-            "x" | "X" | "y" | "Y" | "z" | "Z" => Some(Type::Float),
-            _ => None,
-        },
-        Type::Color => match field {
-            "r" | "R" | "g" | "G" | "b" | "B" | "a" | "A" => Some(Type::Float),
-            _ => None,
-        },
-        Type::Rotator => match field {
-            "pitch" | "yaw" | "roll" => Some(Type::Float),
-            _ => None,
-        },
-        _ => None,
+        _ => crate::catalog::value_fields::field_of(ty, field).map(|_| Type::Float),
     }
 }
 

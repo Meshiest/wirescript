@@ -355,11 +355,10 @@ pub struct NsDeclInfo {
     pub value_type: Option<Type>,
     /// A `let` member's declaration key in `TypeCheckCtx::let_ref_values`.
     pub let_decl: Option<super::let_binding::LetKey>,
-    /// A GENERIC `mod`/`chip` member's full signature (type params with their
-    /// masks, outputs typed over them), so a namespaced call infers the type
-    /// params from its arguments as a flat call does, with its declaration's
-    /// range. `None` otherwise.
-    pub generic: Option<(FnOrChipSig, SourceRange)>,
+    /// A `mod`/`chip`/`fn` member's full signature (defaults, type params with
+    /// their masks, outputs typed over them), so a namespaced call is checked
+    /// as a flat call is, with its declaration's range. `None` otherwise.
+    pub signature: Option<(FnOrChipSig, SourceRange)>,
 }
 
 pub struct TypeCheckCtx<'a> {
@@ -579,6 +578,11 @@ pub struct TypeCheckCtx<'a> {
     /// The names each `mod`/`chip` body mentions, less its params, computed
     /// once per declaration.
     pub(crate) body_idents: HashMap<super::shadow::DeclKey, Arc<Vec<String>>>,
+    /// The top-level call graph WS091 answers a call from when every mod name
+    /// resolves there as at the top level, and the declarations first called
+    /// from such a call (see `shadow::note_call`).
+    pub(crate) top_calls: Option<super::shadow::TopCalls>,
+    pub(crate) first_called_at_top: crate::collections::HashSet<super::shadow::DeclKey>,
     /// The `mod`/`chip` bodies being checked, innermost last, and each
     /// declaration's source range (WS091).
     pub(crate) open_bodies: Vec<super::shadow::DeclKey>,
@@ -698,6 +702,8 @@ impl<'a> TypeCheckCtx<'a> {
             storage_uses: HashMap::default(),
             call_sites: Vec::new(),
             body_idents: HashMap::default(),
+            top_calls: None,
+            first_called_at_top: crate::collections::HashSet::default(),
             open_bodies: Vec::new(),
             body_ranges: HashMap::default(),
             body_calls: HashMap::default(),

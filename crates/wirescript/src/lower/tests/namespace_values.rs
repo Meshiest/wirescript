@@ -20,31 +20,15 @@ fn compile_with_libs(
         files.insert((*name).to_string(), (*src).into());
     }
     let loader = MemLoader { files };
-    let resolved = resolve(main_src, "test", &loader);
+    // Namespace-resolution structure tests; force folding off so constant
+    // chip/value bodies aren't optimized away out from under the asserts.
+    let crate::compile::FrontEnd { resolved, typecheck: tc, lowered: lr, .. } =
+        crate::compile::front_end(main_src, "test", None, FoldMode::ForceOff, &loader);
     assert!(
         resolved.diagnostics.is_empty(),
         "import should resolve: {:?}",
         resolved.diagnostics
     );
-    let tc = crate::typecheck::typecheck(
-        &resolved.ast,
-        "test",
-        &crate::typecheck::CeSlotMap::default(),
-    );
-    let lr = crate::lower::lower(crate::lower::LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test",
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        // Namespace-resolution structure tests; force folding off so constant
-        // chip/value bodies aren't optimized away out from under the asserts.
-        fold_mode: FoldMode::ForceOff,
-        ce_slots: &crate::typecheck::CeSlotMap::default(),
-    });
     (tc, lr)
 }
 
@@ -63,11 +47,6 @@ fn assert_clean(tc: &crate::typecheck::TypeCheckResult, lr: &LowerResult) {
         "lower errors: {:?}",
         lr.diagnostics
     );
-}
-
-fn has_unsupported(m: &crate::ir::Module) -> bool {
-    m.nodes.values().any(|n| n.gate_class.contains("Unsupported"))
-        || m.chips.values().any(has_unsupported)
 }
 
 /// Every `Literal::Int` baked into any node property, anywhere in the tree.
@@ -423,14 +402,6 @@ fn namespaced_import_anon_chip_runs() {
     assert!(has_set, "the namespaced anon chip's `v = 1` write must lower");
 }
 
-fn count_class_ns(m: &crate::ir::Module, class: &str) -> usize {
-    let mut n = m.nodes.values().filter(|x| x.gate_class == class).count();
-    for c in m.chips.values() {
-        n += count_class_ns(c, class);
-    }
-    n
-}
-
 /// Two modules with a same-named private `helper`, each called by a public mod:
 /// `A.f` must run A's `helper` and `B.g` must run B's. The bodies used to
 /// resolve `helper` through the shared bare scope (last namespace won), so both
@@ -451,12 +422,12 @@ fn namespaced_sibling_mod_resolves_its_own_module() {
     );
     assert_clean(&tc, &lr);
     assert_eq!(
-        count_class_ns(&lr.module, "BrickComponentType_Expr_MathAdd"),
+        count_class(&lr.module, "BrickComponentType_Expr_MathAdd"),
         1,
         "A.f must run m's `helper` (x + 1)"
     );
     assert_eq!(
-        count_class_ns(&lr.module, "BrickComponentType_Expr_MathMultiply"),
+        count_class(&lr.module, "BrickComponentType_Expr_MathMultiply"),
         1,
         "B.g must run n's `helper` (x * 100), not m's"
     );
@@ -494,7 +465,7 @@ fn namespaced_mod_mutates_its_own_module_var() {
     );
     assert_clean(&tc, &lr);
     assert_eq!(
-        count_class_ns(&lr.module, "BrickComponentType_Var"),
+        count_class(&lr.module, "BrickComponentType_Var"),
         2,
         "A.g and B.g are distinct storage gates"
     );
@@ -832,13 +803,13 @@ fn transitive_namespace_resolves_in_a_namespaced_body() {
     );
     // Every one of the three reads drives its own store, so none was dropped.
     assert_eq!(
-        count_class_ns(&lr.module, "BrickComponentType_Exec_Var_Set"),
+        count_class(&lr.module, "BrickComponentType_Exec_Var_Set"),
         3,
         "each of `a`/`b`/`c` must be written"
     );
     // The two `n + L.value` bodies and `bump`'s own add are real gates, so the
     // transitive read reached arithmetic rather than folding to a placeholder.
-    let adds = count_class_ns(&lr.module, "BrickComponentType_Expr_MathAdd");
+    let adds = count_class(&lr.module, "BrickComponentType_Expr_MathAdd");
     assert!(adds >= 2, "expected the inlined `n + …` adds, got {adds}");
 }
 
@@ -881,7 +852,7 @@ mod bump(n: int) -> (r: int) { return n + value }"),
     // `leaf`'s `n + value` really inlined, so the call went through the INNER
     // alias rather than resolving back to the importer's same-named one.
     assert!(
-        count_class_ns(&lr.module, "BrickComponentType_Expr_MathAdd") >= 1,
+        count_class(&lr.module, "BrickComponentType_Expr_MathAdd") >= 1,
         "the inlined body's arithmetic must be present"
     );
 }

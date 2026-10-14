@@ -5,17 +5,14 @@
 //! and would still print a plausible tally, so the placeholder check is the
 //! part that cannot be replaced by running the circuit.
 
-use wirescript::{CompileInput, FoldMode, compile};
+use wirescript::compile;
+
+mod common;
 
 #[test]
 fn readable_outputs_fixture_compiles_without_placeholders() {
     let src = include_str!("fixtures/readable_outputs.ws");
-    let r = compile(CompileInput {
-        source: src,
-        file: "readable_outputs",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let r = compile(common::input(src, "readable_outputs"))
     .expect("readable_outputs.ws must compile without errors");
     assert!(
         r.diagnostics.iter().all(|d| d.code != "WSP001"),

@@ -15,15 +15,6 @@ fn label(r: &LowerResult, node: NodeId) -> Option<String> {
     }
 }
 
-/// The gate wired into `node`'s `port`.
-fn source_of(r: &LowerResult, node: NodeId, port: WirePort) -> Option<NodeId> {
-    r.module
-        .wires
-        .iter()
-        .find(|w| w.target.node_id == node && w.target.port == port)
-        .map(|w| w.source.node_id)
-}
-
 /// The label of the storage gate `node` reaches through `port`.
 fn storage_via(r: &LowerResult, node: NodeId, port: WirePort) -> String {
     source_of(r, node, port)
@@ -937,26 +928,6 @@ fn tuple_return_fills_a_record_output_among_several() {
     assert_eq!(read, inputs[1..4].to_vec(), "oa, ox, ob read ia, ib, fb in turn");
 }
 
-/// Whether `to` runs after `from`: reachable along exec wires.
-fn exec_reaches(r: &LowerResult, from: NodeId, to: NodeId) -> bool {
-    let mut seen = crate::collections::HashSet::default();
-    let mut stack = vec![from];
-    while let Some(n) = stack.pop() {
-        if n == to {
-            return true;
-        }
-        if seen.insert(n) {
-            let next = r
-                .module
-                .wires
-                .iter()
-                .filter(|w| w.source.node_id == n && w.target.port.as_str().starts_with("Exec"));
-            stack.extend(next.map(|w| w.target.node_id));
-        }
-    }
-    false
-}
-
 /// The gate that fixes the value `setter` writes: the `Var_Get` it reads, or
 /// the `Var_Set` of the hidden `_` var holding it.
 fn fixed_by(r: &LowerResult, setter: NodeId) -> NodeId {
@@ -1005,7 +976,7 @@ fn a_fixed_before(r: &LowerResult, writes: &[NodeId], what: &str) {
     assert!(!writes.is_empty(), "{what}: no write found");
     let fixed = fixed_by(r, setter(r, "o.a"));
     for w in writes {
-        assert!(exec_reaches(r, fixed, *w), "{what}: o.a is read after the call writes it");
+        assert!(exec_reaches(&r.module, fixed, *w), "{what}: o.a is read after the call writes it");
     }
 }
 
@@ -1090,7 +1061,7 @@ fn a_call_argument_is_read_before_a_later_argument_runs() {
     );
     assert_no_errors(&r);
     let fixed = fixed_by(&r, setter(&r, "oa"));
-    assert!(exec_reaches(&r, fixed, find_gate(&r, gc::VAR_INCREMENT)), "`l` is read after bump()");
+    assert!(exec_reaches(&r.module, fixed, find_gate(&r, gc::VAR_INCREMENT)), "`l` is read after bump()");
 }
 
 /// A pure mod call next to a copied container needs no hold and no WS089.
@@ -1136,7 +1107,7 @@ fn each_source_is_read_before_a_later_one_runs() {
             .collect();
         assert_eq!(held.len(), 1, "{body}: `l` is held once");
         let hold = ops_on(&r, gc::VAR_SET, WirePort::VarRef, &label(&r, held[0]).expect("labelled"));
-        assert!(exec_reaches(&r, hold[0], find_gate(&r, gc::VAR_INCREMENT)), "{body}: `l` is held after bump()");
+        assert!(exec_reaches(&r.module, hold[0], find_gate(&r, gc::VAR_INCREMENT)), "{body}: `l` is held after bump()");
         assert!(
             r.module.wires.iter().any(|w| w.source == held[0].port(WirePort::Value)),
             "{body}: the held value is used"
@@ -1148,7 +1119,7 @@ fn each_source_is_read_before_a_later_one_runs() {
 fn two_bumps(r: &LowerResult) -> (NodeId, NodeId) {
     let incs = writes_of(r, Some("q"));
     assert_eq!(incs.len(), 2, "two bumps");
-    if exec_reaches(r, incs[0], incs[1]) { (incs[0], incs[1]) } else { (incs[1], incs[0]) }
+    if exec_reaches(&r.module, incs[0], incs[1]) { (incs[0], incs[1]) } else { (incs[1], incs[0]) }
 }
 
 /// A source named again after a call is read again there, not reused from
@@ -1167,8 +1138,8 @@ fn a_source_named_after_a_call_is_read_after_it() {
         assert_no_errors(&r);
         let (first, second) = two_bumps(&r);
         let c = fixed_by(&r, setter(&r, var));
-        assert!(exec_reaches(&r, first, c), "{body}: c is read before the first bump()");
-        assert!(exec_reaches(&r, c, second), "{body}: c is read after the second bump()");
+        assert!(exec_reaches(&r.module, first, c), "{body}: c is read before the first bump()");
+        assert!(exec_reaches(&r.module, c, second), "{body}: c is read after the second bump()");
     }
 }
 
@@ -1185,7 +1156,7 @@ fn a_source_is_held_before_a_later_emit() {
             let handler = writes_of(&r, Some("q"));
             assert_eq!(handler.len(), 1);
             let a = fixed_by(&r, setter(&r, "o.a"));
-            assert!(exec_reaches(&r, a, handler[0]), "{em}{body}: o.a is read after the emit");
+            assert!(exec_reaches(&r.module, a, handler[0]), "{em}{body}: o.a is read after the emit");
         }
     }
 }
@@ -1233,7 +1204,7 @@ fn every_construct_evaluates_in_source_order() {
         let held = holds(&r);
         assert_eq!(held.len(), 1, "{body}: `l` is held once");
         let hold = ops_on(&r, gc::VAR_SET, WirePort::VarRef, &label(&r, held[0]).expect("labelled"));
-        assert!(exec_reaches(&r, hold[0], find_gate(&r, gc::VAR_INCREMENT)), "{body}: `l` is held after bump()");
+        assert!(exec_reaches(&r.module, hold[0], find_gate(&r, gc::VAR_INCREMENT)), "{body}: `l` is held after bump()");
         assert!(r.module.wires.iter().any(|w| w.source == held[0].port(WirePort::Value)), "{body}: unused hold");
     }
     let r = compile(&format!("{head}on go {{ oi = min(b = bump(), a = l) }}\n"));
@@ -1250,8 +1221,8 @@ fn every_construct_evaluates_in_source_order() {
     let start = |port: WirePort| {
         r.module.wires.iter().find(|w| w.source == branch.port(port)).map(|w| w.target.node_id).expect("a branch chain")
     };
-    assert!(exec_reaches(&r, start(WirePort::ExecOutA), inc), "bump() runs on the taken branch");
-    assert!(!exec_reaches(&r, start(WirePort::ExecOutB), inc), "and not on the other");
+    assert!(exec_reaches(&r.module, start(WirePort::ExecOutA), inc), "bump() runs on the taken branch");
+    assert!(!exec_reaches(&r.module, start(WirePort::ExecOutB), inc), "and not on the other");
 }
 
 /// `q = q + d` reads `q` before `d` runs, so a `d` that changes `q` gets a read
@@ -1266,7 +1237,7 @@ fn a_self_increment_reads_the_target_first() {
     let sum = value_of(&r, set);
     let read = source_of(&r, sum, WirePort::InputA).expect("q is read");
     assert_eq!(r.module.nodes[&read].gate_class, gc::VAR_GET);
-    assert!(exec_reaches(&r, read, inc) && exec_reaches(&r, inc, set), "q read, bump(), then the set");
+    assert!(exec_reaches(&r.module, read, inc) && exec_reaches(&r.module, inc, set), "q read, bump(), then the set");
     let r = compile(&format!("{head}on go {{ q = bump() + q }}\n"));
     assert_no_errors(&r);
     assert_eq!(writes_of(&r, Some("q")).len(), 2, "bump() runs first, so `q` is incremented");
@@ -1329,7 +1300,7 @@ fn an_earlier_emit_fires_before_later_holds() {
             .collect();
         assert!(!reads.is_empty(), "{body}: a read is held");
         for read in reads {
-            assert!(!exec_reaches(&r, read, handler[0]), "{body}: the handler runs after a later read");
+            assert!(!exec_reaches(&r.module, read, handler[0]), "{body}: the handler runs after a later read");
         }
     }
 }
@@ -1344,12 +1315,12 @@ fn a_write_through_a_ref_evaluates_the_ref_first() {
     assert_no_errors(&r);
     let read = ops_on(&r, gc::VAR_GET, WirePort::VarRef, "h");
     assert_eq!(read.len(), 1);
-    assert!(exec_reaches(&r, read[0], setter(&r, "h")), "h is read before retarget() changes it");
+    assert!(exec_reaches(&r.module, read[0], setter(&r, "h")), "h is read before retarget() changes it");
     let r = compile(
         "var a: int = 0\nvar i: int = 0\nvar refs: (*int)[]\nmod nexti() -> int {\n  i = i + 1\n  return 7\n}\n\
          in go: exec\non go { *refs[i] = nexti() }\n",
     );
     assert_no_errors(&r);
     let get = find_gate(&r, gc::ARRAY_GET);
-    assert!(exec_reaches(&r, get, find_gate(&r, gc::VAR_INCREMENT)), "refs[i] is read before nexti()");
+    assert!(exec_reaches(&r.module, get, find_gate(&r, gc::VAR_INCREMENT)), "refs[i] is read before nexti()");
 }

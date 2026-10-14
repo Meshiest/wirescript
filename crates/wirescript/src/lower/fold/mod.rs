@@ -7,12 +7,12 @@
 //! (dead exec chains, orphaned pure feeders, degenerate unions, emptied
 //! named-chip instances).
 //!
-//! Two-phase (analyze → apply) so the propagation walk never has to fight
+//! Two-phase (analyze -> apply) so the propagation walk never has to fight
 //! `Module`'s tree-of-owned-maps borrows: the analyze phase only reads, the
 //! apply phase is a second, independent tree walk that mutates using the
 //! finished plan. The cleanup sweeps that follow are their own read/mutate
 //! passes, each run to a fixpoint, in the order the mechanics require:
-//! exec-reachability → pure-demand → union → whole-chip elision.
+//! exec-reachability -> pure-demand -> union -> whole-chip elision.
 // `pub` (not `pub(crate)`): the `--fold-diff` fuzz harness needs `eval::eval`
 // + `eval::Value` — see the visibility note on `pub mod fold` in
 // `lower/mod.rs`. `table` has no external consumer and stays crate-private.
@@ -23,12 +23,11 @@ pub(crate) mod table;
 use std::sync::Arc;
 
 use crate::collections::{HashMap, HashSet};
-use crate::diagnostic::SourceRange;
 use crate::intern::{intern_static, resolve, sym};
 use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
 use crate::ir::{
-    GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, ScopeId, Type, Wire,
+    GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire,
 };
 use eval::Value;
 use table::{AnnihilatorKind, CertifiedTable, InVariant};
@@ -275,6 +274,8 @@ pub(crate) fn fold_certified_constants(root: &mut Module) {
 /// though in practice these are only ever recorded on the root module.
 fn collect_label_source_nodes(module: &Module, out: &mut HashSet<NodeId>) {
     out.extend(module.dynamic_labels.values().map(|p| p.node_id));
+    // A runtime `@color` / `@material` source is consumed the same way.
+    out.extend(module.style_sources().map(|p| p.node_id));
     if let Some(p) = &module.root_dynamic_label {
         out.insert(p.node_id);
     }
@@ -517,14 +518,6 @@ fn try_resolve_branch(
     plan.insert(id, PlanAction::Truncate { taken_targets });
 }
 
-/// `FormatText`'s substitution slots, `InputA..InputG`, in template-index
-/// order (`{0}`..`{6}`) — mirrors `lower/ops.rs::FORMAT_SLOTS`.
-const FORMAT_SLOTS: [WirePort; 7] = [
-    WirePort::InputA, WirePort::InputB, WirePort::InputC,
-    WirePort::InputD, WirePort::InputE, WirePort::InputF,
-    WirePort::InputG,
-];
-
 /// `FormatText`: foldable when the node carries a `FormatString` property
 /// (always true for `${...}`-interpolation lowering; a `Fmt(...)` call whose
 /// template argument is itself non-literal wires `FormatString` as a real
@@ -567,7 +560,7 @@ fn try_resolve_format_text(
     plan: &mut HashMap<NodeId, PlanAction>,
 ) -> Option<Value> {
     let template = info.format_string.as_ref()?;
-    let any_substituted = FORMAT_SLOTS.iter().any(|&port| {
+    let any_substituted = eval::FORMAT_SLOTS.iter().any(|&port| {
         in_wires.get(&(id, port)).is_some()
             || info
                 .node
@@ -579,8 +572,8 @@ fn try_resolve_format_text(
     if !any_substituted {
         return None;
     }
-    let mut inputs: Vec<Option<Value>> = Vec::with_capacity(FORMAT_SLOTS.len());
-    for &port in &FORMAT_SLOTS {
+    let mut inputs: Vec<Option<Value>> = Vec::with_capacity(eval::FORMAT_SLOTS.len());
+    for &port in &eval::FORMAT_SLOTS {
         match resolve_data_input(id, port, in_wires, known, &info.node.properties) {
             Resolved::Unwired => inputs.push(None),
             Resolved::Known(v) => inputs.push(Some(v)),
@@ -943,7 +936,7 @@ fn cleanup_boundary_feeds(root: &mut Module, known: &HashMap<NodeId, Value>) {
     // exactly the consumers Rule B will touch before any mutation starts.
     let mut consumer_ids: HashSet<NodeId> = HashSet::default();
     collect_boundary_consumer_ids(root, known, &boundary_ids, &mut consumer_ids);
-    let mut meta: HashMap<NodeId, ConsumerMeta> = HashMap::default();
+    let mut meta: HashMap<NodeId, Node> = HashMap::default();
     collect_consumer_meta(root, &consumer_ids, &mut meta);
     #[cfg(debug_assertions)]
     assert_no_nofold_known_boundary(root, known, &boundary_ids);
@@ -994,7 +987,7 @@ fn cleanup_boundary_feeds(root: &mut Module, known: &HashMap<NodeId, Value>) {
 fn rewire_boundary_consumers(
     module: &mut Module,
     known: &HashMap<NodeId, Value>,
-    metas: &HashMap<NodeId, ConsumerMeta>,
+    metas: &HashMap<NodeId, Node>,
     boundary_ids: &HashSet<NodeId>,
 ) {
     let mut mutated = false;
@@ -1012,18 +1005,15 @@ fn rewire_boundary_consumers(
         let lit_id = NodeId::fresh();
         module.nodes.insert(
             lit_id,
-            Node {
-                id: lit_id,
-                kind: NodeKind::Gate,
-                gate_class: gc::LITERAL,
-                properties,
+            Node::new(
+                lit_id,
+                NodeKind::Gate,
+                gc::LITERAL,
                 ports,
-                source_range: meta.source_range.clone(),
-                chip_id: meta.chip_id,
-                chain_id: meta.chain_id,
-                scope_id: meta.scope_id,
-                note: Some("boundary-delivery cleanup literal"),
-            },
+                properties,
+                Some(meta),
+                Some("boundary-delivery cleanup literal"),
+            ),
         );
         w.source = PortRef {
             node_id: lit_id,
@@ -1037,17 +1027,6 @@ fn rewire_boundary_consumers(
     for child in module.chips.values_mut() {
         rewire_boundary_consumers(child, known, metas, boundary_ids);
     }
-}
-
-/// Placement metadata Rule B copies from the CONSUMER of a rewired boundary
-/// wire onto the fresh `_Literal` it mints, so the new node renders where
-/// it's read (same chip/row/scope as the consumer), not off in the chip the
-/// value originated from.
-struct ConsumerMeta {
-    chip_id: Option<NodeId>,
-    chain_id: Option<u32>,
-    scope_id: ScopeId,
-    source_range: SourceRange,
 }
 
 /// The target node id of every wire Rule B will rewire (source is a Known
@@ -1091,22 +1070,14 @@ fn assert_no_nofold_known_boundary(
     }
 }
 
-fn collect_consumer_meta(
-    module: &Module,
-    consumer_ids: &HashSet<NodeId>,
-    out: &mut HashMap<NodeId, ConsumerMeta>,
-) {
+/// A copy of each CONSUMER of a rewired boundary wire, whose placement Rule B
+/// gives the fresh `_Literal` it mints, so the new node renders where it's
+/// read (same chip/row/scope as the consumer), not off in the chip the value
+/// originated from.
+fn collect_consumer_meta(module: &Module, consumer_ids: &HashSet<NodeId>, out: &mut HashMap<NodeId, Node>) {
     for (id, n) in &module.nodes {
         if consumer_ids.contains(id) {
-            out.insert(
-                *id,
-                ConsumerMeta {
-                    chip_id: n.chip_id,
-                    chain_id: n.chain_id,
-                    scope_id: n.scope_id,
-                    source_range: n.source_range.clone(),
-                },
-            );
+            out.insert(*id, n.clone());
         }
     }
     for child in module.chips.values() {
@@ -1466,6 +1437,8 @@ fn elide_empty_chips_rec(module: &mut Module, touched: &HashSet<NodeId>) {
         let annotated = chip_node.properties.contains_key(&*sym::NAME_LABEL)
             || chip_node.properties.contains_key(&*sym::CHIP_CLOSED)
             || chip_node.properties.contains_key(&*sym::DOC_TEXT)
+            || chip_node.properties.contains_key(&*sym::BRICK_COLOR)
+            || chip_node.properties.contains_key(&*sym::BRICK_MATERIAL)
             || chip_node.properties.contains_key(&*sym::NO_FOLD);
         if annotated {
             continue;

@@ -4,25 +4,13 @@ use crate::intern::sym;
 use crate::ir::{Literal, NodeKind};
 
 fn lower_src(src: &str) -> crate::ir::Module {
-    let parsed = crate::parser::parse(src, "test");
+    let crate::compile::FrontEnd { resolved: parsed, lowered: r, .. } =
+        crate::compile::front_end(src, "test", None, crate::lower::FoldMode::Auto, &crate::resolve::FsLoader);
     assert!(
         parsed.diagnostics.is_empty(),
         "parse diags: {:?}",
         parsed.diagnostics
     );
-    let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
-    let r = crate::lower::lower(crate::lower::LowerInput {
-        ast: &parsed.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        resolutions: &tc.resolutions,
-        file: "test",
-        module_name: None,
-        template_cache: std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
-        doc_comments: &parsed.doc_comments,
-        fold_mode: crate::lower::FoldMode::Auto,
-        ce_slots: &crate::typecheck::CeSlotMap::default(),
-    });
     assert!(
         r.diagnostics
             .iter()
@@ -142,7 +130,7 @@ fn named_chip_instances_inherit_decl_annotations_and_doc() {
 
 #[test]
 fn default_chip_has_no_closed_or_open_prop() {
-    let m = lower_src("chip { var a: int = 0 }\nopen chip { var b: int = 0 }");
+    let m = lower_src("chip { var a: int = 0 }\nchip { var b: int = 0 }");
     for n in chip_nodes(&m) {
         assert!(n.properties.get(&*sym::CHIP_CLOSED).is_none());
         assert!(

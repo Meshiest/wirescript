@@ -46,6 +46,7 @@ impl<'a> Parser<'a> {
                         r.end,
                     );
                 }
+                self.reject_style(&anns, "'in'/'out' declarations");
                 let side = anns.side.map(|(s, _)| s);
                 let label = anns.label.map(|(l, _)| l);
                 let label_expr = anns.label_expr.map(|(e, _)| e);
@@ -65,10 +66,7 @@ impl<'a> Parser<'a> {
                     self.parse_out_binding(side, label, label_expr, invisible, no_fold),
                 ));
             }
-            let next_is_open_chip = kw("open")
-                && self.peek_at(1).kind == TokenKind::Kw
-                && self.peek_at(1).text == "chip";
-            if kw("chip") || next_is_open_chip {
+            if kw("chip") {
                 if let Some((_, r)) = &anns.side {
                     self.error(
                         "a side annotation must be followed by an 'in' or 'out' declaration"
@@ -79,24 +77,12 @@ impl<'a> Parser<'a> {
                 }
                 let label = anns.label.map(|(l, _)| l);
                 let label_expr = anns.label_expr.map(|(e, _)| e);
+                let color = anns.color.map(|(e, _)| e);
+                let material = anns.material.map(|(e, _)| e);
                 let no_fold = anns.nofold.is_some();
-                if next_is_open_chip {
-                    if let Some(r) = &anns.closed {
-                        self.error(
-                            "@closed cannot be combined with 'open chip'".to_string(),
-                            r.start,
-                            r.end,
-                        );
-                    }
-                    self.advance(); // consume "open"
-                    let decl = self.parse_chip_decl(true, label, label_expr, false, no_fold);
-                    if let (TopDecl::AnonChip(_), Some(r)) = (&decl, &anns.nofold) {
-                        self.warn("@nofold has no effect on an anonymous chip", r.start, r.end);
-                    }
-                    return Some(decl);
-                }
-                let decl =
-                    self.parse_chip_decl(false, label, label_expr, anns.closed.is_some(), no_fold);
+                let mut decl =
+                    self.parse_chip_decl(label, label_expr, anns.closed.is_some(), no_fold);
+                set_style(&mut decl, color, material);
                 if let (TopDecl::AnonChip(_), Some(r)) = (&decl, &anns.nofold) {
                     self.warn("@nofold has no effect on an anonymous chip", r.start, r.end);
                 }
@@ -106,31 +92,40 @@ impl<'a> Parser<'a> {
             // `var` / `static var` / `let` / `on`, at any nesting depth. `@label`
             // (string or constant expression) is additionally legal directly on
             // `var` / `static var` — it overrides the var's name-derived
-            // floating label, same as on a port. Any other annotation combined
-            // with these still falls through to the generic "must be followed
-            // by ..." error below, unchanged.
+            // floating label, same as on a port — and so are `@color` and
+            // `@material`. Any other annotation combined with these still falls
+            // through to the generic "must be followed by ..." error below,
+            // unchanged.
             let is_static_var = kw("static")
                 && self.peek_at(1).kind == TokenKind::Kw
                 && self.peek_at(1).text == "var";
             let no_side_closed_invisible =
                 anns.side.is_none() && anns.closed.is_none() && anns.invisible.is_none();
+            let styled = anns.color.is_some() || anns.material.is_some();
             let var_ann_ok = no_side_closed_invisible
-                && (anns.nofold.is_some() || anns.label.is_some() || anns.label_expr.is_some());
+                && (anns.nofold.is_some() || anns.label.is_some() || anns.label_expr.is_some() || styled);
             let bare_nofold = no_side_closed_invisible
                 && anns.nofold.is_some()
                 && anns.label.is_none()
-                && anns.label_expr.is_none();
+                && anns.label_expr.is_none()
+                && !styled;
             if (var_ann_ok && (kw("var") || is_static_var)) || (bare_nofold && (kw("let") || kw("on")))
             {
                 let no_fold = anns.nofold.is_some();
                 let label = anns.label.map(|(l, _)| l);
                 let label_expr = anns.label_expr.map(|(e, _)| e);
+                let color = anns.color.map(|(e, _)| e);
+                let material = anns.material.map(|(e, _)| e);
                 if is_static_var {
                     self.advance(); // consume "static"
-                    return Some(self.parse_var_decl(true, no_fold, label, label_expr));
+                    let mut decl = self.parse_var_decl(true, no_fold, label, label_expr);
+                    set_style(&mut decl, color, material);
+                    return Some(decl);
                 }
                 if kw("var") {
-                    return Some(self.parse_var_decl(false, no_fold, label, label_expr));
+                    let mut decl = self.parse_var_decl(false, no_fold, label, label_expr);
+                    set_style(&mut decl, color, material);
+                    return Some(decl);
                 }
                 if kw("let") {
                     let mut decl = self.parse_let_decl(false);
@@ -162,7 +157,7 @@ impl<'a> Parser<'a> {
             if t2.kind == TokenKind::Eof {
                 return None;
             }
-            return self.parse_top_decl(); // annotations consumed → guaranteed progress
+            return self.parse_top_decl(); // annotations consumed -> guaranteed progress
         }
         // `enum` is a contextual keyword, so it still lexes as an identifier and
         // stays usable as a name. Only `enum` followed by another identifier —
@@ -211,7 +206,7 @@ impl<'a> Parser<'a> {
                                 kw.end,
                             );
                             self.advance(); // consume "const"
-                            self.parse_chip_decl(false, None, None, false, false)
+                            self.parse_chip_decl(None, None, false, false)
                         }
                         _ => self.parse_let_decl(/*is_const=*/ true),
                     });
@@ -219,14 +214,8 @@ impl<'a> Parser<'a> {
                 "on" => return Some(TopDecl::Handler(self.parse_handler(false))),
                 "array" => return Some(self.parse_array_decl()),
                 "map" => return Some(self.parse_map_decl()),
-                "chip" => return Some(self.parse_chip_decl(false, None, None, false, false)),
+                "chip" => return Some(self.parse_chip_decl(None, None, false, false)),
                 "mod" => return Some(self.parse_mod_decl(false)),
-                "open" => {
-                    if self.peek_at(1).kind == TokenKind::Kw && self.peek_at(1).text == "chip" {
-                        self.advance(); // consume "open"
-                        return Some(self.parse_chip_decl(true, None, None, false, false));
-                    }
-                }
                 "fn" => return Some(self.parse_fn_decl()),
                 "import" => return Some(self.parse_import_decl()),
                 "type" => return Some(self.parse_type_alias_decl()),
@@ -311,6 +300,8 @@ impl<'a> Parser<'a> {
             no_fold,
             label,
             label_expr,
+            color_expr: None,
+            material_expr: None,
             range: self.make_range(start, end),
         })
     }
@@ -628,47 +619,107 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::Op, Some("="));
-        // `let name = on Trigger() { ... }` → EventDecl (captured event)
+        // `let name = on Trigger() { ... }` -> EventDecl (captured event)
         if self.check(TokenKind::Kw, Some("on")) {
             self.advance();
+            // `let name = on <expr>` (`on Union(a, b)`, `on a && b`): the
+            // expression trigger an `on <expr>` handler binds, bound to `name`,
+            // so `on name` fires as `on <expr>` does.
+            if self.looks_like_expr_trigger() {
+                let expr = self.parse_expr_no_brace_construct();
+                let arrow = self.check(TokenKind::Arrow, None);
+                if !arrow && !self.check(TokenKind::LBrace, None) {
+                    let end = expr.range().end;
+                    self.eat_stmt_end();
+                    return TopDecl::Let(LetDecl {
+                        binding,
+                        typ,
+                        value: expr,
+                        no_fold: false,
+                        is_const,
+                        range: self.make_range(start, end),
+                    });
+                }
+                // A captured body runs off the expression's own binding, as
+                // an `on <expr>` handler does.
+                let expr_range = expr.range().clone();
+                let synth_name = format!("_on_expr_{}", self.expr_trigger_counter);
+                self.expr_trigger_counter += 1;
+                let trigger = Trigger::Ident { name: synth_name.clone(), range: expr_range.clone() };
+                let has_exec_arg = expr_call_has_exec_arg(&expr);
+                let mut params = Vec::new();
+                if self.match_tok(TokenKind::Arrow, None).is_some() {
+                    self.parse_handler_arrow_pattern(&trigger, &mut params);
+                }
+                let body = self.parse_block();
+                // Queued after the body, which drains the queue into itself.
+                self.pending_stmts.push(Stmt::Let(LetDecl {
+                    binding: LetBinding::Ident { name: synth_name.clone(), range: expr_range.clone() },
+                    typ: None,
+                    value: expr,
+                    no_fold: false,
+                    is_const: false,
+                    range: expr_range.clone(),
+                }));
+                let range = self.make_range(start, body.range.end);
+                return TopDecl::Event(EventDecl {
+                    name,
+                    source: Expr::Ident { name: synth_name, range: expr_range },
+                    captured: Some(Handler {
+                        trigger,
+                        params,
+                        config: Vec::new(),
+                        body,
+                        no_fold: false,
+                        expr_trigger_has_exec_arg: has_exec_arg,
+                        alias: None,
+                        range: range.clone(),
+                    }),
+                    no_fold: false,
+                    range,
+                });
+            }
             let trigger = self.parse_trigger();
             // Events are called here too: `let x = on RoundStart()`. Require and
             // consume the `()` on an event-name trigger, matching the handler form.
             self.require_event_call_parens(&trigger);
-            if self.check(TokenKind::LParen, None) {
-                // Consume the event call's balanced `( ... )` (config args; the
-                // capture form does not currently thread config through).
-                self.advance();
-                let mut depth = 1usize;
-                while depth > 0 && self.peek().kind != TokenKind::Eof {
-                    match self.peek().kind {
-                        TokenKind::LParen => depth += 1,
-                        TokenKind::RParen => depth -= 1,
-                        _ => {}
-                    }
-                    self.advance();
-                }
+            let config = self.parse_alias_config();
+            // A captured body binds the event's outputs as a handler does.
+            let mut params = Vec::new();
+            let arrow = self.match_tok(TokenKind::Arrow, None).is_some();
+            if arrow {
+                self.parse_handler_arrow_pattern(&trigger, &mut params);
             }
-            if self.check(TokenKind::LBrace, None) {
-                let captured_body = Some(self.parse_block());
-                let end = captured_body.as_ref().unwrap().range.end;
+            if arrow || self.check(TokenKind::LBrace, None) {
+                let body = self.parse_block();
+                let range = self.make_range(start, body.range.end);
                 let source = trigger_to_expr(&trigger);
                 return TopDecl::Event(EventDecl {
                     name,
                     source,
-                    captured_body,
+                    captured: Some(Handler {
+                        trigger,
+                        params,
+                        config,
+                        body,
+                        no_fold: false,
+                        expr_trigger_has_exec_arg: false,
+                        alias: None,
+                        range: range.clone(),
+                    }),
                     no_fold: false,
-                    range: self.make_range(start, end),
+                    range,
                 });
             }
-            // `let name = on Trigger` (no body) → event alias
+            // `let name = on Trigger` (no body) -> event alias
             let source = trigger_to_expr(&trigger);
             let end = source.range().end;
             self.eat_stmt_end();
+            self.event_aliases.insert(name.clone(), (trigger, config));
             return TopDecl::Event(EventDecl {
                 name,
                 source,
-                captured_body: None,
+                captured: None,
                 no_fold: false,
                 range: self.make_range(start, end),
             });
@@ -942,7 +993,6 @@ impl<'a> Parser<'a> {
     // `chip Name(params) [-> outputs] { body }`
     pub(super) fn parse_chip_decl(
         &mut self,
-        open: bool,
         label: Option<String>,
         label_expr: Option<Expr>,
         closed: bool,
@@ -1009,7 +1059,6 @@ impl<'a> Parser<'a> {
                 (!names.is_empty()).then(|| names.join(", "))
             };
             return TopDecl::AnonChip(AnonChipDecl {
-                open,
                 body: Block {
                     stmts,
                     range: self.make_range(start, end),
@@ -1017,15 +1066,16 @@ impl<'a> Parser<'a> {
                 range: self.make_range(start, end),
                 label: derived_label,
                 label_expr: label_expr.clone(),
+                color_expr: None,
+                material_expr: None,
                 closed,
             });
         }
-        // `chip on trigger { ... }` → `chip { on trigger { ... } }`
+        // `chip on trigger { ... }` -> `chip { on trigger { ... } }`
         if self.check(TokenKind::Kw, Some("on")) {
             let handler = self.parse_handler(false);
             let end = handler.range.end;
             return TopDecl::AnonChip(AnonChipDecl {
-                open,
                 body: Block {
                     stmts: vec![Stmt::Handler(handler)],
                     range: self.make_range(start, end),
@@ -1033,6 +1083,8 @@ impl<'a> Parser<'a> {
                 range: self.make_range(start, end),
                 label: label.clone(),
                 label_expr: label_expr.clone(),
+                color_expr: None,
+                material_expr: None,
                 closed,
             });
         }
@@ -1041,11 +1093,12 @@ impl<'a> Parser<'a> {
             let body = self.parse_block();
             let end = body.range.end;
             return TopDecl::AnonChip(AnonChipDecl {
-                open,
                 body,
                 range: self.make_range(start, end),
                 label,
                 label_expr,
+                color_expr: None,
+                material_expr: None,
                 closed,
             });
         }
@@ -1070,6 +1123,8 @@ impl<'a> Parser<'a> {
             inline: false,
             label,
             label_expr,
+            color_expr: None,
+            material_expr: None,
             closed,
             no_fold,
             is_const: false,
@@ -1194,6 +1249,8 @@ impl<'a> Parser<'a> {
             inline: true,
             label: None,
             label_expr: None,
+            color_expr: None,
+            material_expr: None,
             closed: false,
             no_fold: false,
             is_const,

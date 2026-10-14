@@ -46,3 +46,12 @@
         assert!(fz.params[1].optional);                                   // tagFilter?: string
         assert_eq!(fz.params[1].ty, Type::String);
     }
+
+    /// `average` reads the gate's `Value`, which the gate declares a float
+    /// whatever the element type: the mean of an int array is fractional.
+    #[test]
+    fn average_of_an_int_array_is_a_float() {
+        let ret = array_return_type("average", &Type::Int).unwrap();
+        let Type::Outputs(fields) = ret else { panic!("expected outputs, got {ret:?}") };
+        assert_eq!(fields[0], ("Value".to_string(), Type::Float));
+    }

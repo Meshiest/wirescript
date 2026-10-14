@@ -1194,7 +1194,7 @@ fn on_general_inline_mod_exec_no_arrow_is_ws043() {
     // "drive this as exec" intent, but an inline mod exposes no completion exec
     // for the handler to trigger on, so the `exec =` has nothing to attach to.
     // Previously this bound `_on_expr_N` to a `Binding::Local` with empty params,
-    // silently fell through to the value-changed-local branch (a value→exec
+    // silently fell through to the value-changed-local branch (a value->exec
     // miswire), and left `exec = s` orphaned/unwired. It must be a clean WS043,
     // body NOT lowered.
     let src = "in s: exec\nmod doWork(x: int) -> (r: int) {\n  return x * 2\n}\nvar hits: int = 0\non doWork(5, exec = s) {\n  hits = hits + 1\n}\n";
@@ -1211,7 +1211,7 @@ fn on_general_inline_mod_exec_no_arrow_is_ws043() {
             .any(|n| n.gate_class.contains("MathAdd")),
         "handler body must not be lowered after WS043 (found a MathAdd from `hits + 1`)"
     );
-    // No value→exec miswire: nothing in the module should be an exec wire whose
+    // No value->exec miswire: nothing in the module should be an exec wire whose
     // SOURCE is a value output. Specifically, `s` (the in-exec) must not be left
     // orphaned into a bogus trigger — assert the handler produced NO exec chain
     // by confirming no Exec_Var_Set gate exists (the miswired `hits = hits + 1`
@@ -1651,7 +1651,7 @@ fn any_annotation_warns_but_storage_and_probe_do_not() {
         diags(s).iter().any(|x| x.code == code && x.severity == sev)
     };
     use crate::diagnostic::Severity;
-    // param + output annotations `any` → warn
+    // param + output annotations `any` -> warn
     assert!(
         has(
             "mod f(a: any) -> any { return a }\n",
@@ -1660,12 +1660,12 @@ fn any_annotation_warns_but_storage_and_probe_do_not() {
         ),
         "any param/output should warn"
     );
-    // in-port `any` → warn
+    // in-port `any` -> no warn: a port cannot take a type parameter
     assert!(
-        has("in x: any\n", "WS032", Severity::Warning),
-        "any in-port should warn"
+        !diags("in x: any\n").iter().any(|z| z.code == "WS032"),
+        "any in-port must not warn"
     );
-    // Opaque(...) probe VALUE is not an annotation → no warn
+    // Opaque(...) probe VALUE is not an annotation -> no warn
     assert!(
         !diags("in x: int\nlet y = Opaque(x)\n")
             .iter()
@@ -1692,12 +1692,12 @@ fn any_annotation_warns_on_compound_and_stmt_out() {
     };
     let count = |s: &str, code: &str| diags(s).iter().filter(|x| x.code == code).count();
     use crate::diagnostic::Severity;
-    // `*any` (Ref-wrapped) ref param → warn (shallow matches! would miss it)
+    // `*any` (Ref-wrapped) ref param -> warn (shallow matches! would miss it)
     assert!(
         has("mod inc(v: *any) { v = v }\n", "WS032", Severity::Warning),
         "*any ref param should warn"
     );
-    // `any[]` (Array-wrapped) param → warn
+    // `any[]` (Array-wrapped) param -> warn
     assert!(
         has(
             "mod f(a: any[]) -> int { return 0 }\n",
@@ -1706,14 +1706,12 @@ fn any_annotation_warns_on_compound_and_stmt_out() {
         ),
         "any[] param should warn"
     );
-    // anon-chip statement-level `out` annotation `any` → warn (Stmt::OutBinding path)
-    assert!(
-        has(
-            "in go: exec\nchip { @bottom out done: any = 5 }\n",
-            "WS032",
-            Severity::Warning
-        ),
-        "anon-chip statement-level out any should warn"
+    // anon-chip statement-level `out` annotation `any` -> no warn: it is a
+    // port, which cannot take a type parameter (Stmt::OutBinding path)
+    assert_eq!(
+        count("in go: exec\nchip { @bottom out done: any = 5 }\n", "WS032"),
+        0,
+        "anon-chip statement-level out any must not warn"
     );
     // fires once per annotation (at the top-level range), not once per nested Opaque
     assert_eq!(
@@ -1725,11 +1723,6 @@ fn any_annotation_warns_on_compound_and_stmt_out() {
         count("mod f(a: any[]) -> int { return 0 }\n", "WS032"),
         1,
         "one warn for any[] param"
-    );
-    assert_eq!(
-        count("in go: exec\nchip { @bottom out done: any = 5 }\n", "WS032"),
-        1,
-        "one warn for anon-chip out"
     );
 }
 
@@ -1787,7 +1780,7 @@ fn generic_mod_call_inference() {
     // here — `var`'s initializer coercion is the hard WS003 error, so
     // that's the construct that proves the result type.) Asserting the message
     // (not just the WS003 code) is deliberate: `coerce(Param("T"), Vector)` is
-    // ALSO a Mismatch → WS003, so a regression that stopped substituting and
+    // ALSO a Mismatch -> WS003, so a regression that stopped substituting and
     // leaked a raw `Param` would still emit WS003 — only the "got Float" text
     // proves substitution actually produced the concrete widened `float`.
     let vecerr = err_msgs(&format!("{pick}var v: vector = pick(flag, 1, 2.0)\n"));
@@ -2085,7 +2078,7 @@ fn generic_type_aliases_instantiate() {
 /// this asserts on the emitted IR.
 #[test]
 fn generic_alias_record_port_lowers_to_real_gates() {
-    // Top-level record PORT: `Pair<int>` → two int sub-ports feeding a MathAdd.
+    // Top-level record PORT: `Pair<int>` -> two int sub-ports feeding a MathAdd.
     let r = compile("type Pair<T> = { a: T, b: T }\nin p: Pair<int>\nout r: int = p.a + p.b\n");
     assert_no_errors(&r);
     assert!(
@@ -2141,7 +2134,7 @@ fn generic_alias_record_port_lowers_to_real_gates() {
 #[test]
 fn deeply_nested_generic_decls_terminate_quickly() {
     // The per-mask-member body check is a whole-PATH budget, not per-decl, so
-    // nesting generic decls can't multiply the combo count (`13^d` → a 17s+
+    // nesting generic decls can't multiply the combo count (`13^d` -> a 17s+
     // typecheck / LSP hang). Depth-6 nested generic mods must type-check clean
     // and near-instantly (this test would time out conspicuously in the suite
     // if the budget regressed).

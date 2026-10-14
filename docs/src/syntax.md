@@ -39,7 +39,7 @@ Import declarations bring symbols from other `.ws` files into scope. The `.ws` e
 import "lib"                            // import all exportable declarations
 import { swap, clamp } from "lib"       // selective import
 import { swap as mySwap } from "lib"    // aliased import
-import * as utils from "lib"            // namespace import — utils.swap()
+import * as utils from "lib"            // namespace import, called as utils.swap()
 ```
 
 Importable: `mod`, `chip`, `fn`, `let`, `const`, `type`, and a module's
@@ -53,26 +53,27 @@ A `match` arm names such a variant by the variant alone (`S =>`). A program has
 one enum of a name, whichever way it is imported, so a namespace import of a
 module declaring an enum the program declares too is `WS013`.
 
-**A SELECTIVE import drops the module's handlers.** `import "lib"` and
-`import * as lib from "lib"` both carry a module's top-level `on` handlers;
-`import { helper } from "lib"` does not, because it selects declarations BY NAME
-and a handler has none to select. No error, no warning: the receiver gate is
-never emitted, so the events it would have caught go nowhere.
+**A selective import drops the module's handlers.** `import "lib"` and
+`import * as lib from "lib"` both carry a module's top-level `on` handlers.
+`import { helper } from "lib"` does not, because it selects declarations by name
+and a handler has no name to select. The compiler reports no error or warning.
+The receiver gate is never emitted, so the events it would have caught go nowhere.
 
-The trap is the edit that narrows an import. Turning `import "lib"` into
-`import { helper } from "lib"` to quiet an unused-name warning drops every
-handler that module declared, and neither `just check` nor `just compile` says
-so. Narrowing to `import * as lib from "lib"` keeps them.
+This usually happens through an edit that narrows an import. Turning
+`import "lib"` into `import { helper } from "lib"` to quiet an unused-name
+warning drops every handler that module declared, and neither `just check` nor
+`just compile` says so. Narrowing to `import * as lib from "lib"` keeps them.
 
-The robust arrangement is to keep `on` handlers in the **entry** file regardless:
-expose the logic from the library as a `mod`, and let each entry file declare the
-thin handler that calls it. That way no import form can silently remove them:
+The safer arrangement is to keep `on` handlers in the **entry** file in every
+case. Expose the logic from the library as a `mod`, and let each entry file
+declare the thin handler that calls it. Then no import form can silently remove
+them:
 
 ```wirescript ignore
-// lib.ws -- the logic, reachable by importers
+// lib.ws: the logic, reachable by importers
 mod onPing(v: int) { total = total + v }
 
-// main.ws -- the handler must be declared HERE
+// main.ws: the handler must be declared here
 import { onPing } from "lib"
 on CustomEvent("ping") -> (v: int) { onPing(v) }
 ```
@@ -88,11 +89,11 @@ just ir main.ws | grep -c Event_Custom
 as `x.f()`, only the `mod`s and `chip`s that file declares or that its own
 imports name. A module's private helper, present because an imported body
 calls it, is not callable from the importer, and an importer's own mods are not
-callable from the bodies it imports: a library that needs one declares it, or
+callable from the bodies it imports. A library that needs one declares it, or
 imports it from a module both files import, since a module can't import the
-file that imports it. A plain call to a mod the file can't name is `WS002`, a
-method call `WS036`; a builtin of the same name is called instead where there
-is one.
+file that imports it. A plain call to a mod the file can't name is `WS002`, and
+a method call is `WS036`. Where a builtin of the same name exists, the builtin
+is called instead.
 
 Paths are resolved relative to the importing file. Circular imports are an error.
 
@@ -262,9 +263,9 @@ The following words are reserved and cannot be used as identifiers:
 | `static` | Persistent-variable modifier (inside handlers/mods) |
 | `await` | Suspend an exec chain until a signal fires |
 
-Using a reserved word as an identifier (eg. `from`) as a variable or parameter
-name produces a **cascade of confusing `WSP001 expected Ident, got '<word>'
-(Kw)` parse errors** that mask the real cause.
+Using a reserved word (e.g. `from`) as a variable or parameter name produces
+**a series of `WSP001 expected Ident, got '<word>' (Kw)` parse errors** that
+hide the real cause.
 
 ## Literals
 
@@ -282,7 +283,7 @@ Decimal, hexadecimal, binary, and octal integer literals are supported. Undersco
 0B1100_0011
 ```
 
-An integer constant (a literal, a name bound to an integer constant such as `const N = 3`, or an expression the compiler computes from them, such as `N + 2`, `-N`, an element of a constant array, a field of a constant record or a `const mod` call) in a place typed `float` is that float: a `float` var, parameter (of a `mod`, `chip`, namespaced call or enum payload), return value, output, record or tuple field, container element, or an annotated `let`/`const`, which then holds a `float` in constant evaluation too. So with `mod half(v: float) -> float { return v / 2 }`, `half(3)`, `half(N)` and `half(N + 2)` are `1.5`, `1.5` and `2.5`. Each read decides on its own: `N` read into an `int` place beside them stays an integer. A runtime value is not converted: an `int` variable, input or computed value passed to a `float` place keeps its integer wire, so `half(n)` with `n: int` divides as integers. An `if` or `match` whose arms join to `float` makes its integer arms floats (`(if c then 3 else 2.5) / 2` is `1.5` or `1.25`), unless the whole value goes into an `int` place, which keeps them integers. A record, tuple, array or map literal fits a target whose fields or elements are `float` where its own are integers. A builtin math call such as `clamp(n, 0, 8)` takes its literals as written; `min`, `max`, `clamp`, `abs`, `sign`, `floor`, `ceil` and `round` of integers are integers, and `float` once an operand is.
+An integer constant in a place typed `float` is that float. An integer constant here is a literal, a name bound to an integer constant such as `const N = 3`, or an expression the compiler computes from them, such as `N + 2`, `-N`, an element of a constant array, a field of a constant record or a `const mod` call. A place typed `float` is a `float` var, parameter (of a `mod`, `chip`, namespaced call or enum payload), return value, output, record or tuple field, container element, or an annotated `let`/`const`. An annotated `let`/`const` then holds a `float` in constant evaluation too. So with `mod half(v: float) -> float { return v / 2 }`, `half(3)`, `half(N)` and `half(N + 2)` are `1.5`, `1.5` and `2.5`. Each read decides on its own: `N` read into an `int` place beside them stays an integer. A runtime value is not converted: an `int` variable, input or computed value passed to a `float` place keeps its integer wire, so `half(n)` with `n: int` divides as integers. An `if` or `match` whose arms join to `float` makes its integer arms floats (`(if c then 3 else 2.5) / 2` is `1.5` or `1.25`), unless the whole value goes into an `int` place, which keeps them integers. A record, tuple, array or map literal fits a target whose fields or elements are `float` where its own are integers. A builtin math call such as `clamp(n, 0, 8)` takes its literals as written. `min`, `max`, `clamp`, `abs`, `sign`, `floor`, `ceil` and `round` of integers are integers, and are `float` once an operand is a float.
 
 ### Float Literals
 

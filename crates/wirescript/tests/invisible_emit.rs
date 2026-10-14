@@ -4,23 +4,14 @@
 //! must carry no `Component_TextDisplay` label components anywhere.
 
 use wirescript::emit::EmitOptions;
-use wirescript::{CompileInput, FoldMode, compile_to_world};
+use wirescript::compile_to_world;
 
-fn is_text_display(c: &Box<dyn brdb::BrdbComponent>) -> bool {
-    c.component_type()
-        .map(|t| t.to_string() == "Component_TextDisplay")
-        .unwrap_or(false)
-}
+mod common;
 
 #[test]
 fn module_invisible_hides_shell_and_labels() {
     let r = compile_to_world(
-        CompileInput {
-            source: "@invisible\n\nin go: exec\non go { }\n",
-            file: "invisible_module.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input("@invisible\n\nin go: exec\non go { }\n", "invisible_module.ws"),
         EmitOptions::default(),
     )
     .expect("should compile");
@@ -46,7 +37,7 @@ fn module_invisible_hides_shell_and_labels() {
             .iter()
             .flat_map(|(_e, bricks)| bricks)
             .chain(r.world.bricks.iter())
-            .any(|b| b.components.iter().any(is_text_display)),
+            .any(|b| b.components.iter().any(common::is_text_display)),
         "@invisible must emit no text labels"
     );
 }

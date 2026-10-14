@@ -7,7 +7,7 @@ use crate::ir::gate_class as gc;
 use crate::ir::NodeId;
 
 /// What drives `(node, port)`: the source node and port.
-pub(super) fn source_of(r: &LowerResult, node: NodeId, port: WirePort) -> Option<(NodeId, WirePort)> {
+pub(super) fn source_port_of(r: &LowerResult, node: NodeId, port: WirePort) -> Option<(NodeId, WirePort)> {
     r.module
         .wires
         .iter()
@@ -23,16 +23,12 @@ pub(super) fn gates(r: &LowerResult, class: &str) -> Vec<NodeId> {
     v.into_iter().map(|n| n.id).collect()
 }
 
-fn class_of(r: &LowerResult, id: NodeId) -> &'static str {
-    r.module.nodes[&id].gate_class
-}
-
 #[test]
 fn ref_of_a_var_wires_its_varref_into_the_consumer() {
     let r = compile("var a: int = 0\nvar h: *int\nin go: exec\non go { h = &a }");
     assert_no_errors(&r);
     let set = gates(&r, gc::VAR_SET)[0];
-    let (src, port) = source_of(&r, set, WirePort::Value).expect("Value wired");
+    let (src, port) = source_port_of(&r, set, WirePort::Value).expect("Value wired");
     assert_eq!(class_of(&r, src), gc::VAR);
     assert_eq!(port, WirePort::VarRef, "`&a` is a's VarRef, not its value");
 }
@@ -42,7 +38,7 @@ fn ref_of_an_array_is_its_arrayvarref() {
     let r = compile("var row: int[]\nvar rows: int[][]\nin go: exec\non go { rows.push(&row) }");
     assert_no_errors(&r);
     let push = gates(&r, gc::ARRAY_PUSH)[0];
-    let (src, port) = source_of(&r, push, WirePort::Value).expect("Value wired");
+    let (src, port) = source_port_of(&r, push, WirePort::Value).expect("Value wired");
     assert_eq!(class_of(&r, src), gc::ARRAY_VAR);
     assert_eq!(port, WirePort::ArrayVarRef);
 }
@@ -53,9 +49,9 @@ fn a_write_through_a_ref_takes_its_varref_from_a_read_of_the_holder() {
     assert_no_errors(&r);
     let sets = gates(&r, gc::VAR_SET);
     assert_eq!(sets.len(), 2, "h = &a, then *h = 5");
-    let (src, _) = source_of(&r, sets[1], WirePort::VarRef).expect("VarRef wired");
+    let (src, _) = source_port_of(&r, sets[1], WirePort::VarRef).expect("VarRef wired");
     assert_eq!(class_of(&r, src), gc::VAR_GET, "the ref comes off a read of h");
-    let (holder, _) = source_of(&r, src, WirePort::VarRef).unwrap();
+    let (holder, _) = source_port_of(&r, src, WirePort::VarRef).unwrap();
     assert_eq!(class_of(&r, holder), gc::VAR);
 }
 
@@ -67,7 +63,7 @@ fn a_read_through_a_ref_is_a_var_get_off_the_ref() {
     assert_eq!(reads.len(), 2, "read h, then read through it");
     let chained: Vec<_> = reads
         .iter()
-        .filter(|g| source_of(&r, **g, WirePort::VarRef).map(|s| class_of(&r, s.0)) == Some(gc::VAR_GET))
+        .filter(|g| source_port_of(&r, **g, WirePort::VarRef).map(|s| class_of(&r, s.0)) == Some(gc::VAR_GET))
         .collect();
     assert_eq!(chained.len(), 1, "exactly one read takes its VarRef off the other read's Value");
 }
@@ -78,16 +74,16 @@ fn an_increment_through_a_ref_is_a_var_increment() {
     assert_no_errors(&r);
     let inc = gates(&r, gc::VAR_INCREMENT);
     assert_eq!(inc.len(), 1, "`*h += 2` is one Var_Increment");
-    let (src, _) = source_of(&r, inc[0], WirePort::VarRef).unwrap();
+    let (src, _) = source_port_of(&r, inc[0], WirePort::VarRef).unwrap();
     assert_eq!(class_of(&r, src), gc::VAR_GET);
 }
 
 /// Reads of the var whose gate feeds the first `Var_Get`.
 fn reads_of_first_var(r: &LowerResult) -> usize {
     let all = gates(r, gc::VAR_GET);
-    let (var, _) = source_of(r, all[0], WirePort::VarRef).unwrap();
+    let (var, _) = source_port_of(r, all[0], WirePort::VarRef).unwrap();
     all.iter()
-        .filter(|g| source_of(r, **g, WirePort::VarRef).map(|s| s.0) == Some(var))
+        .filter(|g| source_port_of(r, **g, WirePort::VarRef).map(|s| s.0) == Some(var))
         .count()
 }
 
@@ -114,11 +110,11 @@ fn an_address_taken_var_is_never_folded() {
     );
     assert_no_errors(&r);
     let sets = gates(&r, gc::VAR_SET);
-    let (a_var, _) = source_of(&r, sets[0], WirePort::Value).unwrap();
+    let (a_var, _) = source_port_of(&r, sets[0], WirePort::Value).unwrap();
     assert!(
         gates(&r, gc::VAR_GET)
             .iter()
-            .any(|g| source_of(&r, *g, WirePort::VarRef).map(|s| s.0) == Some(a_var)),
+            .any(|g| source_port_of(&r, *g, WirePort::VarRef).map(|s| s.0) == Some(a_var)),
         "`n = a + 1` must read a at runtime"
     );
 }
@@ -156,7 +152,7 @@ fn a_method_on_an_array_element_takes_its_ref_from_the_element() {
     let r = compile("var rows: int[][]\nin go: exec\non go { rows[0].push(7) }");
     assert_no_errors(&r);
     let push = gates(&r, gc::ARRAY_PUSH)[0];
-    let (src, _) = source_of(&r, push, WirePort::ArrayVarRef).unwrap();
+    let (src, _) = source_port_of(&r, push, WirePort::ArrayVarRef).unwrap();
     assert_eq!(class_of(&r, src), gc::ARRAY_GET, "the inner array's ref is the element");
 }
 
@@ -166,7 +162,7 @@ fn an_element_read_two_levels_deep_goes_through_the_inner_ref() {
     assert_no_errors(&r);
     let reads = gates(&r, gc::ARRAY_GET);
     assert_eq!(reads.len(), 2);
-    let (src, _) = source_of(&r, reads[1], WirePort::ArrayVarRef).unwrap();
+    let (src, _) = source_port_of(&r, reads[1], WirePort::ArrayVarRef).unwrap();
     assert_eq!(src, reads[0]);
 }
 
@@ -176,7 +172,7 @@ fn an_element_write_two_levels_deep_goes_through_the_inner_ref() {
     let r = compile("var rows: int[][]\nin go: exec\non go { rows[0][1] = 5 }");
     assert_no_errors(&r);
     let set = gates(&r, gc::ARRAY_SET_AT_INDEX)[0];
-    let (src, _) = source_of(&r, set, WirePort::ArrayVarRef).unwrap();
+    let (src, _) = source_port_of(&r, set, WirePort::ArrayVarRef).unwrap();
     assert_eq!(class_of(&r, src), gc::ARRAY_GET);
 }
 
@@ -189,7 +185,7 @@ fn a_var_holding_an_array_ref_is_used_directly() {
     assert_no_errors(&r);
     for class in [gc::ARRAY_PUSH, gc::ARRAY_GET_LENGTH, gc::ARRAY_SET_AT_INDEX] {
         let g = gates(&r, class)[0];
-        let (src, _) = source_of(&r, g, WirePort::ArrayVarRef).unwrap();
+        let (src, _) = source_port_of(&r, g, WirePort::ArrayVarRef).unwrap();
         assert_eq!(class_of(&r, src), gc::VAR_GET, "{class} reads cur's held ref");
     }
 }
@@ -202,9 +198,9 @@ fn a_map_of_array_refs_and_an_array_of_map_refs() {
     );
     assert_no_errors(&r);
     let push = gates(&r, gc::ARRAY_PUSH)[0];
-    assert_eq!(class_of(&r, source_of(&r, push, WirePort::ArrayVarRef).unwrap().0), gc::MAP_GET);
+    assert_eq!(class_of(&r, source_port_of(&r, push, WirePort::ArrayVarRef).unwrap().0), gc::MAP_GET);
     for set in gates(&r, gc::MAP_SET) {
-        assert_eq!(class_of(&r, source_of(&r, set, WirePort::MapVarRef).unwrap().0), gc::ARRAY_GET);
+        assert_eq!(class_of(&r, source_port_of(&r, set, WirePort::MapVarRef).unwrap().0), gc::ARRAY_GET);
     }
 }
 
@@ -217,12 +213,6 @@ fn an_array_ref_is_a_dual_array_argument() {
             && r.module.nodes[&w.target.node_id].gate_class != gc::ARRAY_GET),
         "append's source array comes off rows[1]"
     );
-}
-
-fn has_error(r: &LowerResult, code: &str) -> bool {
-    r.diagnostics
-        .iter()
-        .any(|d| d.code == code && d.severity == crate::diagnostic::Severity::Error)
 }
 
 #[test]
@@ -258,9 +248,9 @@ fn a_namespaced_var_element_is_a_runtime_container() {
     );
     assert_no_errors(&r);
     let push = gates(&r, gc::ARRAY_PUSH)[0];
-    assert_eq!(class_of(&r, source_of(&r, push, WirePort::ArrayVarRef).unwrap().0), gc::ARRAY_GET);
+    assert_eq!(class_of(&r, source_port_of(&r, push, WirePort::ArrayVarRef).unwrap().0), gc::ARRAY_GET);
     let set = gates(&r, gc::MAP_SET)[0];
-    assert_eq!(class_of(&r, source_of(&r, set, WirePort::MapVarRef).unwrap().0), gc::ARRAY_GET);
+    assert_eq!(class_of(&r, source_port_of(&r, set, WirePort::MapVarRef).unwrap().0), gc::ARRAY_GET);
 }
 
 #[test]
@@ -273,11 +263,11 @@ fn the_value_of_a_let_bound_map_get_is_a_runtime_container() {
     assert!(gates(&r, gc::UNSUPPORTED).is_empty());
     for class in [gc::ARRAY_GET, gc::ARRAY_SET_AT_INDEX, gc::ARRAY_PUSH] {
         let g = gates(&r, class)[0];
-        let (src, _) = source_of(&r, g, WirePort::ArrayVarRef).unwrap();
+        let (src, _) = source_port_of(&r, g, WirePort::ArrayVarRef).unwrap();
         assert_eq!(class_of(&r, src), gc::MAP_GET, "{class} takes its ref from the map get");
     }
     let append = gates(&r, gc::ARRAY_APPEND)[0];
-    let (src, _) = source_of(&r, append, WirePort::SourceRef).unwrap();
+    let (src, _) = source_port_of(&r, append, WirePort::SourceRef).unwrap();
     assert_eq!(class_of(&r, src), gc::MAP_GET);
 
     let r = compile(
@@ -286,7 +276,7 @@ fn the_value_of_a_let_bound_map_get_is_a_runtime_container() {
     );
     assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
     let set = gates(&r, gc::MAP_SET)[0];
-    assert_eq!(class_of(&r, source_of(&r, set, WirePort::MapVarRef).unwrap().0), gc::MAP_GET);
+    assert_eq!(class_of(&r, source_port_of(&r, set, WirePort::MapVarRef).unwrap().0), gc::MAP_GET);
 }
 
 #[test]
@@ -297,7 +287,7 @@ fn a_ref_value_binds_an_inline_mods_ref_param_to_its_wire() {
     );
     assert_no_errors(&r);
     let set = gates(&r, gc::VAR_SET)[0];
-    let (src, _) = source_of(&r, set, WirePort::VarRef).unwrap();
+    let (src, _) = source_port_of(&r, set, WirePort::VarRef).unwrap();
     assert_eq!(class_of(&r, src), gc::ARRAY_GET, "the write goes through the element's ref");
 }
 
@@ -307,7 +297,7 @@ fn a_ref_holding_var_binds_the_ref_it_holds_not_itself() {
     let r = compile("var h: *int\nmod set7(p: *int) { p = 7 }\nin go: exec\non go { set7(h) }");
     assert_no_errors(&r);
     let set = gates(&r, gc::VAR_SET)[0];
-    let (src, _) = source_of(&r, set, WirePort::VarRef).unwrap();
+    let (src, _) = source_port_of(&r, set, WirePort::VarRef).unwrap();
     assert_eq!(class_of(&r, src), gc::VAR_GET, "p names the var h points at, read off h");
 }
 
@@ -318,7 +308,7 @@ fn a_plain_var_still_binds_a_ref_param_by_alias() {
     let sets = gates(&r, gc::VAR_SET);
     assert_eq!(sets.len(), 2, "one write per call");
     for set in sets {
-        let (src, port) = source_of(&r, set, WirePort::VarRef).unwrap();
+        let (src, port) = source_port_of(&r, set, WirePort::VarRef).unwrap();
         assert_eq!((class_of(&r, src), port), (gc::VAR, WirePort::VarRef));
     }
 }
@@ -331,13 +321,13 @@ fn a_dynamically_bound_param_forwards_to_a_nested_call() {
     );
     assert_no_errors(&r);
     let set = gates(&r, gc::VAR_SET)[0];
-    let (src, _) = source_of(&r, set, WirePort::VarRef).unwrap();
+    let (src, _) = source_port_of(&r, set, WirePort::VarRef).unwrap();
     assert_eq!(class_of(&r, src), gc::VAR_GET, "q's wire reaches inner's p unchanged");
     // One read of `h`, straight from its var: a second read would deref the
     // ref `h` holds instead of forwarding it.
     let gets = gates(&r, gc::VAR_GET);
     assert_eq!(gets, [src], "one read of h");
-    let (h, _) = source_of(&r, src, WirePort::VarRef).unwrap();
+    let (h, _) = source_port_of(&r, src, WirePort::VarRef).unwrap();
     assert_eq!(class_of(&r, h), gc::VAR);
 }
 
@@ -348,7 +338,7 @@ fn an_array_element_binds_an_array_param() {
     );
     assert_no_errors(&r);
     let push = gates(&r, gc::ARRAY_PUSH)[0];
-    let (src, _) = source_of(&r, push, WirePort::ArrayVarRef).unwrap();
+    let (src, _) = source_port_of(&r, push, WirePort::ArrayVarRef).unwrap();
     assert_eq!(class_of(&r, src), gc::ARRAY_GET);
 }
 
@@ -401,7 +391,7 @@ fn event_data_is_a_ref_both_ways() {
     );
     // Receive: the write's VarRef is the event's data output.
     let set = gates(&r, gc::VAR_SET)[0];
-    let (src, _) = source_of(&r, set, WirePort::VarRef).unwrap();
+    let (src, _) = source_port_of(&r, set, WirePort::VarRef).unwrap();
     assert_eq!(class_of(&r, src), gc::CUSTOM_EVENT);
 }
 
@@ -446,7 +436,7 @@ fn a_ref_record_field_binds_a_mods_ref_param() {
     ));
     assert_no_errors(&r);
     let set = gates(&r, gc::VAR_SET)[0];
-    let (src, port) = source_of(&r, set, WirePort::VarRef).unwrap();
+    let (src, port) = source_port_of(&r, set, WirePort::VarRef).unwrap();
     assert_eq!((class_of(&r, src), port), (gc::VAR, WirePort::VarRef), "the field holds a's ref");
 }
 
@@ -469,7 +459,7 @@ fn a_map_value_ref_binds_a_mods_ref_param() {
     ));
     assert_no_errors(&r);
     let set = gates(&r, gc::VAR_SET)[0];
-    let (src, _) = source_of(&r, set, WirePort::VarRef).unwrap();
+    let (src, _) = source_port_of(&r, set, WirePort::VarRef).unwrap();
     assert_eq!(class_of(&r, src), gc::MAP_GET, "the ref comes off the map read");
 }
 

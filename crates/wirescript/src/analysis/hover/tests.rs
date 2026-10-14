@@ -1338,3 +1338,47 @@ fn a_component_property_ref_hovers_with_its_type() {
     let h = hover_for(src, 0, col).expect("a component property ref hovers");
     assert!(h.contains("PointLight.Brightness") && h.contains("float") && h.contains("unverified"), "got: {h}");
 }
+
+    #[test]
+    fn rotator_and_quat_components_hover_as_floats() {
+        assert_eq!(resolve_field_in_type(&Type::Rotator, "Pitch"), Some(Type::Float));
+        assert_eq!(resolve_field_in_type(&Type::Quat, "w"), Some(Type::Float));
+    }
+
+
+/// A `fn` hovers as a `fn`, with its own cost line: it is compiled once and
+/// each call is one Function Call gate, where a `mod` is inlined per call.
+#[test]
+fn a_fn_hovers_as_fn_not_mod() {
+    let src = "fn add(x: int, y: int = 1) -> int {
+  return x + y
+}
+in go: exec
+on go {
+  let a = add(3)
+}
+";
+    for (line, col) in [(0, 4), (5, 11)] {
+        let h = hover_for(src, line, col).expect("hover on a fn");
+        assert!(h.contains("fn add("), "{h}");
+        assert!(!h.contains("mod add") && !h.contains("inlined per call"), "{h}");
+        assert!(h.contains("built once, 1 gate per call"), "{h}");
+    }
+    let kw = hover_for(src, 0, 0).expect("hover on the fn keyword");
+    assert!(kw.contains("fn add"), "{kw}");
+}
+
+    /// An annotation's name hovers as the annotation, not as a symbol that
+    /// shares its spelling: `@color` is not the `color` type and `@material`
+    /// is not a pin named `material`.
+    #[test]
+    fn annotations_hover_as_annotations() {
+        let src = "@right out material = 1\n@color(Color(1.0, 0.0, 0.0)) @material(Glow)\nvar heat: int = 0\n";
+        let color = hover_for(src, 1, 2).expect("a hover on @color");
+        assert!(color.contains("@color(color)") && color.contains("Annotation"), "{color}");
+        let material = hover_for(src, 1, 32).expect("a hover on @material");
+        assert!(material.contains("@material(BrickMaterial)"), "{material}");
+        // Without the `@` the same word is still the pin.
+        let pin = hover_for(src, 0, 12).expect("a hover on the pin");
+        assert!(!pin.contains("Annotation"), "{pin}");
+    }

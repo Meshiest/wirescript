@@ -52,18 +52,8 @@ pub(super) fn fold_const_chip_input(ctx: &mut LowerCtx, chip_node_id: NodeId, fo
     let mut props = HashMap::default();
     props.insert(*sym::VALUE, fold.value.clone());
     let lit_id = NodeId::fresh();
-    let lit = crate::ir::Node {
-        id: lit_id,
-        kind: NodeKind::Gate,
-        gate_class: gc::LITERAL,
-        properties: std::sync::Arc::new(props),
-        ports: std::sync::Arc::new(GateIO::source(fold.ty.clone())),
-        source_range: pin_node.source_range.clone(),
-        chip_id: pin_node.chip_id,
-        chain_id: None,
-        scope_id: pin_node.scope_id,
-        note: None,
-    };
+    let ports = GateIO::source(fold.ty.clone());
+    let lit = crate::ir::Node::new(lit_id, NodeKind::Gate, gc::LITERAL, ports, props, Some(pin_node), None);
     child.nodes.insert(lit_id, lit);
     // Everything the pin fed now reads the literal directly.
     for w in &mut child.wires {

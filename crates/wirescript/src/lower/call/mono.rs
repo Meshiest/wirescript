@@ -6,12 +6,7 @@ use super::*;
 /// Type of `port` as declared on its node (searching this module and any
 /// already-built chip children). Used to read an argument's ACTUAL lowered type.
 pub(in crate::lower) fn arg_port_type(ctx: &LowerCtx, port: PortRef) -> Option<Type> {
-    fn find(m: &Module, id: NodeId) -> Option<&crate::ir::Node> {
-        m.nodes
-            .get(&id)
-            .or_else(|| m.chips.values().find_map(|c| find(c, id)))
-    }
-    let n = find(&ctx.builder.module, port.node_id)?;
+    let n = ctx.find_node(port.node_id)?;
     let sym = port.port.sym();
     n.ports
         .find_output(sym)

@@ -70,7 +70,7 @@ pub struct CallOutput {
     pub ty: Type,
     /// Record field this output binds to when the call returns a record
     /// (e.g. `Edge`'s `rising`). Named outputs make the call result bind as
-    /// a field→port record, so field access resolves through the spec
+    /// a field->port record, so field access resolves through the spec
     /// instead of port-name matching. None for single-value outputs.
     pub field: Option<&'static str>,
 }
@@ -167,7 +167,7 @@ fn vec_expr(
 
 /// A pure gate returning a record: one named output per field. The spec's
 /// return type is the record derived from `fields`, and lowering binds the
-/// result as a field→port record (no port-name matching).
+/// result as a field->port record (no port-name matching).
 fn vec_expr_record(
     name: &'static str,
     gate_class: &'static str,
@@ -211,7 +211,8 @@ fn vec_recv(
 
 /// The value types a math-variant port accepts, matching the game's
 /// numeric operand set (`f64, i64, Vector, Rotator, Quat, LinearColor`).
-/// `Blend`/`lerp`/`Tween` interpolate any of these, not just floats.
+/// `Blend`/`lerp`/`Tween` interpolate any of these, not just floats, and
+/// `abs`/`min`/`max`/`clamp` give back the one they are given.
 fn blend_variant() -> Type {
     Type::Union(vec![
         Type::Float,

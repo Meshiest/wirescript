@@ -4,13 +4,7 @@
 mod common;
 
 use wirescript::emit::EmitOptions;
-use wirescript::{CompileInput, FoldMode, compile_to_world};
-
-fn is_text_display(c: &Box<dyn brdb::BrdbComponent>) -> bool {
-    c.component_type()
-        .map(|t| t.to_string() == "Component_TextDisplay")
-        .unwrap_or(false)
-}
+use wirescript::compile_to_world;
 
 /// The set of brick ids that actually carry a `Component_TextDisplay`. A dynamic
 /// label wire must target one of these — a target brick absent from this set is
@@ -21,7 +15,7 @@ fn text_display_brick_ids(world: &brdb::World) -> std::collections::HashSet<usiz
         .iter()
         .flat_map(|(_e, bricks)| bricks)
         .chain(world.bricks.iter())
-        .filter(|b| b.components.iter().any(is_text_display))
+        .filter(|b| b.components.iter().any(common::is_text_display))
         .filter_map(|b| b.get_id())
         .collect()
 }
@@ -36,12 +30,7 @@ const SRC: &str = "var counter: int = 0\n\
 #[test]
 fn labels_attach_to_chip_var_and_io_bricks() {
     let r = compile_to_world(
-        CompileInput {
-            source: SRC,
-            file: "labels.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input(SRC, "labels.ws"),
         EmitOptions::default(),
     )
     .expect("should compile");
@@ -61,7 +50,7 @@ fn labels_attach_to_chip_var_and_io_bricks() {
     // entry file's stem.
     let root_chip = &r.world.bricks[0];
     assert!(
-        root_chip.components.iter().any(is_text_display),
+        root_chip.components.iter().any(common::is_text_display),
         "top-level chip brick should carry a text label"
     );
 
@@ -77,7 +66,7 @@ fn labels_attach_to_chip_var_and_io_bricks() {
         .iter()
         .flat_map(|(_e, bricks)| bricks)
         .chain(r.world.bricks.iter())
-        .filter(|b| b.components.iter().any(is_text_display))
+        .filter(|b| b.components.iter().any(common::is_text_display))
         .map(|b| {
             b.components
                 .iter()
@@ -99,12 +88,7 @@ fn labels_attach_to_chip_var_and_io_bricks() {
 fn labels_serialize_with_style() {
     use brdb::schema::BrdbValue;
 
-    let cr = wirescript::compile::compile(CompileInput {
-        source: SRC,
-        file: "labels.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let cr = wirescript::compile::compile(common::input(SRC, "labels.ws"))
     .expect("should compile to brz");
     let mut texts: Vec<(String, f32)> = Vec::new();
     for c in common::world_components(&cr.brz) {
@@ -183,12 +167,7 @@ fn var_tag_survives_boundary_pins_inside_named_chip() {
                in s: exec\n\
                let r = Init(exec = s)\n\
                out v = r.code\n";
-    let cr = wirescript::compile::compile(CompileInput {
-        source: src,
-        file: "boundary_var_tag.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let cr = wirescript::compile::compile(common::input(src, "boundary_var_tag.ws"))
     .expect("should compile to brz");
     let mut tags: Vec<(String, f32)> = Vec::new();
     for c in common::world_components(&cr.brz) {
@@ -217,12 +196,7 @@ fn var_tag_survives_boundary_pins_inside_named_chip() {
 #[test]
 fn dynamic_int_label_wires_through_formattext() {
     let r = compile_to_world(
-        CompileInput {
-            source: "@label(hp) var hp: int = 100\nin go: exec\non go { hp = hp - 1 }\n",
-            file: "dyn_label.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input("@label(hp) var hp: int = 100\nin go: exec\non go { hp = hp - 1 }\n", "dyn_label.ws"),
         EmitOptions::default(),
     )
     .expect("should compile");
@@ -259,12 +233,7 @@ fn dynamic_int_label_wires_through_formattext() {
 #[test]
 fn dynamic_string_self_label_wires_value_directly() {
     let r = compile_to_world(
-        CompileInput {
-            source: "@label(myvar) var myvar: string = \"foo\"\nin go: exec\non go { myvar = \"bar\" }\n",
-            file: "self_label.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input("@label(myvar) var myvar: string = \"foo\"\nin go: exec\non go { myvar = \"bar\" }\n", "self_label.ws"),
         EmitOptions::default(),
     )
     .expect("should compile");
@@ -302,12 +271,7 @@ fn dynamic_string_self_label_wires_value_directly() {
 #[test]
 fn dynamic_label_on_underscore_var_emits_wire_target() {
     let r = compile_to_world(
-        CompileInput {
-            source: "var src: int = 0\n@label(src) var _shown: int = 0\nin go: exec\non go { src = src + 1 }\n",
-            file: "underscore.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input("var src: int = 0\n@label(src) var _shown: int = 0\nin go: exec\non go { src = src + 1 }\n", "underscore.ws"),
         EmitOptions::default(),
     )
     .expect("should compile");
@@ -341,12 +305,7 @@ fn dynamic_label_on_underscore_var_emits_wire_target() {
 #[test]
 fn module_label_wires_runtime_value_into_root_shell() {
     let r = compile_to_world(
-        CompileInput {
-            source: "@label(title)\n\nvar title: string = \"hi\"\nin go: exec\non go { title = \"go\" }\n",
-            file: "modlabel.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input("@label(title)\n\nvar title: string = \"hi\"\nin go: exec\non go { title = \"go\" }\n", "modlabel.ws"),
         EmitOptions::default(),
     )
     .expect("should compile");
@@ -380,12 +339,7 @@ fn module_label_wires_runtime_value_into_root_shell() {
 #[test]
 fn interpolated_module_label_has_no_redundant_format() {
     let r = compile_to_world(
-        CompileInput {
-            source: "@label(\"var: ${v}\")\n\nvar v: string = \"hi\"\n",
-            file: "interp.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input("@label(\"var: ${v}\")\n\nvar v: string = \"hi\"\n", "interp.ws"),
         EmitOptions::default(),
     )
     .expect("should compile");
@@ -412,7 +366,6 @@ fn interpolated_module_label_has_no_redundant_format() {
 /// (the constant path — no value is wired into any label).
 #[test]
 fn module_label_constant_bakes_root_title_without_a_wire() {
-    use brdb::IntoReader;
     use brdb::schema::BrdbValue;
 
     const SRC: &str = "@label(\"My Chip\")\n\nvar x: int = 0\n";
@@ -420,12 +373,7 @@ fn module_label_constant_bakes_root_title_without_a_wire() {
     // In-memory: a constant module label is static, so nothing wires into a
     // Component_TextDisplay Text port.
     let world = compile_to_world(
-        CompileInput {
-            source: SRC,
-            file: "modconst.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        common::input(SRC, "modconst.ws"),
         EmitOptions::default(),
     )
     .expect("should compile")
@@ -440,38 +388,12 @@ fn module_label_constant_bakes_root_title_without_a_wire() {
 
     // Round-trip: the root shell's label text is the override "My Chip", not
     // the module name.
-    let cr = wirescript::compile::compile(CompileInput {
-        source: SRC,
-        file: "modconst.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let cr = wirescript::compile::compile(common::input(SRC, "modconst.ws"))
     .expect("should compile to brz");
-    let path = std::env::temp_dir().join("ws_module_label_const_test.brz");
-    std::fs::write(&path, &cr.brz).expect("write brz");
-    let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
-
-    let mut found_title = false;
-    for gid in 1..8 {
-        let Ok(chunks) = reader.brick_chunk_index(gid) else {
-            break;
-        };
-        for chunk in chunks {
-            if chunk.num_components == 0 {
-                continue;
-            }
-            let (_soa, comps) = reader
-                .component_chunk_soa(gid, chunk.index)
-                .expect("read components");
-            for c in comps {
-                if let Some(BrdbValue::String(t)) = c.get("Text") {
-                    if t == "My Chip" {
-                        found_title = true;
-                    }
-                }
-            }
-        }
-    }
+    let found_title = wirescript_ir::readback::Save::read(&cr.brz)
+        .components()
+        .iter()
+        .any(|c| matches!(c.get("Text"), Some(BrdbValue::String(t)) if t == "My Chip"));
     assert!(found_title, "constant module @label should bake \"My Chip\"");
 }
 
@@ -486,12 +408,7 @@ fn doc_comment_renders_under_the_title() {
                chip Foo(x: int) -> (r: int) { out r = x + 1 }\n\
                let f = Foo(1)\n\
                out result = f.r\n";
-    let cr = wirescript::compile::compile(CompileInput {
-        source: src,
-        file: "docs.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let cr = wirescript::compile::compile(common::input(src, "docs.ws"))
     .expect("should compile");
     let mut found = false;
     for c in common::world_components(&cr.brz) {
@@ -511,12 +428,7 @@ fn doc_comment_renders_under_the_title() {
 fn map_var_gets_a_name_label() {
     use brdb::schema::BrdbValue;
 
-    let cr = wirescript::compile::compile(CompileInput {
-        source: "var scores: Map<string, int>\nin t: exec\non t { let g = scores.get(\"a\") }\n",
-        file: "maplabel.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let cr = wirescript::compile::compile(common::input("var scores: Map<string, int>\nin t: exec\non t { let g = scores.get(\"a\") }\n", "maplabel.ws"))
     .expect("should compile to brz");
     let mut texts: Vec<String> = Vec::new();
     for c in common::world_components(&cr.brz) {
@@ -539,12 +451,7 @@ fn map_var_gets_a_name_label() {
 fn map_get_key_data_field_matches_key_type() {
     use brdb::schema::BrdbValue;
 
-    let cr = wirescript::compile::compile(CompileInput {
-        source: "var m: Map<string, int> = { \"a\" => 1 }\nin t: exec\non t { let g = m.get(\"a\") }\n",
-        file: "mapkey.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let cr = wirescript::compile::compile(common::input("var m: Map<string, int> = { \"a\" => 1 }\nin t: exec\non t { let g = m.get(\"a\") }\n", "mapkey.ws"))
     .expect("should compile to brz");
     let mut checked = false;
     for c in common::world_components(&cr.brz) {

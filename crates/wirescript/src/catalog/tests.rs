@@ -54,7 +54,7 @@
 
     #[test]
     fn config_enum_for_named_arg_resolves_calls_and_events() {
-        // Call path: SweepSimple's `direction` config → EBrickDirection.
+        // Call path: SweepSimple's `direction` config -> EBrickDirection.
         assert_eq!(
             config_enum_for_named_arg("SweepSimple", "direction"),
             Some("EBrickDirection")
@@ -125,7 +125,7 @@
             gb::SET_ARRAY_ELEMENT,
         ];
         let cat = default_catalog();
-        for &name in gb::ALL {
+        for name in gb::all() {
             match gb::method_for(name) {
                 Some(method) => {
                     // The desugared method must be a known array and/or map

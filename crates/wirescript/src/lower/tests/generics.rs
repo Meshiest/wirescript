@@ -1,6 +1,6 @@
 //! Monomorphization of generic `mod` calls: a generic mod inlined
-//! at a concrete call site must emit CONCRETE gates (`box<int>` → int gates,
-//! `box<vector>` → vector gates), never leaking `Type::Param` (or an
+//! at a concrete call site must emit CONCRETE gates (`box<int>` -> int gates,
+//! `box<vector>` -> vector gates), never leaking `Type::Param` (or an
 //! incorrectly-defaulted `Any`/last-combo variant) into emit.
 
 use super::*;
@@ -77,9 +77,9 @@ pub(super) fn emit_ok(r: &LowerResult) -> Result<(), String> {
     let opts = crate::emit::EmitOptions::default();
     crate::emit::emit_brz(
         &r.module,
+        &Default::default(),
         &lr,
         &opts,
-        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
     )
     .map(|_| ())
     .map_err(|e| format!("{e:?}"))
@@ -311,8 +311,8 @@ fn generic_body_operator_and_if_use_call_monomorph_variant() {
     // Regression: operators (`v * v`) and if-exprs
     // (`if c then a else b`) inside a generic body must emit the CALL's
     // monomorph variant — not the last mask-member the per-mask-member body
-    // check leaves in `op_resolutions` / `type_of_expr` (Numeric → Color,
-    // an unbounded `T` → Prefab). `sq<int>` must be an int MathMultiply,
+    // check leaves in `op_resolutions` / `type_of_expr` (Numeric -> Color,
+    // an unbounded `T` -> Prefab). `sq<int>` must be an int MathMultiply,
     // `sq<vector>` a vector one; `pick<int>` an int Select — never Color/Prefab.
     let src = "mod sq<T: Numeric>(v: T) -> T { return v * v }\n\
                mod pick<T>(c: bool, a: T, b: T) -> T { return if c then a else b }\n\
@@ -696,7 +696,7 @@ fn container_array_self_receiver_desugars_to_mod_call() {
     // A self-mod whose receiver is an array VAR must NOT be hijacked by the
     // array-method lowering branch. Before the `is_array_method` gate was added
     // there, `arr.firstOr(9)` (firstOr NOT an array method) routed into
-    // `lower_array_method` → `_Unsupported`, diverging from typecheck. It must
+    // `lower_array_method` -> `_Unsupported`, diverging from typecheck. It must
     // desugar to `firstOr(arr, 9)` and inline the body's real gates.
     let method = "mod firstOr(self: int[], fallback: int) -> int { let n = self.length()\n return n + fallback }\n\
                   var arr: int[] = [1, 2, 3]\nvar rr: int = 0\nin go: exec\non go { rr = arr.firstOr(9) }\n";
@@ -777,7 +777,7 @@ fn compound_arg_forwarded_into_nested_generic_call_uses_monomorph() {
     // A COMPOUND arg (`a + b`, an if-expr, a
     // nested generic call) forwarded into another generic call from INSIDE a
     // generic body must monomorphize the inner call to the CURRENT type — not
-    // the stale last-mask-member `type_of_expr` holds (`Numeric` → Color). Here
+    // the stale last-mask-member `type_of_expr` holds (`Numeric` -> Color). Here
     // `outer<int>` forwards `a + b` (int) and `id(a)` (int) into `Box`, whose
     // `stored: U` gate must come out INT, never Color/Vector.
     let src = "chip Box<U>(x: U) -> (r: U) { var stored: U = x\n out r = stored }\n\

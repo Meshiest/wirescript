@@ -82,14 +82,14 @@ chip Increment(counter: ref int, amount: int) {
           (identifier))))))
 
 ================================================================================
-anonymous and open chips
+anonymous chips
 ================================================================================
 
 chip {
   var x: int = 0
 }
 
-open chip {
+chip {
   var y: int = 0
 }
 

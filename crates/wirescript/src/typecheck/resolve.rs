@@ -133,7 +133,7 @@ fn names_a_type_parameter(ctx: &TypeCheckCtx, name: &str) -> bool {
 /// Unbound (`T`, no `: Bound`) is the full `Variant` mask; a bound narrows it
 /// (see `types::mono::mask_for_param`).
 pub(super) fn type_param_mask(ctx: &TypeCheckCtx, tp: &TypeParam) -> Vec<Type> {
-    // The bound → mask resolution lives in the shared `types::mono` module so
+    // The bound -> mask resolution lives in the shared `types::mono` module so
     // the lowering-side monomorphizer can rebuild the same masks.
     crate::types::mono::mask_for_param(tp.bound.as_ref(), &quiet_resolver(ctx, &tp.range.file))
 }
@@ -674,9 +674,9 @@ pub(crate) fn type_has_param(t: &Type) -> bool {
     }
 }
 
-/// Warns (does not error) when a user's *non-storage* type annotation — an
-/// `in`/`out` port, a mod/chip param or output, a handler's typed destructure
-/// param, a `let`, or a `type X = ...` alias body — resolves to `any`
+/// Warns (does not error) when a user's *non-storage* type annotation — a
+/// mod/chip param or output, a handler's typed destructure param, a `let`, or
+/// a `type X = ...` alias body — resolves to `any`
 /// (`Type::Opaque`), including when the `any` is wrapped in a compound
 /// (`*any`, `any[]`, `Map<_, any>`, `{ a: any }`, …). `any` still works there
 /// (the value just flows through as a wildcard), but a generic type parameter
@@ -685,7 +685,8 @@ pub(crate) fn type_has_param(t: &Type) -> bool {
 /// routed through this: an explicit `any` there is already a hard error
 /// (WS025), and warning on top would double-fire the same annotation. Fires
 /// once per annotation (at the top-level annotation range), not once per nested
-/// `Opaque`.
+/// `Opaque`. An `in`/`out` port is not routed through it either: a port cannot
+/// take a type parameter, so the advice would have nothing to follow.
 pub(super) fn warn_any_annotation(ctx: &mut TypeCheckCtx, resolved: &Type, range: SourceRange) {
     if contains_opaque(resolved) {
         ctx.diagnostics.push(Diagnostic {

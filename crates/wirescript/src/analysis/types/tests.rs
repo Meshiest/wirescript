@@ -26,7 +26,7 @@
         for m in ["ToHex", "ToSRGB", "Blend"] {
             assert!(color.contains(&m), "color should have {m}: {color:?}");
         }
-        // A vector exposes the direction→quat conversions but not quat-only ops.
+        // A vector exposes the direction->quat conversions but not quat-only ops.
         let vector: Vec<&str> = receiver_methods("vector").iter().map(|(n, _)| *n).collect();
         assert!(vector.contains(&"ToRotation"), "vector should have ToRotation");
         assert!(!vector.contains(&"Slerp"), "Slerp leaked onto vector");
@@ -46,7 +46,7 @@
         assert_eq!(n, "self");
         assert_eq!(t, "{ x: int, y: int }");
         assert_eq!(rest, "k: Map<string, int>");
-        // No params → None.
+        // No params -> None.
         assert!(split_signature_params("() -> int").is_none());
     }
 

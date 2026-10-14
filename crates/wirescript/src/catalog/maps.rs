@@ -8,7 +8,7 @@
 use crate::ir::gate_class as gc;
 use crate::ir::Type;
 use crate::ir::port_registry::WirePort;
-use crate::typecheck::ContainerKind;
+use crate::types::container::ContainerKind;
 
 use super::methods::{arg, generic, opt, val, ArgKind, ArgTy, Lowering};
 
@@ -18,7 +18,6 @@ use super::methods::{arg, generic, opt, val, ArgKind, ArgTy, Lowering};
 pub struct MapMethod {
     pub name: &'static str,
     pub gate: &'static str,
-    pub signature: &'static str,
     pub doc: &'static str,
     /// Which argument feeds which gate input and which output the call
     /// returns. Typecheck reads the same arguments as the method's parameters
@@ -33,15 +32,20 @@ pub struct MapMethod {
 }
 
 impl MapMethod {
+    /// The parameter list completion and hover show, e.g. `(index, value)`.
+    pub fn shown_signature(&self) -> String {
+        super::methods::shown_signature(self.name, &self.lowering)
+    }
+
     /// The method's typed parameters on a `Map<key, value>`.
-    pub fn params(&self, key: &Type, value: &Type) -> Vec<crate::typecheck::Param> {
+    pub fn params(&self, key: &Type, value: &Type) -> Vec<crate::types::signature::Param> {
         self.lowering.params(&ContainerKind::Map { key: key.clone(), value: value.clone() })
     }
 
-    /// Build the [`CallSignature`](crate::typecheck::CallSignature) for a call
+    /// Build the [`CallSignature`](crate::types::signature::CallSignature) for a call
     /// on a `Map<key, value>`.
-    pub fn signature(&self, key: &Type, value: &Type) -> crate::typecheck::CallSignature {
-        crate::typecheck::CallSignature {
+    pub fn signature(&self, key: &Type, value: &Type) -> crate::types::signature::CallSignature {
+        crate::types::signature::CallSignature {
             name: self.name.to_string(),
             params: self.params(key, value),
             config_gate: None,
@@ -54,18 +58,18 @@ use WirePort as P;
 
 /// Every method callable on a map, in a stable display order.
 pub static MAP_METHODS: &[MapMethod] = &[
-    MapMethod { name: "get", mutates: false, gate: gc::MAP_GET, signature: "(key)", doc: "Read the value at key; gives its Value (default) and Found", lowering: generic(&[val("key", P::Key, Key)], P::Value) },
-    MapMethod { name: "set", mutates: true, gate: gc::MAP_SET, signature: "(key, value)", doc: "Insert or overwrite the value at key", lowering: generic(&[val("key", P::Key, Key), val("value", P::Value, MapValue)], P::ExecOut) },
-    MapMethod { name: "has", mutates: false, gate: gc::MAP_HAS, signature: "(key)", doc: "Whether the map contains key", lowering: generic(&[val("key", P::Key, Key)], P::BFound) },
-    MapMethod { name: "remove", mutates: true, gate: gc::MAP_REMOVE, signature: "(key)", doc: "Remove key; gives whether it was present", lowering: generic(&[val("key", P::Key, Key)], P::BFound) },
-    MapMethod { name: "clear", mutates: true, gate: gc::MAP_CLEAR, signature: "()", doc: "Remove all entries", lowering: generic(&[], P::ExecOut) },
-    MapMethod { name: "copyFrom", mutates: true, gate: gc::MAP_COPY_FROM, signature: "(source)", doc: "Replace contents with a copy of another map", lowering: generic(&[arg("source", P::SourceRef, ArgKind::MapRef)], P::ExecOut) },
-    MapMethod { name: "length", mutates: false, gate: gc::MAP_GET_LENGTH, signature: "() -> int", doc: "Number of entries", lowering: generic(&[], P::Length) },
+    MapMethod { name: "get", mutates: false, gate: gc::MAP_GET, doc: "Read the value at key; gives its Value (default) and Found", lowering: generic(&[val("key", P::Key, Key)], P::Value) },
+    MapMethod { name: "set", mutates: true, gate: gc::MAP_SET, doc: "Insert or overwrite the value at key", lowering: generic(&[val("key", P::Key, Key), val("value", P::Value, MapValue)], P::ExecOut) },
+    MapMethod { name: "has", mutates: false, gate: gc::MAP_HAS, doc: "Whether the map contains key", lowering: generic(&[val("key", P::Key, Key)], P::BFound) },
+    MapMethod { name: "remove", mutates: true, gate: gc::MAP_REMOVE, doc: "Remove key; gives whether it was present", lowering: generic(&[val("key", P::Key, Key)], P::BFound) },
+    MapMethod { name: "clear", mutates: true, gate: gc::MAP_CLEAR, doc: "Remove all entries", lowering: generic(&[], P::ExecOut) },
+    MapMethod { name: "copyFrom", mutates: true, gate: gc::MAP_COPY_FROM, doc: "Replace contents with a copy of another map", lowering: generic(&[arg("source", P::SourceRef, ArgKind::MapRef)], P::ExecOut) },
+    MapMethod { name: "length", mutates: false, gate: gc::MAP_GET_LENGTH, doc: "Number of entries", lowering: generic(&[], P::Length) },
     // `keys`/`values` fill a caller-supplied destination array in place; the
     // `destArray: K[]`/`V[]` array is a PARAMETER, and the call itself has no
     // value (`Never`, `map_return_type`).
-    MapMethod { name: "keys", mutates: false, gate: gc::MAP_GET_KEYS, signature: "(destArray, includeDead?)", doc: "Fill an array with the map's keys; a brick key whose brick is gone is skipped unless includeDead", lowering: generic(&[arg("destArray", P::ArrayVarRef, ArgKind::DestArray(Key)), opt("includeDead", P::BIncludeDead, Bool)], P::ExecOut) },
-    MapMethod { name: "values", mutates: false, gate: gc::MAP_GET_VALUES, signature: "(destArray)", doc: "Fill an array with the map's values", lowering: generic(&[arg("destArray", P::ArrayVarRef, ArgKind::DestArray(MapValue))], P::ExecOut) },
+    MapMethod { name: "keys", mutates: false, gate: gc::MAP_GET_KEYS, doc: "Fill an array with the map's keys; a brick key whose brick is gone is skipped unless includeDead", lowering: generic(&[arg("destArray", P::ArrayVarRef, ArgKind::DestArray(Key)), opt("includeDead", P::BIncludeDead, Bool)], P::ExecOut) },
+    MapMethod { name: "values", mutates: false, gate: gc::MAP_GET_VALUES, doc: "Fill an array with the map's values", lowering: generic(&[arg("destArray", P::ArrayVarRef, ArgKind::DestArray(MapValue))], P::ExecOut) },
 ];
 
 pub fn map_methods() -> &'static [MapMethod] {
@@ -83,27 +87,22 @@ pub fn is_map_method(name: &str) -> bool {
     MAP_METHOD_NAMES.contains(name)
 }
 
-/// The return type of `m.<method>()` for a `Map<key, value>`. `get` yields a
-/// record that auto-unwraps to `Value`; `has`/`remove` a bool; `length` an int;
-/// the rest are void statements (`never`).
-pub fn map_return_type(method: &str, _key: &Type, value: &Type) -> Option<Type> {
-    Some(match method {
-        // A record-valued map returns the value RECORD directly, so
-        // `m.get(k).field` and `p = m.get(k)` type-check like the `m[k]`
-        // subscript form (which the record-map lowering also fans out per
-        // field). There is no `Found` flag to expose alongside a record - the
-        // `{Value, Found}` pair is kept only for a scalar value.
-        "get" if matches!(value, Type::Record(_)) => Type::call_result(vec![("Value".into(), value.clone())]),
-        "get" => Type::call_result(vec![("Value".into(), value.clone()), ("Found".into(), Type::Bool)]),
-        "has" | "remove" => Type::Bool,
-        "length" => Type::Int,
-        // All void statements: `set`/`clear`/`copyFrom` mutate the map;
-        // `keys`/`values` fill the destination array passed as their argument
-        // (`m.keys(destArray)`). None produce a value, so `Never` (not `Any`)
-        // makes consuming a "result" a type error.
-        "set" | "clear" | "copyFrom" | "keys" | "values" => Type::Never,
-        _ => return None,
-    })
+/// The return type of `m.<method>()` for a `Map<key, value>`
+/// ([`super::methods::method_return_type`]): `get` a record that unwraps to
+/// `Value`, `has`/`remove` a bool, `length` an int, and the mutations and
+/// `keys`/`values` (which fill the destination array they are given) `Never`.
+pub fn map_return_type(method: &str, key: &Type, value: &Type) -> Option<Type> {
+    // A record-valued map returns the value RECORD directly, so
+    // `m.get(k).field` and `p = m.get(k)` type-check like the `m[k]`
+    // subscript form (which the record-map lowering also fans out per
+    // field). There is no `Found` flag to expose alongside a record - the
+    // `{Value, Found}` pair is kept only for a scalar value.
+    if method == "get" && matches!(value, Type::Record(_)) {
+        return Some(Type::call_result(vec![("Value".into(), value.clone())]));
+    }
+    let m = map_method(method)?;
+    let kind = ContainerKind::Map { key: key.clone(), value: value.clone() };
+    Some(super::methods::method_return_type(m.gate, &m.lowering, &kind))
 }
 
 #[cfg(test)]

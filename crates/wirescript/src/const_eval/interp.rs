@@ -14,7 +14,6 @@
 //! (WS048) rather than a stack overflow.
 
 use crate::ast::{Block, CallArg, ChipDecl, Expr, ExprStmt, NamedOutput, Param, Stmt};
-use crate::collections::HashMap;
 use crate::diagnostic::SourceRange;
 use crate::ir::Literal;
 
@@ -289,7 +288,7 @@ fn reorder_to_declaration(value: Literal, declared: &[NamedOutput]) -> Literal {
 /// Shapes a `const mod`'s `out`-collected value the way `typecheck::call`
 /// types the very same call, which is the whole correctness condition here:
 ///
-/// - **exactly one** declared output → that output's value, BARE. This
+/// - **exactly one** declared output -> that output's value, BARE. This
 ///   mirrors `type_user_symbol_call`'s
 ///   `if sig.outputs.len() == 1 && !has_exec_arg { return out_ty(&sig.outputs[0].ty) }`.
 ///   Wrapping it in a 1-field record instead made const evaluation disagree
@@ -310,7 +309,7 @@ fn reorder_to_declaration(value: Literal, declared: &[NamedOutput]) -> Literal {
 ///   unreachable rather than wrong; mirroring it here would mean inventing a
 ///   `Literal` for an exec edge, which has no constant form.
 
-/// - **several** → a `Literal::Record`, built by walking `outs` in
+/// - **several** -> a `Literal::Record`, built by walking `outs` in
 ///   DECLARATION order, deliberately NOT the order the body's `out`
 ///   statements ran in. `Literal::Record`'s field order is significant (it is
 ///   what a destructure and an equality check both see), so tying it to the
@@ -825,13 +824,12 @@ fn mutate_array(
 ) -> Result<Vec<Literal>, ConstError> {
     match field {
         "push" => {
-            let value = positional_arg(args, 0).ok_or_else(|| arity_error(es))?;
+            let [value] = method_args(&["value"], args, es)?[..] else { unreachable!() };
             items.push(eval_expr(value, cx, budget)?);
             Ok(items)
         }
         "set" => {
-            let index = positional_arg(args, 0).ok_or_else(|| arity_error(es))?;
-            let value = positional_arg(args, 1).ok_or_else(|| arity_error(es))?;
+            let [index, value] = method_args(&["index", "value"], args, es)?[..] else { unreachable!() };
             let idx_lit = eval_expr(index, cx, budget)?;
             let val_lit = eval_expr(value, cx, budget)?;
             match idx_lit {
@@ -854,7 +852,7 @@ fn mutate_array(
             Ok(items)
         }
         "append" => {
-            let source = positional_arg(args, 0).ok_or_else(|| arity_error(es))?;
+            let [source] = method_args(&["source"], args, es)?[..] else { unreachable!() };
             match eval_expr(source, cx, budget)? {
                 Literal::Array(mut more) => {
                     items.append(&mut more);
@@ -890,8 +888,7 @@ fn mutate_map(
 ) -> Result<Vec<(Literal, Literal)>, ConstError> {
     match field {
         "set" => {
-            let key = positional_arg(args, 0).ok_or_else(|| arity_error(es))?;
-            let value = positional_arg(args, 1).ok_or_else(|| arity_error(es))?;
+            let [key, value] = method_args(&["key", "value"], args, es)?[..] else { unreachable!() };
             let key_lit = eval_expr(key, cx, budget)?;
             let val_lit = eval_expr(value, cx, budget)?;
             match pairs.iter_mut().find(|(k, _)| *k == key_lit) {
@@ -901,7 +898,7 @@ fn mutate_map(
             Ok(pairs)
         }
         "remove" => {
-            let key = positional_arg(args, 0).ok_or_else(|| arity_error(es))?;
+            let [key] = method_args(&["key"], args, es)?[..] else { unreachable!() };
             let key_lit = eval_expr(key, cx, budget)?;
             pairs.retain(|(k, _)| *k != key_lit);
             Ok(pairs)
@@ -919,17 +916,64 @@ fn mutate_map(
     }
 }
 
-/// The `i`th POSITIONAL argument only — a mutating method call has no named
-/// or optional parameters, so this is simpler than `bind_call_args`'s
-/// name-based binding (which exists for user mod/chip parameters, not for
-/// these fixed built-in shapes).
-fn positional_arg(args: &[CallArg], i: usize) -> Option<&Expr> {
-    args.iter()
-        .filter_map(|a| match a {
-            CallArg::Positional(v) => Some(v),
-            _ => None,
-        })
-        .nth(i)
+/// How [`bind_args`] treats an argument that fits no parameter.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Arity {
+    /// An extra positional argument, a name no parameter has, a second
+    /// argument for one parameter, or a spread is refused.
+    Strict,
+    /// Such arguments are skipped; of two arguments for one parameter the
+    /// later wins.
+    Lenient,
+}
+
+/// Why [`bind_args`] refused under [`Arity::Strict`].
+pub(super) enum Misfit<'a> {
+    /// An argument fits no parameter, or a parameter got two.
+    Argument,
+    /// A spread, which has no constant form.
+    Spread(&'a Expr),
+}
+
+/// Bind `args` to the parameters `names`: positional arguments fill them left
+/// to right from index `first` (the ones before it are bound by the caller,
+/// such as a method's receiver), named arguments by name. One slot per
+/// parameter, `None` where no argument was given.
+pub(super) fn bind_args<'a>(
+    names: &[&str],
+    first: usize,
+    args: &'a [CallArg],
+    arity: Arity,
+) -> Result<Vec<Option<&'a Expr>>, Misfit<'a>> {
+    let mut slots: Vec<Option<&'a Expr>> = vec![None; names.len()];
+    let mut next_pos = first;
+    for a in args {
+        let (slot, value) = match a {
+            CallArg::Positional(v) => {
+                next_pos += 1;
+                ((next_pos - 1 < names.len()).then_some(next_pos - 1), v)
+            }
+            CallArg::Named { name, value, .. } => (names.iter().position(|n| n == name), value),
+            CallArg::Spread(v) => match arity {
+                Arity::Strict => return Err(Misfit::Spread(v)),
+                Arity::Lenient => continue,
+            },
+        };
+        match (slot, arity) {
+            (Some(i), Arity::Strict) if slots[i].is_some() => return Err(Misfit::Argument),
+            (Some(i), _) => slots[i] = Some(value),
+            (None, Arity::Strict) => return Err(Misfit::Argument),
+            (None, Arity::Lenient) => {}
+        }
+    }
+    Ok(slots)
+}
+
+/// The arguments of a mutating method on a const array or map, bound to the
+/// method's parameter names; each one is required.
+fn method_args<'a>(names: &[&str], args: &'a [CallArg], es: &ExprStmt) -> Result<Vec<&'a Expr>, ConstError> {
+    let Ok(slots) = bind_args(names, 0, args, Arity::Lenient) else { return Err(arity_error(es)) };
+    slots.into_iter().map(|s| s.ok_or_else(|| arity_error(es))).collect()
 }
 
 /// A mutating method call missing a required positional argument (typecheck
@@ -960,14 +1004,14 @@ fn unsupported_collection_method(
     }
 }
 
-/// Binds `args` to `inputs` by name (positional args fill left-to-right,
-/// named args target a parameter by name — the same convention
-/// `eval_method_call` in `expr.rs` uses for builtin receiver calls), then
-/// evaluates each bound expression against the CALLER's `cx` before handing
-/// the resulting literals to `eval_call`, which seeds a fresh environment
-/// from them. An unbound parameter (arity mismatch — typecheck's WS022
-/// normally prevents this before const evaluation ever runs) is
-/// `Unsupported`, blamed on the missing parameter's own declaration.
+/// Binds `args` to `inputs` with [`bind_args`] (leniently, as
+/// `eval_method_call` binds builtin receiver calls), then evaluates each
+/// bound expression against the CALLER's `cx` before handing the resulting
+/// literals to `eval_call`, which seeds a fresh environment from them. An
+/// omitted argument takes the parameter's default, evaluated against the
+/// caller's `cx` as lowering does. A parameter with neither (an arity
+/// mismatch, which typecheck's WS022 normally reports first) is
+/// `Unsupported`, blamed on the parameter's own declaration.
 ///
 /// `budget` is threaded through to `eval_expr` (rather than each argument
 /// getting its own fresh one) so a call-chain reached from ARGUMENT
@@ -981,26 +1025,13 @@ pub(super) fn bind_call_args(
     cx: &ConstCtx,
     budget: &mut Budget,
 ) -> Result<Vec<Literal>, ConstError> {
-    let mut bound: HashMap<&str, &Expr> = HashMap::default();
-    let mut next_pos = 0usize;
-    for a in args {
-        match a {
-            CallArg::Positional(v) => {
-                if let Some(p) = inputs.get(next_pos) {
-                    bound.insert(p.name.as_str(), v);
-                }
-                next_pos += 1;
-            }
-            CallArg::Named { name, value, .. } => {
-                bound.insert(name.as_str(), value);
-            }
-            CallArg::Spread(_) => {} // no constant form; unbound parameter below is Unsupported
-        }
-    }
-
+    let names: Vec<&str> = inputs.iter().map(|p| p.name.as_str()).collect();
+    let Ok(slots) = bind_args(&names, 0, args, Arity::Lenient) else {
+        unreachable!("lenient binding refuses nothing")
+    };
     let mut out = Vec::with_capacity(inputs.len());
-    for p in inputs {
-        let Some(&expr) = bound.get(p.name.as_str()) else {
+    for (p, slot) in inputs.iter().zip(slots) {
+        let Some(expr) = slot.or(p.default.as_ref()) else {
             return Err(ConstError {
                 reason: ConstReason::Unsupported("a call missing an argument for this parameter"),
                 range: p.range.clone(),

@@ -3,29 +3,16 @@
 //! `*T` parameter wires its var's `VarRef`, a ref value wires the ref, a place
 //! reads its var's value and arithmetic on a ref value is WS004.
 
-use super::refs::{driver_through_pins, gates, source_of};
+use super::refs::{driver_through_pins, gates, source_port_of};
 use super::*;
 use crate::ir::gate_class as gc;
 use crate::ir::{Module, NodeId};
 
 const MATH_ADD: &str = "BrickComponentType_Expr_MathAdd";
 
-fn has_error(r: &LowerResult, code: &str) -> bool {
-    r.diagnostics
-        .iter()
-        .any(|d| d.code == code && d.severity == crate::diagnostic::Severity::Error)
-}
-
 /// Every node of `class` anywhere in the chip tree, in source order.
 fn in_tree(m: &Module, class: &str) -> Vec<NodeId> {
-    fn walk<'a>(m: &'a Module, class: &str, out: &mut Vec<&'a crate::ir::Node>) {
-        out.extend(m.nodes.values().filter(|n| n.gate_class == class));
-        for c in m.chips.values() {
-            walk(c, class, out);
-        }
-    }
-    let mut v = Vec::new();
-    walk(m, class, &mut v);
+    let mut v = nodes_of(m, class);
     v.sort_by_key(|n| (n.source_range.start.offset, n.source_range.end.offset));
     v.into_iter().map(|n| n.id).collect()
 }
@@ -69,10 +56,6 @@ fn find_driver_node(root: &Module, node: NodeId, port: WirePort) -> NodeId {
     }
 }
 
-fn class_of(r: &LowerResult, id: NodeId) -> &'static str {
-    r.module.nodes[&id].gate_class
-}
-
 /// No wire anywhere in the tree feeds a var's VALUE into a `VarRef`.
 fn no_value_into_varref(m: &Module) {
     for w in &m.wires {
@@ -104,9 +87,9 @@ fn a_place_bundle_through_a_let_projection_names_its_var() {
     assert_eq!(node, var_node(&r, &src, "var cpsr"));
     // The pure-looking read is a read of cpsr's value.
     let add = gates(&r, MATH_ADD)[0];
-    let (get, _) = source_of(&r, add, WirePort::InputA).unwrap();
+    let (get, _) = source_port_of(&r, add, WirePort::InputA).unwrap();
     assert_eq!(class_of(&r, get), gc::VAR_GET);
-    assert_eq!(source_of(&r, get, WirePort::VarRef), Some((var_node(&r, &src, "var cpsr"), WirePort::VarRef)));
+    assert_eq!(source_port_of(&r, get, WirePort::VarRef), Some((var_node(&r, &src, "var cpsr"), WirePort::VarRef)));
     no_value_into_varref(&r.module);
 }
 
@@ -153,9 +136,9 @@ fn a_ref_value_field_of_a_mod_result_is_not_a_number() {
     let r = compile(&src);
     assert_no_errors(&r);
     let add = gates(&r, MATH_ADD)[0];
-    let (get, _) = source_of(&r, add, WirePort::InputA).unwrap();
+    let (get, _) = source_port_of(&r, add, WirePort::InputA).unwrap();
     assert_eq!(class_of(&r, get), gc::VAR_GET);
-    assert_eq!(source_of(&r, get, WirePort::VarRef), Some((var_node(&r, &src, "var a"), WirePort::VarRef)));
+    assert_eq!(source_port_of(&r, get, WirePort::VarRef), Some((var_node(&r, &src, "var a"), WirePort::VarRef)));
 }
 
 #[test]
@@ -186,9 +169,9 @@ fn a_ref_value_bound_to_a_record_params_field_is_read_through() {
     let r = compile(&src);
     assert_no_errors(&r);
     let add = gates(&r, MATH_ADD)[0];
-    let (get, _) = source_of(&r, add, WirePort::InputA).unwrap();
+    let (get, _) = source_port_of(&r, add, WirePort::InputA).unwrap();
     assert_eq!(class_of(&r, get), gc::VAR_GET, "a read through the ref, not the ref itself");
-    assert_eq!(source_of(&r, get, WirePort::VarRef), Some((var_node(&r, &src, "var a"), WirePort::VarRef)));
+    assert_eq!(source_port_of(&r, get, WirePort::VarRef), Some((var_node(&r, &src, "var a"), WirePort::VarRef)));
 
     // A ref-holding var: the ref it holds, read at the call.
     let src = "type R = { p: *int }\nvar a: int = 0\nvar h: *int\nvar n: int = 0\n\
@@ -196,11 +179,11 @@ fn a_ref_value_bound_to_a_record_params_field_is_read_through() {
     let r = compile(src);
     assert_no_errors(&r);
     let add = gates(&r, MATH_ADD)[0];
-    let (get, _) = source_of(&r, add, WirePort::InputA).unwrap();
+    let (get, _) = source_port_of(&r, add, WirePort::InputA).unwrap();
     assert_eq!(class_of(&r, get), gc::VAR_GET);
-    let (ref_src, _) = source_of(&r, get, WirePort::VarRef).unwrap();
+    let (ref_src, _) = source_port_of(&r, get, WirePort::VarRef).unwrap();
     assert_eq!(class_of(&r, ref_src), gc::VAR_GET, "the ref comes off a read of h");
-    assert_eq!(source_of(&r, ref_src, WirePort::VarRef), Some((var_node(&r, src, "var h"), WirePort::VarRef)));
+    assert_eq!(source_port_of(&r, ref_src, WirePort::VarRef), Some((var_node(&r, src, "var h"), WirePort::VarRef)));
 
     // Writing the field writes the var the ref names.
     let src = "type R = { p: *int }\nvar a: int = 0\nmod M7(x: *int) { x = x + 1 }\n\
@@ -227,14 +210,14 @@ fn a_ref_holding_var_in_a_record_literal_is_a_ref_value() {
     assert_no_errors(&r);
     let (node, class, _) = increment_target(&r);
     assert_eq!(class, gc::VAR_GET, "M7 writes the var h points at, not h");
-    assert_eq!(source_of(&r, node, WirePort::VarRef), Some((var_node(&r, &src, "var h"), WirePort::VarRef)));
+    assert_eq!(source_port_of(&r, node, WirePort::VarRef), Some((var_node(&r, &src, "var h"), WirePort::VarRef)));
     let r = compile(&format!("{head}on go {{ h = &a\n let rr: R = {{ p: h }}\n n = rr.p + 1 }}"));
     assert!(has_error(&r, "WS004"), "{:?}", r.diagnostics);
     let src = format!("{head}on go {{ h = &a\n let rr: R = {{ p: h }}\n *rr.p = 9 }}");
     let r = compile(&src);
     assert_no_errors(&r);
     let set = gates(&r, gc::VAR_SET).into_iter().find(|s| {
-        source_of(&r, *s, WirePort::VarRef).is_some_and(|(n, _)| class_of(&r, n) == gc::VAR_GET)
+        source_port_of(&r, *s, WirePort::VarRef).is_some_and(|(n, _)| class_of(&r, n) == gc::VAR_GET)
     });
     assert!(set.is_some(), "`*rr.p = 9` writes through the ref h holds");
 }
@@ -253,9 +236,9 @@ fn a_namespaced_record_let_keeps_its_ref_values() {
     );
     assert_no_errors(&r);
     let add = gates(&r, MATH_ADD)[0];
-    let (get, _) = source_of(&r, add, WirePort::InputA).unwrap();
+    let (get, _) = source_port_of(&r, add, WirePort::InputA).unwrap();
     assert_eq!(class_of(&r, get), gc::VAR_GET);
-    let (a, port) = source_of(&r, get, WirePort::VarRef).unwrap();
+    let (a, port) = source_port_of(&r, get, WirePort::VarRef).unwrap();
     assert_eq!((class_of(&r, a), port), (gc::VAR, WirePort::VarRef));
 }
 
@@ -341,7 +324,7 @@ fn a_record_chosen_by_if_or_match_chooses_the_refs_of_its_places() {
         let (node, class, _) = increment_target(&r);
         assert_eq!(class, gc::SELECT, "{pick}");
         for input in [WirePort::InputA, WirePort::InputB] {
-            let (v, port) = source_of(&r, node, input).unwrap();
+            let (v, port) = source_port_of(&r, node, input).unwrap();
             assert_eq!((class_of(&r, v), port), (gc::VAR, WirePort::VarRef), "{pick}: a ref, not a value");
         }
         let r = compile(&format!(
@@ -409,7 +392,7 @@ fn a_ref_of_a_record_var_is_a_record_of_its_refs() {
     let (_, class, port) = increment_target(&r);
     assert_eq!((class, port), (gc::VAR, WirePort::VarRef));
     let get = gates(&r, gc::VAR_GET).into_iter().last().unwrap();
-    let (b, port) = source_of(&r, get, WirePort::VarRef).unwrap();
+    let (b, port) = source_port_of(&r, get, WirePort::VarRef).unwrap();
     assert_eq!((class_of(&r, b), port), (gc::VAR, WirePort::VarRef), "`*x.b` reads r.b through its ref");
 }
 
@@ -426,13 +409,13 @@ fn a_deref_of_an_enum_payload_ref_goes_through_the_ref() {
             r.module.nodes[s].source_range.start.offset == src.find("*p = 9").unwrap()
         })
         .expect("the write");
-    let (src_node, _) = source_of(&r, set9, WirePort::VarRef).unwrap();
+    let (src_node, _) = source_port_of(&r, set9, WirePort::VarRef).unwrap();
     assert_ne!(src_node, a, "not a itself: the ref read off the payload slot");
     assert_eq!(class_of(&r, src_node), gc::VAR_GET, "the ref comes off a read of the payload slot");
     let add = gates(&r, MATH_ADD)[0];
-    let (get, _) = source_of(&r, add, WirePort::InputA).unwrap();
+    let (get, _) = source_port_of(&r, add, WirePort::InputA).unwrap();
     assert_eq!(class_of(&r, get), gc::VAR_GET);
-    let (inner, _) = source_of(&r, get, WirePort::VarRef).unwrap();
+    let (inner, _) = source_port_of(&r, get, WirePort::VarRef).unwrap();
     assert_eq!(class_of(&r, inner), gc::VAR_GET, "`*p` reads through the ref, not the slot");
 }
 
@@ -466,10 +449,10 @@ fn a_game_enum_crosses_a_port_as_its_value() {
     assert!(!has_gate(&r, "_Unsupported"));
     let input = r.module.inputs[0];
     let set = gates(&r, gc::VAR_SET)[0];
-    assert_eq!(source_of(&r, set, WirePort::Value), Some((input, WirePort::RerOutput)), "v = ease stores it");
+    assert_eq!(source_port_of(&r, set, WirePort::Value), Some((input, WirePort::RerOutput)), "v = ease stores it");
     let outs: Vec<NodeId> = r.module.outputs.clone();
     for out in outs {
-        assert!(source_of(&r, out, WirePort::RerInput).is_some(), "every output is wired");
+        assert!(source_port_of(&r, out, WirePort::RerInput).is_some(), "every output is wired");
     }
 }
 
@@ -496,7 +479,7 @@ fn enum_out_driver(src: &str) -> (LowerResult, (NodeId, WirePort)) {
     assert_eq!(r.module.outputs.len(), 1, "one pin for the enum output: {src}");
     assert_emits(&r.module, &crate::layout::layout(&r.module));
     let out = r.module.outputs[0];
-    let driver = source_of(&r, out, WirePort::RerInput).unwrap_or_else(|| panic!("the output is wired: {src}"));
+    let driver = source_port_of(&r, out, WirePort::RerInput).unwrap_or_else(|| panic!("the output is wired: {src}"));
     (r, driver)
 }
 
@@ -599,9 +582,9 @@ fn an_element_of_a_port_array_of_enum_tags_is_that_enum() {
     let s = var_node(&r, src, "var s");
     let set = gates(&r, gc::VAR_SET)
         .into_iter()
-        .find(|g| source_of(&r, *g, WirePort::VarRef).is_some_and(|(n, _)| n == s))
+        .find(|g| source_port_of(&r, *g, WirePort::VarRef).is_some_and(|(n, _)| n == s))
         .expect("s = cs[0] stores");
-    let (get, _) = source_of(&r, set, WirePort::Value).unwrap();
+    let (get, _) = source_port_of(&r, set, WirePort::Value).unwrap();
     assert_eq!(class_of(&r, get), gc::ARRAY_GET);
 }
 
@@ -617,7 +600,7 @@ fn messages(r: &LowerResult) -> String {
 fn driver(r: &LowerResult, class: &str, port: WirePort) -> (&'static str, WirePort) {
     let g = gates(r, class);
     assert_eq!(g.len(), 1, "one {class}");
-    let (src, p) = source_of(r, g[0], port).unwrap_or_else(|| panic!("{class}.{port:?} is wired"));
+    let (src, p) = source_port_of(r, g[0], port).unwrap_or_else(|| panic!("{class}.{port:?} is wired"));
     (class_of(r, src), p)
 }
 
@@ -751,7 +734,7 @@ fn a_call_with_a_value_and_an_exec_output_used_as_one_enum_is_its_value() {
             let what = format!("`{stmt}`, {mode}");
             assert_clean(&r, &what);
             let write = r.module.nodes.values().find(|n| n.gate_class == class).unwrap_or_else(|| panic!("{what}: the write"));
-            let (value, _) = source_of(&r, write.id, WirePort::Value).unwrap_or_else(|| panic!("{what}: its value is wired"));
+            let (value, _) = source_port_of(&r, write.id, WirePort::Value).unwrap_or_else(|| panic!("{what}: its value is wired"));
             assert_eq!(read_label(&r, value), Some("c".to_string()), "{what}");
         }
     }
@@ -1067,7 +1050,7 @@ fn an_internal_error_is_dropped_only_beside_another_error() {
         file: "test.ws",
         module_name: None,
         fold_mode: crate::FoldMode::Auto,
-    });
+    }, &crate::resolve::FsLoader);
     assert!(all.iter().any(|d| d.code == "WS095"), "{all:?}");
     assert!(all.iter().all(|d| d.code != "WS094"), "{all:?}");
 }

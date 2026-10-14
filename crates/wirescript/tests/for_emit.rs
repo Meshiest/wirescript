@@ -2,30 +2,9 @@
 //! loop bounds as that component's data. Any one of the three wrong produces a
 //! save that loads and quietly does the wrong thing.
 
-use wirescript::compile::{CompileError, CompileInput, FoldMode, compile, compile_to_world};
-use wirescript::emit::EmitOptions;
+use wirescript::compile::{CompileError, compile};
 
 mod common;
-
-fn world(src: &str) -> brdb::World {
-    compile_to_world(
-        CompileInput { source: src, file: "for_emit.ws", module_name: None, fold_mode: FoldMode::Auto },
-        EmitOptions::default(),
-    )
-    .expect("should compile to a world")
-    .world
-}
-
-fn brz(src: &str) -> Vec<u8> {
-    compile(CompileInput {
-        source: src,
-        file: "for_emit.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
-    .expect("should compile to brz")
-    .brz
-}
 
 /// Every plane brick asset paired with the component class sitting on it:
 /// both the shells and the entry gates, since a brick placed without its own
@@ -39,7 +18,7 @@ fn shells(world: &brdb::World) -> Vec<(String, String)> {
 
 #[test]
 fn a_range_loop_emits_the_count_for_brick() {
-    let w = world("var t: int = 0\nin go: exec\non go { for i in 0..10 { t += i } }");
+    let w = common::world("var t: int = 0\nin go: exec\non go { for i in 0..10 { t += i } }", "for_emit.ws");
     let assets = common::brick_assets(&w);
     assert!(
         assets.iter().any(|a| a == "B_1x1_Microchip_CountFor"),
@@ -67,7 +46,7 @@ fn a_range_loop_emits_the_count_for_brick() {
 
 #[test]
 fn an_array_loop_emits_the_for_each_array_brick() {
-    let w = world("var arr: int[]\nvar t: int = 0\nin go: exec\non go { arr.push(3)\nfor v in arr { t += v } }");
+    let w = common::world("var arr: int[]\nvar t: int = 0\nin go: exec\non go { arr.push(3)\nfor v in arr { t += v } }", "for_emit.ws");
     let assets = common::brick_assets(&w);
     assert!(
         assets.iter().any(|a| a == "B_1x1_Microchip_ForEachArray"),
@@ -96,7 +75,7 @@ fn an_array_loop_emits_the_for_each_array_brick() {
 
 #[test]
 fn a_map_loop_emits_the_for_each_map_brick() {
-    let w = world("var m: Map<int, int>\nvar t: int = 0\nin go: exec\non go { m.set(1, 3)\nfor k, v in m { t += v } }");
+    let w = common::world("var m: Map<int, int>\nvar t: int = 0\nin go: exec\non go { m.set(1, 3)\nfor k, v in m { t += v } }", "for_emit.ws");
     let assets = common::brick_assets(&w);
     assert!(
         assets.iter().any(|a| a == "B_1x1_Microchip_ForEachMap"),
@@ -129,8 +108,8 @@ fn a_map_loop_emits_the_for_each_map_brick() {
 /// plain microchip keeps its own brick and component.
 #[test]
 fn a_plain_chip_still_emits_a_plain_microchip() {
-    let w = world(
-        "var t: int = 0\nchip Bump(a: int) -> (r: int) { return a + 1 }\nin go: exec\non go { t = Bump(t) }",
+    let w = common::world(
+        "var t: int = 0\nchip Bump(a: int) -> (r: int) { return a + 1 }\nin go: exec\non go { t = Bump(t) }", "for_emit.ws",
     );
     let pairs = shells(&w);
     assert!(
@@ -150,7 +129,7 @@ fn a_plain_chip_still_emits_a_plain_microchip() {
 /// survive. Reading just the wires leaves all three at their defaults.
 #[test]
 fn a_range_loop_emits_its_bounds_as_shell_data() {
-    let b = brz("var t: int = 0\nin go: exec\non go { for i in 0..10 { t += i } }");
+    let b = common::brz("var t: int = 0\nin go: exec\non go { for i in 0..10 { t += i } }", "for_emit.ws");
     assert_eq!(
         common::count_for_shell_data(&b),
         vec![(10, 0, 1)],
@@ -162,7 +141,7 @@ fn a_range_loop_emits_its_bounds_as_shell_data() {
 /// apart must pin `Count` at the ceiling, four, and not the truncated three.
 #[test]
 fn a_stepped_range_emits_the_ceiling_count() {
-    let b = brz("var t: int = 0\nin go: exec\non go { for i in (0..10).step(3) { t += i } }");
+    let b = common::brz("var t: int = 0\nin go: exec\non go { for i in (0..10).step(3) { t += i } }", "for_emit.ws");
     assert_eq!(
         common::count_for_shell_data(&b),
         vec![(4, 0, 3)],
@@ -174,7 +153,7 @@ fn a_stepped_range_emits_the_ceiling_count() {
 /// `Step` and the shifted `FirstIndex` have to reach the component.
 #[test]
 fn a_reversed_range_emits_a_negative_step() {
-    let b = brz("var t: int = 0\nin go: exec\non go { for i in (0..5).rev() { t += i } }");
+    let b = common::brz("var t: int = 0\nin go: exec\non go { for i in (0..5).rev() { t += i } }", "for_emit.ws");
     assert_eq!(common::count_for_shell_data(&b), vec![(5, 4, -1)]);
 }
 
@@ -182,7 +161,7 @@ fn a_reversed_range_emits_a_negative_step() {
 /// default, so each pin has to resolve independently of the others.
 #[test]
 fn a_partly_constant_range_inlines_only_the_constant_pins() {
-    let b = brz("var n: int = 7\nvar t: int = 0\nin go: exec\non go { for i in 3..n { t += i } }");
+    let b = common::brz("var n: int = 7\nvar t: int = 0\nin go: exec\non go { for i in 3..n { t += i } }", "for_emit.ws");
     let data = common::count_for_shell_data(&b);
     assert_eq!(data.len(), 1, "expected one counted shell, got {data:?}");
     let (_count, first, step) = data[0];
@@ -197,7 +176,7 @@ fn a_partly_constant_range_inlines_only_the_constant_pins() {
 /// its own inline pass, so its bounds have to arrive there too.
 #[test]
 fn a_nested_loop_emits_bounds_on_both_shells() {
-    let b = brz("var t: int = 0\nin go: exec\non go { for i in 0..3 { for j in 0..4 { t += j } } }");
+    let b = common::brz("var t: int = 0\nin go: exec\non go { for i in 0..3 { for j in 0..4 { t += j } } }", "for_emit.ws");
     let mut data = common::count_for_shell_data(&b);
     data.sort();
     assert_eq!(
@@ -216,12 +195,7 @@ fn a_nested_loop_emits_bounds_on_both_shells() {
 fn an_await_reached_through_an_inlined_mod_call_fails_to_compile() {
     let src = "in done: exec\nvar t: int = 0\nmod waiter() { await done\n t = t + 1 }\n\
                in go: exec\non go { for i in 0..3 { waiter() } }";
-    let result = compile(CompileInput {
-        source: src,
-        file: "for_emit.ws",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    });
+    let result = compile(common::input(src, "for_emit.ws"));
     let Err(CompileError::HasErrors(diags)) = result else {
         panic!("an await reached through an inlined mod call inside a loop must fail with HasErrors, not compile");
     };
@@ -237,7 +211,7 @@ fn an_await_reached_through_an_inlined_mod_call_fails_to_compile() {
 fn sliced_is_baked_into_every_loop_shell() {
     use brdb::schema::BrdbValue;
     let flags = |src: &str| -> Vec<(String, bool)> {
-        let mut out: Vec<(String, bool)> = common::world_components(&brz(src))
+        let mut out: Vec<(String, bool)> = common::world_components(&common::brz(src, "for_emit.ws"))
             .iter()
             .filter(|c| c.get_name().starts_with("BrickComponentData_Internal_Microchip_"))
             .filter_map(|c| match c.get("bRunAcrossTicks") {
