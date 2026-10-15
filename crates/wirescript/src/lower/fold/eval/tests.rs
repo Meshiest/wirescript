@@ -266,7 +266,7 @@
         assert_eq!(format_text("{A} apples", &[i(Value::Int(5))]), None);
         assert_eq!(format_text("{G}", &[]), None);
         assert_eq!(format_text("{A:,}", &[i(Value::Int(1234567))]), None);
-        assert_eq!(format_text("{0:.2} m/s", &[i(Value::Float(3.14159))]), None);
+        assert_eq!(format_text("{0:.2} m/s", &[i(Value::Float(1.2345))]), None);
         assert_eq!(format_text("Door: {A:Open=Closed}", &[i(Value::Bool(true))]), None);
         assert_eq!(format_text("{0} {0}|plural(one=apple,other=apples)", &[i(Value::Int(3))]), None);
         assert_eq!(format_text("{A}{A}|ordinal(one=st,two=nd,few=rd,other=th)", &[i(Value::Int(2))]), None);
