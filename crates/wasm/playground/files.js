@@ -10,12 +10,13 @@ const DEFAULT_FILE_CONTENT = `// Welcome to the Wirescript Playground!
 var count: int = 0
 
 in trigger: exec
+in reset: exec
 
 on trigger {
-  count = count + 1
+  count += 1
 }
 
-on RoundStart {
+on reset {
   count = 0
 }
 
