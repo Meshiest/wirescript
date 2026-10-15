@@ -19,8 +19,8 @@ in cancel: exec
 
 // emit target = expr - set output value and fire exec
 on player {
-  score = score + 10
-  phase = phase + 1
+  score += 10
+  phase += 1
   emit result = score
   if phase >= 3 {
     emit ready

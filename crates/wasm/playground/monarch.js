@@ -6,7 +6,7 @@ export const monarchLanguage = {
 
   keywords: [
     'if', 'else', 'then', 'match', 'on', 'return', 'emit', 'await', 'for', 'break',
-    'var', 'array', 'map', 'buffer', 'let', 'const', 'fn', 'chip', 'mod', 'in', 'out', 'open', 'ref',
+    'var', 'array', 'map', 'buffer', 'let', 'const', 'fn', 'chip', 'mod', 'in', 'out', 'ref',
     'import', 'from', 'as', 'static', 'type',
     // Contextual: the parser also accepts these as ordinary identifiers, so a
     // variable named `enum` highlights as a keyword. Worth it -- they are the

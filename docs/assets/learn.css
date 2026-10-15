@@ -1,0 +1,87 @@
+/* The links under a Learn page's title (written by gen_learn_tree.mjs). */
+.learn-links {
+  font-size: 0.9em;
+  padding: 0.4em 0.9em;
+  margin: 0 0 1.2em;
+  border-left: 3px solid var(--quote-border);
+  background: var(--quote-bg);
+}
+
+.learn-links p {
+  margin: 0.3em 0;
+}
+
+/* Lesson and branch icons in the sidebar (learn-nav.js). */
+.learn-nav-icon {
+  width: 1.15em;
+  height: 1em;
+  margin-right: 0.45em;
+  vertical-align: -0.12em;
+  opacity: 0.8;
+  flex: none;
+}
+
+/* Wiring diagrams (ws-wiring.js). */
+.ws-wiring {
+  margin: 1em 0 1.5em;
+  overflow-x: auto;
+  text-align: center;
+}
+
+.ws-wiring-svg {
+  max-width: 100%;
+  height: auto;
+  font-size: 12px;
+}
+
+.ws-wiring-lines path {
+  fill: none;
+  stroke: var(--fg);
+  stroke-opacity: 0.55;
+  stroke-width: 1.6;
+}
+
+.ws-wiring-ends circle {
+  fill: var(--fg);
+  fill-opacity: 0.7;
+}
+
+.ws-wiring-node rect {
+  fill: var(--quote-bg);
+  stroke: var(--quote-border);
+  stroke-width: 1.5;
+}
+
+.ws-wiring-icon {
+  fill: var(--fg);
+}
+
+.ws-wiring-chip rect {
+  fill: #0e639c;
+  stroke: #1177bb;
+}
+
+.ws-wiring-chip .ws-wiring-icon,
+.ws-wiring-chip .ws-wiring-num {
+  fill: #fff;
+}
+
+.ws-wiring-name {
+  fill: var(--fg);
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.ws-wiring-num {
+  fill: var(--fg);
+  font-size: 10px;
+  font-weight: bold;
+}
+
+.ws-wiring-labels text {
+  fill: var(--fg);
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}

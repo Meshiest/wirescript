@@ -13,7 +13,7 @@
 // slip a Bandage into their inventory. Also track the last hit and expose
 // whether it was a pickaxe as an output.
 
-static var lastWeapon: entity
+var lastWeapon: entity
 
 on CharacterDamaged() -> (victim, damage, attacker, weapon, weaponName) {
   lastWeapon = weapon

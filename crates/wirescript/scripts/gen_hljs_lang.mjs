@@ -83,7 +83,7 @@ const tmPath = join(repoRoot, 'editors', 'vscode', 'syntaxes', 'wirescript.tmLan
 const CONTEXTUAL = new Set(['unsafe', 'is']);
 const DECLARATIONS = new Set([
   'var', 'array', 'map', 'static', 'buffer', 'let', 'const', 'fn', 'chip', 'mod',
-  'in', 'out', 'open', 'ref', 'import', 'type', 'enum',
+  'in', 'out', 'ref', 'import', 'type', 'enum',
 ]);
 const alternation = (xs) => [...new Set(xs)].sort().join('|');
 const tmLists = {

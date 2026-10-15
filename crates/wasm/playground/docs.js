@@ -56,12 +56,19 @@ A browser-based development environment for Wirescript with full language suppor
 `,
 };
 
+import { LEARN } from './learn.js';
+import { preludeBefore } from './snippet.js';
+
 // Every doc page, in display order: its key, its title in the navigation and
 // the file it loads (none for the playground's own help). The book's table of
 // contents is generated from this list, so a new page is registered here once.
+// A page's `children` are listed under it in the book; the Learn series'
+// pages come from `learn.js`. A page with a `book` link is read in the book
+// only, never in the playground's panel.
 export const DOCS = [
   { key: 'Playground', title: 'Playground Help', file: null },
   { key: 'Overview', title: 'Overview', file: 'docs/README.md' },
+  { key: 'Learn', title: 'Learn', file: 'docs/learn/README.md', children: LEARN, book: 'docs/learn/index.html' },
   { key: 'Syntax', title: 'Syntax', file: 'docs/syntax.md' },
   { key: 'Types', title: 'Types', file: 'docs/types.md' },
   { key: 'Enums', title: 'Enums', file: 'docs/enums.md' },
@@ -80,9 +87,28 @@ export const DOCS = [
   { key: 'Changelog', title: 'Changelog', file: 'docs/CHANGELOG.md' },
 ];
 
-export const DOC_MANIFEST = Object.fromEntries(DOCS.filter((d) => d.file).map((d) => [d.key, d.file]));
-export const DOC_PAGES = DOCS.map((d) => d.key);
-export const DOC_TITLES = Object.fromEntries(DOCS.map((d) => [d.key, d.title]));
+// The panel lists, loads and searches only the pages it shows itself; Learn
+// has its own button in the playground's toolbar.
+const PANEL_DOCS = DOCS.filter((d) => !d.book);
+export const DOC_MANIFEST = Object.fromEntries(PANEL_DOCS.filter((d) => d.file).map((d) => [d.key, d.file]));
+export const DOC_PAGES = PANEL_DOCS.map((d) => d.key);
+export const DOC_TITLES = Object.fromEntries(PANEL_DOCS.map((d) => [d.key, d.title]));
+/** Folders only the book shows (`docs/learn/`); links into them open there. */
+const BOOK_FOLDERS = DOCS.filter((d) => d.book).map((d) => d.file.replace(/[^/]*$/, ''));
+
+/**
+ * The site path a link `href` names, read relative to the page at `from`
+ * (`docs/learn/x.md` + `../types.md` -> `docs/types.md`).
+ */
+export function resolveDocPath(from, href) {
+  if (/^[a-z]+:/i.test(href) || href.startsWith('/')) return href;
+  const parts = from.split('/').slice(0, -1);
+  for (const seg of href.split('/')) {
+    if (seg === '..') parts.pop();
+    else if (seg !== '.' && seg !== '') parts.push(seg);
+  }
+  return parts.join('/');
+}
 
 async function loadDoc(page) {
   if (DOCS_CACHE[page] !== undefined) return DOCS_CACHE[page];
@@ -187,12 +213,14 @@ export function initDocs(container, onInsertExample) {
         cls.includes('language-wirescript') ||
         !cls.includes('language-')
       ) {
+        // The hidden prelude gives a fragment the names it needs to compile.
+        const prelude = preludeBefore(pre);
         const btn = document.createElement('button');
         btn.className = 'docs-insert-btn';
         btn.textContent = 'Insert Example';
         btn.addEventListener('click', () => {
           if (onInsertExample) {
-            onInsertExample(block.innerText.replace(/\u00a0/g, ' '));
+            onInsertExample(prelude + block.innerText.replace(/\u00a0/g, ' '));
           }
         });
         // Wrap pre in a container for positioning
@@ -217,17 +245,32 @@ export function initDocs(container, onInsertExample) {
         a.addEventListener('click', (e) => { e.preventDefault(); scrollToAnchor(anchor); });
         return;
       }
-      const basename = target.replace(/^.*\//, '');
-      for (const [page, path] of Object.entries(DOC_MANIFEST)) {
-        if (path.endsWith(basename)) {
-          a.addEventListener('click', async (e) => {
-            e.preventDefault();
-            await showPage(page);
-            if (anchor) scrollToAnchor(anchor);
-          });
-          a.removeAttribute('target');
-          return;
-        }
+      // A relative link names a file next to this page's own (`learn/x.md`
+      // links `cpu/y.md` as `learn/cpu/y.md`). The book links `.html`; the
+      // panel loads the `.md` beside it.
+      // A link that names no page this way (GitHub's `../../CHANGELOG.md`,
+      // the changelog's repository paths) falls back to the top-level page
+      // with that file name.
+      const resolved = resolveDocPath(DOC_MANIFEST[name] || 'docs/README.md', target.replace(/\.html$/, '.md'));
+      // A page only the book shows opens there.
+      if (BOOK_FOLDERS.some((dir) => resolved.startsWith(dir))) {
+        a.setAttribute('href', resolved.replace(/\.md$/, '.html') + (anchor ? '#' + anchor : ''));
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener');
+        return;
+      }
+      const basename = resolved.replace(/^.*\//, '');
+      const entries = Object.entries(DOC_MANIFEST);
+      const found =
+        entries.find(([, path]) => path === resolved) || entries.find(([, path]) => path === 'docs/' + basename);
+      if (found) {
+        const [page] = found;
+        a.addEventListener('click', async (e) => {
+          e.preventDefault();
+          await showPage(page);
+          if (anchor) scrollToAnchor(anchor);
+        });
+        a.removeAttribute('target');
       }
     });
 

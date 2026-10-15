@@ -58,7 +58,7 @@ export function listFiles() {
 
 export function readFile(name) {
   const files = ensureDefault();
-  return files[name] !== undefined ? files[name] : null;
+  return Object.hasOwn(files, name) ? files[name] : null;
 }
 
 export function writeFile(name, content) {
@@ -109,7 +109,7 @@ export function getActiveFile() {
   const active = localStorage.getItem(STORAGE_ACTIVE);
   const files = ensureDefault();
   // Validate active file still exists
-  if (active && files[active] !== undefined) {
+  if (active && Object.hasOwn(files, active)) {
     return active;
   }
   // Fall back to first file

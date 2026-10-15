@@ -94,17 +94,18 @@ All trig functions take and return `float`. Angles are in **radians** unless con
 | `exp(x)` | `(x: float) -> float` | e^x |
 | `ln(x)` | `(x: float) -> float` | Natural logarithm |
 | `sign(x)` | `(x: float) -> float` | Sign (-1, 0, or 1) |
-| `abs(x)` | `(x: float) -> float` | Absolute value |
+| `abs(x)` | `(x: T) -> T` | Absolute value; `T` is any math variant, per component |
 | `sqrt(x)` | `(x: float) -> float` | Square root |
 | `pow(x, exponent)` | `(x: float, exponent: float) -> float` | Power |
-| `clamp(x, min, max)` | `(x: float, min: float, max: float) -> float` | Clamp to range |
+| `clamp(x, min, max)` | `(x: T, min: T, max: T) -> T` | Clamp to range |
 | `round(x)` | `(x: float) -> float` | Round to nearest integer |
 | `floor(x)` | `(x: float) -> float` | Round down |
 | `ceil(x)` | `(x: float) -> float` | Round up |
-| `min(a, b)` | `(a: float, b: float) -> float` | Minimum of two values |
-| `max(a, b)` | `(a: float, b: float) -> float` | Maximum of two values |
+| `min(a, b)` | `(a: T, b: T) -> T` | Minimum of two values |
+| `max(a, b)` | `(a: T, b: T) -> T` | Maximum of two values |
 | `log(x, base)` | `(x: float, base: float) -> float` | Logarithm with arbitrary base |
 | `lerp(a, b, t)` | `(a: T, b: T, t: float) -> T` | Linear interpolation; `T` is any math variant (see Easing/Tween) |
+| `Blend(a, b, alpha)` | `(a: T, b: T, alpha: float) -> T` | The same gate as `lerp`, with a `clampAlpha` config (receiver on `a`) |
 | `fmod(a, b)` | `(a: float, b: float) -> float` | Floored modulo |
 | `Deg2Rad(x)` | `(x: float) -> float` | Degrees to radians |
 | `Rad2Deg(x)` | `(x: float) -> float` | Radians to degrees |
@@ -115,6 +116,11 @@ let clamped = clamp(value, 0.0, 1.0)
 let dist = sqrt(dx * dx + dy * dy)
 let radians = Deg2Rad(90.0)
 ```
+
+`abs`, `min`, `max` and `clamp` give the type of their arguments: an `int` for
+`int`s, a `float` once one is a `float`, and a `vector`, `rotator`, `quat` or
+`color` per component. A `bool` reads as an `int`. A constant call folds to a
+constant of that type, so `max(3, 7)` is the `int` `7`.
 
 ## Bitwise (Pure)
 
@@ -143,23 +149,22 @@ let bits = BitCount(flags)
 | `Distance(a, b)` | `(a: vector, b: vector) -> float` | Distance between two points |
 | `DistanceSq(a, b)` | `(a: vector, b: vector) -> float` | Squared distance (avoids sqrt) |
 | `ScaleVec(v, s)` | `(v: vector, scalar: float) -> vector` | Scale vector by scalar |
-| `RotToDir(rot)` | `(rot: vector) -> vector` | Convert rotation to direction |
 | `v.SplitVec()` | `(v: vector) -> {x, y, z: float}` | Decompose vector (receiver on `vector`) |
 
 ### Vector Receiver Methods
 
-`DistanceSq`, `MagnitudeSq`, and `RotToDir` support receiver syntax on `vector`:
+`Dot`, `Cross`, `Normalize`, `Magnitude`, `MagnitudeSq`, `Distance`, `DistanceSq`, and `ScaleVec` support receiver syntax on `vector`:
 
 ```wirescript
 // Receiver form
 let dsq = a.DistanceSq(b)
 let msq = v.MagnitudeSq()
-let dir = rot.RotToDir()
+let n = v.Normalize()
 
 // Traditional form
 let dsq = DistanceSq(a, b)
 let msq = MagnitudeSq(v)
-let dir = RotToDir(rot)
+let n = Normalize(v)
 ```
 
 ```wirescript
@@ -184,10 +189,10 @@ receiver form.
 | `v.Rotate(q)` | `(vector, quat) -> vector` | Rotate a vector by a quaternion |
 | `q.Invert()` | `(quat) -> quat` | Inverse rotation |
 | `from.RotationTo(to)` | `(vector, vector) -> quat` | Quaternion rotating `from` onto `to` |
-| `a.AngleTo(b)` | `(quat, quat) -> float` | Angle between two quaternions |
+| `a.AngleTo(b)` | `(quat, quat) -> float` | Smallest angle between two quaternions (degrees) |
 | `a.Slerp(b, alpha)` | `(quat, quat, float) -> quat` | Spherical interpolation |
-| `axis.RotationByAngle(angle)` | `(vector, float) -> quat` | Quaternion from axis + angle (radians) |
-| `q.ToAxisAngle()` | `(quat) -> {Axis: vector, Angle: float}` | Decompose into axis + angle |
+| `axis.RotationByAngle(angle)` | `(vector, float) -> quat` | Quaternion from axis + angle (degrees) |
+| `q.ToAxisAngle()` | `(quat) -> {Axis: vector, Angle: float}` | Decompose into axis + angle (degrees) |
 | `Quat(x, y, z, w)` | `(float, float, float, float) -> quat` | Construct a quaternion from raw components |
 | `q.SplitQuat()` | `(quat) -> {X, Y, Z, W: float}` | Decompose into raw components |
 | `a.QuatDot(b)` | `(quat, quat) -> float` | Quaternion dot product |
@@ -236,8 +241,8 @@ let mixed = red.ColorBlend(orange, 0.5)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `Select(cond, a, b)` | `(cond: bool, a: any, b: any) -> any` | Returns `a` if false, `b` if true |
-| `Swap(cond, a, b)` | `(cond: bool, a: any, b: any) -> {Output, OutputB: any}` | Conditionally swap two values |
+| `Select(cond, a, b)` | `(cond: bool, a: T, b: T) -> T` | Returns `a` if false, `b` if true |
+| `Swap(cond, a, b)` | `(cond: bool, a: T, b: T) -> {Output, OutputB: T}` | Conditionally swap two values |
 
 ```wirescript
 let bigger = Select(x > y, y, x)
@@ -253,14 +258,14 @@ let result = Swap(shouldSwap, left, right)
 | `Edge(input)` | `(input: bool) -> {Rising, Falling: bool}` | Bool pulses on boolean transitions |
 | `EdgeExec(input)` | `(input: float) -> {Rising, Falling: exec}` | Exec pulses when a value rises/falls |
 | `Changed(input)` | `(input: any) -> bool` | Bool pulse when the input changes |
-| `Change(input)` | `(input: any) -> any` | Pulse the input value through when it changes |
+| `Change(input)` | `(input: any) -> exec` | Exec pulse when the input changes |
 | `ContainerChange(container)` | `(container: T[] \| Map<K, V>) -> exec` | Exec pulse on the update after an array or map changes |
 
 `Edge` and `Changed` are pure: they produce a one-tick bool pulse (`Rising` on
 false→true, `Falling` on true→false; `Changed` on any change). `EdgeExec` and
 `Change` are their exec-flavored siblings. `EdgeExec`'s outputs fire exec
 chains directly (use with `on`/`await`, like `Timer(...).Expired`), and
-`Change` pulses the new value through whenever the input changes.
+`Change` fires an exec pulse whenever the input changes.
 
 ```wirescript
 let edges = Edge(button)
@@ -293,8 +298,6 @@ The compiler fuses `!(a && b)` and `!(a || b)` into single NAND/NOR gates.
 
 ## String Operations (Pure)
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
 All string functions support **receiver syntax** on `string`:
 
 | Function | Signature | Description |
@@ -310,8 +313,8 @@ All string functions support **receiver syntax** on `string`:
 | `s.ToLower()` | `(s: string) -> string` | Convert to lowercase |
 | `s.ToUpper()` | `(s: string) -> string` | Convert to uppercase |
 | `s.Trim()` | `(s: string) -> string` | Remove leading/trailing whitespace |
-| `s.ParseInt()` / `ParseInt(s)` | `(s: string) -> int` | Parse an integer from text |
-| `s.ParseNumber()` / `ParseNumber(s)` | `(s: string) -> float` | Parse a number from text |
+| `s.ParseInt()` / `ParseInt(s)` | `(s: string) -> {Value: int, Success: bool}` | Parse an integer from text (auto-unwraps to `Value`) |
+| `s.ParseNumber()` / `ParseNumber(s)` | `(s: string) -> {Value: float, Success: bool}` | Parse a number from text (auto-unwraps to `Value`) |
 
 ```wirescript
 let name = "Hello World"
@@ -326,17 +329,43 @@ let parts = name.Split(" ")         // parts.Left = "Hello", parts.Right = "Worl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `Fmt(format, a?, b?, c?, d?, e?, f?, g?)` | `(format: any, a-g?: any) -> string` | Format text with placeholders |
+| `Fmt(format, a?, b?, c?, d?, e?, f?, g?)` | `(format: string, a-g?: any) -> string` | Format text with placeholders |
 
-The `Fmt` function wraps the FormatText gate. The format string uses `{0}` through `{6}` placeholders corresponding to inputs `a` through `g`.
+The `Fmt` function wraps the FormatText gate. The format string names inputs
+`a` through `g` as `{A}` through `{G}`, the form the gate's own tooltip uses.
+The numbered form `{0}` through `{6}` also works, and it is what `${}`
+interpolation compiles to.
 
 ```wirescript
-let label = Fmt("{0}: {1}", "Score", score)
+let label = Fmt("{A}: {B}", "Score", score)
 let coords = Fmt("({0}, {1}, {2})", x, y, z)
 
-// Also works for palette selection:
+// The format string can be built at runtime, which turns Fmt into a lookup table:
 let col = Fmt('{' .. bucket .. '}', 'eee4da', 'f2b179', 'f65e3b')
 ```
+
+An option after a colon changes how a value prints:
+
+| Placeholder | Prints | Example |
+|---|---|---|
+| `{A:,}` | Thousands grouped | `1,234,567` |
+| `{A:.2}` | Fixed decimals, up to 6 | `12.50` |
+| `{A:,.2}` | Both | `1,234.50` |
+| `{A:On=Off}` | The first word when true, the second when false | `On` |
+
+A form after a bar picks a word by number. Each form names a plural category
+(`one`, `two`, `few`, `other`), and a form's text can insert inputs itself:
+
+```wirescript
+let apples = Fmt("{A} {A}|plural(one=apple,other=apples)", n)            // 1 apple, 3 apples
+let place = Fmt("{A}{A}|ordinal(one=st,two=nd,few=rd,other=th)", rank)  // 1st, 2nd, 3rd, 4th
+let basket = Fmt("{A}|plural(one=one apple,other={A} apples)", n)       // one apple, 3 apples
+```
+
+The game applies these options. A `Fmt` that uses lettered inputs, options or
+word forms is never folded at compile time, even when its inputs are
+constants. Whether the options also apply to the numbered form (`{0:.2}`) is
+unverified, so prefer the lettered form with them.
 
 ## Array Methods (Exec)
 
@@ -352,26 +381,26 @@ rejected with `WS050`. See [Records as storage](types.md#records-as-storage).
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `arr.push(value)` | `(value: T)` | Append an element |
-| `arr.pop()` | `() -> T` | Remove and return the last element |
+| `arr.pop()` | `() -> {Value: T, IsEmpty: bool}` | Remove and return the last element (auto-unwraps to `Value`) |
 | `arr.get(index)` | `(index: int) -> {Value: T, OutOfBounds: bool}` | Read the element at `index` (auto-unwraps to `Value`). `.OutOfBounds` flags a bad index. This is the explicit form of `arr[i]` |
 | `arr.length()` | `() -> int` | Number of elements |
-| `arr.remove(index)` | `(index: int)` | Remove the element at `index` |
-| `arr.insert(index, value)` | `(index: int, value: T)` | Insert before `index` |
+| `arr.remove(index)` | `(index: int) -> bool` | Remove the element at `index`; gives `true` if `index` was out of range |
+| `arr.insert(index, value)` | `(index: int, value: T) -> bool` | Insert before `index`; gives `true` if `index` was out of range |
 | `arr.clear()` | `()` | Remove all elements |
-| `arr.find(value)` | `(value: T) -> {Index: int, Found: bool, Value: T}` | Find the first match (auto-unwraps to `Index`). `Index` is `-1` when `Found` is `false` |
+| `arr.find(value)` | `(value: T) -> {Index: int, Found: bool}` | Find the first match (auto-unwraps to `Index`). `Index` is `-1` when `Found` is `false` |
 | `arr.sort(descending?)` | `(descending?: bool)` | Sort in place |
-| `arr.sortMultiple(other, ..., descending?)` | `(other: T[], ..., descending?: bool)` | Sort in place, reordering at most 7 parallel arrays through the same permutation (more is `WS011`). A record array argument is carried along as one array per field, and each field counts toward the 7. Only a trailing `bool` is `descending` |
+| `arr.sortMultiple(other, ..., descending?)` | `(other: T[], ..., descending?: bool) -> bool` | Sort in place, reordering at most 7 parallel arrays through the same permutation (more is `WS011`). A record array argument is carried along as one array per field, and each field counts toward the 7. Only a trailing `bool` is `descending` |
 | `arr.reverse()` | `()` | Reverse in place |
 | `arr.shuffle()` | `()` | Randomly reorder |
-| `arr.swap(a, b)` | `(a: int, b: int)` | Swap two elements |
+| `arr.swap(a, b)` | `(a: int, b: int) -> bool` | Swap two elements; gives `true` if an index was out of range |
 | `arr.fill(value)` | `(value: T)` | Set every element to `value` |
 | `arr.resize(size, value)` | `(size: int, value: T)` | Grow/shrink, filling new slots with `value` |
 | `arr.sum()` | `() -> T` | Sum of elements |
-| `arr.min()` / `arr.max()` | `() -> T` | Smallest / largest element |
-| `arr.average()` | `() -> float` | Mean of elements |
+| `arr.min()` / `arr.max()` | `() -> {Value: T, IsEmpty: bool}` | Smallest / largest element (auto-unwraps to `Value`) |
+| `arr.average()` | `() -> {Value: float, IsEmpty: bool}` | Mean of elements (auto-unwraps to `Value`) |
 | `arr.append(source)` | `(source: T[])` | Append all elements of another array |
 | `arr.copyFrom(source)` | `(source: T[])` | Replace contents with a copy of another array |
-| `arr.slice(source, start, count)` | `(source: T[], start: int, count: int)` | Copy `source[start..start+count]` into this array |
+| `arr.slice(source, start, count)` | `(source: T[], start: int, count: int) -> bool` | Copy `source[start..start+count]` into this array; gives `true` if the range was out of bounds |
 | `arr.fillFromPlayers()` | `()` | Fill with all current players |
 | `arr.fillFromTeam(team)` | `(team: entity)` | Fill with the members of a team |
 
@@ -428,6 +457,18 @@ InputReader(character: character) -> { ...same fields... }
 
 Read player input axes and pressed keys. Receiver on `character`.
 
+`InputReader` is not a gate: it compiles to the **Seat Control Splitter**
+component (`Component_Internal_InputSplitter`), with the character wired into
+its **Character** input. Its outputs are live: they change while the player
+presses keys, with no Clock and no exec step, so `on input.PressedQ { ... }`
+runs once per press (on the rising edge) and `on input.Forward > 0.5` once
+per push. Any character wire works, not only a Seat's **Sitting Character**:
+a Switch's **Character** holds the last player who flipped it and keeps
+holding them wherever they go, which hands a remote to a player who is not
+seated. One splitter reads one player; to read every player at once, spawn a
+small chip per player that wires its own splitter
+([One Chip per Player](learn/prefabs/one-chip-per-player.md)).
+
 Returns a record with fields:
 - `Forward: float`: forward/backward movement axis (-1 to 1)
 - `Right: float`: left/right movement axis (-1 to 1)
@@ -452,14 +493,19 @@ Sample the same twelve controls once, at the point the exec chain reaches this
 call, rather than reading them continuously. The field names are identical to
 `InputReader`'s, so only the context differs. Its operand also accepts a
 persistent player, which wires straight into the `character` parameter.
+It reads any player, wherever they are: they need not be seated or standing
+in a zone, so a list of players from a zone fill, a stored reference or an
+event's character all work.
 
 It is an exec gate, so it must sit on an exec chain. In pure position it
-reports `WS007`.
+reports `WS007`. Use it for a one-time read in a handler that has a player
+but no character wire, such as a zone event. To watch keys, wire the
+character into [`InputReader`](#inputreader) instead: a `GetInputs` on a
+Clock misses any press shorter than the interval.
 
 ```wirescript
-on Clock(interval = 0.1) {
-  let input = char.GetInputs()
-  if input.PressedQ { char.ShowStatusMessage("q") }
+on ZoneEntered(zone = hall) -> (character) {
+  if character.GetInputs().PressedQ { character.ShowStatusMessage("q") }
 }
 ```
 
@@ -473,7 +519,17 @@ entity.ControllerOf() -> controller
 ControllerOf(entity: entity) -> controller
 ```
 
-Get controller from entity. Receiver on `entity`.
+Get controller from entity. Receiver on `entity`. Uses the admin-only **Get
+Player (Persistent)** gate.
+
+A controller (player state) is the persistent player, not the body: it stays
+the same through deaths and respawns, while each respawn makes a new
+character. A character and its controller are not equal. A character wired
+straight into a `controller` slot (a `Map<controller, V>` key, a
+`controller` var) still carries the character, so as a map key it files
+under that body and a respawn starts a new key. Custom properties
+(`SetCustomProperty`) can be set on a controller, which makes it per-player
+storage that survives respawns but not a reconnect.
 
 ### CharacterOf
 ```
@@ -518,7 +574,7 @@ on trigger {
 ### DisplayText
 ```
 target.DisplayText(text, ...) -> int
-DisplayText(target: controller, text: any, ...) -> int
+DisplayText(target: controller, text: string, ...) -> int
 ```
 
 Display HUD text to a player. Receiver on `controller`. Returns the resolved
@@ -529,15 +585,16 @@ at a time: `positionX` / `positionY`, `anchorX` / `anchorY`, and so on, each a
 `float`. There is no `vector`-typed `position` or `anchor`, and passing one is a
 `WS041` error. A constant axis bakes into the parent `Vector2D` data field. A
 runtime value wires the matching sub-port. The call also exposes the scalar
-styling below, plus `fontSize` / `justify` / `easing` / `typeface` / `font`, which
-are constant-only data fields (not wire inputs).
+styling below, plus `typeface` / `font`, which are constant-only data fields
+(not wire inputs). `justify` and `easing` are wire inputs: a constant member
+name bakes into the gate, and any other value wires in.
 
 #### DisplayText Parameters
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `target` | `controller` | Yes | Player to display to |
-| `text` | `any` | Yes | Text content (auto-converted to string) |
+| `text` | `string` | Yes | Text content (auto-converted to string) |
 | `positionX` / `positionY` | `float` | No | 2D screen position, per axis |
 | `anchorX` / `anchorY` | `float` | No | 2D anchor point, per axis |
 | `scaleX` / `scaleY` | `float` | No | 2D scale, per axis |
@@ -557,10 +614,10 @@ are constant-only data fields (not wire inputs).
 | `lifetime` | `float` | No | Display duration (seconds) |
 | `transition` | `float` | No | Seconds to interpolate to the new state when re-emitted with the same `textId` |
 | `textId` | `int` | No | Unique ID for updating text in-place |
-| `fontSize` | `int` | No | Font size (constant only) |
-| `justify` | `int` | No | Justification: `DisplayTextJustification.Left` / `.Center` / `.Right`, or bare `Left` / `Center` / `Right` (constant only) |
-| `easing` | `int` | No | Transition curve: `DisplayTextEasing.Linear` / `.EaseIn` / `.EaseOut` / `.EaseInOut`, or bare `Linear` / `EaseIn` / `EaseOut` / `EaseInOut` (constant only) |
-| `typeface` | `int` | No | Typeface: `TextTypeface.Regular` / `.Bold` / `.Italic` / `.BoldItalic`, or bare `Regular` / `Bold` / `Italic` / `BoldItalic` (constant only) |
+| `fontSize` | `int` | No | Font size |
+| `justify` | `DisplayTextJustification` | No | Justification: `DisplayTextJustification.Left` / `.Center` / `.Right`, or bare `Left` / `Center` / `Right` |
+| `easing` | `DisplayTextEasing` | No | Transition curve: `DisplayTextEasing.Linear` / `.EaseIn` / `.EaseOut` / `.EaseInOut`, or bare `Linear` / `EaseIn` / `EaseOut` / `EaseInOut` |
+| `typeface` | `TextTypeface` | No | Typeface: `TextTypeface.Regular` / `.Bold` / `.Italic` / `.BoldItalic`, or bare `Regular` / `Bold` / `Italic` / `BoldItalic` (constant only) |
 | `font` | asset ref | No | Font asset reference (constant only) |
 
 ```wirescript
@@ -648,6 +705,11 @@ SetLocation(entity: entity, pos: vector)
 Set entity position. Use this (not `Teleport`) to move an entity to world
 coordinates. `pos` is a real `vector` port.
 
+It moves a spawned prefab (the entity `SpawnPrefab` returns, or
+`ReadBrickGrid()` inside the copy). It does not move a pasted chip's own
+grid: `ReadBrickGrid().SetLocation(...)` in a chip that was pasted, not
+spawned, leaves it where it is.
+
 ### SetRotation
 ```
 entity.SetRotation(rot: rotator)
@@ -674,16 +736,16 @@ Add to position and rotation.
 
 ### Teleport
 ```
-entity.Teleport(dest: any)
-Teleport(entity: entity, dest: any)
+entity.Teleport(dest: teleport)
+Teleport(entity: entity, dest: teleport)
 ```
 
 Teleport entity to destination.
 
 ### RelativeTeleport
 ```
-entity.RelativeTeleport(source: any, dest: any)
-RelativeTeleport(entity: entity, source: any, dest: any)
+entity.RelativeTeleport(source: teleport, dest: teleport)
+RelativeTeleport(entity: entity, source: teleport, dest: teleport)
 ```
 
 Relative teleport between two points.
@@ -757,32 +819,32 @@ on trigger {
 
 ### SetLeaderboard
 ```
-controller.SetLeaderboard(key: string, value: any)
-SetLeaderboard(controller: controller, key: string, value: any)
+controller.SetLeaderboard(key: string, value: int)
+SetLeaderboard(controller: controller, key: string, value: int)
 ```
 
 Set a leaderboard value. Receiver on `controller`.
 
 ### IncLeaderboard
 ```
-controller.IncLeaderboard(key: string, value: any)
-IncLeaderboard(controller: controller, key: string, value: any)
+controller.IncLeaderboard(key: string, value: int)
+IncLeaderboard(controller: controller, key: string, value: int)
 ```
 
 Increment a leaderboard value. Receiver on `controller`.
 
 ### GetLeaderboard
 ```
-controller.GetLeaderboard(key: string) -> any
-GetLeaderboard(controller: controller, key: string) -> any
+controller.GetLeaderboard(key: string) -> int
+GetLeaderboard(controller: controller, key: string) -> int
 ```
 
 Get a leaderboard value. Receiver on `controller`.
 
 ### GetTeam
 ```
-character.GetTeam() -> any
-GetTeam(character: character) -> any
+character.GetTeam() -> entity
+GetTeam(character: character) -> entity
 ```
 
 Get a character's team. Receiver on `character`.
@@ -862,7 +924,9 @@ character.ShowHint(title: string, text: string)
 ShowHint(character: character, title: string, text: string)
 ```
 
-Display a hint popup to a character. Receiver on `character`.
+Display a hint popup to a character. Receiver on `character`. `title` and
+`text` are gate settings, so they must be constants: a variable or computed
+string is `WS028`.
 
 ```wirescript
 on CharacterSpawned() -> (character) {
@@ -935,8 +999,8 @@ on RoundStart() {
 
 ### ShowChatMessage
 ```
-controller.ShowChatMessage(message: string)
-ShowChatMessage(controller: controller, message: string)
+controller.ShowChatMessage(message: any)
+ShowChatMessage(controller: controller, message: any)
 ```
 
 Send a chat message that only this player sees (a whisper). Receiver on
@@ -944,10 +1008,10 @@ Send a chat message that only this player sees (a whisper). Receiver on
 
 ### Dialogs
 ```
-controller.ShowMessageBox(message: string, title?: string) -> { ClickedBy, OkClicked, Declined }
-controller.ShowOkCancelBox(message: string, title?: string) -> { ClickedBy, OkClicked, Declined }
-controller.ShowYesNoBox(message: string, title?: string) -> { ClickedBy, YesClicked, Declined }
-controller.ShowTextInputBox(message: string, title?: string) -> { ClickedBy, Text, OkClicked, Declined }
+controller.ShowMessageBox(message: any, title?: any) -> { ClickedBy, OkClicked, Declined }
+controller.ShowOkCancelBox(message: any, title?: any) -> { ClickedBy, OkClicked, Declined }
+controller.ShowYesNoBox(message: any, title?: any) -> { ClickedBy, YesClicked, Declined }
+controller.ShowTextInputBox(message: any, title?: any) -> { ClickedBy, Text, OkClicked, Declined }
 ```
 
 Pop up a dialog for this player. Receiver on `controller`. The call itself
@@ -988,8 +1052,8 @@ ability to respawn, respawn them immediately (`ForceRespawn`, also callable as
 ## Broadcast Messaging (Exec)
 
 ```
-BroadcastChatMessage(message: string)
-BroadcastStatusMessage(message: string, flash?: bool)
+BroadcastChatMessage(message: any)
+BroadcastStatusMessage(message: any, flash?: bool)
 ```
 
 Send a chat message or status-bar message to **every** player. `flash`
@@ -1044,7 +1108,10 @@ entity.RemoveCustomProperty(key: string) -> bool
 entity.CopyCustomProperties(source: entity)
 ```
 
-A key/value store on an entity, a player or a dynamic grid. `SetCustomProperty`
+A key/value store on an entity, a player or a dynamic grid. On a controller
+the values stay with the player through respawns and are lost when the player
+leaves and reconnects. On a character they belong to that one body and are
+lost when it respawns. `SetCustomProperty`
 replaces any value already under the key. `GetCustomProperty` gives the value,
 auto-unwrapped like a map read, and `Found` is `false` when the key is not set.
 `RemoveCustomProperty` gives whether anything was removed.
@@ -1055,17 +1122,16 @@ value can be any wire value. Annotate the read (`let hp: int = ...`) to give it
 a type.
 
 ```wirescript
-on CharacterSpawned() -> (character) {
-  character.SetCustomProperty("lives", 3)
-}
 on CharacterDied() -> (character) {
-  let lives = character.GetCustomProperty("lives")
-  if lives.Found {
-    let left: int = lives.Value
-    character.SetCustomProperty("lives", left - 1)
-  }
+  let player = character.ControllerOf()
+  let lives = player.GetCustomProperty("lives")
+  let left: int = if lives.Found then lives.Value else 3
+  player.SetCustomProperty("lives", left - 1)
 }
 ```
+
+The count is kept on the controller, so it carries over to the player's next
+character. Kept on `character`, every respawn would start without it.
 
 ## Bricks (Exec)
 
@@ -1176,22 +1242,22 @@ on go {
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `FindPlayer(query)` | `(query: string) -> character` (exec) | Look up a player by name; emits their character |
-| `PrintToConsole(text)` | `(text: any) -> ()` (exec) | Print a value to the game console (debugging) |
+| `FindPlayer(query)` | `(query: any) -> controller` (exec) | Look up a player by name; emits the player |
+| `PrintToConsole(text)` | `(text: string) -> ()` (exec) | Print a value to the game console (debugging) |
 | `Opaque(value)` | `(value: any) -> any` (pure) | Identity rerouter that acts as a permanent constant-fold barrier. The wrapped value always stays a real runtime wire and is never folded or seen through. Used in probe/test circuits (see [Constant Folding](folding.md)) |
 | `DeltaTime()` | `() -> float` | Seconds elapsed since the previous tick |
 | `ServerUptime()` | `() -> float` | Seconds the server has been running |
 | `ReadBrickGrid()` | `() -> entity` | The brick grid this gate's microchip is on, as an entity |
 | `NearlyEqual(a, b, tolerance)` | `(a: float, b: float, tolerance: float) -> bool` | Approximate float equality |
-| `Dampen(target, smoothTime)` | `(target: float, smoothTime: float) -> float` | Critically-damped smoothing toward a target |
-| `Easing(a, b, blend, fn?, dir?)` | `(a: T, b: T, blend: float, fn?: any, dir?: any) -> T` | Ease from `a` to `b` by `blend` |
-| `Tween(target, duration, fn?, dir?)` | `(target: T, duration: float, fn?: any, dir?: any) -> T` | Stateful eased value toward `target` |
+| `Dampen(target, smoothTime)` | `(target: T, smoothTime: float) -> T` | Critically-damped smoothing toward a target; `T` is any math variant, as for `lerp` |
+| `Easing(a, b, blend, function?, direction?)` | `(a: T, b: T, blend: float, function?: EasingFunction, direction?: EasingDirection) -> T` | Ease from `a` to `b` by `blend` |
+| `Tween(target, duration, function?, direction?)` | `(target: T, duration: float, function?: EasingFunction, direction?: EasingDirection) -> {Value: T, Arrived: exec}` | Stateful eased value toward `target` (auto-unwraps to `Value`; `Arrived` pulses on arrival) |
 | `Timer(limit, restart?, pause?, resume?)` | `(limit: float, restart?/pause?/resume?: exec) -> {Time: float, Expired: exec}` | Stateful countdown timer |
 
-`Blend`/`lerp`/`Easing`/`Tween` interpolate any one math variant `T`: float|int|vector|rotator|quat|color.
+`Blend`/`lerp`/`Easing`/`Tween`/`Dampen` interpolate any one math variant `T`: float|int|vector|rotator|quat|color.
 The result is whatever `T` the inputs carry.
 
-`Easing`/`Tween` take an easing `fn` and `dir`: an int, a bare enum-name
+`Easing`/`Tween` take an easing `function` and `direction`: an int, a bare enum-name
 literal, or an `EasingFunction` / `EasingDirection` value (see
 [Built-in game enums](enums.md#built-in-game-enums)). `function =
 EasingFunction.Bounce` and `function = Bounce` set the same field. Functions:
@@ -1270,8 +1336,9 @@ Config attributes by gate:
 | `ColorBlend` | `blendSpace` (EBRColorSpace), `clampAlpha` |
 | `Slerp` | `shortestPath`, `clampAlpha` |
 | `Easing` | `function` (`EasingFunction`, schema `EBREasingFunction`), `direction` (`EasingDirection`, schema `EBREasingDirection`) |
+| `Remap` | `function` (`EasingFunction`), `direction` (`EasingDirection`) |
 | `ConvertColor` | `fromSpace`, `toSpace` (EBRColorSpace) |
-| `DisplayText` | `fontSize`, `justify` (`DisplayTextJustification`, schema `EBRDisplayTextJustification`), `easing` (`DisplayTextEasing`, schema `EBRDisplayTextEasing`), `typeface` (`TextTypeface`, schema `EBRTextTypeface`), `font` (a `$Font/...` asset ref) |
+| `DisplayText` | `typeface` (`TextTypeface`, schema `EBRTextTypeface`), `font` (a `$Font/...` asset ref). `justify` (`DisplayTextJustification`) and `easing` (`DisplayTextEasing`) are wire inputs that also take a bare member name |
 | `GetAim` | `localAim` |
 | `AddInventoryItemAdv` / `SetInventoryItemAdv` | `overrideColors`, `meshColors` (a color array), `ammoOverride` |
 
@@ -1440,7 +1507,7 @@ on hit { SendGlobalCustomEvent("score", 10) }
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `prefab` | prefab ref | No | The prefab to spawn: a `$./file.brz` archive, a `$./file.ws` source compiled on reference, or an inline `$` triple-backtick block ([prefab reference](expressions.md#prefab-references)). Embedded into the bundle at compile. |
-| `offset` | `vector` | No | Spawn position offset |
+| `offset` | `vector` | No | Spawn position, relative to the Spawn Prefab gate's own position (local, not world space) |
 | `rotation` | `rotator` | No | Spawn rotation offset |
 | `velocity` | `vector` | No | Initial velocity of the spawned entity |
 | `lifetime` | `float` | No | Lifetime in seconds (0 = permanent) |
@@ -1450,6 +1517,19 @@ on hit { SendGlobalCustomEvent("score", 10) }
 Returns: `entity`, the spawned entity. Give the prefab with a `$…brz`
 reference; omit `prefab` to configure it on the placed gate in-game instead
 (copy a prefab onto the Spawn Prefab brick).
+
+`offset` is measured from the Spawn Prefab gate, so `Vec(0.0, 0.0, 50.0)` is
+50 units above the spawner. To place a copy at a world position (a player's
+location, a stored spot), spawn it and then move the returned entity with
+[`SetLocation`](#setlocation):
+
+```wirescript
+in pad: zone
+on ZoneEntered(zone = pad) -> (character) {
+  let crate = SpawnPrefab(prefab = $./crate.brz, limit = 3)
+  crate.SetLocation(character.GetLocation() + Vec(0.0, 0.0, 150.0))
+}
+```
 
 ```wirescript
 on trigger {
@@ -1530,17 +1610,18 @@ on hit {
 |-----------|------|----------|-------------|
 | `origin` | `vector` | Yes | Ray start position |
 | `direction` | `vector` | Yes | Ray direction |
-| `Distance` | `float` | Yes | Maximum ray distance |
+| `distance` | `float` | Yes | Maximum ray distance |
 | `radius` | `float` | No | Sphere radius (0 = line trace) |
 | `relative` | `bool` | No | Interpret `origin`/`direction` in the owning grid's local frame |
 | `ignore` | `entity` | No | A single entity to exclude from hits |
 | `ignoreList` | `entity[]` | No | An array var of additional entities to exclude (on top of `ignore`) |
-| `ignoreOwningGrid` | `bool` | No | Exclude the grid this gate sits on (prevents self-hits) |
-| `collisionChannel` | `int` | No | Collision channel to sweep on (`EBRSweepCollisionChannel`: 0 Physics, 1 Weapon, 2 Interaction, 3 Tool, 4-7 Player1-4, 8 NoAdditionalRestriction) |
 | `detectBricks` | `bool` | No | Detect brick grids, including spawned prefabs (**default false**) |
-| `detectMap` | `bool` | No | Detect the static world / environment (**default false**) |
-| `detectPhysics` | `bool` | No | Detect physics-simulating objects (**default false**) |
 | `detectPlayers1` to `detectPlayers4` | `bool` | No | Detect players on collision channels 1-4 (**default false**) |
+| `detectPhysics` | `bool` | No | Detect physics-simulating objects (**default false**) |
+| `detectMap` | `bool` | No | Detect the static world / environment (**default false**) |
+| `ignoreOwningGrid` | `bool` | No | Exclude the grid this gate sits on (prevents self-hits) |
+| `collisionChannel` | `SweepCollisionChannel` | No | Collision channel to sweep on (`EBRSweepCollisionChannel`: 0 Physics, 1 Weapon, 2 Interaction, 3 Tool, 4-7 Player1-4, 8 NoAdditionalRestriction) |
+| `bodyPartsOnly` | `bool` | No | Only hit player body parts (constant only) |
 
 > **Detection is opt-in.** Every `detect*` flag defaults to `false`, so a Sweep
 > with none set **detects nothing and always fires `Miss`.** Enable the channel you
@@ -1596,8 +1677,8 @@ Buffer gates that delay a value passing through. Most useful with `await` and th
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `Sleep(input, delay?, hold?)` | `(input: any, delay?: float, hold?: float) -> any` | Delay by seconds (BufferSeconds gate) |
-| `SleepTicks(input, delay?, hold?)` | `(input: any, delay?: int, hold?: int) -> any` | Delay by ticks (BufferTicks gate) |
+| `Sleep(input, delay?, hold?)` | `(input: T, delay?: float, hold?: float) -> T` | Delay by seconds (BufferSeconds gate) |
+| `SleepTicks(input, delay?, hold?)` | `(input: T, delay?: int, hold?: int) -> T` | Delay by ticks (BufferTicks gate) |
 
 - `input`: the value to delay. Use `_` inside `await` to wire the armed flag.
 - `delay`: seconds/ticks to wait before the output follows the input.
@@ -1661,7 +1742,7 @@ character.IncWeaponChamberAmmo(resource: entity, slot: int, amount: int)
 character.SetWeaponChamberAmmo(resource: entity, slot: int, amount: int)
 ```
 
-The `CharacterFiredWeapon(character, direction, start)` event fires when a player
+The `CharacterFiredWeapon(character, direction, start, weapon, weaponName)` event fires when a player
 fires a weapon (`direction`/`start` are vectors). `Sweep`/`SweepSimple` results also
 carry a `HitColor` field (the color of the surface hit).
 
@@ -1673,15 +1754,27 @@ FormatDate(unixTime: int, format: string, useUTC?: bool) -> { Output: string, Su
 
 ### Value conversions (Pure)
 ```
-Remap(value, inMin, inMax, outMin, outMax) -> float   // rescale a value between ranges
+Remap(value, inMin, inMax, outMin, outMax, function?, direction?) -> float   // rescale a value between ranges
 LogicalShiftRight(a: int, b: int) -> int              // logical (unsigned) >>
 EnumToInt(value: enum) -> int                     // enum tag; folds a known variant, else uses the gate
 IntToEnum(value: int, wrap?: bool) -> enum        // enum type from context; const folds, runtime uses the gate
 ItemToPickup(item: entity) -> entity                  // pickup asset for an item
-color.ConvertColor(fromSpace?: int, toSpace?: int) -> color
+color.ConvertColor(fromSpace?: ColorSpace, toSpace?: ColorSpace) -> color
 "A".ToCharCode() -> { Codepoint: int, Success: bool }
 FromCharCode(codepoint: int) -> { Character: string, Success: bool }
 GetValueType(value) -> int                            // which kind of value is on the wire
+```
+
+`Remap` follows a straight line by default. Its `function` and `direction`
+settings bend it along an easing curve, with the same values `Easing` takes: a
+bare member name (`Bounce`, `InOut`), an `EasingFunction` / `EasingDirection`
+value, or an int. They are settings-menu fields, so each must be a constant
+(`WS028` otherwise); the raw names `Function` and `Direction` set the same
+fields.
+
+```wirescript
+in v: float
+out r = Remap(v, 0.0, 1.0, 0.0, 100.0, function = Quad, direction = Out)
 ```
 
 `GetValueType` reports which kind of value a wire carries, to branch on what an
@@ -1715,8 +1808,8 @@ their parsed `Value` in arithmetic/comparisons (`ParseInt(s) == 5`), and `.Succe
 ### Self transform + simple raycast (Exec)
 ```
 GetOwnTransform() -> { Location: vector, Rotation: rotator }
-SweepSimple(distance: float, radius?: float, spreadConeAngle?: float)
-  -> { HitDistance, HitEntity, HitLocation, HitNormal, Hit, Miss }
+SweepSimple(distance: float, radius?: float, spreadConeAngle?: float, ..., collisionChannel?: SweepCollisionChannel)
+  -> { HitDistance, HitEntity, HitLocation, HitNormal, HitColor, HitBrick, Hit, Miss }
 ```
   
 `SweepSimple` sweeps **from its own brick** (the containing microchip's brick, or the

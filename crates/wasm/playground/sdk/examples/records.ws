@@ -27,7 +27,7 @@ mod add_point({ x, y }: Point) -> int {
 
 // Mod with record ref field - mutates through the record
 mod bump({ counter, step }: State) {
-  counter = counter + step
+  counter += step
 }
 
 // Tuples

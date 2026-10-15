@@ -68,6 +68,7 @@ export function createEditor(container, wasm, monaco, getFilesJson, getPrefabsJs
       { token: 'comment.doc', foreground: '608B4E', fontStyle: 'italic' },
       { token: 'keyword', foreground: 'C586C0' },
       { token: 'type', foreground: '4EC9B0' },
+      { token: 'annotation', foreground: 'D7BA7D' },
       { token: 'support.function', foreground: 'DCDCAA' },
       { token: 'variable.predefined', foreground: '4FC1FF' },
       { token: 'constant', foreground: '569CD6' },

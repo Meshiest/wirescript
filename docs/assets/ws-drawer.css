@@ -1,0 +1,131 @@
+/* The editor drawer at the bottom of the book (ws-drawer.js). */
+.ws-drawer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  background: #1e1e1e;
+  border-top: 1px solid var(--sidebar-spacer, #444);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.ws-drawer[hidden] {
+  display: none;
+}
+
+.ws-drawer-grip {
+  height: 6px;
+  cursor: ns-resize;
+  touch-action: none;
+  background: transparent;
+}
+
+.ws-drawer-grip:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.ws-drawer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 10px 6px;
+  font-size: 0.85em;
+  color: #ccc;
+}
+
+.ws-drawer-title {
+  font-weight: bold;
+}
+
+.ws-drawer-status {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #999;
+}
+
+.ws-drawer-status.ws-drawer-error {
+  color: #f48771;
+}
+
+.ws-drawer-status.ws-drawer-warning {
+  color: #cca700;
+}
+
+.ws-drawer-status.ws-drawer-ok {
+  color: #89d185;
+}
+
+.ws-drawer-bar button {
+  box-sizing: border-box;
+  height: 26px;
+  font: inherit;
+  color: #eee;
+  background: #333;
+  border: 1px solid #555;
+  border-radius: 4px;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.ws-drawer-bar button:hover {
+  background: #444;
+}
+
+.ws-drawer-bar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ws-drawer-bar .ws-drawer-compile {
+  background: #0e639c;
+  border-color: #1177bb;
+}
+
+.ws-drawer-bar .ws-drawer-compile:hover {
+  background: #1177bb;
+}
+
+.ws-drawer-bar .ws-drawer-close {
+  width: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2em;
+  line-height: 1;
+}
+
+.ws-drawer-editor {
+  flex: 1;
+  min-height: 0;
+}
+
+.ws-drawer-tab {
+  position: fixed;
+  right: 16px;
+  bottom: 0;
+  z-index: 200;
+  font: inherit;
+  font-size: 0.85em;
+  color: #eee;
+  background: #0e639c;
+  border: 0;
+  border-radius: 6px 6px 0 0;
+  padding: 6px 16px;
+  cursor: pointer;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.ws-drawer-tab:hover {
+  background: #1177bb;
+}
+
+.ws-drawer-tab[hidden] {
+  display: none;
+}

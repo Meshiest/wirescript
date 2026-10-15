@@ -144,6 +144,23 @@ type (`int[]`, `Map<K, V>`, a record, `zone`) has no null value and reports
 that was never assigned is null (see [Reference values](#reference-values)).
 A bare `let x = null` with no target types as `any`.
 
+Compared with `==` or `!=`, `null` takes the other operand's type, so
+`x == null` tests for an unset reference on an `entity`, `character`,
+`controller`, `brick` or `*T`: an Equal (or Not Equal) gate against the empty
+reference. On a value type it compares with that type's zero (`n == null` is
+`n == 0`).
+
+```wirescript
+var holder: character = null
+in go: exec
+on go {
+  if holder != null { BroadcastChatMessage("taken") }
+}
+```
+
+An object is `false` on a `bool` port when it is unset, so `!holder` reads the
+same as `holder == null`.
+
 ## Compound Types
 
 ### Reference Types (`ref T`)
@@ -353,7 +370,7 @@ chip Split(v: vector) -> (x: float, y: float, z: float) {
 }
 ```
 
-Access tuple elements with `.0`, `.1`, `.2` etc:
+Access the elements of a tuple value with `.0`, `.1`, `.2` etc. (A multi-output `mod`'s result is read by its output names instead, `r.lo`; `.0` on it is `WSP001`.)
 
 ```wirescript
 let pair = someTuple
@@ -947,6 +964,12 @@ var y: float = 0.0
 | `ref T` | `ref U` (T != U) | **Mismatch** |
 | `any` | anything | Same |
 | anything | `any` | Same |
+
+"Wired directly" converts nothing in game. A character wired into a
+`controller` slot is still the character: it is not equal to that player's
+controller, and as a `Map<controller, V>` key it files under the body, so a
+respawn starts a new key. Only `ControllerOf` (an admin gate) gives the
+persistent player.
 
 ## Type Annotations
 

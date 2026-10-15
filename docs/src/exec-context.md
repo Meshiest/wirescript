@@ -414,7 +414,7 @@ on start {
 }
 ```
 
-`||` in the expression creates a Union gate, and the first exec wins.
+`||` waits for whichever operand fires first. The compiler joins the operands with an OR gate.
 
 ### Local Exec Signals
 

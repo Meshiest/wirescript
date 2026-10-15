@@ -269,7 +269,9 @@ A `match` must cover every variant of the scrutinee's enum, or be capped with
 a `_` wildcard arm. An uncovered variant is a [`WS054`](diagnostics.md) error
 that names the missing pattern(s) in its message. An arm that can never run
 because an earlier arm already covers everything it would match is a
-[`WS061`](diagnostics.md) warning.
+[`WS061`](diagnostics.md) warning. A `_` after arms for every variant is not
+one: it runs for a tag that names no variant, such as `Enum.FromInt(n)` with
+`n` out of range.
 
 ```wirescript
 enum Shape { Empty, Circle(float), Rect(float, float) }
@@ -647,6 +649,12 @@ declaration** at all. `EasingFunction`, `Direction`, `ColorSpace`,
 the compiler discovers them from the game's own config enums (the same ones
 that back a gate's settings-menu fields), so the exact set and its variants
 track whatever build the compiler was generated against.
+
+`BrickMaterial` (`Plastic`, `Glass`, `TranslucentPlastic`, `Glow`, `Metal`,
+`Hologram`) is built in the same way from the game's brick material enum. It is
+the value [`@material`](statements.md#color--material-brick-color-and-material)
+takes rather than a gate setting. Its members are bare only as that argument
+(`@material(Glow)`); everywhere else write them qualified, `BrickMaterial.Glow`.
 
 A built-in game enum behaves like an ordinary unit-only enum (see
 [Declaration](#declaration) above): construct a variant with its qualified

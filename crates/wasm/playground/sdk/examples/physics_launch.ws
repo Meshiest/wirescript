@@ -1,5 +1,5 @@
 // Launch entity upward on trigger
-in trigger: bool
+in trigger: exec
 in target: entity
 
 on trigger {

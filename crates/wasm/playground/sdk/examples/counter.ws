@@ -1,8 +1,9 @@
-/// Simple counter that increments each round
+/// Simple counter that increments each time `go` fires
 var count: int = 0
 
-on RoundStart() {
-  count = count + 1
+in go: exec
+on go {
+  count += 1
 }
 
-out total = count.Value
+out total: int = count

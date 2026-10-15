@@ -14,9 +14,9 @@
 // (`playground/docs.js` assigns heading ids with the same function) so a
 // Contents link works both on GitHub and in the doc browser.
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { mdLines, repoRoot, writeOrCheck } from "./lib.mjs";
+import { filesUnder, mdLines, repoRoot, writeOrCheck } from "./lib.mjs";
 
 const docsDir = join(repoRoot, "docs", "src");
 
@@ -106,9 +106,8 @@ function withToc(text) {
 }
 
 const check = process.argv.includes("--check");
-const pages = readdirSync(docsDir)
-  .filter((f) => f.endsWith(".md") && !SKIP.has(f))
-  .sort();
+// `learn/` pages nest one folder deeper; a README is a section index either way.
+const pages = filesUnder(docsDir, ".md").filter((f) => !SKIP.has(f.split("/").pop()));
 
 let stale = 0;
 let written = 0;

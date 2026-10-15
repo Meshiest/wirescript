@@ -32,7 +32,7 @@
       grid-column: 1 / -1;
       display: flex;
       align-items: center;
-      gap: 2px;
+      gap: 6px;
       background: #252526;
       border-bottom: 1px solid #3c3c3c;
       padding: 0 8px;
@@ -40,19 +40,21 @@
     }
 
     #toolbar button, #toolbar select {
+      box-sizing: border-box;
+      height: 26px;
       font-family: inherit;
       font-size: 12px;
-      padding: 4px 12px;
-      border: 1px solid #3c3c3c;
-      border-radius: 3px;
+      padding: 0 12px;
+      border: 1px solid #555555;
+      border-radius: 4px;
       background: #333333;
-      color: #d4d4d4;
+      color: #eeeeee;
       cursor: pointer;
       white-space: nowrap;
     }
 
     #toolbar button:hover {
-      background: #404040;
+      background: #444444;
     }
 
     #toolbar button:active {
@@ -72,7 +74,7 @@
       width: 1px;
       height: 20px;
       background: #3c3c3c;
-      margin: 0 6px;
+      margin: 0 2px;
     }
 
     #toolbar .spacer {
@@ -417,28 +419,27 @@
       transform: rotate(-90deg);
     }
 
-    /* Hidden with opacity, not `display`, so it stays keyboard-reachable while
-       only appearing on header hover. */
-    #docs-site-link {
-      margin-left: 6px;
+    .docs-header-btn {
+      background: none;
+      border: 1px solid #555;
       color: #999;
+      cursor: pointer;
+      font: inherit;
+      font-size: 10px;
+      line-height: normal;
       text-decoration: none;
-      font-size: 11px;
-      line-height: 1;
-      padding: 1px 4px;
+      padding: 1px 6px;
       border-radius: 3px;
-      opacity: 0;
-      transition: opacity 0.15s, color 0.15s, background 0.15s;
     }
 
-    #docs-panel-header:hover #docs-site-link,
-    #docs-site-link:focus {
-      opacity: 1;
-    }
-
-    #docs-site-link:hover {
+    .docs-header-btn:hover {
       color: #ddd;
       background: #3c3c3c;
+    }
+
+    #docs-site-link {
+      margin-left: auto;
+      margin-right: 6px;
     }
 
     #docs-panel-body {
@@ -844,7 +845,9 @@
       <button id="btn-format" title="Format code (Shift+Alt+F)">Format</button>
       <button id="btn-share" title="Copy shareable URL">Share</button>
       <div class="separator"></div>
-      <button id="btn-docs-toggle" title="Toggle documentation panel">Docs</button>
+      <button id="btn-docs-toggle" title="Show or hide the documentation panel beside the editor">Docs Here</button>
+      <button id="btn-docs" title="Open the documentation in a new tab" onclick="window.open('docs/index.html', '_blank', 'noopener')">Docs</button>
+      <button id="btn-learn" title="Open the Learn tutorials in a new tab" onclick="window.open('docs/learn/index.html', '_blank', 'noopener')">Learn</button>
       <button id="btn-sdk" title="Download Wirescript SDK (CLI tools, docs, examples)">SDK ↓</button>
       <button id="btn-source" title="View source on GitHub" onclick="window.open('https://github.com/Meshiest/wirescript', '_blank')">Source</button>
       <div class="spacer"></div>
@@ -887,9 +890,9 @@
       <div id="docs-panel-header">
         <span class="toggle-icon">&#9660;</span>
         <span>Documentation</span>
-        <a id="docs-site-link" href="https://wirescript.brickadia.dev/docs/" target="_blank" rel="noopener"
-           title="Open the full documentation site">&#8599;</a>
-        <button id="docs-dock-btn" style="margin-left:auto;background:none;border:1px solid #555;color:#999;cursor:pointer;font-size:10px;padding:1px 6px;border-radius:3px;">Move to Side</button>
+        <a id="docs-site-link" class="docs-header-btn" href="docs/" target="_blank" rel="noopener"
+           title="Open the full documentation site in a new tab">Open in Tab</a>
+        <button id="docs-dock-btn" class="docs-header-btn">Move to Side</button>
       </div>
       <div id="docs-panel-body"></div>
     </div>
@@ -957,7 +960,8 @@
     async function loadExamples() {
       const manifest = [
         'counter.ws', 'array_push_pop.ws', 'maps.ws', 'ref_params.ws',
-        'chips_and_mods.ws', 'display_score.ws', 'physics_launch.ws',
+        'chips_and_mods.ws', 'functions.ws', 'loops.ws',
+        'display_score.ws', 'physics_launch.ws',
         'records.ws', 'assets.ws', 'zones.ws',
       ];
       const examples = {};
@@ -1485,9 +1489,29 @@
         if (shared) {
           const lastShareHash = sessionStorage.getItem('ws_last_share_hash');
           if (window.location.hash && window.location.hash !== lastShareHash) {
-            const active = files.getActiveFile();
-            if (active) {
-              files.writeFile(active, shared);
+            if (typeof shared === 'string') {
+              const active = files.getActiveFile();
+              if (active) {
+                files.writeFile(active, shared);
+              }
+            } else {
+              // A docs example arrives with the libraries it imports. The
+              // example opens as a new file (a different file of the same
+              // name is kept, and the example takes a free name); a library
+              // is written only where none exists, since renaming it would
+              // break the example's import.
+              const existing = new Set(files.listFiles());
+              for (const [name, text] of Object.entries(shared.files)) {
+                if (name === shared.open) continue;
+                if (!existing.has(name)) files.writeFile(name, text);
+                else if (files.readFile(name) !== text) console.warn(`Kept your ${name}; the shared example imports it`);
+              }
+              let target = shared.open;
+              for (let n = 2; existing.has(target) && files.readFile(target) !== shared.files[shared.open]; n++) {
+                target = shared.open.replace(/\.ws$/, '') + '-' + n + '.ws';
+              }
+              files.writeFile(target, shared.files[shared.open]);
+              files.setActiveFile(target);
             }
             sessionStorage.setItem('ws_last_share_hash', window.location.hash);
           }

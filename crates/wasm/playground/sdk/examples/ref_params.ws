@@ -9,11 +9,10 @@ mod swap(x: *int, y: *int) {
   y = tmp
 }
 
-on RoundStart() {
+in go: exec
+on go {
   swap(a, b)
-  // Or use the built-in
-  Swap(true, a, b)
 }
 
-out va = a.Value
-out vb = b.Value
+out va: int = a
+out vb: int = b

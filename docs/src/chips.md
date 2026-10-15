@@ -62,18 +62,6 @@ on go {
 
 A name only the chip declares is visible across the file. A top-level declaration is named from where it is written on, so a read above it reads the chip's declaration of the name. Two declarations of one name in one chip are `WS013`. Two at the top level itself are read by position (`WS108`): a read names the latest one visible where it is written (storage, declared ahead of everything, above both), as described in [Declaring a Name Again](statements.md#declaring-a-name-again). A chip nested in another names its storage from where it is written on, past the enclosing chip.
 
-### `open` Modifier
-
-Chips compile open by default now (see [Open and Closed Chips](#open-and-closed-chips)
-below), so the `open` keyword is a redundant no-op kept for backward compatibility:
-
-```wirescript
-open chip {
-  var state: int = 0
-  // ...
-}
-```
-
 ### `chip let`: Compact Let Bindings
 
 `chip let` is shorthand for an anonymous chip containing one or more `let` bindings, separated by commas:
@@ -150,7 +138,7 @@ chip on moved {
 
 ## Named Chips
 
-Named chips define reusable components with explicit inputs and outputs. They create an isolated scope: the chip body cannot see the parent scope's variables (except what is passed through parameters).
+Named chips define reusable components with explicit inputs and outputs. Each call is a separate instance with its own local state. Names in the body resolve where the chip is declared, so a chip declared at module level can read and write module-level vars; each such read crosses the chip wall through a boundary pin (see [Boundary Pins](#boundary-pins)). Values from the call site come in through parameters.
 
 ```wirescript ignore
 chip Name(params) -> outputs {
@@ -538,9 +526,7 @@ place:
 ```
 
 `@closed` works on every chip form: `chip Name(...)`, `chip { ... }`,
-`chip on`, and `chip let`. `open chip { ... }` still parses, but is now a
-redundant no-op. Combining `@closed` with `open` on the same chip is an
-error.
+`chip on`, and `chip let`.
 
 ## Compiling Without Microchips (`@flat`)
 
@@ -601,9 +587,14 @@ chip Counter(bump: exec) -> (value: int) {
 }
 ```
 
+`@color(...)` and `@material(...)` style a chip's shell brick the same way:
+`@material(Glass) chip { ... }` makes it Glass. On a chip the value must be a
+constant; see
+[`@color` / `@material`](statements.md#color--material-brick-color-and-material).
+
 `mod` declarations always inline into their callers and never become a
-physical chip, so any annotation (`@closed`, `@label`, or a side pin)
-on a `mod` is an error.
+physical chip, so any annotation (`@closed`, `@label`, `@color`,
+`@material`, or a side pin) on a `mod` is an error.
 
 ## `mod`: Inline Chips
 
@@ -640,6 +631,27 @@ let clamped = clamp(x, 0, 255)  // clamped is directly an int
 > **Note:** A single `return expr` wires the value directly (pure, zero-tick). Multiple `return expr` statements cause the compiler to insert a hidden variable: each branch does a `Var_Set`, and a `Var_Get` after the return union reads the result. This adds exec gates but is correct within the same tick's exec chain.
 
 An output set by name (`emit name = v` or `out name = v`) works the same way when it is set in more than one place, under a branch or loop, or beside a `return`: every write goes to the hidden variable, and the call reads the value the path that ran left there. A `mod` output behaves like a `chip` output here, per call site for a `mod` and per instance for a `chip`. A path that does not write it leaves it holding its last value, which starts at the type's default (`0`, `""` or `false`). A write from an `on` handler nested in the mod lands whenever that handler fires, and the caller sees it until the caller's own chain writes the output again. A `return` inside such a handler is one of those writes: it sets the outputs and ends that handler's run, not the call. A `return` inside an anonymous `chip { }` is an ordinary return of the body.
+
+### Default and Named Arguments
+
+A trailing `mod` or `fn` parameter may have a default value, a constant a call uses when it leaves the argument out. A call can also pass a defaulted parameter by name after its positional arguments, which skips the ones before it.
+
+```wirescript
+mod scale(v: int, by: int = 2, offset: int = 0) -> int {
+  return v * by + offset
+}
+
+in go: exec
+in n: int
+on go {
+  let a = scale(n)              // by = 2, offset = 0
+  let b = scale(n, 3)           // by = 3
+  let c = scale(n, offset = 1)  // by keeps its default
+  BroadcastChatMessage("${a} ${b} ${c}")
+}
+```
+
+A parameter without a default is always passed by position (`WS022`), and a name that is not a parameter is `WS041`. A namespaced call (`u.scale(n, offset = 1)`) takes defaults and names the same way. A `chip` parameter cannot have a default (`WS114`).
 
 ### When to Use `mod`
 
@@ -705,11 +717,11 @@ the common case and always sound.
 | Physical microchip | Yes | No (inlined) |
 | Gates | Own grid | Expanded into caller |
 | Names in the body | Resolved where declared | Resolved where declared |
-| Outputs with `->` | Yes (multi) | Yes (single, with `return expr`) |
+| Outputs with `->` | Yes (multi) | Yes (single or named, with `return`) |
 | `ref`/`*` params | Yes | Yes |
 | Reusable | Yes (separate instance per call) | Yes (expanded per call) |
 
-`mod` declarations do not support output declarations with `->`. Instead, their effect is through mutating `ref` parameters.
+A `mod` declares outputs with `->`: one (`-> int`, set by `return expr`) or several named ones (`-> (lo: int, hi: int)`, set by `return (a, b)`). It can also act through `ref` parameters.
 
 ## Boundary Pins
 

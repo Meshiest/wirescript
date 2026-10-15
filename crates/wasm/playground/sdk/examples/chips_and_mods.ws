@@ -20,17 +20,18 @@ mod clamp(val: *int, lo: int, hi: int) {
 }
 
 // chip on = handler inside a physical microchip
-chip on RoundStart() {
+in reset: exec
+chip on reset {
   health = 100
   armor = 50
 }
 
 chip on CharacterDied() -> (character) {
-  health = health - 25
-  armor = armor - 10
+  health -= 25
+  armor -= 10
   clamp(health, 0, 100)
   clamp(armor, 0, 100)
 }
 
-out hp = health.Value
-out ap = armor.Value
+out hp: int = health
+out ap: int = armor

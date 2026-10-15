@@ -9,6 +9,9 @@
 //   ```wirescript ignore     -> skipped (an illustrative fragment that cannot
 //                               compile standalone, e.g. it references names
 //                               defined elsewhere); still rendered normally
+//   ```wirescript expect=WSP001 -> under learn/, skipped here: a diagnostic
+//                               shown on purpose, which check_learn.mjs
+//                               requires to report that code
 // A block may also carry a hidden prelude: an HTML comment
 //   <!-- doc-check-prelude:
 //   <ws lines...>
@@ -18,11 +21,11 @@
 // without cluttering the shown example. Multiple preludes accumulate until a
 // fenced block consumes them.
 
-import { readFileSync, writeFileSync, mkdtempSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
-import { binPath, mdLines, repoRoot } from "./lib.mjs";
+import { binPath, filesUnder, repoRoot, wsBlocks } from "./lib.mjs";
 
 const docsDir = join(repoRoot, "docs", "src");
 const checkBin = binPath("wirescript-check");
@@ -36,71 +39,24 @@ if (!existsSync(checkBin)) {
 
 const scratch = mkdtempSync(join(tmpdir(), "ws-doccheck-"));
 
-/** Parse a markdown file into checkable wirescript blocks. */
-function extractBlocks(text) {
-  const blocks = [];
-  let pendingPrelude = "";
-  // The lines of an open `<!-- doc-check-prelude:` comment.
-  let prelude = null;
-  // The wirescript block being read.
-  let block = null;
-  for (const { line, index, fence, fenced, indent, info } of mdLines(text)) {
-    if (block) {
-      if (fence) {
-        blocks.push({ ...block, code: block.body.join("\n") });
-        block = null;
-      } else {
-        // A block inside a list item is indented, and its body carries that
-        // indent.
-        block.body.push(indent ? line.slice(indent.length) : line);
-      }
-      continue;
-    }
-    if (prelude) {
-      if (/-->/.test(line)) {
-        pendingPrelude += prelude.join("\n") + "\n";
-        prelude = null;
-      } else {
-        prelude.push(line);
-      }
-      continue;
-    }
-    if (fence && /^wirescript\b/.test(info)) {
-      // 1-based line of the ``` fence.
-      block = { startLine: index + 1, ignore: /\bignore\b/.test(info), prelude: pendingPrelude, body: [] };
-      pendingPrelude = "";
-      continue;
-    }
-    // Hidden prelude comment: <!-- doc-check-prelude: ... -->
-    if (!fence && !fenced && /^\s*<!--\s*doc-check-prelude:\s*$/.test(line)) {
-      prelude = [];
-      continue;
-    }
-    // A non-prelude, non-blank line clears a dangling prelude (prelude must
-    // immediately precede its block, allowing only blank lines between).
-    if (line.trim() !== "" && pendingPrelude && !/^\s*<!--/.test(line)) {
-      pendingPrelude = "";
-    }
-  }
-  return blocks;
-}
-
 let checked = 0;
 let skipped = 0;
 const failures = [];
 
-const mdFiles = readdirSync(docsDir).filter((f) => f.endsWith(".md")).sort();
+const mdFiles = filesUnder(docsDir, ".md");
 for (const md of mdFiles) {
   const text = readFileSync(join(docsDir, md), "utf8");
-  const blocks = extractBlocks(text);
+  const blocks = wsBlocks(text);
   blocks.forEach((b, idx) => {
-    if (b.ignore) {
+    // An `expect=` block shows an error on purpose; check_learn.mjs checks
+    // that it fails with that code.
+    if (b.ignore || (md.startsWith("learn/") && b.words.some((w) => w.startsWith("expect=")))) {
       skipped++;
       return;
     }
     checked++;
     const src = (b.prelude ? b.prelude : "") + b.code + "\n";
-    const file = join(scratch, `${md}.${idx}.ws`);
+    const file = join(scratch, `${md.replaceAll("/", "_")}.${idx}.ws`);
     writeFileSync(file, src);
     try {
       execFileSync(checkBin, [file], { stdio: "pipe" });

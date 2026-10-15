@@ -12,6 +12,7 @@ game does with the result, plus the practical tips that follow from it.
 - [DisplayText Screen Placement](#displaytext-screen-placement)
 - [References in wire values](#references-in-wire-values)
 - [Loop Ticks](#loop-ticks)
+- [Players and Components](#players-and-components)
 <!-- /toc -->
 
 ## Rich Text Markup
@@ -317,3 +318,72 @@ edge, costs a tick per iteration. That is no longer the only option: a bounded
 sweep that must finish before the tick ends belongs in a `for` now. Keep the
 back-edge form for work that should stay spread across ticks on purpose, such
 as a slow reveal or a rate-limited rebuild.
+
+## Players and Components
+
+Behavior checked in game:
+
+- **Button.** Its outputs are **Held**, **Character** and **Press Count**;
+  it has no exec output, and nothing fires on release except **Held** and
+  **Press Count** changing. **Press Count** is the number of players holding
+  the button right now: it goes up when someone presses and down when they
+  let go. It is not a running total of presses. **Held** stays on while
+  anyone holds the button. **Character** is set on every press, including a
+  second player pressing while the button is already held. With **Held**
+  wired to an exec pin (`in held: exec`), `on held` fires when Held turns
+  on, so it misses that second press. To count presses from
+  one player, `on held { count += 1 }`. To catch every player's press and who
+  made it, wire **Press Count** to an `int` pin `holding` and keep its last
+  value in a `var last`: in `on Change(holding)`, act only
+  `if holding > last`, reading **Character** there, then set
+  `last = holding`. `Change` does not fire when the chip loads.
+- **Switch.** Its outputs are **Enabled** and **Character** (the Toggle
+  Switch has the same two). **Character** holds the last player who flipped
+  the switch, either way, and keeps holding them: it is a steady character
+  wire that changes only when someone else flips it. Wired into
+  `InputReader` (the **Seat Control Splitter**), it gives that player's
+  keys live, wherever they stand, with no seat and no Clock.
+- **Get Inputs** (`GetInputs`) reads any player, wherever they are. They
+  need not be seated or inside a zone.
+- **Spawn Prefab**'s `offset` is relative to the Spawn Prefab gate's own
+  position, not world space. For a world position, spawn the copy and then
+  `SetLocation` the returned entity.
+- **`SetLocation`** moves a spawned prefab, from the spawner (the entity
+  `SpawnPrefab` returns) or from inside the copy (`ReadBrickGrid()`). It
+  does not move a pasted chip's own grid.
+- **Controllers.** A controller (player state) is the persistent player,
+  not the body. A character and its controller are not equal: a character
+  used as a `Map<controller, V>` key files under that body, and a respawn
+  starts a new key. Custom properties (`SetCustomProperty`) can be set on a
+  controller, which keeps them through respawns (but not a reconnect; on a
+  character they are lost at respawn). Getting a controller from a
+  character takes `ControllerOf`, an admin gate; without admin, key
+  per-player state by `GetUserId()`.
+- **A player who leaves.** A stored reference to a player who has left the
+  server (in a `var`, an array or a map) turns into `null`, so
+  `owner == null` detects it. `GetUserId()` on it reads back `""` too.
+- **A player who dies.** A stored character of a player who died also
+  turns into `null`, but not at once: some time after the death, with no
+  fixed delay. An `owner == null` check therefore also removes a dead
+  player's copy, a little later than the death.
+- **Zone events.** `ZoneEntered` and `ZoneLeft` are fine for reacting to
+  one player stepping in or out (a greeting, a chime, a door), but over a
+  long session some are missed. A list of who is inside, or a count per
+  team, kept up from them drifts and does not come back. Ask the zone
+  instead: `arr.fillFromZonePlayers(zone)` (**Get Players In Zone**) gives
+  everyone in it now. When that has to stay current, run the fill on a
+  Clock; that is a proper use of one.
+- **Clock.** The first pulse comes one `interval` after the Clock is
+  enabled, not at the moment it turns on.
+- **Server restarts.** `var`s, arrays and maps are saved with the bricks
+  and come back. Buffers survive a restart too, so a pending
+  `await Sleep(...)` or a `buffer emit` still lands after it.
+  `ServerUptime()` starts again from 0, so a deadline stored from it comes
+  back unreachable; `GetUnixTime()` keeps counting.
+- **Tagging a spawned copy.** A spawned prefab's entity holds custom
+  properties like any other. The spawner can tag a copy with its player's
+  user id right after spawning it (`copy.SetCustomProperty("owner", id)`),
+  and the copy reads its own tag with
+  `ReadBrickGrid().GetCustomProperty("owner")`. Store the read in a typed
+  `var` before sending it in an event: an annotated `let` still sends as an
+  untyped value (`WS045`).

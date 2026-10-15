@@ -7,7 +7,7 @@ on CharacterSpawned() -> (p) {
     // Label the microchip by the player's name
     @label(playerName)
 
-    var playerName =""
+    var playerName = ""
 
     on CustomEvent("init", isObject = true) -> (p: character) {
       let name = p.GetDisplayName()

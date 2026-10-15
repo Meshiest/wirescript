@@ -8,11 +8,11 @@ repository's [`CHANGELOG.md`](../../CHANGELOG.md).
 <!-- toc -->
 ## Contents
 
-- [1.12.0](#1120)
+- [2.0.0](#200)
 - [1.1.0](#110)
 <!-- /toc -->
 
-## 1.12.0
+## 2.0.0
 
 ### An empty `[]` or `{}` needs a type
 

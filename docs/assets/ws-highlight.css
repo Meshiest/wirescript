@@ -1,0 +1,73 @@
+/* Token colors for ws-highlight.js. The dark themes (navy, coal, ayu) use the
+   playground editor's `wirescript-dark` theme (playground/editor.js); the
+   light themes (light, rust) use the matching VS Code Light+ colors. A more
+   specific class (ws-comment-doc) comes after its parent (ws-comment). */
+
+code.ws-monaco .ws-comment { color: #008000; font-style: italic; }
+code.ws-monaco .ws-comment-doc { color: #3a7d44; }
+code.ws-monaco .ws-keyword { color: #af00db; }
+code.ws-monaco .ws-type { color: #267f99; }
+code.ws-monaco .ws-annotation { color: #795e26; }
+code.ws-monaco .ws-support-function { color: #795e26; }
+code.ws-monaco .ws-variable-predefined { color: #0070c1; }
+code.ws-monaco .ws-constant { color: #0000ff; }
+code.ws-monaco .ws-number { color: #098658; }
+code.ws-monaco .ws-string { color: #a31515; }
+code.ws-monaco .ws-string-escape { color: #ee0000; }
+code.ws-monaco .ws-string-escape-invalid { color: #cd3131; }
+code.ws-monaco .ws-operator,
+code.ws-monaco .ws-delimiter { color: #000000; }
+code.ws-monaco .ws-delimiter-bracket { color: #0431fa; }
+code.ws-monaco .ws-identifier { color: #001080; }
+
+.navy code.ws-monaco,
+.coal code.ws-monaco,
+.ayu code.ws-monaco { color: #d4d4d4; }
+.navy code.ws-monaco .ws-comment,
+.coal code.ws-monaco .ws-comment,
+.ayu code.ws-monaco .ws-comment { color: #6a9955; }
+.navy code.ws-monaco .ws-comment-doc,
+.coal code.ws-monaco .ws-comment-doc,
+.ayu code.ws-monaco .ws-comment-doc { color: #608b4e; }
+.navy code.ws-monaco .ws-keyword,
+.coal code.ws-monaco .ws-keyword,
+.ayu code.ws-monaco .ws-keyword { color: #c586c0; }
+.navy code.ws-monaco .ws-type,
+.coal code.ws-monaco .ws-type,
+.ayu code.ws-monaco .ws-type { color: #4ec9b0; }
+.navy code.ws-monaco .ws-annotation,
+.coal code.ws-monaco .ws-annotation,
+.ayu code.ws-monaco .ws-annotation { color: #d7ba7d; }
+.navy code.ws-monaco .ws-support-function,
+.coal code.ws-monaco .ws-support-function,
+.ayu code.ws-monaco .ws-support-function { color: #dcdcaa; }
+.navy code.ws-monaco .ws-variable-predefined,
+.coal code.ws-monaco .ws-variable-predefined,
+.ayu code.ws-monaco .ws-variable-predefined { color: #4fc1ff; }
+.navy code.ws-monaco .ws-constant,
+.coal code.ws-monaco .ws-constant,
+.ayu code.ws-monaco .ws-constant { color: #569cd6; }
+.navy code.ws-monaco .ws-number,
+.coal code.ws-monaco .ws-number,
+.ayu code.ws-monaco .ws-number { color: #b5cea8; }
+.navy code.ws-monaco .ws-string,
+.coal code.ws-monaco .ws-string,
+.ayu code.ws-monaco .ws-string { color: #ce9178; }
+.navy code.ws-monaco .ws-string-escape,
+.coal code.ws-monaco .ws-string-escape,
+.ayu code.ws-monaco .ws-string-escape { color: #d7ba7d; }
+.navy code.ws-monaco .ws-string-escape-invalid,
+.coal code.ws-monaco .ws-string-escape-invalid,
+.ayu code.ws-monaco .ws-string-escape-invalid { color: #f44747; }
+.navy code.ws-monaco .ws-operator,
+.coal code.ws-monaco .ws-operator,
+.ayu code.ws-monaco .ws-operator,
+.navy code.ws-monaco .ws-delimiter,
+.coal code.ws-monaco .ws-delimiter,
+.ayu code.ws-monaco .ws-delimiter { color: #d4d4d4; }
+.navy code.ws-monaco .ws-delimiter-bracket,
+.coal code.ws-monaco .ws-delimiter-bracket,
+.ayu code.ws-monaco .ws-delimiter-bracket { color: #ffd700; }
+.navy code.ws-monaco .ws-identifier,
+.coal code.ws-monaco .ws-identifier,
+.ayu code.ws-monaco .ws-identifier { color: #9cdcfe; }

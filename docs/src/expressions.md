@@ -200,6 +200,44 @@ let either = a ^^ b
 
 `!(a && b)` and `!(a || b)` are automatically fused into single NAND/NOR gates by the compiler.
 
+### No short-circuiting
+
+`&&` and `||` do not short-circuit. Both operands are wires into one gate, so
+both are always computed: in pure code both sides are evaluated every tick, and
+in a handler a call with side effects on either side runs whatever the other
+side is. Here `take()` runs on every `go`, armed or not:
+
+```wirescript
+in go: exec
+in armed: bool
+var stock: int = 5
+mod take() -> bool {
+  stock -= 1
+  return stock >= 0
+}
+on go {
+  if armed && take() { }   // take() runs even when armed is false
+}
+```
+
+To guard a side effect, nest the `if`s, so the call sits in a branch that only
+runs when the guard holds:
+
+```wirescript
+in go: exec
+in armed: bool
+var stock: int = 5
+mod take() -> bool {
+  stock -= 1
+  return stock >= 0
+}
+on go {
+  if armed {
+    if take() { }
+  }
+}
+```
+
 ## Bitwise Operators
 
 All bitwise operators produce `int` results. Operands are `int`. A `float` or `bool` operand coerces to `int` first (`1.5 & 2` truncates `1.5` to `1`), so only a non-numeric operand (`string`, `vector`, …) is a **WS011** error.
@@ -756,11 +794,13 @@ let check = !(x && y)
 
 ### Bitwise `&` is lower precedence than `==`/`!=`
 
-This matches C. `x >> 31 & 1 != 0` parses as `x >> 31 & (1 != 0)`. Always parenthesize:
+This matches C. `x >> 31 & 1 != 0` would parse as `x >> 31 & (1 != 0)`,
+which is almost never what was meant, so a comparison used directly as an
+operand of `&`, `|` or `^` warns (`WS117`). Parenthesize either way:
 
 ```wirescript
-let bit = ((x >> 31) & 1) != 0  // correct
-let bad = x >> 31 & 1 != 0      // wrong: compares 1 != 0 first
+let bit = ((x >> 31) & 1) != 0  // tests the bit
+let flag = x & (y != 0)         // takes the comparison's result
 ```
 
 ### Chips encapsulate state
@@ -832,26 +872,27 @@ on spawn {
 }
 ```
 
+`offset` is relative to the Spawn Prefab gate, so both copies appear 50 units
+above the spawner. For a world position, spawn and then `SetLocation` the
+returned entity.
+
 A prefab can also be written **inline**, as a `$` followed by a triple-backtick
 block of Wirescript compiled as a nested prefab. The spawned chip's source sits
 at the spawn site, and it closes over nothing. It communicates by targeted
 custom events like any other prefab. Inline blocks may nest 8 deep.
 
 ```wirescript
-var subject: character
-
 on CharacterSpawned() -> (who) {
   let e = SpawnPrefab(prefab = $```
     var owner: character
-    on CustomEvent("init") -> (p: character) {
+    on CustomEvent("init", isObject = true) -> (p: character) {
       owner = p
       on ServerUptime() {
-        if owner.GetUserId() == "" { ReadBrickGrid().DestroySpawnedPrefab() }
+        if owner == null { ReadBrickGrid().DestroySpawnedPrefab() }
       }
     }
   ```, lifetime = 0.0, limit = 64)
-  subject = who               // a var: a constant argument emits no wire
-  e.SendCustomEvent("init", subject)
+  e.SendCustomEvent("init", who)   // targeted: the copy's receiver needs isObject
 }
 ```
 

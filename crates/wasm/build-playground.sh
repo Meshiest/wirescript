@@ -7,6 +7,15 @@ echo "Building WASM..."
 wasm-pack build . --target web --release
 
 echo "Assembling playground..."
+
+# Copy the docs' markdown, keeping subfolders (docs/src/learn/), plus the
+# Learn series' library files, into $1.
+copy_docs() {
+  (cd ../../docs/src && find . -name '*.md' -o -path './learn/lib/*.ws') | while read -r f; do
+    mkdir -p "$1/$(dirname "$f")"
+    cp "../../docs/src/$f" "$1/$f"
+  done
+}
 rm -rf _site
 mkdir -p _site/pkg
 
@@ -19,6 +28,8 @@ cp playground/files.js _site/
 cp playground/prefabs.js _site/
 cp playground/share.js _site/
 cp playground/docs.js _site/
+cp playground/learn.js _site/
+cp playground/snippet.js _site/
 
 echo "Copying docs + examples..."
 mkdir -p _site/docs _site/sdk/examples
@@ -38,7 +49,7 @@ else
   echo "  install it with: cargo install mdbook --locked"
 fi
 
-cp ../../docs/src/*.md _site/docs/
+copy_docs _site/docs
 cp ../../CHANGELOG.md _site/docs/
 node playground/build-search-index.mjs _site/docs _site/docs/search-index.json
 cp playground/sdk/examples/*.ws _site/sdk/examples/
@@ -57,6 +68,8 @@ cp playground/sdk/lib.mjs _sdk/wirescript-sdk/
 cp playground/sdk/CLAUDE.md _sdk/wirescript-sdk/
 cp playground/sdk/README.md _sdk/wirescript-sdk/
 cp playground/docs.js _sdk/wirescript-sdk/
+cp playground/learn.js _sdk/wirescript-sdk/
+cp playground/snippet.js _sdk/wirescript-sdk/
 cp playground/sdk/examples/*.ws _sdk/wirescript-sdk/examples/
 
 cp playground/index.html _sdk/wirescript-sdk/playground/
@@ -66,6 +79,8 @@ cp playground/files.js _sdk/wirescript-sdk/playground/
 cp playground/prefabs.js _sdk/wirescript-sdk/playground/
 cp playground/share.js _sdk/wirescript-sdk/playground/
 cp playground/docs.js _sdk/wirescript-sdk/playground/
+cp playground/learn.js _sdk/wirescript-sdk/playground/
+cp playground/snippet.js _sdk/wirescript-sdk/playground/
 cp pkg/wasm_bg.wasm _sdk/wirescript-sdk/playground/pkg/
 cp pkg/wasm.js _sdk/wirescript-sdk/playground/pkg/
 
@@ -73,7 +88,7 @@ cp pkg/wasm.js _sdk/wirescript-sdk/playground/pkg/
 # playground is a self-contained docs viewer and cross-doc links (e.g. the
 # migration guide's link to the CHANGELOG) resolve offline.
 mkdir -p _sdk/wirescript-sdk/playground/docs
-cp ../../docs/src/*.md _sdk/wirescript-sdk/playground/docs/
+copy_docs _sdk/wirescript-sdk/playground/docs
 cp ../../CHANGELOG.md _sdk/wirescript-sdk/playground/docs/
 node playground/build-search-index.mjs _sdk/wirescript-sdk/playground/docs _sdk/wirescript-sdk/playground/docs/search-index.json
 

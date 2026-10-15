@@ -6,7 +6,7 @@
     return {
       name: 'Wirescript',
       keywords: {
-        keyword: "array as await break buffer chip const else emit enum fn for from if import in is let map match mod on open out ref return static then type unsafe var",
+        keyword: "array as await break buffer chip const else emit enum fn for from if import in is let map match mod on out ref return static then type unsafe var",
         type: "Component any bool brick character color controller entity exec float int never prefab quat rotator string teleport vector zone",
         built_in: "AddLocationRotation AddVelocity BitCount BrickChanged BrickRemoved CharacterDamaged CharacterDied CharacterFiredWeapon CharacterOf CharacterSpawned ChatCommand Clock Color ControllerJoined ControllerJoinedTeam ControllerLeft ControllerLeftTeam ControllerOf Cross CustomEvent Deg2Rad DisplayText Distance DistanceSq Dot EntityZoneEntered EntityZoneLeft Fmt GetAim GetAngularVelocity GetLeaderboard GetLinearVelocity GetLocation GetLocationRotation GetRotation GetTeam GetVelocity GlobalCustomEvent IncLeaderboard InputReader Magnitude MagnitudeSq Normalize ProjectileZoneEntered ProjectileZoneLeft Rad2Deg Random RelativeTeleport RoundEnd RoundStart ScaleVec SetAngularVelocity SetGravityDirection SetLeaderboard SetLinearVelocity SetLocation SetLocationRotation SetRotation SetVelocity SpawnPrefab Sweep Teleport Vec WholeGridInteracted WholeGridTargeted ZoneEntered ZoneLeft acos acosh asin asinh atan atan2 atanh cos cosh exp ln max min round sign sin sinh tanh",
         literal: "false null true",

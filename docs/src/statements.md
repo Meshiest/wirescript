@@ -127,7 +127,7 @@ on RoundStart() {
 
 ### Declaring a Name Again
 
-A top-level `const` or `let` may declare a name the top level of the same file declares already (another `const` or `let`, or a `var`, `buffer`, array or map). The file is then read by position. A read names the latest declaration written before it, and the body of a `mod`, `chip`, generic or `const mod` reads as code written where that declaration is, wherever it is called from. The later declaration hides the earlier one from its position on, for values and for constant-only settings (an event name, a `Sleep` delay, a folded `if`) alike, and the compiler warns `WS108` at it, naming both lines. Storage is declared ahead of everything, so a read above every declaration of the name reads the storage. A `var` initializer is the exception: it reads the declaration before the `var` (`let k = 5` then `var k: int = k` starts the var at 5), as a `let` initializer reads the one before the `let`. A `buffer` initializer reads the buffer itself, which is its value the tick before. With no storage, a `mod` or `chip` written above every declaration reads the first one, as it reads the only one when there is one. A library reads its own duplicates the same way, in the order it writes them, however it is imported (flat, by name, both, or by several paths). Its importer reads the last one, which is the one a named import binds. A module imported with `import * as` holds only the last one. Every read of that module names it, including reads through a flat import of the same module in the same program (one `WS108` says so). Two storage declarations of one name are `WS013`.
+A top-level `const` or `let` may declare a name the top level of the same file declares already (another `const` or `let`, or a `var`, `buffer`, array or map). The file is then read by position. A read names the latest declaration written before it, and the body of a `mod`, `chip`, generic or `const mod` reads as code written where that declaration is, wherever it is called from. The later declaration hides the earlier one from its position on, for values and for constant-only settings (an event name, a folded `if`) alike, and the compiler warns `WS108` at it, naming both lines. Storage is declared ahead of everything, so a read above every declaration of the name reads the storage. A `var` initializer is the exception: it reads the declaration before the `var` (`let k = 5` then `var k: int = k` starts the var at 5), as a `let` initializer reads the one before the `let`. A `buffer` initializer reads the buffer itself, which is its value the tick before. With no storage, a `mod` or `chip` written above every declaration reads the first one, as it reads the only one when there is one. A library reads its own duplicates the same way, in the order it writes them, however it is imported (flat, by name, both, or by several paths). Its importer reads the last one, which is the one a named import binds. A module imported with `import * as` holds only the last one. Every read of that module names it, including reads through a flat import of the same module in the same program (one `WS108` says so). Two storage declarations of one name are `WS013`.
 
 ```wirescript
 in go: exec
@@ -260,14 +260,11 @@ chip Outer(t: exec) {
 - String interpolation (`"a${1 + 1}b"`) and the certified string/math builtin
   methods (`.ToUpper()`, `.Trim()`, `.Length()`, `sin`, `sqrt`, ...), when
   every operand is constant.
-- **`abs`, `min`, `max`, `clamp` fold on float constants but not int ones.**
-  `min(3.0, 7.0)` folds, while `min(3, 7)` emits a gate. This is a coverage gap,
-  not a language rule. The certified fold pass only folds a gate on an input
-  shape the in-game probe recorded, and these four were only ever probed with
-  float inputs (unlike `+`/`-`/`*`, which were probed with ints and fold). Until
-  the probe is rerun with int inputs, either use a float literal (`max(n, 0.0)`)
-  where a float result is fine, or write the constant directly. A single op
-  that does not fold keeps everything downstream of it from folding.
+- **`abs`, `min`, `max`, `clamp` fold in a `let` but are not `const`.**
+  `let m = max(3, 7)` folds to the `int` `7` (and `max(3.0, 7.0)` to the
+  `float`), keeping the type of the arguments, but `const m = max(3, 7)` is
+  `WS046`. Bind the result with `let`, or write the constant directly where a
+  `const` is required.
 - The `Vec`/`Rotation`/`Color` constructors.
 - Array and map literals, indexing (`arr[i]`, `m[k]`), and `.length()`.
 - Record literals and field access (`.field`), including nested records.
@@ -818,6 +815,71 @@ on tick { status = "running" }
 Without the blank line, `@label(status)` would instead attach to the `status`
 declaration directly (a variable self-label, above).
 
+### `@color` / `@material`: Brick Color and Material
+
+`@color(<color>)` and `@material(<BrickMaterial>)` set the color and material
+of a declaration's brick. They go where `@label` goes on a chip and a `var`:
+alone, together, or beside `@label`, in any order.
+
+```wirescript
+@color(Color(1.0, 0.5, 0.0)) @material(Glow)
+var score: int = 0
+
+@material(Metal)
+chip {
+  @color(ColorSRGB(40, 120, 255, 255))
+  var hits: int = 0
+}
+```
+
+- On a chip (anonymous or named) they style its microchip brick. On a `var`
+  they style its Variable gate brick, or every field's gate for a record.
+- `@color` takes a `color`, from `Color(r, g, b)` (linear, 0 to 1) or
+  `ColorSRGB(r, g, b, a)` (bytes, 0 to 255). `@material` takes a
+  `BrickMaterial`: `Plastic`, `Glass`, `TranslucentPlastic`, `Glow`, `Metal` or
+  `Hologram` (see [Built-in game enums](enums.md#built-in-game-enums)). A bare
+  member name works as the whole argument, `@material(Glow)`, as well as the
+  qualified `BrickMaterial.Glow`. A value of another type is `WS003`.
+- A constant value is set on the brick itself. On a **top-level `var`** the
+  value may also be a *runtime* one: the brick then also gets a Brick Property
+  Changer component, and the value is wired into its Color or Material input,
+  so the brick changes as the value does.
+
+```wirescript
+in hit: exec
+
+var heat: float = 0.0
+on hit { heat = heat + 0.1 }
+
+@color(Color(heat, 0.0, 0.0))
+var shown: int = 0
+```
+
+A runtime value on a chip or a nested `var` has no wire to drive and is a
+compile error (`WS040`), as a runtime `@label` there is.
+
+The component sets every property it has, so each one it does not wire starts
+as the brick's own value, constants included: a runtime `@color` keeps the
+brick's material and material alpha, and a runtime `@material` keeps its
+color. The brick stays visible and solid.
+
+At the **top of the file**, separated from the first declaration by a blank
+line, they style the **root microchip** instead, under the same placement rule
+as a module-level `@label`. A runtime value is allowed here too, and the
+expression may name a declaration below it:
+
+```wirescript
+@color(Color(0.2, 0.2, 0.2))
+@material(kind)
+
+var kind: BrickMaterial = BrickMaterial.Metal
+in go: exec
+on go { kind = BrickMaterial.Glow }
+```
+
+They are not allowed on ports, `mod`s, `fn`s or `for` loops, and either one
+given twice on a declaration is an error.
+
 ### `@nofold`: Suppress Constant Folding
 
 - `@nofold`: suppress constant folding/elision for everything lowered from this
@@ -985,8 +1047,8 @@ It is independent of `@layout(...)` and composes with it. `@flat` with
 `@layout("cube")` is the natural pairing: one plane, packed as tightly as the
 gates allow. `@flat` on its own, or with `@layout("code")`, works too.
 
-Because the chip bricks no longer exist, `@label` and `@closed` on a chip have
-nothing to apply to under `@flat`. They are accepted without an error and
+Because the chip bricks no longer exist, `@label`, `@closed`, `@color` and
+`@material` on a chip have nothing to apply to under `@flat`. They are accepted without an error and
 have no effect.
 
 Same placement rules as the other module annotations: at the very top of the
@@ -1540,7 +1602,7 @@ on ChatCommand("wave", Description = "Wave at everyone") { }
 The zone events (`ZoneEntered`, `ZoneLeft`, `EntityZoneEntered`, `EntityZoneLeft`, `ProjectileZoneEntered`, `ProjectileZoneLeft`, `BrickChanged`, `BrickRemoved`) accept a `zone = <value>` named arg that **wires** its value into the gate's `Zone` input port (rather than setting a static config field). Pass an `in` port bound to a zone brick so one wire selects the zone the gate watches, and the same port can drive several of these gates:
 
 ```wirescript
-in room: entity                             // wire to a Zone brick in-game
+in room: zone                               // wire an Attached Zone's Zone Ref here
 on ZoneEntered(zone = room) -> (character) { }  // room feeds the gate's Zone input
 on ZoneLeft(zone = room) -> (character) { }
 ```
@@ -1726,6 +1788,11 @@ on Union(eventA, eventB) {
 }
 ```
 
+`||` is not a union: it joins two values into one, so `on a || b` fires when
+that one value turns true. With an object operand (`on reset || ReadBrickGrid()`)
+the value is true for as long as the object exists, which the compiler warns
+about (`WS116`).
+
 The older `|` trigger-union syntax still parses but is discouraged in favor of
 `Union(...)`:
 
@@ -1751,29 +1818,47 @@ Event declarations create named triggers using `let ... = on ...`. The `event` k
 
 ### Event Alias
 
-Creates a new name for an existing event or trigger:
+Creates a new name for a trigger: an event with its config, an exec pin, or a
+trigger expression such as `Union(...)`. Each `on` handler of the alias
+compiles as if it wrote the trigger itself, so two handlers of `tick` are two
+`Clock` gates, as two `on Clock(interval = 1.0)` handlers would be. A handler
+binds the event's outputs with `->`, as it would on the event:
 
 ```wirescript
+in front: exec
+in back: exec
+in room: zone
+var visits: int = 0
+
+let tick = on Clock(interval = 1.0)
 let died = on CharacterDied()
+let arrived = on ZoneEntered(zone = room)
+let rang = on Union(front, back)
+
+on tick { visits += 1 }
+on died -> (character) { character.SetLocation(Vec(0.0, 0.0, 100.0)) }
+on arrived -> (character) { visits += 1 }
+on rang { BroadcastChatMessage("ding") }
 ```
 
-The alias can then be used as a trigger:
-
-```wirescript
-on died(character) {
-  // ...
-}
-```
+An alias is declared at the top level, before the handlers that use it.
 
 ### Captured Event
 
-Wraps a trigger with a handler body that defines the event's behavior:
+Wraps a trigger with a handler body that defines the event's behavior. The
+body runs as `on <trigger> { .. }` would, with the trigger's config args and
+`->` output captures, and the name becomes a trigger that fires when the body
+finishes. The trigger takes any form a handler's does, a call such as
+`on f(5, exec = go) -> (r)` included:
 
 ```wirescript
-let bumped = on Bumped {
-  // This body executes when Bumped fires
-  // 'bumped' becomes a trigger in its own right
+in room: zone
+var visits: int = 0
+
+let arrived = on ZoneEntered(zone = room) -> (character) {
+  visits += 1                // runs when a character enters `room`
 }
+on arrived { BroadcastChatMessage("visit ${visits}") }
 ```
 
 ## `emit`: Emit Signal
@@ -1852,10 +1937,10 @@ buffer(0, 1s) emit sig      // delay 0, hold output 1s after the input drops
 ```wirescript ignore
 let loop: exec
 
-emit loop = 0                        // scalar payload
+buffer emit loop = 0                        // scalar payload
 let index = await loop               // read it back
 
-emit loop = { sum: 0, index: 0 }     // record payload: one store per field
+buffer emit loop = { sum: 0, index: 0 }     // record payload: one store per field
 let { sum, index } = await loop      // destructure the fields
 ```
 
@@ -1868,7 +1953,7 @@ mod sumItems(arr: int[]) -> int {
   var sum = 0
   var index = 0
   let loop: exec
-  emit loop
+  buffer emit loop
   await loop
   if index < arr.length() {
     sum += arr[index]
@@ -1885,7 +1970,7 @@ or ride the signal as a ferried payload (no mutable vars):
 ```wirescript
 mod sumItems(arr: int[]) -> int {
   let loop: exec
-  emit loop = { sum: 0, index: 0 }
+  buffer emit loop = { sum: 0, index: 0 }
   let { sum, index } = await loop
   if index < arr.length() {
     buffer(1) emit loop = { sum: sum + arr[index], index: index + 1 }
@@ -1897,51 +1982,36 @@ mod sumItems(arr: int[]) -> int {
 
 Semantics:
 
-- An emit on the **same exec chain** as an unconditional `await` of that signal is sequenced through a `Var_Set(armed = true)` **before** entering the signal's union, so the awaiting `Var_Get` can never race the arm, and a loop back-edge re-arms the await every iteration.
+- The `await` is what arms the resume, so the emit that starts a loop must be buffered (`buffer emit loop`): it lands the next tick, after the await is armed. A plain `emit loop` on the same chain fires before the await arms and the chain parks forever (`WS053` warns). The buffered back-edge re-arms the await every iteration.
 - Emits from **other handlers** enter the signal directly and are guarded by the armed flag: the continuation only runs if the awaiting chain has reached the `await`.
-- An `await` inside an `if` branch keeps pure flag semantics (its arm only fires when the branch is taken).
-- **A back-edge loop whose `await` sits inside an `if` runs only one iteration.** This follows from the rule above, and it is an easy mistake to make because the loop looks correct. The first pass consumes the arm. The buffered back-edge arrives on the next tick, finds the branch untaken and the await unarmed, and the continuation never runs. There is no error, no warning and no hang. The program continues with one iteration's work done, so a loop meant to fill 25 entries leaves 1.
-
-  Measured, same loop body both ways: 5 of 5 iterations with the `await` at its handler's top level, 1 of 5 with it inside a branch.
-
-  This happens most easily when a loop is in a `mod` called from a step machine, because the `mod` inlines into the caller and inherits its branch:
+- An `await` inside an `if` branch keeps pure flag semantics (its arm only fires when the branch is taken) for a signal declared outside that branch.
+- **A back-edge loop inside an `if` declares its signal in the same branch.** A signal declared in the await's own branch (`if !running { let loop: exec ... }`, or in a `mod` the branch calls, since the `mod` inlines there) can only be emitted inside that branch, so its back-edge re-arms the await as it does at a handler's top level:
 
   ```wirescript ignore
-  // BROKEN - the call site puts the await inside an `if`
   on tick {
-    if step == 4 { fill() }        // fill()'s await inlines into this branch
-  }
-
-  // WORKS - the await is at its own handler's top level
-  let fillSig: exec
-  on fillSig {
-    idx = 0
-    let loop: exec
-    emit loop
-    await loop
-    if idx < 25 { dest.push(idx) idx += 1 buffer emit loop }
-  }
-  on tick {
-    if step == 4 { emit fillSig }  // pulse it instead of calling it
+    if step == 4 { fill() }        // fill() declares `loop`: every iteration runs
   }
   ```
 
-  The `if` guarding the loop's own continuation (`if idx < 25`) is fine and required, because it is the exit test. Only the `await` itself must stay out of a branch.
+  A signal declared outside the branch is not re-armed by an emit on the same chain, so a back-edge loop on it runs one iteration. The compiler warns (`WS118`) at the `await`. Declare the signal inside the branch, or give the loop a handler of its own and pulse it.
+
+  The `if` guarding the loop's own continuation (`if idx < 25`) is fine and required, because it is the exit test.
+- **A `buffer emit` ends its chain.** Nothing after it on that chain runs: not a statement later in the same block, not one after an `if` whose branches both end in one, not one after a call to a `mod` that ends in one. Each such statement is a `WS058` warning, and it is not compiled. An `await` right after the emit is the exception, since that is how a loop starts: it arms on the chain the emit ended.
 - **Loop state must outlive the tick.** A back-edge buffer crosses a tick, and a
   tick is a new call of whatever handler the loop sits in, so a non-static `var`
   declared inside the loop's own scope is reset before the next iteration reads
   it. A counter declared there sticks at its initial value forever, and the loop
   rewrites element 0 on every pass while looking like it is running. Put the
   counter (and any accumulator) at **module level**, or make it `static`, and
-  reset it upstream of the `emit`:
+  reset it upstream of the kick:
 
   ```wirescript
   var idx: int = 0          // module level: survives the tick boundary
 
   mod fill(dest: int[]) {
-    idx = 0                 // reset BEFORE the emit, not inside the loop body
+    idx = 0                 // reset BEFORE the kick, not inside the loop body
     let loop: exec
-    emit loop
+    buffer emit loop
     await loop
     if idx < 25 {
       dest.push(idx)

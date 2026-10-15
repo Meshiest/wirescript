@@ -1,6 +1,6 @@
 // Helpers the repository's scripts share.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -16,6 +16,27 @@ export function opt(name, dflt, args = process.argv.slice(2)) {
 /** Whether the module whose `import.meta.url` is `url` is the script node ran. */
 export function isMain(url) {
   return Boolean(process.argv[1]) && url === pathToFileURL(process.argv[1]).href;
+}
+
+/**
+ * Every file under `dir` whose name ends with `ext`, as sorted paths relative
+ * to `dir` with `/` separators (`learn/cpu/nand.md`). `skip` names
+ * directories to leave out, by their path relative to `dir`.
+ */
+export function filesUnder(dir, ext, { skip = [] } = {}) {
+  const out = [];
+  const walk = (rel) => {
+    for (const entry of readdirSync(join(dir, rel), { withFileTypes: true })) {
+      const path = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (!skip.includes(path)) walk(path);
+      } else if (entry.name.endsWith(ext)) {
+        out.push(path);
+      }
+    }
+  };
+  walk('');
+  return out.sort();
 }
 
 /** A binary this workspace builds, under `target/<profile>`. */
@@ -69,4 +90,60 @@ export function* mdLines(text) {
       yield { line, index, fence: false, fenced: false, indent: '', info: '' };
     }
   }
+}
+
+/**
+ * Every ```wirescript fenced block in the markdown `text`: its `code`, the
+ * 1-based `startLine` of its fence, the words of its `info` string after
+ * `wirescript`, whether it is `ignore`d, and the hidden `prelude` of
+ * `<!-- doc-check-prelude: ... -->` comments right before it (blank lines
+ * between are allowed; several accumulate).
+ */
+export function wsBlocks(text) {
+  const blocks = [];
+  let pendingPrelude = "";
+  // The lines of an open `<!-- doc-check-prelude:` comment.
+  let prelude = null;
+  // The wirescript block being read.
+  let block = null;
+  for (const { line, index, fence, fenced, indent, info } of mdLines(text)) {
+    if (block) {
+      if (fence) {
+        blocks.push({ ...block, code: block.body.join("\n") });
+        block = null;
+      } else {
+        // A block inside a list item is indented, and its body carries that
+        // indent.
+        block.body.push(indent ? line.slice(indent.length) : line);
+      }
+      continue;
+    }
+    if (prelude) {
+      if (/-->/.test(line)) {
+        pendingPrelude += prelude.join("\n") + "\n";
+        prelude = null;
+      } else {
+        prelude.push(line);
+      }
+      continue;
+    }
+    if (fence && /^wirescript\b/.test(info)) {
+      // 1-based line of the ``` fence.
+      const words = info.replace(/^wirescript\b/, '').split(/[\s,]+/).filter(Boolean);
+      block = { startLine: index + 1, words, ignore: words.includes('ignore'), prelude: pendingPrelude, body: [] };
+      pendingPrelude = "";
+      continue;
+    }
+    // Hidden prelude comment: <!-- doc-check-prelude: ... -->
+    if (!fence && !fenced && /^\s*<!--\s*doc-check-prelude:\s*$/.test(line)) {
+      prelude = [];
+      continue;
+    }
+    // A non-prelude, non-blank line clears a dangling prelude (prelude must
+    // immediately precede its block, allowing only blank lines between).
+    if (line.trim() !== "" && pendingPrelude && !/^\s*<!--/.test(line)) {
+      pendingPrelude = "";
+    }
+  }
+  return blocks;
 }

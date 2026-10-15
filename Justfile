@@ -24,9 +24,10 @@ release:
 lsp:
     cargo build --release -p wirescript-lsp
 
-# Build check CLI (release)
+# Build the check and compile CLIs (release)
 check-bin:
     cargo build --release -p wirescript --bin wirescript-check
+    cargo build --release -p wirescript-cli
 
 # Time every compile stage on generated programs at 4k/8k/16k and fail a stage
 # that grows faster than linearly (--update writes the baseline)
@@ -49,8 +50,10 @@ doc-toc:
 # Type-check every ```wirescript example in docs/src (CI gate)
 doc-check: check-bin
     node crates/wirescript/scripts/check_docs.mjs
+    node crates/wirescript/scripts/check_learn.mjs
     node crates/wirescript/scripts/gen_doc_toc.mjs --check
     node crates/wirescript/scripts/gen_book_summary.mjs --check
+    node crates/wirescript/scripts/gen_learn_tree.mjs --check
     node crates/wirescript/scripts/gen_hljs_lang.mjs --check
     cargo run -q -p wirescript --example gen_environment_doc -- --check
 
@@ -62,6 +65,10 @@ doc-environment:
 # Regenerate the book's table of contents from the playground's page list
 doc-summary:
     node crates/wirescript/scripts/gen_book_summary.mjs
+
+# Regenerate the Learn series' tree (docs/src/learn/README.md) from learn.js
+learn-tree:
+    node crates/wirescript/scripts/gen_learn_tree.mjs
 
 # Regenerate the book's highlight.js grammar from the playground's monarch.js
 doc-hljs:
@@ -91,6 +98,19 @@ mdbook *ARGS='build': doc-summary doc-hljs
     cp -f CHANGELOG.md docs/src/CHANGELOG.md
     mdbook {{ ARGS }} docs
     rm -f docs/src/CHANGELOG.md
+
+# Build the playground and the docs book (with the Learn lessons) into
+# target/learn-preview and serve them at http://localhost:8080/ (or `port`), so the
+# lessons' Compile and Open in playground buttons work. Needs wasm-pack and mdbook.
+learn-preview port='8080': doc-summary doc-hljs learn-tree
+    wasm-pack build crates/wasm --target web --release
+    node crates/wasm/preview-site.mjs --port {{port}}
+
+# The same site as learn-preview, built into target/learn-preview without serving
+# it (serve that folder with any static server, e.g. `python -m http.server`)
+learn-site: doc-summary doc-hljs learn-tree
+    wasm-pack build crates/wasm --target web --release
+    node crates/wasm/preview-site.mjs --no-serve
 
 # Build WASM module (for playground/SDK)
 wasm:

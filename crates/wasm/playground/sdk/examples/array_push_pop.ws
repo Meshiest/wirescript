@@ -1,7 +1,8 @@
 // Array operations
 var items: int[]
 
-on RoundStart() {
+in go: exec
+on go {
   items.clear()
   items.push(10)
   items.push(20)
@@ -13,4 +14,6 @@ on RoundStart() {
   /// First item in the array
   let first = items[0]
   let second = items[1]
+
+  BroadcastChatMessage("${len} items: ${first}, ${second}")
 }

@@ -56,7 +56,7 @@ module declaring an enum the program declares too is `WS013`.
 **A selective import drops the module's handlers.** `import "lib"` and
 `import * as lib from "lib"` both carry a module's top-level `on` handlers.
 `import { helper } from "lib"` does not, because it selects declarations by name
-and a handler has no name to select. The compiler reports no error or warning.
+and a handler has no name to select. The compiler warns `WS014`, naming the handlers left out, and still compiles.
 The receiver gate is never emitted, so the events it would have caught go nowhere.
 
 This usually happens through an edit that narrows an import. Turning
@@ -258,7 +258,6 @@ The following words are reserved and cannot be used as identifiers:
 | `true` | Boolean literal |
 | `false` | Boolean literal |
 | `ref` | Reference type or ref-of expression |
-| `open` | Modifier for anonymous chips (start expanded) |
 | `type` | Record type declaration |
 | `static` | Persistent-variable modifier (inside handlers/mods) |
 | `await` | Suspend an exec chain until a signal fires |

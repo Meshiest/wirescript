@@ -578,8 +578,7 @@ var minions: Map<character, entity>
 on CharacterSpawned() -> (who) {
   let e = SpawnPrefab(prefab = $./minion.ws, lifetime = 0.0, limit = 64)
   minions.set(who, e)
-  owner = who              // a var: a constant argument emits no wire
-  e.SendCustomEvent("minion.init", owner)
+  e.SendCustomEvent("minion.init", who)
 }
 ```
 
@@ -590,13 +589,13 @@ closes over a reference that is set:
 var owner: character
 var ready: bool = false
 
-on CustomEvent("minion.init") -> (who: character) {
+on CustomEvent("minion.init", isObject = true) -> (who: character) {
   owner = who
   ready = true
   on ServerUptime() {
     if ready {
       // per-tick work for this one entity only
-      if owner.GetUserId() == "" { ReadBrickGrid().DestroySpawnedPrefab() }
+      if owner == null { ReadBrickGrid().DestroySpawnedPrefab() }
     }
   }
 }
