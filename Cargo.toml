@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/cli", "crates/lsp", "crates/wasm", "crates/wirescript", "crates/wirescript-ir"]
+members = [
+  "crates/cli",
+  "crates/lsp",
+  "crates/wasm",
+  "crates/wirescript",
+  "crates/wirescript-ir",
+]
 resolver = "3"
 
 [profile.release]
@@ -25,7 +31,7 @@ thiserror = "2.0.12"
 
 # Pull brdb from the sibling checkout so the microchip + schema work in brdb
 # flows straight through without a crates.io publish cycle.
-brdb = { path = "../brdb/crates/brdb", default-features = false }
-# brdb = { version = "0.11.0", default-features = false }
+# brdb = { path = "../brdb/crates/brdb", default-features = false }
+brdb = { version = "1.0.0", default-features = false }
 wirescript = { path = "crates/wirescript" }
 wirescript-ir = { path = "crates/wirescript-ir", default-features = false }
