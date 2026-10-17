@@ -42,6 +42,10 @@ vscode-package: lsp-wasi
     node editors/vscode/scripts/package-server.mjs
     cd editors/vscode && npx vsce package --no-dependencies --out brickadia-wirescript.vsix
 
+# Set the VS Code extension's version (package.json and its lockfile), e.g. `just vscode-version 0.1.1`
+vscode-version VERSION:
+    cd editors/vscode && npm version {{VERSION}} --no-git-tag-version
+
 # Open the packaged .vsix in a separate VS Code with its own profile (editors/vscode/.vscode-test), apart from your own setup
 vscode-try *FOLDER: vscode-package
     code --extensions-dir editors/vscode/.vscode-test/extensions --user-data-dir editors/vscode/.vscode-test/user --install-extension editors/vscode/brickadia-wirescript.vsix --force
