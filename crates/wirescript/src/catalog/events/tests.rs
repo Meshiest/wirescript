@@ -20,6 +20,19 @@
     }
 
     #[test]
+    fn brick_zone_events_bind_brick_and_character() {
+        for name in ["BrickChanged", "BrickRemoved"] {
+            let e = find_event(name).unwrap();
+            let data: Vec<_> = e.data.iter().map(|d| (d.name, d.port, d.ty.clone())).collect();
+            assert_eq!(
+                data,
+                [("brick", "Brick", Type::Brick), ("character", "Character", Type::Character)],
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn character_spawned_has_character_binding() {
         let e = find_event("CharacterSpawned").unwrap();
         assert_eq!(e.data.len(), 1);

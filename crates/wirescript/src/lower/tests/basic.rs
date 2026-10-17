@@ -617,6 +617,59 @@ fn array_methods_lower_to_their_gates() {
     }
 }
 
+/// `xs.join(sep)` is one Join gate reading the array through its
+/// `ArrayVarRef`, with a literal separator baked onto `Separator`.
+#[test]
+fn array_join_lowers_to_one_join_gate() {
+    let r = compile("var xs: int[]\nin t: exec\non t {\n  let s = xs.join(\", \")\n  BroadcastChatMessage(s)\n}");
+    assert_no_errors(&r);
+    let join = find_gate(&r, "BrickComponentType_Exec_ArrayVar_Join");
+    let arr = r
+        .module
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == join && w.target.port == WirePort::ArrayVarRef)
+        .expect("Join must have its ArrayVarRef wired");
+    assert_eq!(r.module.nodes[&arr.source.node_id].gate_class, "BrickComponentType_ArrayVar");
+    assert_eq!(
+        r.module.nodes[&join].properties.get(&crate::intern::intern("Separator")),
+        Some(&crate::ir::Literal::String(", ".into()))
+    );
+    assert!(
+        r.module.wires.iter().any(|w| w.source.node_id == join && w.source.port == WirePort::Output),
+        "the joined string must feed the chat message"
+    );
+}
+
+/// The separator is optional: `join()` leaves `Separator` unset.
+#[test]
+fn array_join_separator_is_optional() {
+    let r = compile("var xs: string[]\nin t: exec\non t {\n  BroadcastChatMessage(xs.join())\n}");
+    assert_no_errors(&r);
+    let join = find_gate(&r, "BrickComponentType_Exec_ArrayVar_Join");
+    assert!(r.module.nodes[&join].properties.get(&crate::intern::intern("Separator")).is_none());
+    assert!(!r.module.wires.iter().any(|w| w.target.node_id == join && w.target.port == WirePort::Separator));
+}
+
+/// `join` gives a `string` whatever the element type, and works on int,
+/// string and entity arrays.
+#[test]
+fn array_join_is_a_string_on_any_element_type() {
+    let r = compile(
+        "var a: int[]\nvar b: string[]\nvar c: entity[]\nvar msg: string\n\
+         mod say(s: string) { BroadcastChatMessage(s) }\nin t: exec\non t {\n  \
+         say(a.join(\",\"))\n  msg = \"b: \" .. b.join(\" \")\n  let s: string = c.join()\n  say(s)\n}",
+    );
+    assert_no_errors(&r);
+    assert_eq!(gate_count(&r, "BrickComponentType_Exec_ArrayVar_Join"), 3);
+    let bad = compile("var a: int[]\nin t: exec\non t {\n  let n: int = a.join()\n}");
+    assert!(
+        bad.diagnostics.iter().any(|d| d.code == "WS016" && d.message.contains("has type string")),
+        "a joined string is not an int: {:?}",
+        bad.diagnostics
+    );
+}
+
 #[test]
 fn array_constant_initializer_populates_node() {
     // `var a: int[] = [1, 2, -3]` carries its literals as an InitialValue
@@ -1084,7 +1137,7 @@ fn every_canonical_array_method_lowers() {
         a.push(1)\n  let p = a.pop()\n  let n = a.length()\n  a.remove(0)\n  a.insert(0, 9)\n  \
         a.clear()\n  let i = a.find(3)\n  let g = a.get(0)\n  a.sort()\n  a.reverse()\n  a.shuffle()\n  a.swap(0, 1)\n  \
         a.fill(3)\n  a.resize(4, 0)\n  let s = a.sum()\n  let lo = a.min()\n  let hi = a.max()\n  \
-        let av = a.average()\n  b.append(a)\n  b.copyFrom(a)\n  b.slice(a, 0, 2)\n  \
+        let av = a.average()\n  let j = a.join(\", \")\n  b.append(a)\n  b.copyFrom(a)\n  b.slice(a, 0, 2)\n  \
         a.fillFromPlayers()\n  a.fillFromTeam(ent)\n  a.fillFromZoneEntities(z)\n  \
         a.fillFromZonePlayers(z)\n  a.sortMultiple(b)\n}";
     let r = compile(src);
@@ -2538,6 +2591,36 @@ on ZoneEntered(zone = zoneA) -> { character: character } {
         "Exec",
         "zone event exec output port must be `Exec`, not `ExecOut`"
     );
+}
+
+/// `BrickChanged` / `BrickRemoved` bind the gate's `Brick` and `Character`
+/// outputs, and a use of either reads from that port.
+#[test]
+fn brick_zone_events_bind_brick_and_character() {
+    for (event, class) in [
+        ("BrickChanged", "BrickComponentType_Internal_ZoneEvent_BrickChanged"),
+        ("BrickRemoved", "BrickComponentType_Internal_ZoneEvent_BrickRemoved"),
+    ] {
+        let r = compile(&format!(
+            "in z: zone\nvar lastBrick: brick\nvar who: character\n\
+             on {event}(zone = z) -> (brick, character) {{\n  lastBrick = brick\n  who = character\n}}"
+        ));
+        assert_no_errors(&r);
+        let ev = find_gate(&r, class);
+        let mut ports: Vec<&str> = r
+            .module
+            .wires
+            .iter()
+            .filter(|w| {
+                w.source.node_id == ev
+                    && w.target.port == WirePort::Value
+                    && r.module.nodes[&w.target.node_id].gate_class == "BrickComponentType_Exec_Var_Set"
+            })
+            .map(|w| w.source.port.as_str())
+            .collect();
+        ports.sort_unstable();
+        assert_eq!(ports, ["Brick", "Character"], "{event}: bindings must wire from the gate's ports");
+    }
 }
 
 #[test]

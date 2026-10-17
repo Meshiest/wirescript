@@ -1,5 +1,10 @@
 # Wirescript Changelog
 
+## 2.0.3
+
+- `arr.join(separator?)` joins every element of an array into one `string`, with `separator` between them (the Join Array gate, also callable as `JoinArray(a, sep?)`)
+- `BrickChanged` and `BrickRemoved` now bind `brick` (the added, changed or deleted brick) and `character` (the player who did it): `on BrickChanged(zone = z) -> (brick, character) { ... }`.
+
 ## 2.0.2
 
 - Fixed: in the playground, a layout argument that set one `Vector2D` axis (`anchorY = 0.25` alone) wrote 0 to the other axis instead of the gate's default, and hover showed no gate defaults.

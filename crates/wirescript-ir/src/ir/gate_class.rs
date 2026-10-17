@@ -91,6 +91,7 @@ pub const ARRAY_RESIZE: &str = "BrickComponentType_Exec_ArrayVar_Resize";
 pub const ARRAY_SLICE: &str = "BrickComponentType_Exec_ArrayVar_Slice";
 pub const ARRAY_APPEND: &str = "BrickComponentType_Exec_ArrayVar_Append";
 pub const ARRAY_COPY_FROM: &str = "BrickComponentType_Exec_ArrayVar_CopyFrom";
+pub const ARRAY_JOIN: &str = "BrickComponentType_Exec_ArrayVar_Join";
 
 // Exec flow
 pub const UNION: &str = "BrickComponentType_Exec_Union";

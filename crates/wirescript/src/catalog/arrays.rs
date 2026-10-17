@@ -92,6 +92,9 @@ pub static ARRAY_METHODS: &[ArrayMethod] = &[
     // The gate's `Value` is declared a float whatever the element type: the
     // mean of an int array is fractional.
     ArrayMethod { name: "average", mutates: false, gate: gc::ARRAY_AVERAGE, doc: "Mean of all elements", lowering: Lowering::Generic { args: &[], result: P::Value, port_types: &[(P::Value, Type::Float)] } },
+    // The gate declares `Separator` and `Output` `any`, but saves both as
+    // strings: every element is converted to text.
+    ArrayMethod { name: "join", mutates: false, gate: gc::ARRAY_JOIN, doc: "Join every element into one string, with separator between them", lowering: Lowering::Generic { args: &[opt("separator", P::Separator, Str)], result: P::Output, port_types: &[(P::Separator, Type::String), (P::Output, Type::String)] } },
     ArrayMethod { name: "append", mutates: true, gate: gc::ARRAY_APPEND, doc: "Append all elements of another array", lowering: generic(&[arg("source", P::SourceRef, ArgKind::ArrayRef(Elem))], P::ExecOut) },
     ArrayMethod { name: "copyFrom", mutates: true, gate: gc::ARRAY_COPY_FROM, doc: "Replace contents with a copy of another array", lowering: generic(&[arg("source", P::SourceRef, ArgKind::ArrayRef(Elem))], P::ExecOut) },
     ArrayMethod { name: "slice", mutates: true, gate: gc::ARRAY_SLICE, doc: "Copy source[start..start+count] into this array", lowering: generic(&[arg("source", P::SourceRef, ArgKind::ArrayRef(Elem)), val("start", P::Start, Int), val("count", P::Count, Int)], P::ExecOut) },

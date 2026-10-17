@@ -50,6 +50,7 @@ pub const READERS: &[&str] = &[
     gc::ARRAY_MIN,
     gc::ARRAY_MAX,
     gc::ARRAY_AVERAGE,
+    gc::ARRAY_JOIN,
     gc::MAP_GET,
     gc::MAP_HAS,
     gc::MAP_GET_LENGTH,

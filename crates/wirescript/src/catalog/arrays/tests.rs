@@ -47,6 +47,19 @@
         assert_eq!(fz.params[1].ty, Type::String);
     }
 
+    /// `join` reads the gate's `Output`, a string whatever the element type,
+    /// and its separator is an optional string.
+    #[test]
+    fn join_is_a_string_with_an_optional_separator() {
+        for elem in [Type::Int, Type::String, Type::Entity] {
+            assert_eq!(array_return_type("join", &elem), Some(Type::String));
+            let sig = array_method("join").unwrap().signature(&elem);
+            assert_eq!(sig.params.len(), 1);
+            assert!(sig.params[0].optional);
+            assert_eq!(sig.params[0].ty, Type::String);
+        }
+    }
+
     /// `average` reads the gate's `Value`, which the gate declares a float
     /// whatever the element type: the mean of an int array is fractional.
     #[test]

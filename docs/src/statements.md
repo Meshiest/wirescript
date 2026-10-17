@@ -2207,8 +2207,8 @@ These events are available as handler triggers. Parameters listed can be bound u
 | `ProjectileZoneLeft` | `character: character`, `projectile: entity`, `weapon: entity`, `weaponName: string` | A projectile left a zone |
 | `CharacterDamaged` | `character: character`, `damage: float`, `attacker: character`, `attackerWeapon: entity`, `attackerWeaponName: string` | A character took damage |
 | `CharacterFiredWeapon` | `character: character`, `direction: vector`, `start: vector`, `weapon: entity`, `weaponName: string` | A character fired a weapon (`start` / `direction` are the shot ray's origin and aim) |
-| `BrickChanged` | (none) | A brick was changed in a zone |
-| `BrickRemoved` | (none) | A brick was removed from a zone |
+| `BrickChanged` | `brick: brick`, `character: character` | A brick was added or changed in a zone (`character` is the player who changed it) |
+| `BrickRemoved` | `brick: brick`, `character: character` | A brick was removed from a zone (`brick` is the deleted brick, `character` the player who removed it) |
 | `ChatCommand` | `controller: controller`, `arguments: string` | A registered chat command was run. Takes config args for the command name + help text (see [above](#triggering-on-built-in-events)) |
 
 ## `return`

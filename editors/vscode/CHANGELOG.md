@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- Wirescript 2.0.3: `arr.join(separator?)`, and `BrickChanged` / `BrickRemoved`
+  bind `brick` and `character`.
+
 ## 0.1.0
 
 First release.

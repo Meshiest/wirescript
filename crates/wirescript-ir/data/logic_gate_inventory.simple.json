@@ -2048,6 +2048,65 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Exec_ArrayVar_Join",
+      "brickDisplayName": "Join Array",
+      "brickSummary": "Joins every element of the connected array into one string, with Separator between them, written as each would convert to a string. Use it to build lists, rows of text, or a string edited character by character.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_Exec_ArrayVar_Join",
+        "displayName": "Join Array",
+        "description": "Joins every element of the connected array into one string, with Separator between them, written as each would convert to a string. Use it to build lists, rows of text, or a string edited character by character.",
+        "searchTags": "",
+        "category": "Arrays",
+        "kind": "exec",
+        "family": "ArrayVar",
+        "inputs": [
+          {
+            "name": "ArrayVarRef",
+            "displayName": "Array Var Ref",
+            "tooltip": "",
+            "type": "arrayVarRef",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Separator",
+            "displayName": "Separator",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Output",
+            "displayName": "Output",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Exec_ArrayVar_Max",
       "brickDisplayName": "Array Maximum",
       "brickSummary": "Outputs the highest value in the connected array. Is Empty reports when there is no result and Value is its default; use this to find the best score, greatest speed, or largest amount.",
@@ -18000,7 +18059,7 @@
     {
       "brickAsset": "B_1x1_Gate_Internal_ZoneEvent_BrickChanged",
       "brickDisplayName": "Brick Changed In Zone Event",
-      "brickSummary": "Triggers when a brick is added or changed inside the connected zone. Use it to react to building or editing within an area.",
+      "brickSummary": "Triggers when a brick is added or changed inside the connected zone, outputting the brick and the player who changed it. Use it to react to building or editing within an area.",
       "halfSize": {
         "X": 5,
         "Y": 5,
@@ -18009,7 +18068,7 @@
       "component": {
         "class": "BrickComponentType_Internal_ZoneEvent_BrickChanged",
         "displayName": "Brick Changed In Zone Event",
-        "description": "Triggers when a brick is added or changed inside the connected zone. Use it to react to building or editing within an area.",
+        "description": "Triggers when a brick is added or changed inside the connected zone, outputting the brick and the player who changed it. Use it to react to building or editing within an area.",
         "searchTags": "brick changed change edited edit added add placed place built build zone area event",
         "category": "Zones",
         "kind": "internal",
@@ -18025,6 +18084,20 @@
         ],
         "outputs": [
           {
+            "name": "Brick",
+            "displayName": "Brick",
+            "tooltip": "",
+            "type": "brick",
+            "composite": null
+          },
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
             "name": "Exec",
             "displayName": "Exec",
             "tooltip": "",
@@ -18038,7 +18111,7 @@
     {
       "brickAsset": "B_1x1_Gate_Internal_ZoneEvent_BrickRemoved",
       "brickDisplayName": "Brick Removed From Zone Event",
-      "brickSummary": "Triggers when a brick is removed from inside the connected zone. Use it to detect demolition or enforce build-area rules.",
+      "brickSummary": "Triggers when a brick is removed from inside the connected zone, outputting the deleted brick and the player who removed it. Use it to detect demolition or enforce build-area rules.",
       "halfSize": {
         "X": 5,
         "Y": 5,
@@ -18047,7 +18120,7 @@
       "component": {
         "class": "BrickComponentType_Internal_ZoneEvent_BrickRemoved",
         "displayName": "Brick Removed From Zone Event",
-        "description": "Triggers when a brick is removed from inside the connected zone. Use it to detect demolition or enforce build-area rules.",
+        "description": "Triggers when a brick is removed from inside the connected zone, outputting the deleted brick and the player who removed it. Use it to detect demolition or enforce build-area rules.",
         "searchTags": "brick removed remove deleted delete destroyed destroy demolition zone area event",
         "category": "Zones",
         "kind": "internal",
@@ -18062,6 +18135,20 @@
           }
         ],
         "outputs": [
+          {
+            "name": "Brick",
+            "displayName": "Brick",
+            "tooltip": "",
+            "type": "brick",
+            "composite": null
+          },
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
           {
             "name": "Exec",
             "displayName": "Exec",

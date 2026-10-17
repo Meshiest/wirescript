@@ -398,6 +398,7 @@ rejected with `WS050`. See [Records as storage](types.md#records-as-storage).
 | `arr.sum()` | `() -> T` | Sum of elements |
 | `arr.min()` / `arr.max()` | `() -> {Value: T, IsEmpty: bool}` | Smallest / largest element (auto-unwraps to `Value`) |
 | `arr.average()` | `() -> {Value: float, IsEmpty: bool}` | Mean of elements (auto-unwraps to `Value`) |
+| `arr.join(separator?)` | `(separator?: string) -> string` | Join every element into one string, each converted as it would be to a string, with `separator` between them (none when omitted) |
 | `arr.append(source)` | `(source: T[])` | Append all elements of another array |
 | `arr.copyFrom(source)` | `(source: T[])` | Replace contents with a copy of another array |
 | `arr.slice(source, start, count)` | `(source: T[], start: int, count: int) -> bool` | Copy `source[start..start+count]` into this array; gives `true` if the range was out of bounds |
@@ -1966,6 +1967,7 @@ the same operation; the receiver is the first argument:
 | `ClearArray(a)` | `a.clear()` | | `AverageArray(a)` | `a.average()` |
 | `FillArray(a, x)` | `a.fill(x)` | | `ArrayMaximum(a)` | `a.max()` |
 | `ResizeArray(a, n, x)` | `a.resize(n, x)` | | `ArrayMinimum(a)` | `a.min()` |
+| `JoinArray(a, sep?)` | `a.join(sep?)` | | | |
 
 **Array fills** (Gamemode / Zone gates, the function-call twins of the
 [`fillFrom*` array methods](#zone-array-fills-exec-array-methods)):

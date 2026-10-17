@@ -265,17 +265,21 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             "BrickComponentType_Internal_CharacterZoneEvent_Left",
             vec![character("character", "Character")],
         ),
-        // The brick zone events carry no data payload — the gate exposes only
-        // its exec pulse (no `Brick` output), so there's no `brick` binding.
         mk_zone(
             "BrickChanged",
             "BrickComponentType_Internal_ZoneEvent_BrickChanged",
-            vec![],
+            vec![
+                EventDataBinding { name: "brick", port: "Brick", ty: Type::Brick },
+                character("character", "Character"),
+            ],
         ),
         mk_zone(
             "BrickRemoved",
             "BrickComponentType_Internal_ZoneEvent_BrickRemoved",
-            vec![],
+            vec![
+                EventDataBinding { name: "brick", port: "Brick", ty: Type::Brick },
+                character("character", "Character"),
+            ],
         ),
         mk(
             "CharacterDamaged",

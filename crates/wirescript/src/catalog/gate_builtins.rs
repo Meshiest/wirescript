@@ -37,6 +37,7 @@ const METHODS: &[(&str, &str)] = &[
     ("AverageArray", "average"),
     ("ArrayMaximum", "max"),
     ("ArrayMinimum", "min"),
+    ("JoinArray", "join"),
     // Array fills
     ("FillArrayFromPlayers", "fillFromPlayers"),
     ("FillArrayFromTeamMembers", "fillFromTeam"),
