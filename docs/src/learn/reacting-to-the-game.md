@@ -68,7 +68,9 @@ A display name is chosen by the player and can contain `<`, which text
 displays read as the start of formatting. `import { escape } from "sanitize"`
 brings in one helper from the lessons' starter library, `sanitize.ws`, which
 makes a name safe to show. The Compile button fetches the library with the
-example. Use it whenever a circuit shows text a player chose.
+example; to build it in the playground or VS Code, save
+[the starter library](tools.md#the-starter-library) beside your file. Use it
+whenever a circuit shows text a player chose.
 
 ## Deciding with `if`
 

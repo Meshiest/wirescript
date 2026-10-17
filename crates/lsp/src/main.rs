@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+#[cfg(not(target_family = "wasm"))]
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -12,7 +13,7 @@ use wirescript::analysis::text::Ruler;
 use wirescript::analysis::{
     asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
     cursor_byte_offset, field_name_at, fill_match_arms_at, fill_record_at, find_asset_refs,
-    find_name_range, format_wirescript, hover_at, prepare_rename_at, references_at,
+    find_name_range, format_with, hover_at, prepare_rename_at, references_at, FormatOptions,
     references_to_export, rename_edit_text, semantic_tokens, word_at, AssetRef, CrossFile,
     InlayHintKind, RefNs, RefSite, RefTarget, ResourceEstimate, SemTokenKind, SymbolDef, TextRange,
     TypeMap, VarReadContextMap,
@@ -597,6 +598,9 @@ fn to_lsp_diagnostic(ruler: &Ruler, d: &wirescript::diagnostic::Diagnostic) -> D
             _ => DiagnosticSeverity::INFORMATION,
         }),
         code: Some(NumberOrString::String(d.code.clone())),
+        code_description: wirescript::analysis::doc_url(wirescript::analysis::Doc::Diagnostic(&d.code))
+            .and_then(|url| Url::parse(&url).ok())
+            .map(|href| CodeDescription { href }),
         source: Some("wirescript".into()),
         message: d.message.clone(),
         ..Default::default()
@@ -1003,9 +1007,8 @@ impl LanguageServer for Backend {
                 .unwrap_or(false),
             std::sync::atomic::Ordering::Relaxed,
         );
-        // A client that brings its own formatter (the VS Code extension uses
-        // its prettier plugin) can opt out of server-side formatting so the
-        // editor doesn't list two identical providers.
+        // A client that brings its own formatter can opt out of server-side
+        // formatting so the editor doesn't list two providers.
         let provide_formatting = params
             .initialization_options
             .as_ref()
@@ -1719,16 +1722,20 @@ impl LanguageServer for Backend {
             .first()
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        // Without an output path the save comes back in the response instead
+        // (base64): a WASI server sees only the mounted workspace, not the
+        // editor's temp folder.
         let out_path = params
             .arguments
             .get(1)
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if uri_str.is_empty() || out_path.is_empty() {
+        if uri_str.is_empty() {
             return Err(tower_lsp::jsonrpc::Error::invalid_params(
-                "expected [uri, outputPath]",
+                "expected [uri, outputPath?]",
             ));
         }
+        let destination = if out_path.is_empty() { "the editor" } else { out_path };
 
         let uri = Url::parse(uri_str)
             .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("invalid URI"))?;
@@ -1744,7 +1751,7 @@ impl LanguageServer for Backend {
         self.client
             .log_message(
                 MessageType::INFO,
-                format!("[compile] start {file} -> {out_path}"),
+                format!("[compile] start {file} -> {destination}"),
             )
             .await;
         let started = std::time::Instant::now();
@@ -1874,15 +1881,17 @@ impl LanguageServer for Backend {
             }
         };
 
-        if let Err(e) = std::fs::write(out_path, &result.brz) {
-            self.client
-                .log_message(MessageType::ERROR, format!("[compile] write failed: {e}"))
-                .await;
-            return Err(tower_lsp::jsonrpc::Error {
-                code: tower_lsp::jsonrpc::ErrorCode::InternalError,
-                message: format!("write failed: {e}").into(),
-                data: None,
-            });
+        if !out_path.is_empty() {
+            if let Err(e) = std::fs::write(out_path, &result.brz) {
+                self.client
+                    .log_message(MessageType::ERROR, format!("[compile] write failed: {e}"))
+                    .await;
+                return Err(tower_lsp::jsonrpc::Error {
+                    code: tower_lsp::jsonrpc::ErrorCode::InternalError,
+                    message: format!("write failed: {e}").into(),
+                    data: None,
+                });
+            }
         }
 
         let warnings = result
@@ -1906,7 +1915,7 @@ impl LanguageServer for Backend {
             .log_message(
                 MessageType::INFO,
                 format!(
-                    "[compile] ok -> {out_path} ({} bytes, {} warning{}, {}ms)",
+                    "[compile] ok -> {destination} ({} bytes, {} warning{}, {}ms)",
                     result.brz.len(),
                     warnings,
                     if warnings == 1 { "" } else { "s" },
@@ -1915,6 +1924,9 @@ impl LanguageServer for Backend {
             )
             .await;
 
+        if out_path.is_empty() {
+            return Ok(Some(serde_json::json!({ "ok": true, "brz": base64(&result.brz) })));
+        }
         Ok(Some(serde_json::json!({ "ok": true, "path": out_path })))
     }
 
@@ -1958,15 +1970,15 @@ impl LanguageServer for Backend {
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document.uri;
-        let tab = if params.options.insert_spaces {
-            " ".repeat(params.options.tab_size as usize)
-        } else {
-            "\t".to_string()
-        };
+        // The editor's indentation, then whatever `.editorconfig` sets for this
+        // file (indentation, print width, line endings, final newline).
+        let opts = FormatOptions::default()
+            .indent_with(!params.options.insert_spaces, params.options.tab_size as usize)
+            .with_editorconfig(std::path::Path::new(&uri_to_file_string(uri)));
 
         if let Ok(docs) = self.docs.lock() {
             if let Some(doc) = docs.get(uri) {
-                let formatted = format_wirescript(&doc.source, &tab);
+                let formatted = format_with(&doc.source, &opts);
                 if formatted == doc.source {
                     return Ok(None);
                 }
@@ -2000,10 +2012,40 @@ impl LanguageServer for Backend {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
+/// Stack for the runtime's threads. Every request handler runs inside the
+/// `serve` future and walks user ASTs recursively (clone, drop, hover,
+/// references), so a deep program must not outgrow it. Native reserves the
+/// address space and commits pages as touched. The WASI build's main thread
+/// gets the same size from `build.rs`.
+const HANDLER_STACK: usize = 64 * 1024 * 1024;
+
+fn main() {
+    #[cfg(not(target_family = "wasm"))]
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    #[cfg(target_family = "wasm")]
+    let mut builder = tokio::runtime::Builder::new_current_thread();
+    let rt = builder
+        .enable_all()
+        .thread_stack_size(HANDLER_STACK)
+        .build()
+        .expect("failed to build the tokio runtime");
+    // `block_on` polls its future on the calling thread, and a native main
+    // thread's stack is 1 MiB on Windows, so the server goes to a worker.
+    #[cfg(not(target_family = "wasm"))]
+    rt.block_on(async { tokio::spawn(serve()).await.expect("language server task panicked") });
+    #[cfg(target_family = "wasm")]
+    rt.block_on(serve());
+    // `serve` returns on the client's `exit`. Dropping the runtime would wait
+    // for the stdin reader, blocked in a read that never returns, so the
+    // process ends here. A WASI host never kills the server itself.
+    std::process::exit(0);
+}
+
+async fn serve() {
+    #[cfg(not(target_family = "wasm"))]
+    let (stdin, stdout) = (tokio::io::stdin(), tokio::io::stdout());
+    #[cfg(target_family = "wasm")]
+    let (stdin, stdout) = (wasi_stdio::stdin(), wasi_stdio::Stdout);
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
@@ -2065,10 +2107,28 @@ fn compile_diagnostic_items(
                 ),
                 "severity": severity,
                 "code": d.code,
+                "docUrl": wirescript::analysis::doc_url(wirescript::analysis::Doc::Diagnostic(&d.code)),
                 "message": d.message,
             })
         })
         .collect()
+}
+
+/// Standard base64 (RFC 4648, padded), for returning a save in a JSON response.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i)) as usize & 63] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// Inverse of [`cursor_byte_offset`]: a byte `offset` back to a zero-based
@@ -2181,6 +2241,9 @@ fn completion_item(ruler: &Ruler, line: usize, col: usize, c: wirescript::analys
 
 #[cfg(test)]
 use wirescript::analysis::match_arm_head_scrutinee_at;
+
+#[cfg(target_family = "wasm")]
+mod wasi_stdio;
 
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,6 @@
 [package]
 name = "wirescript"
-version = "2.0.0"
+version = "2.0.2"
 edition = "2024"
 
 [lib]
@@ -29,6 +29,8 @@ serde_json = "1"
 petgraph = "0.7"
 bitflags = "2"
 lasso = { version = "0.7", features = ["multi-threaded"] }
+# The formatter reads `.editorconfig` (indent, line length, line endings).
+ec4rs = "1.2"
 dhat = { version = "0.3", optional = true }
 
 # Native-only: global allocator for the check bin + examples (never wasm32).

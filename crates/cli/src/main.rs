@@ -58,6 +58,18 @@ enum Command {
         #[arg(long, conflicts_with = "no_fold")]
         fold: bool,
     },
+    /// Format wirescript files in place. Each file follows the `.editorconfig`
+    /// files that govern it (indentation, `max_line_length`, `end_of_line`,
+    /// `insert_final_newline`).
+    Fmt {
+        /// Files, or directories to search for `.ws` files.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+
+        /// Write nothing; list the files that are not formatted and fail if any.
+        #[arg(long)]
+        check: bool,
+    },
     /// Build a .brdb or .brz save from a `.wsir` program.
     Assemble {
         /// The `.wsir` file.
@@ -141,7 +153,61 @@ fn run() -> Result<(), Box<dyn Error>> {
         Command::Assemble { source, output, place, check_roundtrip, no_validate } => {
             run_assemble(source, output, &place, check_roundtrip, !no_validate)
         }
+        Command::Fmt { paths, check } => run_fmt(&paths, check),
     }
+}
+
+// ---------- fmt ----------
+
+/// The `.ws` files in `path`: itself if a file, else every one beneath it,
+/// skipping hidden directories, `target` and `node_modules`.
+fn ws_files(path: &std::path::Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    if !path.is_dir() {
+        out.push(path.to_path_buf());
+        return Ok(());
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(path)?.collect::<Result<_, _>>()?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let p = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if p.is_dir() {
+            if !name.starts_with('.') && name != "target" && name != "node_modules" {
+                ws_files(&p, out)?;
+            }
+        } else if name.ends_with(".ws") {
+            out.push(p);
+        }
+    }
+    Ok(())
+}
+
+fn run_fmt(paths: &[PathBuf], check: bool) -> Result<(), Box<dyn Error>> {
+    let mut files = Vec::new();
+    for path in paths {
+        ws_files(path, &mut files).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    }
+    let mut unformatted = 0usize;
+    for file in &files {
+        let src = std::fs::read_to_string(file).map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+        let opts = wirescript::analysis::FormatOptions::default().with_editorconfig(file);
+        let formatted = wirescript::analysis::format_with(&src, &opts);
+        if formatted == src {
+            continue;
+        }
+        unformatted += 1;
+        if check {
+            println!("{}", file.display());
+        } else {
+            std::fs::write(file, formatted).map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+            println!("formatted {}", file.display());
+        }
+    }
+    if check && unformatted > 0 {
+        return Err(format!("{unformatted} of {} file(s) not formatted", files.len()).into());
+    }
+    Ok(())
 }
 
 // ---------- assemble ----------

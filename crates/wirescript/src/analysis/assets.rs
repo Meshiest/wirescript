@@ -106,7 +106,7 @@ pub fn environment_completions(source: &str, line: usize, col: usize) -> Option<
                     .map(|p| {
                         let detail = match properties::property_type(p) {
                             PropertyType::Value(t) => crate::analysis::types::type_str(&t),
-                            PropertyType::Enum(en) => format!("int ({en})"),
+                            PropertyType::Enum(en) => format!("int ({})", crate::catalog::clean_game_enum_type(&en)),
                             PropertyType::Unsupported(why) => format!("unsupported: {why}"),
                         };
                         (p.name.clone(), detail)

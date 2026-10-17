@@ -10,6 +10,7 @@ use super::types::{type_str, collection_kind, CollectionKind};
 use super::text::{after_char, char_col_to_byte, find_enclosing_call, word_at};
 use super::symbols::SymbolDef;
 use super::gate_docs::gate_docs;
+use super::doc_links::{doc_url, with_doc_link, Doc};
 use super::resource_estimate::{ResourceEstimate, lookup_estimate};
 
 enum EstimateKind { Chip, Mod, Fn, Scope }
@@ -483,30 +484,57 @@ pub fn hover_at(
     // `:name` atom literals aren't identifier words either — show the
     // compile-time `int` they hash to.
     if let Some(h) = hover_atom(source, file, line, col) {
-        return Some(h);
+        return Some(with_doc_link(h, Doc::Topic("atoms")));
     }
 
     let word = word_at(source, line, col)?;
+
+    // A word in a comment or in a string's own text is prose, not a name,
+    // even when it is spelled like one. The one exception is a quoted enum
+    // setting (`function = "Bounce"`).
+    match super::format::text_kind_at(source, line, col) {
+        super::format::TextKind::Comment => return None,
+        super::format::TextKind::Str => return hover_config_enum_value(source, &word, line, col),
+        super::format::TextKind::Code => {}
+    }
 
     // `@color`, `@material`, `@label`: the word after an `@` is the
     // annotation, never a symbol that happens to share its spelling (the
     // `color` type, a pin named `material`).
     if annotation_word_at(source, line, col) {
-        return hover_annotation(&word);
+        return hover_annotation(&word).map(|h| with_doc_link(h, Doc::Annotation(&word)));
+    }
+
+    if let Some(h) = hover_environment_path(source, symbols, line, col) {
+        return Some(h);
     }
 
     None
-        .or_else(|| hover_if_keyword(source, file, &word, if_contexts, resource_estimates, line, col))
+        .or_else(|| {
+            hover_if_keyword(source, file, &word, if_contexts, resource_estimates, line, col)
+                .map(|h| with_doc_link(h, Doc::Keyword("if")))
+        })
         .or_else(|| hover_named_param(source, &word, line, col))
         .or_else(|| hover_event_config_param(source, &word, line, col))
         .or_else(|| hover_data_driven_config(source, &word, line, col))
         .or_else(|| hover_config_enum_value(source, &word, line, col))
-        .or_else(|| hover_collection_method(source, symbols, &word, line, col))
-        .or_else(|| hover_custom_event(source, file, ast, &word, type_map, line, col))
-        .or_else(|| hover_builtin_event(&word))
-        .or_else(|| hover_builtin_call(source, &word, line, col))
-        .or_else(|| hover_chip_or_mod_keyword(source, &word, symbols, resource_estimates, line))
-        .or_else(|| hover_on_keyword(source, &word, resource_estimates, line))
+        .or_else(|| {
+            hover_collection_method(source, symbols, &word, line, col).map(|h| {
+                let topic = if h.starts_with("**map.") { "mapMethods" } else { "arrayMethods" };
+                with_doc_link(h, Doc::Topic(topic))
+            })
+        })
+        .or_else(|| {
+            hover_custom_event(source, file, ast, &word, type_map, line, col)
+                .map(|h| with_doc_link(h, Doc::Topic("customEvents")))
+        })
+        .or_else(|| hover_builtin_event(&word).map(|h| with_doc_link(h, event_doc(&word))))
+        .or_else(|| hover_builtin_call(source, &word, line, col).map(|h| with_doc_link(h, Doc::Builtin(&word))))
+        .or_else(|| {
+            hover_chip_or_mod_keyword(source, &word, symbols, resource_estimates, line)
+                .map(|h| with_doc_link(h, Doc::Keyword(&word)))
+        })
+        .or_else(|| hover_on_keyword(source, &word, resource_estimates, line).map(|h| with_doc_link(h, Doc::Keyword("on"))))
         .or_else(|| {
             hover_record_or_type_field(
                 source,
@@ -530,6 +558,80 @@ pub fn hover_at(
         .or_else(|| hover_user_symbol(source, file, ast, symbols, doc_comments, var_read_contexts, resource_estimates, &word, line, col))
         .or_else(|| hover_enum_type_name(source, ast, &word))
         .or_else(|| hover_type_or_class(&word))
+}
+
+/// Hover for a segment of `Environment.<group>.<property>`: the builtin
+/// itself, an environment group, or a property with the type it reads and
+/// writes as. Read from the line's text like environment completion, so it
+/// works inside `${...}` too. A binding of the program's own named
+/// `Environment` shadows the builtin, as in the type checker.
+fn hover_environment_path(source: &str, symbols: &[SymbolDef], line: usize, col: usize) -> Option<String> {
+    use crate::catalog::properties::{property_type, PropertyType};
+    use crate::typecheck::props::{environment_by_label, environment_names, ENVIRONMENT};
+    let l = source.lines().nth(line)?;
+    let end = word_end_at_byte(l, char_col_to_byte(l, col));
+    let start = l[..end]
+        .rfind(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == '.'))
+        .map(|i| after_char(l, i))
+        .unwrap_or(0);
+    let segments: Vec<&str> = l[start..end].split('.').collect();
+    if segments.first() != Some(&ENVIRONMENT) || symbols.iter().any(|s| s.name == ENVIRONMENT) {
+        return None;
+    }
+    match segments.as_slice() {
+        [_] => {
+            let groups: Vec<String> = environment_names().iter().map(|n| format!("`{n}`")).collect();
+            let hover = format!(
+                "```wirescript\n{ENVIRONMENT}\n```\nThe world's environment settings. Reading \
+                 `{ENVIRONMENT}.<group>.<property>` runs a **Get Environment Property** gate and \
+                 assigning it a **Set Environment Property** gate, both in an exec context.\n\n\
+                 Groups: {}.",
+                groups.join(", ")
+            );
+            Some(with_doc_link(hover, Doc::Topic("environment")))
+        }
+        [_, group] => {
+            let e = environment_by_label(group)?;
+            let names: Vec<String> = e.properties.iter().map(|p| format!("`{}`", p.name)).collect();
+            let hover = format!(
+                "```wirescript\n{ENVIRONMENT}.{group}\n```\n**Environment group**, {} properties: {}.",
+                e.properties.len(),
+                names.join(", ")
+            );
+            Some(with_doc_link(hover, Doc::Environment(group)))
+        }
+        [_, group, property] => {
+            let p = environment_by_label(group)?.property(property)?;
+            let (ty, note) = match property_type(p) {
+                PropertyType::Value(t) => (type_str(&t), String::new()),
+                PropertyType::Enum(raw) => {
+                    let en = crate::catalog::clean_game_enum_type(&raw);
+                    (format!("int ({en})"), format!(" It reads as an `int` and takes a member such as `{en}.<member>`."))
+                }
+                PropertyType::Unsupported(why) => {
+                    ("unsupported".to_string(), format!(" It is {why}, so a program can't read or write it."))
+                }
+            };
+            let hover = format!(
+                "```wirescript\n{ENVIRONMENT}.{group}.{property}: {ty}\n```\n**Environment setting.** Reading it \
+                 runs a **Get Environment Property** gate, assigning it a **Set Environment Property** gate.{note}"
+            );
+            Some(with_doc_link(hover, Doc::Environment(group)))
+        }
+        _ => None,
+    }
+}
+
+/// Where a built-in event's hover links: its own section when it has one
+/// (`Clock`), else the section on triggering built-in events.
+fn event_doc(word: &str) -> Doc<'_> {
+    if doc_url(Doc::Builtin(word)).is_some() {
+        Doc::Builtin(word)
+    } else if matches!(word, "CustomEvent" | "GlobalCustomEvent") {
+        Doc::Topic("customEvents")
+    } else {
+        Doc::Topic("builtinEvents")
+    }
 }
 
 /// A short description for a built-in primitive type name.
@@ -564,13 +666,14 @@ fn builtin_type_desc(word: &str) -> Option<&'static str> {
 fn hover_type_or_class(word: &str) -> Option<String> {
     if let Some(members) = crate::types::classes::class_mask(word) {
         let names: Vec<String> = members.iter().map(type_str).collect();
-        return Some(format!(
+        let hover = format!(
             "```wirescript\n{word}  (generic constraint class)\n```\nA bound for a generic type parameter: `<T: {word}>` restricts `T` to one of: {}.",
             names.join(", ")
-        ));
+        );
+        return Some(with_doc_link(hover, Doc::Topic("constraintClass")));
     }
     let desc = builtin_type_desc(word)?;
-    Some(format!("```wirescript\n{word}\n```\n{desc}"))
+    Some(with_doc_link(format!("```wirescript\n{word}\n```\n{desc}"), Doc::Type(word)))
 }
 
 /// Hover for a `:name` atom literal under the cursor: the compile-time `int`
@@ -651,9 +754,9 @@ fn hover_annotation(name: &str) -> Option<String> {
 fn hover_asset_ref(source: &str, file: &str, line: usize, col: usize) -> Option<String> {
     let r = super::text::asset_ref_at(source, line, col)?;
     Some(if r.is_file() {
-        render_prefab_file_hover(&r.path, file)
+        with_doc_link(render_prefab_file_hover(&r.path, file), Doc::Topic("prefabs"))
     } else {
-        render_asset_hover(&r.path)
+        with_doc_link(render_asset_hover(&r.path), Doc::Topic("assets"))
     })
 }
 
@@ -815,7 +918,6 @@ fn scalar_kind_of(ty: &Type) -> Option<&'static str> {
 /// then read the field out of `STRUCT_DEFAULTS` - the same source of truth the
 /// emitter bakes from. `None` when the gate has no data struct, or that struct
 /// no such field.
-#[cfg(feature = "brdb-full")]
 fn struct_field_default(gate_class: &str, field: &str) -> Option<&'static dyn brdb::AsBrdbValue> {
     let strct = brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
         .iter()
@@ -832,7 +934,6 @@ fn struct_field_default(gate_class: &str, field: &str) -> Option<&'static dyn br
 /// [`struct_field_default`]'s value is read in its declared scalar `kind`
 /// (`bool`/`int`/`float`/`string`). `None` when the gate registers no such
 /// default, or the kind is non-scalar.
-#[cfg(feature = "brdb-full")]
 fn gate_field_default(gate_class: &str, field: &str, kind: &str) -> Option<String> {
     let value = struct_field_default(gate_class, field)?;
     // Enum-typed field: the default is an index; show the member name.
@@ -857,11 +958,6 @@ fn gate_field_default(gate_class: &str, field: &str, kind: &str) -> Option<Strin
     }
 }
 
-#[cfg(not(feature = "brdb-full"))]
-fn gate_field_default(_gate_class: &str, _field: &str, _kind: &str) -> Option<String> {
-    None
-}
-
 /// A gate data-struct field's registered COMPOSITE default (vector / color /
 /// rotator / quat), rendered for display. Reads the struct default the same way
 /// [`gate_field_default`] reads scalars, then pulls the composite's named
@@ -870,7 +966,6 @@ fn gate_field_default(_gate_class: &str, _field: &str, _kind: &str) -> Option<St
 /// their sRGB hex (`#181425`); vectors/rotators show a `Vec(...)`/`Rotation(...)`
 /// constructor. `None` when the gate registers no such default or `ty` isn't a
 /// composite the emitter can bake.
-#[cfg(feature = "brdb-full")]
 fn composite_field_default(gate_class: &str, field: &str, ty: &Type) -> Option<String> {
     let value = struct_field_default(gate_class, field)?;
     let schema = brdb::schemas::bricks_components_schema_max();
@@ -918,11 +1013,6 @@ fn composite_field_default(gate_class: &str, field: &str, ty: &Type) -> Option<S
     }
 }
 
-#[cfg(not(feature = "brdb-full"))]
-fn composite_field_default(_gate_class: &str, _field: &str, _ty: &Type) -> Option<String> {
-    None
-}
-
 /// A gate field's default rendered for hover — a `Vector2D` sub-port axis
 /// (`Position.X`) via [`vector2d_subport_default`], a scalar via
 /// [`gate_field_default`], or a composite (vector/color/rotator/quat) via
@@ -941,7 +1031,6 @@ fn field_default_display(gate_class: &str, field: &str, ty: &Type) -> Option<Str
 /// field, rendered for a per-axis layout param hover (`anchorY` -> `Anchor.Y` ->
 /// `0.5`). Reads the parent's composite default the same way
 /// [`composite_field_default`] does.
-#[cfg(feature = "brdb-full")]
 fn vector2d_subport_default(gate_class: &str, parent: &str, axis: &str) -> Option<String> {
     let value = struct_field_default(gate_class, parent)?;
     let schema = brdb::schemas::bricks_components_schema_max();
@@ -954,20 +1043,13 @@ fn vector2d_subport_default(gate_class: &str, parent: &str, axis: &str) -> Optio
     Some(fnum(f))
 }
 
-#[cfg(not(feature = "brdb-full"))]
-fn vector2d_subport_default(_gate_class: &str, _parent: &str, _axis: &str) -> Option<String> {
-    None
-}
-
 /// Render a float without a trailing `.0`, matching the scalar-default style:
 /// `1.0 -> "1"`, `0.5 -> "0.5"`, `-1.0 -> "-1"`.
-#[cfg(feature = "brdb-full")]
 fn fnum(f: f64) -> String {
     f.to_string()
 }
 
 /// Linear-light 0–1 component -> sRGB byte (the standard piecewise encode).
-#[cfg(feature = "brdb-full")]
 fn linear_to_srgb_u8(c: f64) -> u8 {
     let c = c.clamp(0.0, 1.0);
     let s = if c <= 0.0031308 {
@@ -981,7 +1063,6 @@ fn linear_to_srgb_u8(c: f64) -> u8 {
 /// Render a stored LINEAR RGBA default as sRGB hex (`#rrggbb`), the form the
 /// color appears as in-editor; a non-opaque alpha is noted after it. Alpha is
 /// stored linearly (not gamma-encoded), so it scales straight to a byte.
-#[cfg(feature = "brdb-full")]
 fn render_color_default(r: f64, g: f64, b: f64, a: f64) -> String {
     let (r, g, b) = (
         linear_to_srgb_u8(r),

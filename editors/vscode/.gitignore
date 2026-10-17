@@ -1,2 +1,13 @@
 node_modules
 out
+# copied from ../../docs/src by `npm run build`
+docs
+# copied from ../../LICENSE by `npm run build`
+LICENSE
+# built by `npm run build` (scripts/bundle.mjs)
+dist
+# the WASI language server, put here by `just vscode-package`
+server
+*.vsix
+# the separate VS Code profile `just vscode-try` opens
+.vscode-test

@@ -3706,7 +3706,10 @@ fn build_exec_union(ctx: &mut LowerCtx, ports: Vec<PortRef>) -> PortRef {
 }
 
 pub(super) fn flush_pending_emits(ctx: &mut LowerCtx) {
-    let pending = std::mem::take(&mut ctx.pending_emits);
+    // By name: each union takes the next node ids, and map order differs
+    // between 32-bit and 64-bit targets.
+    let mut pending: Vec<_> = std::mem::take(&mut ctx.pending_emits).into_iter().collect();
+    pending.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     ctx.emit_log.clear();
     for (name, entries) in pending {
         if entries.is_empty() {

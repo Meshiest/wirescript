@@ -77,11 +77,14 @@ The library is a file named `sanitize.ws`, and
 `import { escape } from "sanitize"` brings in one helper from it. This is the
 whole file:
 
-```wirescript nocompile
+```wirescript nocompile file=../lib/sanitize.ws
+// Escape markup in a display name before showing it. A `mod`, so each use is a single gate.
 mod escape(text: string) -> string {
   return text.Replace("<", "&lt;")
 }
 
+// Clean free-form player input: trim, cap the length, then escape.
+// Capping first keeps the cut from landing inside an `&lt;`.
 fn sanitize(raw: string, maxLen: int = 24) -> string {
   return raw.Trim().Substring(0, maxLen).Replace("<", "&lt;")
 }

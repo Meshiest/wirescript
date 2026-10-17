@@ -1,6 +1,6 @@
 # Chips
 
-Chips are Wirescript's primary mechanism for organizing and reusing wire graph logic. They map to physical microchip bricks in Brickadia: a separate grid of gates contained within a single brick. (A module-level [`@flat`](#compiling-without-microchips-flat) compiles the same program onto one grid instead, with no microchip bricks at all.)
+Chips are Wirescript's primary mechanism for organizing and reusing logic. They map to physical microchip bricks in Brickadia: a separate grid of gates contained within a single brick. (A module-level [`@flat`](#compiling-without-microchips-flat) compiles the same program onto one grid instead, with no microchip bricks at all.)
 
 <!-- toc -->
 ## Contents
@@ -414,15 +414,15 @@ are reported rather than silently dropped (see
 
 A `const mod` may declare multiple outputs, and its result destructures the same way
 as an ordinary multi-output mod's does. One rule is specific to `const`: the
-wire graph keeps whichever assignment to an output comes first in source order.
+compiled gates keep whichever assignment to an output comes first in source order.
 A valued `return` placed after an `out` to the same output would disagree with
-the wire graph, so it is rejected (**WS046**) instead of compiling to a
+the compiled gates, so it is rejected (**WS046**) instead of compiling to a
 mismatch.
 
 ```wirescript ignore
 const mod pick(n: const int) -> (r: int) {
   out r = 111
-  if n > 0 { return 222 }   // WS046: disagrees with the wire graph
+  if n > 0 { return 222 }   // WS046: disagrees with the compiled gates
 }
 ```
 

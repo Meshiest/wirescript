@@ -16,6 +16,7 @@ save, and paste the save in-game.
 
 - [Writing and compiling](#writing-and-compiling)
 - [Pasting a circuit in-game](#pasting-a-circuit-in-game)
+- [The starter library](#the-starter-library)
 - [Code layout](#code-layout)
 - [Reading an error](#reading-an-error)
 <!-- /toc -->
@@ -63,6 +64,32 @@ Code's compile command copies it for you), and place it where you want it.
 The microchip is the circuit. Its pins are small bricks on its sides, each
 labeled with its name. You wire them to the rest of your build with the wire
 tool, like any other component.
+
+## The starter library
+
+Many examples begin with `import { escape } from "sanitize"`. That line
+brings in helpers from `sanitize.ws`, a small library that comes with these
+lessons. An example's **Compile** button and the docs editor fetch it for you.
+To build those examples in the playground or VS Code, save
+[sanitize.ws](lib/sanitize.ws) in the same folder as your own file. This is
+the whole file:
+
+```wirescript nocompile file=lib/sanitize.ws
+// Escape markup in a display name before showing it. A `mod`, so each use is a single gate.
+mod escape(text: string) -> string {
+  return text.Replace("<", "&lt;")
+}
+
+// Clean free-form player input: trim, cap the length, then escape.
+// Capping first keeps the cut from landing inside an `&lt;`.
+fn sanitize(raw: string, maxLen: int = 24) -> string {
+  return raw.Trim().Substring(0, maxLen).Replace("<", "&lt;")
+}
+```
+
+`escape` makes a name safe to show, and `sanitize` also trims it and cuts it
+to a length. [Safe Text](strings/safe-text.md) explains both, and
+[Imports](abstraction/imports.md) explains `import`.
 
 ## Code layout
 

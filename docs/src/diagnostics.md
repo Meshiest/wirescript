@@ -6,7 +6,7 @@ of problem. Codes are **errors** (they stop compilation) unless the entry marks
 them *(warning)*. Warnings compile but flag something likely unintended.
 
 Diagnostics run in a fixed order (parse, resolve/import, type-check, lower,
-wire-graph analysis), so an early error can suppress later ones on the same
+circuit analysis), so an early error can suppress later ones on the same
 construct.
 
 > Some numbers in the `WS0xx` range are **not used**: `WS009` and `WS018` have
@@ -41,7 +41,7 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 
 | Code | Meaning | Trigger |
 |------|---------|---------|
-| `WS005` | Wire-graph cycle with no barrier: a feedback loop must cross a Buffer/Queue/EdgeDetector; break it with `buffer emit`. | a gate loop with no buffer on any edge |
+| `WS005` | Gate cycle with no barrier: a feedback loop must cross a Buffer/Queue/EdgeDetector; break it with `buffer emit`. | a gate loop with no buffer on any edge |
 | `WS006` | `*x` deref used in pure context. Use `x.Value` for a pure read. | `out v = *count` |
 | `WS007` | Exec-only construct outside an exec context: assignment, `emit`, `await`, an array index read, an exec-returning call, or a `return` inside a branch of a mod or chip called with no enclosing exec chain. A named `chip` whose output writes must choose between paths (several `return`s, a `return` beside one in a nested `on` handler, or a `return` beside an `emit`/`out` of an output) needs that chain too. Also an `emit` of a local exec signal (`let sig: exec`) where no exec chain runs, such as the body of a named `chip` outside its handlers, so nothing would ever fire it. Also a write to something that is not writable storage: a `let`, an enum payload field named directly (destructure it instead), a misspelled record field, or a field of a scalar. | `count = 1` at the top level / `state.field = v` on an enum |
 | `WS101` | An initializer on `let s: exec`. That form declares a new signal, fired only by `emit s`, so the value would be dropped and an `on s` handler would never run. Use `on go { .. }` with the existing signal, or name it again with `let s = go` (no annotation). | `let s: exec = go` |

@@ -83,8 +83,8 @@ with live reload). The compiler is
 
 ## LSP + VS Code Extension
 
-The extension in [editors/vscode/](editors/vscode/) runs the native LSP server
-for diagnostics, hover, completions, go-to-definition, rename, organize
+The extension in [editors/vscode/](editors/vscode/) runs the LSP server (native,
+or compiled to WASI; see below) for diagnostics, hover, completions, go-to-definition, rename, organize
 imports, and inlay hints, plus a Prettier-based formatter and a
 **Compile and Copy Path** command (`Ctrl+Shift+B`) that compiles the current
 file to a `.brz` and copies its path for Brickadia's load dialog.
@@ -99,7 +99,10 @@ Building it requires [Node.js](https://nodejs.org/):
 
 ```sh
 just lsp        # build the native LSP server (target/release/wirescript-lsp)
-just vscode     # npm install + compile the extension (editors/vscode/out)
+just lsp-wasi   # build the WASI LSP server (target/wasm32-wasip1-threads/release/wirescript-lsp.wasm)
+just vscode     # npm install + build the extension (editors/vscode/dist)
+just vscode-package  # package editors/vscode/brickadia-wirescript.vsix, with the WASI server inside
+just vscode-try      # package, then open it in a separate VS Code profile
 ```
 
 ### Installing the extension
@@ -122,14 +125,47 @@ ln -s "$(pwd)/editors/vscode" ~/.vscode/extensions/wirescript
 New-Item -ItemType Junction -Path "$env:USERPROFILE\.vscode\extensions\wirescript" -Target "$PWD\editors\vscode"
 ```
 
-The extension locates the LSP binary at `target/release/wirescript-lsp`
-**relative to the repo root** by resolving its own real path. If you copy the
-folder somewhere else instead, point the extension at the binary with
-the `wirescript.lspPath` setting.
+The `wirescript.server` setting picks the server:
 
-After changing compiler or LSP code, rerun `just lsp` - the extension watches
-the binary and restarts the server automatically (on Windows it runs a temp
-copy so cargo can rebuild while the server is running).
+- `native` runs `wirescript.lspPath`, else `target/release/wirescript-lsp`
+  **relative to the repo root** (the extension resolves its own real path).
+  Build it with `just lsp`.
+- `wasi` runs `wirescript.wasmPath`, else
+  `target/wasm32-wasip1-threads/release/wirescript-lsp.wasm`, else a bundled
+  `server/wirescript-lsp.wasm`, on the WebAssembly Execution Engine extension
+  (`ms-vscode.wasm-wasi-core`). Build it with `just lsp-wasi`.
+- `auto` (the default) is native when one is configured or built, WASI
+  otherwise.
+
+After changing compiler or LSP code, rerun `just lsp` (or `just lsp-wasi`):
+the extension watches the server it runs and restarts it automatically (on
+Windows the native server runs from a temp copy so cargo can rebuild it).
+**Wirescript: Restart Language Server** restarts it by hand.
+
+## Formatting
+
+`wirescript fmt <files or directories>` formats `.ws` files in place
+(`just fmt <paths>`); `--check` (`just fmt-check <paths>`) lists the files
+that are not formatted and fails if there are any. The same formatter runs in
+the playground and in the LSP server.
+
+It re-indents by bracket depth, normalizes comma spacing, joins `}` and
+`else {`, and splits lines wider than the print width (100 columns): an
+import list across lines, a binary expression before its loosest operators. It
+only moves whitespace and line breaks. `// fmt-ignore` on its own line keeps
+the next line as written; at the end of a line, that line. Block comments and
+nested-prefab blocks are kept as written.
+
+Settings come from `.editorconfig`:
+
+```ini
+[*.ws]
+indent_style = space      # or tab
+indent_size = 2
+max_line_length = 100     # print width; "off" never splits
+end_of_line = lf          # or crlf; unset keeps the file's own
+insert_final_newline = true
+```
 
 ## WASM
 

@@ -1,0 +1,38 @@
+/* The docs' inline styles (the Learn page's lesson tree) use mdBook's theme
+   variables; give them the editor theme's colors. */
+body {
+  --fg: var(--vscode-editor-foreground);
+  --bg: var(--vscode-editor-background);
+  --quote-bg: var(--vscode-textBlockQuote-background);
+  --quote-border: var(--vscode-textBlockQuote-border);
+}
+
+/* Colors for ```wirescript blocks in the markdown preview (see
+   src/markdownHighlight.ts): VS Code's default Dark+ and Light+ token colors,
+   so a docs example looks like the same code in the editor. */
+
+body.vscode-dark .ws-comment, body.vscode-high-contrast .ws-comment { color: #6a9955; }
+body.vscode-dark .ws-string, body.vscode-high-contrast .ws-string { color: #ce9178; }
+body.vscode-dark .ws-escape, body.vscode-high-contrast .ws-escape { color: #d7ba7d; }
+body.vscode-dark .ws-number, body.vscode-high-contrast .ws-number { color: #b5cea8; }
+body.vscode-dark .ws-constant, body.vscode-high-contrast .ws-constant { color: #569cd6; }
+body.vscode-dark .ws-keyword, body.vscode-high-contrast .ws-keyword { color: #c586c0; }
+body.vscode-dark .ws-declaration, body.vscode-high-contrast .ws-declaration { color: #569cd6; }
+body.vscode-dark .ws-annotation, body.vscode-high-contrast .ws-annotation { color: #dcdcaa; }
+body.vscode-dark .ws-type, body.vscode-high-contrast .ws-type { color: #4ec9b0; }
+body.vscode-dark .ws-function, body.vscode-high-contrast .ws-function { color: #dcdcaa; }
+body.vscode-dark .ws-event, body.vscode-high-contrast .ws-event { color: #4fc1ff; }
+body.vscode-dark .ws-asset, body.vscode-high-contrast .ws-asset { color: #9cdcfe; }
+
+body.vscode-light .ws-comment { color: #008000; }
+body.vscode-light .ws-string { color: #a31515; }
+body.vscode-light .ws-escape { color: #ee0000; }
+body.vscode-light .ws-number { color: #098658; }
+body.vscode-light .ws-constant { color: #0000ff; }
+body.vscode-light .ws-keyword { color: #af00db; }
+body.vscode-light .ws-declaration { color: #0000ff; }
+body.vscode-light .ws-annotation { color: #795e26; }
+body.vscode-light .ws-type { color: #267f99; }
+body.vscode-light .ws-function { color: #795e26; }
+body.vscode-light .ws-event { color: #0070c1; }
+body.vscode-light .ws-asset { color: #001080; }

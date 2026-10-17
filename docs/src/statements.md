@@ -31,7 +31,7 @@ Statements are the building blocks of Wirescript programs. They declare data, de
 
 ## `var`: Mutable Variable
 
-Declares a mutable variable backed by a wire graph variable gate. In exec context (inside handlers or mods), the variable is **reset to its initial value** each time the code path executes.
+Declares a mutable variable backed by a Variable gate. In exec context (inside handlers or mods), the variable is **reset to its initial value** each time the code path executes.
 
 ```wirescript ignore
 var name: type = initializer
@@ -49,7 +49,7 @@ var label: string = "hi" // strings persist in vars too
 var dir: vector = Vec(0.0, 0.0, 1.0)
 ```
 
-A variable is backed by a wire-graph `Variable` gate, whose value is a wire
+A variable is backed by a `Variable` gate, whose value is a wire
 variant, so a `var` can hold any variant member type: `int`, `float`, `bool`,
 `string`, `vector`, and object types (`entity`, `controller`, `character`).
 
@@ -581,7 +581,7 @@ use `m.copyFrom(src)` (**WS027**). See
 
 ## `in`: Input Port
 
-Declares an input port for the current scope. At the top level, `in` creates an external input that other wire graphs can connect to. Inside a chip, `in` creates a chip input port.
+Declares an input port for the current scope. At the top level, `in` creates an external input that other gates can connect to. Inside a chip, `in` creates a chip input port.
 
 ```wirescript ignore
 in name: type
@@ -594,7 +594,7 @@ in speed: float
 in enabled: bool
 ```
 
-Input values are read-only within the script. They are provided by the external wire graph environment.
+Input values are read-only within the script. They come from whatever is wired to them outside the script.
 
 ## `out`: Output Port
 
@@ -1004,7 +1004,7 @@ on tick {
 ### `@layout("cube")`: Compact 3D Packing
 
 `@layout("cube")` packs gates into a cube (rows of bricks, stacked into
-layers along the plane's depth axis) without analyzing the wire graph at
+layers along the plane's depth axis) without analyzing the wiring at
 all. The compiler already falls back to this arrangement on modules too large
 for the default layout to place economically; the annotation asks for it at
 any size.
@@ -1916,7 +1916,7 @@ A `type` alias of `exec` declares one the same way: with `type Signal = exec`, `
 
 ### Buffered Emit
 
-`buffer emit sig` routes the emit's exec through a **Buffer** gate, delaying delivery by one tick. Crossing a tick this way is what makes emit/await **loops** legal. A back-edge `emit` after an `await` closes a wire-graph cycle, and every cycle must cross a Buffer or the compile fails (**WS005**).
+`buffer emit sig` routes the emit's exec through a **Buffer** gate, delaying delivery by one tick. Crossing a tick this way is what makes emit/await **loops** legal. A back-edge `emit` after an `await` closes a cycle of gates, and every cycle must cross a Buffer or the compile fails (**WS005**).
 
 ```wirescript ignore
 buffer emit loop            // 1 tick (default)

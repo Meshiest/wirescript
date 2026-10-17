@@ -8,9 +8,17 @@ name = "wirescript-lsp"
 path = "src/main.rs"
 
 [dependencies]
-mimalloc = "0.1"
-wirescript = { path = "../wirescript", features = ["editor"] }
 tower-lsp = "0.20"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "io-std", "time"] }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+mimalloc = "0.1"
+wirescript = { path = "../wirescript", features = ["editor"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "io-std", "time"] }
+
+# WASI build (wasm32-wasip1-threads), run by VS Code's WebAssembly host.
+# No .brdb output there: brdb-full pulls in SQLite.
+[target.'cfg(target_family = "wasm")'.dependencies]
+wirescript = { path = "../wirescript", default-features = false, features = ["editor"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }

@@ -22,6 +22,9 @@ use wirescript::{parse, typecheck::typecheck_with_inference};
 pub struct DiagnosticOut {
     pub severity: &'static str,
     pub code: String,
+    /// The docs section for `code`, when the docs cover it.
+    #[serde(rename = "docUrl", skip_serializing_if = "Option::is_none")]
+    pub doc_url: Option<String>,
     pub message: String,
     #[serde(rename = "startLine")]
     pub start_line: usize,
@@ -110,6 +113,7 @@ pub fn diagnostics(source: &str, files_json: &str) -> String {
                 _ => "info",
             },
             code: d.code.clone(),
+            doc_url: wirescript::analysis::doc_url(wirescript::analysis::Doc::Diagnostic(&d.code)),
             message: d.message.clone(),
             start_line: d.range.start.line.saturating_sub(1) as usize,
             start_col: ruler.byte_col_to_editor(

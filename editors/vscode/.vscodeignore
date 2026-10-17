@@ -1,0 +1,14 @@
+# The package ships the bundle (dist/), the WASI server (server/), the docs,
+# the grammar and the media. Everything below is source or build input.
+src/**
+out/**
+scripts/**
+node_modules/**
+**/*.map
+**/*.ts
+tsconfig.json
+package-lock.json
+prettier-plugin-wirescript.js
+.gitignore
+*.vsix
+.vscode-test/**

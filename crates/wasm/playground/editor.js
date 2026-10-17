@@ -121,7 +121,9 @@ export function createEditor(container, wasm, monaco, getFilesJson, getPrefabsJs
       const diagnostics = JSON.parse(json);
       const markers = diagnostics.map(d => ({
         severity: mapSeverity(monaco, d.severity),
-        message: d.message + (d.code ? ` [${d.code}]` : ''),
+        message: d.message,
+        // The code shows beside the message, linked to its docs section.
+        code: d.docUrl ? { value: d.code, target: monaco.Uri.parse(d.docUrl) } : d.code || undefined,
         startLineNumber: (d.startLine || 0) + 1,
         startColumn: (d.startCol || 0) + 1,
         endLineNumber: (d.endLine || d.startLine || 0) + 1,

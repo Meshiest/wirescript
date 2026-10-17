@@ -1,6 +1,6 @@
 # Execution Context
 
-Understanding exec vs pure context is fundamental to writing correct Wirescript. This distinction reflects how Brickadia's wire graph engine executes: some gates define continuous signal relationships (pure), while others execute imperatively in response to events (exec).
+Understanding exec vs pure context is fundamental to writing correct Wirescript. This distinction reflects how Brickadia's logic gates execute: some gates define continuous signal relationships (pure), while others execute imperatively in response to events (exec).
 
 <!-- toc -->
 ## Contents
@@ -114,7 +114,7 @@ if count > 10 {
 }
 ```
 
-This models how the wire graph works: the exec output of each handler merges into a union that feeds into subsequent exec nodes.
+This models how the gates work: the exec output of each handler merges into a union that feeds into subsequent exec nodes.
 
 ### 3. Chips with Ref Parameters
 
@@ -266,7 +266,7 @@ on RoundStart() {
 }
 ```
 
-The wire graph executes these in sequence: event fires, then node 1, then node 2, then node 3, then the branch.
+The gates execute these in sequence: event fires, then node 1, then node 2, then node 3, then the branch.
 
 ## Forking the Exec Chain
 
@@ -441,7 +441,7 @@ on up { ctrl.DisplayText("menu up") }   // runs on every `emit up`
 
 An `emit` after an `await` of the same signal is a loop back-edge. It must be
 buffered, with `buffer emit` (1 tick) or `buffer(N)` / `buffer(0.5s)`, because
-every wire-graph cycle must cross a tick barrier (**WS005**). Each iteration
+every cycle of gates must cross a tick barrier (**WS005**). Each iteration
 then advances one buffer period. Loop state lives in `var`s (persist across
 iterations, reset per call) or is carried on the signal as a ferried payload
 (`emit loop = { ... }` / `let { ... } = await loop`). See

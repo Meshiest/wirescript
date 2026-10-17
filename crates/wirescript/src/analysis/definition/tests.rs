@@ -345,3 +345,15 @@
         assert_eq!(loc.file, None, "same-file port: {loc:?}");
         assert_eq!(loc.start_line, 0, "`out shared` is declared on line 0, got {loc:?}");
     }
+
+    #[test]
+    fn annotation_name_is_not_a_symbol() {
+        // `@left` must not jump to a variable named `left`; the variable's own
+        // uses still resolve.
+        let main = "var left: int = 0\n@left in go: exec\non go { left = 1 }\n";
+        let at = main.lines().nth(1).unwrap().find("left").unwrap() + 1;
+        assert!(goto(main, "", 1, at).is_none(), "annotation resolved");
+        let use_col = main.lines().nth(2).unwrap().find("left").unwrap() + 1;
+        let loc = goto(main, "", 2, use_col).expect("the variable resolves");
+        assert_eq!(loc.start_line, 0);
+    }

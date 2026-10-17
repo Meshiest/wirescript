@@ -147,3 +147,15 @@ export function wsBlocks(text) {
   }
   return blocks;
 }
+
+/** GitHub's heading slug: strip markdown, drop punctuation, spaces to hyphens. */
+export function slug(heading) {
+  return heading
+    .replace(/`/g, '')
+    .replace(/\*\*|__|\*/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\- ]+/g, '')
+    .replace(/ /g, '-');
+}

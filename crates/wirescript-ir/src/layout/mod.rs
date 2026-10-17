@@ -528,7 +528,11 @@ fn align_sources_to_consumers(laid: &mut RegionLayout, module: &Module) {
         *occupied.entry((p.dx, p.dy)).or_insert(0) += 1;
     }
 
-    let ids: Vec<NodeId> = laid.local.keys().cloned().collect();
+    // A move claims a cell its later rivals then skip, so the visit order
+    // picks the winner. Id order, not map order: map order differs between
+    // 32-bit and 64-bit targets, and the wasm builds would lay out differently.
+    let mut ids: Vec<NodeId> = laid.local.keys().cloned().collect();
+    ids.sort_unstable();
     for _ in 0..4 {
         let mut changed = false;
         for id in &ids {

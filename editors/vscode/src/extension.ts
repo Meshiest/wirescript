@@ -1,6 +1,13 @@
 import * as path from "path";
 import * as os from "os";
+import * as fs from "fs";
 import { copyFileToClipboard } from "./clipboard";
+import { startWasiServer } from "./wasi";
+import type { WasmProcess } from "@vscode/wasm-wasi/v1";
+import { translateUri, wasiMounts } from "./wasiPaths";
+import { registerDocs } from "./docs";
+import { bundleDocLinks, handlerUri, OPEN_DOCS_PAGE } from "./docLinks";
+import { loadGrammar, wirescriptMarkdown } from "./markdownPreview";
 import {
   workspace,
   ExtensionContext,
@@ -9,19 +16,15 @@ import {
   window,
   env,
   Uri,
-  DocumentFormattingEditProvider,
-  CodeActionProvider,
   CodeActionKind,
   CodeAction,
   TextDocument,
-  FormattingOptions,
-  CancellationToken,
-  TextEdit,
   Range,
   Position,
   WorkspaceEdit,
   Diagnostic,
   DiagnosticSeverity,
+  MarkdownString,
 } from "vscode";
 import {
   LanguageClient,
@@ -30,147 +33,279 @@ import {
   Executable,
 } from "vscode-languageclient/node";
 
-let client: LanguageClient;
-// The temporary copy of the server binary the running client was started from.
+let client: LanguageClient | undefined;
+// The temporary copy of the native server binary the running client was started from.
 let runningCopy: string | undefined;
+// The running WASI server, ended when its client stops.
+let wasiProcess: WasmProcess | undefined;
 
 /** Stop the client and delete the copy of the server it ran from. */
 async function stopClient(): Promise<void> {
-  if (client) await client.stop();
+  const stopping = client;
+  client = undefined;
+  if (stopping) {
+    try {
+      await stopping.stop();
+    } catch {}
+  }
+  const ending = wasiProcess;
+  wasiProcess = undefined;
+  if (ending) {
+    try {
+      await ending.terminate();
+    } catch {}
+  }
   if (runningCopy) {
     try {
-      require("fs").unlinkSync(runningCopy);
+      fs.unlinkSync(runningCopy);
     } catch {}
     runningCopy = undefined;
   }
 }
 
-class PrettierFormatter implements DocumentFormattingEditProvider {
-  private extDir: string;
+/** Which language server to run, and from where. */
+type ServerChoice = { kind: "native"; binary: string } | { kind: "wasi"; wasm: string };
 
-  constructor(extDir: string) {
-    this.extDir = extDir;
-  }
-
-  async provideDocumentFormattingEdits(
-    document: TextDocument,
-    options: FormattingOptions,
-    _token: CancellationToken,
-  ): Promise<TextEdit[]> {
-    try {
-      const prettierPath = path.join(this.extDir, "node_modules", "prettier");
-      const pluginPath = path.join(
-        this.extDir,
-        "prettier-plugin-wirescript.js",
-      );
-      const prettier = require(prettierPath);
-      const source = document.getText();
-      const formatted = await prettier.format(source, {
-        parser: "wirescript",
-        plugins: [pluginPath],
-        tabWidth: options.tabSize,
-        useTabs: !options.insertSpaces,
-      });
-      if (formatted === source) return [];
-      const fullRange = new Range(
-        new Position(0, 0),
-        document.lineAt(document.lineCount - 1).range.end,
-      );
-      return [TextEdit.replace(fullRange, formatted)];
-    } catch (e: any) {
-      const { window } = require("vscode");
-      window.showErrorMessage(`Wirescript format error: ${e.message}`);
-      console.error("wirescript prettier format error:", e.stack || e.message);
-      return [];
-    }
-  }
-}
-
-export function activate(context: ExtensionContext) {
+/**
+ * `wirescript.server` picks the server. `native` runs `wirescript.lspPath` or
+ * this checkout's release build. `wasi` runs `wirescript.wasmPath`, else this
+ * checkout's `wasm32-wasip1-threads` build, else the one bundled in `server/`.
+ * `auto` takes native when one is configured or built here, WASI otherwise.
+ * Returns why nothing can run when there is no such server.
+ */
+function chooseServer(extDir: string): ServerChoice | string {
   const config = workspace.getConfiguration("wirescript");
-
-  const fs = require("fs");
-  let extDir = context.extensionPath;
-  try {
-    extDir = fs.realpathSync(extDir);
-  } catch {}
+  const mode = config.get<string>("server", "auto");
   const repoRoot = path.resolve(extDir, "..", "..");
-
-  // The server binary: the configured one, else this checkout's release build.
-  const sourceBinaryPath =
-    config.get<string>("lspPath", "") ||
+  const lspPath = config.get<string>("lspPath", "");
+  const binary =
+    lspPath ||
     path.join(
       repoRoot,
       "target",
       "release",
       `wirescript-lsp${process.platform === "win32" ? ".exe" : ""}`,
     );
+  const wasmPath = config.get<string>("wasmPath", "");
+  const wasmCandidates = wasmPath
+    ? [wasmPath]
+    : [
+        path.join(repoRoot, "target", "wasm32-wasip1-threads", "release", "wirescript-lsp.wasm"),
+        path.join(extDir, "server", "wirescript-lsp.wasm"),
+      ];
+  const wasm = wasmCandidates.find((p) => fs.existsSync(p));
 
-  // On Windows the server runs from a copy, so cargo can rebuild the binary
-  // while it runs. Each copy is deleted once its server has stopped.
-  function serverCopy(): string {
-    if (process.platform !== "win32" || !fs.existsSync(sourceBinaryPath)) {
-      return sourceBinaryPath;
-    }
-    const copyPath = path.join(os.tmpdir(), `wirescript-lsp-${Date.now()}.exe`);
-    try {
-      fs.copyFileSync(sourceBinaryPath, copyPath);
-      return copyPath;
-    } catch {
-      return sourceBinaryPath;
-    }
+  if (mode === "native") {
+    return fs.existsSync(binary)
+      ? { kind: "native", binary }
+      : `no native server at ${binary}: build one with \`just lsp\` or set wirescript.lspPath`;
   }
+  if (mode === "wasi") {
+    return wasm
+      ? { kind: "wasi", wasm }
+      : `no WASI server at ${wasmCandidates.join(" or ")}: build one with \`just lsp-wasi\` or set wirescript.wasmPath`;
+  }
+  if (fs.existsSync(binary)) return { kind: "native", binary };
+  if (wasm) return { kind: "wasi", wasm };
+  return "no language server found: build one with `just lsp` or `just lsp-wasi`, or set wirescript.lspPath";
+}
 
-  const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: "file", language: "wirescript" }],
-    synchronize: { fileEvents: workspace.createFileSystemWatcher("**/*.ws") },
-    // The extension registers its prettier formatter below; tell the server
-    // not to advertise formatting so the picker shows a single entry.
-    initializationOptions: { provideFormatting: false },
+export function activate(context: ExtensionContext) {
+  let extDir = context.extensionPath;
+  try {
+    extDir = fs.realpathSync(extDir);
+  } catch {}
+
+  registerDocs(context);
+
+  // Diagnostics link to the docs through this handler (see docLinks.ts).
+  const handlerBase = `${env.uriScheme}://${context.extension.id}`;
+  context.subscriptions.push(
+    window.registerUriHandler({
+      handleUri(uri) {
+        const page = new URLSearchParams(uri.query).get("page");
+        if (uri.path === "/docs" && page) void commands.executeCommand(OPEN_DOCS_PAGE, page, uri.fragment || undefined);
+      },
+    }),
+  );
+  // A diagnostic code's docs link, pointed at the bundled page.
+  const bundledCode = (code: Diagnostic["code"]): Diagnostic["code"] => {
+    if (!code || typeof code !== "object") return code;
+    const local = handlerUri(code.target.toString(true), handlerBase);
+    return local ? { value: code.value, target: Uri.parse(local) } : code;
   };
 
-  function startClient() {
-    const binPath = serverCopy();
-    runningCopy = binPath === sourceBinaryPath ? undefined : binPath;
-    const exe: Executable = { command: binPath };
-    const opts: ServerOptions = { run: exe, debug: exe };
-    client = new LanguageClient(
-      "wirescript",
-      "Wirescript Language Server",
-      opts,
-      clientOptions,
-    );
-    client.start();
+  // On Windows the native server runs from a copy, so cargo can rebuild the
+  // binary while it runs. Each copy is deleted once its server has stopped.
+  function serverCopy(binary: string): string {
+    if (process.platform !== "win32") return binary;
+    const copyPath = path.join(os.tmpdir(), `wirescript-lsp-${Date.now()}.exe`);
+    try {
+      fs.copyFileSync(binary, copyPath);
+      return copyPath;
+    } catch {
+      return binary;
+    }
   }
 
-  startClient();
+  // One channel across restarts: the server's log, a WASI server's stderr,
+  // and the compile log below.
+  const output = window.createOutputChannel("Wirescript Language Server", { log: true });
+  context.subscriptions.push(output);
 
-  // Prettier-based formatter — the sole formatting provider (see
-  // initializationOptions above).
-  context.subscriptions.push(
-    languages.registerDocumentFormattingEditProvider(
-      { language: "wirescript" },
-      new PrettierFormatter(extDir),
-    ),
-  );
+  // Status bar item for compile progress
+  const compileStatus = window.createStatusBarItem(1, 100);
+  compileStatus.name = "Wirescript Compile";
+  context.subscriptions.push(compileStatus);
+  let compiling = false;
 
-  // Watch the source binary for rebuilds and auto-restart the LSP
-  if (fs.existsSync(sourceBinaryPath)) {
+  // A WASI server sees the workspace folders mounted under /workspace or
+  // /workspaces (see wasiPaths.ts), so URIs and paths
+  // going to it, and paths coming back, are translated. Identity for native.
+  let toServer = (uri: Uri) => uri.toString();
+  let fromServerPath = (p: string) => Uri.file(p);
+  // The WASI host mounts the workspace folders once, when the server starts.
+  let mountsFolders = false;
+
+  let watcher: fs.FSWatcher | undefined;
+  context.subscriptions.push({ dispose: () => watcher?.close() });
+
+  async function startClient() {
+    const choice = chooseServer(extDir);
+    if (typeof choice === "string") {
+      output.appendLine(`[server] ${choice}`);
+      window.showErrorMessage(`Wirescript: ${choice}`);
+      return;
+    }
+
+    const clientOptions: LanguageClientOptions = {
+      documentSelector: [{ scheme: "file", language: "wirescript" }],
+      synchronize: { fileEvents: workspace.createFileSystemWatcher("**/*.ws") },
+      outputChannel: output,
+      // The server links hovers and diagnostics to the published docs; open
+      // the bundled pages instead.
+      middleware: {
+        provideHover: async (document, position, token, next) => {
+          const hover = await next(document, position, token);
+          if (!hover) return hover;
+          hover.contents = hover.contents.map((part) => {
+            if (!(part instanceof MarkdownString)) return part;
+            const md = new MarkdownString(bundleDocLinks(part.value), part.supportThemeIcons);
+            md.supportHtml = part.supportHtml;
+            md.baseUri = part.baseUri;
+            md.isTrusted = { enabledCommands: [OPEN_DOCS_PAGE] };
+            return md;
+          });
+          return hover;
+        },
+        handleDiagnostics: (uri, diagnostics, next) => {
+          for (const d of diagnostics) d.code = bundledCode(d.code);
+          next(uri, diagnostics);
+        },
+      },
+    };
+    let serverOptions: ServerOptions;
+    let source: string;
+    if (choice.kind === "native") {
+      const binPath = serverCopy(choice.binary);
+      runningCopy = binPath === choice.binary ? undefined : binPath;
+      const exe: Executable = { command: binPath };
+      serverOptions = { run: exe, debug: exe };
+      toServer = (uri) => uri.toString();
+      fromServerPath = (p) => Uri.file(p);
+      source = choice.binary;
+      mountsFolders = false;
+    } else {
+      const mounts = wasiMounts(
+        (workspace.workspaceFolders ?? []).map((f) => ({ uri: f.uri.toString(), name: f.name })),
+      );
+      clientOptions.uriConverters = {
+        code2Protocol: (uri) => translateUri(uri.toString(), mounts, 0),
+        protocol2Code: (value) => Uri.parse(translateUri(value, mounts, 1)),
+      };
+      toServer = (uri) => translateUri(uri.toString(), mounts, 0);
+      fromServerPath = (p) => Uri.parse(translateUri(Uri.file(p).toString(), mounts, 1));
+      serverOptions = () => startWasiServer(Uri.file(choice.wasm), output, (p) => (wasiProcess = p));
+      source = choice.wasm;
+      mountsFolders = true;
+    }
+
+    output.appendLine(
+      `[server] starting the ${choice.kind === "wasi" ? "WASI" : "native"} server: ${source}`,
+    );
+    const started = new LanguageClient(
+      "wirescript",
+      "Wirescript Language Server",
+      serverOptions,
+      clientOptions,
+    );
+    // Compile progress. The compile command below owns the indicator's
+    // lifecycle (shows it on start, clears it when the request resolves); a
+    // progress notification only refreshes the step counter WHILE a compile is
+    // actually in flight. `done` and any late/out-of-order notification are
+    // ignored: they arrive fire-and-forget and used to strand the spinner when a
+    // non-`done` was delivered last.
+    started.onNotification("wirescript/compileProgress", (params: any) => {
+      if (!compiling || params.done) return;
+      // The server names the phase it is entering; showing it turns a stalled
+      // "4/4" into "4/4 emit", which says where the time actually went. The
+      // matching per-phase timings go to the LSP output channel server-side.
+      const phase = params.label ? ` ${params.label}` : "";
+      compileStatus.text = `$(sync~spin) Compiling: ${params.step}/${params.total}${phase}`;
+      compileStatus.show();
+    });
+    client = started;
+    watchForRebuild(source);
+    try {
+      await started.start();
+    } catch (e: any) {
+      output.appendLine(`[server] failed to start: ${e?.message ?? e}`);
+      window.showErrorMessage(`Wirescript language server failed to start: ${e?.message ?? e}`);
+    }
+  }
+
+  // Restarts run one after another, so a burst of rebuilds or setting changes
+  // never leaves two servers running.
+  let restarting: Promise<void> = Promise.resolve();
+  function restart(): Promise<void> {
+    restarting = restarting
+      .then(async () => {
+        await stopClient();
+        await startClient();
+      })
+      .catch((e: any) => output.appendLine(`[server] restart failed: ${e?.message ?? e}`));
+    return restarting;
+  }
+
+  // Restart when the server being run is rebuilt (native binary or .wasm).
+  function watchForRebuild(file: string) {
+    watcher?.close();
+    watcher = undefined;
+    if (!fs.existsSync(file)) return;
     let debounce: NodeJS.Timeout | null = null;
-    fs.watch(sourceBinaryPath, () => {
+    watcher = fs.watch(file, () => {
       if (debounce) clearTimeout(debounce);
-      debounce = setTimeout(async () => {
+      debounce = setTimeout(() => {
         debounce = null;
-        try {
-          await stopClient();
-          startClient();
-          console.log("wirescript-lsp: restarted after binary change");
-        } catch (e: any) {
-          console.error("wirescript-lsp: restart failed:", e.message);
-        }
+        output.appendLine("[server] restarting after a rebuild");
+        void restart();
       }, 500);
     });
   }
+
+  context.subscriptions.push(
+    commands.registerCommand("wirescript.restartServer", () => restart()),
+    workspace.onDidChangeConfiguration((e) => {
+      if (["wirescript.server", "wirescript.lspPath", "wirescript.wasmPath"].some((k) => e.affectsConfiguration(k))) {
+        void restart();
+      }
+    }),
+    workspace.onDidChangeWorkspaceFolders(() => {
+      if (mountsFolders) void restart();
+    }),
+  );
+
+  void restart();
 
   // Alt-Shift-O: organize imports — sort alphabetically, remove unused
   context.subscriptions.push(
@@ -405,11 +540,6 @@ export function activate(context: ExtensionContext) {
     ),
   );
 
-  // Status bar item for compile progress
-  const compileStatus = window.createStatusBarItem(1, 100);
-  compileStatus.name = "Wirescript Compile";
-  context.subscriptions.push(compileStatus);
-
   // Build-error diagnostics (from the on-demand Compile command). Kept in its own
   // collection so it never fights the language server's live typecheck diagnostics —
   // VS Code merges the two in the Problems panel. Cleared on each compile attempt.
@@ -431,28 +561,10 @@ export function activate(context: ExtensionContext) {
     workspace.onDidSaveTextDocument(clearBuildDiagnostics),
   );
 
-  // Listen for compile progress from LSP. The compile command below owns the
-  // indicator's lifecycle (shows it on start, clears it when the request
-  // resolves); a progress notification only refreshes the step counter WHILE a
-  // compile is actually in flight. `done` and any late/out-of-order notification
-  // are ignored — they arrive fire-and-forget and used to strand the spinner
-  // when a non-`done` was delivered last.
-  let compiling = false;
-  client.onNotification("wirescript/compileProgress", (params: any) => {
-    if (!compiling || params.done) return;
-    // The server names the phase it is entering; showing it turns a stalled
-    // "4/4" into "4/4 emit", which says where the time actually went. The
-    // matching per-phase timings go to the LSP output channel server-side.
-    const phase = params.label ? ` ${params.label}` : "";
-    compileStatus.text = `$(sync~spin) Compiling: ${params.step}/${params.total}${phase}`;
-    compileStatus.show();
-  });
-
   // Client-side half of the compile log. The server logs the compile itself
   // (phases, timings, diagnostics) into this same channel via window/logMessage;
   // these lines cover the steps only the extension can see.
-  const logCompile = (msg: string) =>
-    client.outputChannel.appendLine(`[compile] ${msg}`);
+  const logCompile = (msg: string) => output.appendLine(`[compile] ${msg}`);
 
   // Compile and copy .brz to clipboard as file drop (for Brickadia paste)
   context.subscriptions.push(
@@ -460,6 +572,11 @@ export function activate(context: ExtensionContext) {
       const doc = window.activeTextEditor?.document;
       if (!doc || doc.languageId !== "wirescript") {
         window.showWarningMessage("No active Wirescript file.");
+        return;
+      }
+      const running = client;
+      if (!running) {
+        window.showErrorMessage("Wirescript: the language server is not running.");
         return;
       }
       await doc.save();
@@ -473,11 +590,13 @@ export function activate(context: ExtensionContext) {
       // Fresh compile — drop any stale build errors before we try again.
       buildDiagnostics.clear();
 
+      // No output path: the server returns the save (base64) and it is written
+      // here, since a WASI server cannot see the temp folder.
       let result: any;
       try {
-        result = await client.sendRequest("workspace/executeCommand", {
+        result = await running.sendRequest("workspace/executeCommand", {
           command: "wirescript.compile",
-          arguments: [doc.uri.toString(), outPath],
+          arguments: [toServer(doc.uri)],
         });
       } catch (err: any) {
         compileStatus.text = "$(error) Compile failed";
@@ -498,7 +617,7 @@ export function activate(context: ExtensionContext) {
       if (result && result.ok === false) {
         const byFile = new Map<string, Diagnostic[]>();
         for (const d of result.diagnostics ?? []) {
-          const uri = d.file ? Uri.file(d.file) : doc.uri;
+          const uri = d.file ? fromServerPath(d.file) : doc.uri;
           const key = uri.toString();
           const range = new Range(
             d.startLine ?? 0,
@@ -513,7 +632,7 @@ export function activate(context: ExtensionContext) {
                 ? DiagnosticSeverity.Information
                 : DiagnosticSeverity.Error;
           const diag = new Diagnostic(range, d.message, severity);
-          if (d.code) diag.code = d.code;
+          if (d.code) diag.code = d.docUrl ? bundledCode({ value: d.code, target: Uri.parse(d.docUrl) }) : d.code;
           diag.source = "wirescript build";
           const list = byFile.get(key) ?? [];
           list.push(diag);
@@ -537,6 +656,14 @@ export function activate(context: ExtensionContext) {
       // can never again strand the spinner on the last compile step.
       compileStatus.hide();
 
+      try {
+        fs.writeFileSync(outPath, Buffer.from(result?.brz ?? "", "base64"));
+      } catch (err: any) {
+        logCompile(`writing ${outPath} failed: ${err.message || err}`);
+        window.showErrorMessage(`Wirescript: could not write ${outPath}: ${err.message || err}`);
+        return;
+      }
+
       if (copyFileToClipboard(outPath)) {
         logCompile(`copied ${baseName}.brz to the clipboard as a file drop`);
         window.setStatusBarMessage(
@@ -558,6 +685,18 @@ export function activate(context: ExtensionContext) {
         );
       }
     }),
+  );
+
+  // For the built-in markdown preview (`markdown.markdownItPlugins`):
+  // ```wirescript blocks colored with this extension's grammar, and the
+  // bundled docs' book links pointed at their markdown pages.
+  const docsDir = path.join(extDir, "docs");
+  return loadGrammar(extDir).then(
+    (grammar) => ({ extendMarkdownIt: wirescriptMarkdown(grammar, docsDir) }),
+    (e: any) => {
+      output.appendLine(`[docs] code blocks stay plain: the grammar did not load (${e?.message ?? e})`);
+      return { extendMarkdownIt: wirescriptMarkdown(null, docsDir) };
+    },
   );
 }
 

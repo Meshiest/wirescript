@@ -675,7 +675,6 @@ pub(in crate::lower) fn lower_builtin_call(
 /// field, read from brdb's `STRUCT_DEFAULTS` — the same source emit uses. Fills
 /// the axis a per-axis layout call left unset (e.g. `anchorY = 0.25` needs the
 /// default `Anchor.X`). `0.0` when the gate/field/axis has no registered default.
-#[cfg(feature = "brdb-full")]
 fn vector2d_default_axis(gate_class: &str, field: &str, axis: &str) -> f64 {
     let Some(strct) = brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
         .iter()
@@ -701,9 +700,4 @@ fn vector2d_default_axis(gate_class: &str, field: &str, axis: &str) -> f64 {
         .ok()
         .and_then(|p| p.as_brdb_f64().ok())
         .unwrap_or(0.0)
-}
-
-#[cfg(not(feature = "brdb-full"))]
-fn vector2d_default_axis(_gate_class: &str, _field: &str, _axis: &str) -> f64 {
-    0.0
 }

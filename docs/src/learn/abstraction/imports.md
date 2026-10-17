@@ -49,7 +49,8 @@ on ZoneEntered(zone = room) -> (character) {
 ```
 
 `import { escape, sanitize } from "sanitize"` brings two helpers in from a
-file named `sanitize.ws`, the lessons' starter library. `escape` is the mod
+file named `sanitize.ws`, the lessons'
+[starter library](../tools.md#the-starter-library). `escape` is the mod
 from [Reacting to the Game](../reacting-to-the-game.md) that makes a name
 safe to show. `sanitize` is a `fn` that also trims spaces from the ends and
 cuts the text to a length, here 16 characters. After the import, both are

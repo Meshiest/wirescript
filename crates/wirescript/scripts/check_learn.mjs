@@ -14,6 +14,8 @@
 //   bench-for=x     a test bench for block `x`: its outputs must be x's
 //                   inputs, and its inputs x's outputs, by name and type
 //   admin           the block may use gates only an admin can load
+//   file=path       the block is a copy of that file (relative to the page),
+//                   and must match it exactly
 // A compiled block fails on any error or warning, and, unless it or its page
 // (in learn.js) is marked admin, on any gate listed in docs/admin-gates.json.
 // The same holds for every inline prefab (`$```…```) inside it, compiled on
@@ -24,7 +26,7 @@
 
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { binPath, filesUnder, isMain, repoRoot, wsBlocks } from './lib.mjs';
@@ -195,8 +197,15 @@ async function main() {
   for (const page of pages) {
     for (const b of wsBlocks(readFileSync(join(docsDir, page), 'utf8'))) {
       const rules = blockRules(b.words);
-      if (rules.ignore || rules.nocompile) continue;
       const where = `${page}:${b.startLine}`;
+      if (rules.file) {
+        const copied = join(docsDir, dirname(page), rules.file);
+        if (!existsSync(copied)) failures.push(`${where}: file=${rules.file} does not exist`);
+        else if (readFileSync(copied, 'utf8').replace(/\r\n/g, '\n').trimEnd() !== b.code.trimEnd()) {
+          failures.push(`${where}: the block no longer matches ${rules.file}; copy the file into it`);
+        }
+      }
+      if (rules.ignore || rules.nocompile) continue;
       if (!rules.name) {
         failures.push(`${where}: a compiled block needs a name= tag`);
         continue;

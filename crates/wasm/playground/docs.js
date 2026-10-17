@@ -176,6 +176,13 @@ export function initDocs(container, onInsertExample) {
       content.innerHTML = '<pre>' + escapeHtml(md) + '</pre>';
     }
 
+    // An image path is relative to its page, as the book resolves it; this
+    // panel renders at the site root, so point it at the page's own folder.
+    const pagePath = DOC_MANIFEST[name] || 'docs/README.md';
+    content.querySelectorAll('img[src]').forEach(img => {
+      img.setAttribute('src', resolveDocPath(pagePath, img.getAttribute('src')));
+    });
+
     // Heading anchors: marked (v14) emits no ids, so the "Contents" list each
     // page opens with would link nowhere. Assign them here with the same slug
     // rule the generator uses (`scripts/gen_doc_toc.mjs`), including GitHub's
@@ -271,6 +278,11 @@ export function initDocs(container, onInsertExample) {
           if (anchor) scrollToAnchor(anchor);
         });
         a.removeAttribute('target');
+      } else if (!/.md$/.test(resolved) && !/^[a-z]+:/i.test(resolved)) {
+        // A file the docs ship beside their pages (`learn/lib/sanitize.ws`)
+        // is served at its doc path: download it.
+        a.setAttribute('href', resolved);
+        a.setAttribute('download', basename);
       }
     });
 

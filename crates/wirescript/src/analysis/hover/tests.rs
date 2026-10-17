@@ -1382,3 +1382,71 @@ on go {
         let pin = hover_for(src, 0, 12).expect("a hover on the pin");
         assert!(!pin.contains("Annotation"), "{pin}");
     }
+
+    /// Hovers on language features end with a link to their docs section; a
+    /// user's own names get none.
+    #[test]
+    fn hovers_link_to_the_docs() {
+        let src = "@layout(\"code\")\n\nin go: exec\nvar count: int = 0\non go {\n  count = abs(count)\n}\n";
+        let docs = "https://wirescript.brickadia.dev/docs/";
+        let annotation = hover_for(src, 0, 3).expect("annotation hover");
+        assert!(annotation.ends_with(&format!("[Docs]({docs}statements.html#layoutcode-source-shaped-gate-layout)")), "{annotation}");
+        let ty = hover_for(src, 3, 12).expect("type hover");
+        assert!(ty.ends_with(&format!("[Docs]({docs}types.html#primitive-types)")), "{ty}");
+        let call = hover_for(src, 5, 11).expect("builtin hover");
+        assert!(call.ends_with(&format!("[Docs]({docs}builtins.html#math--trigonometry-pure)")), "{call}");
+        let on = hover_for(src, 4, 0);
+        if let Some(on) = on {
+            assert!(on.ends_with(&format!("[Docs]({docs}statements.html#on-event-handler)")), "{on}");
+        }
+        let var = hover_for(src, 3, 5).expect("variable hover");
+        assert!(!var.contains("[Docs]"), "{var}");
+    }
+
+    /// Every segment of `Environment.<group>.<property>` hovers, read or
+    /// written, and inside a string's `${...}`; what follows the property
+    /// (`.ToHex()`) and the enum on the right of `=` keep their own hovers.
+    #[test]
+    fn environment_paths_hover() {
+        let src = "in go: exec\non go {\n  let before = Environment.Sky.TimeOfDay\n  Environment.Sky.TimeOfDay = 12.5\n  Environment.Ambience.ReverbEffect = ReverbEffect.LongHallway\n  BroadcastChatMessage(\"${Environment.Sky.SkyColor.ToHex()}\")\n}\n";
+        let lines: Vec<&str> = src.lines().collect();
+        let at = |line: usize, needle: &str, nth: usize| {
+            let col = lines[line].match_indices(needle).nth(nth).expect("needle").0 + 1;
+            hover_for(src, line, col).unwrap_or_default()
+        };
+        let sky = "environment.html#environmentsky";
+        let read = at(2, "TimeOfDay", 0);
+        assert!(read.contains("Environment.Sky.TimeOfDay: float") && read.contains(sky), "{read}");
+        let write = at(3, "TimeOfDay", 0);
+        assert!(write.contains("Environment.Sky.TimeOfDay: float"), "{write}");
+        let group = at(3, "Sky", 0);
+        assert!(group.contains("**Environment group**") && group.contains("`TimeOfDay`"), "{group}");
+        let root = at(2, "Environment", 0);
+        assert!(root.contains("Groups:") && root.contains("`Sky`"), "{root}");
+        let enum_prop = at(4, "ReverbEffect", 0);
+        assert!(enum_prop.contains("Environment.Ambience.ReverbEffect: int (ReverbEffect)"), "{enum_prop}");
+        let enum_value = at(4, "ReverbEffect", 1);
+        assert!(!enum_value.contains("Environment setting"), "{enum_value}");
+        let in_string = at(5, "SkyColor", 0);
+        assert!(in_string.contains("Environment.Sky.SkyColor: color"), "{in_string}");
+        let method = at(5, "ToHex", 0);
+        assert!(!method.contains("Environment setting"), "{method}");
+    }
+
+    /// A string's own text and a comment are prose: a word in them that is
+    /// spelled like a name gets no hover. `${...}` inside a string is code.
+    #[test]
+    fn no_hover_in_string_text_or_comments() {
+        let src = "in go: exec\non go {\n  // ReverbEffect in a comment\n  BroadcastChatMessage(\"SEE Ambience.ReverbEffect => ${Environment.Ambience.ReverbEffect}\")\n}\n";
+        let lines: Vec<&str> = src.lines().collect();
+        let at = |line: usize, needle: &str, nth: usize| {
+            let col = lines[line].match_indices(needle).nth(nth).expect("needle").0 + 1;
+            hover_for(src, line, col)
+        };
+        assert_eq!(at(2, "ReverbEffect", 0), None, "comment");
+        assert_eq!(at(3, "ReverbEffect", 0), None, "string text");
+        let interp = at(3, "ReverbEffect", 1).expect("interpolation hovers");
+        assert!(interp.contains("Environment.Ambience.ReverbEffect"), "{interp}");
+        let call = at(3, "BroadcastChatMessage", 0).expect("call hovers");
+        assert!(call.contains("[Docs](https://wirescript.brickadia.dev/docs/builtins.html#broadcast-messaging-exec)"), "{call}");
+    }

@@ -1,6 +1,6 @@
-# Wirescript Language Reference
+# <img src="images/logo.png" alt="" width="64" height="64" style="height: 1.3em; width: auto; vertical-align: -0.25em; margin-right: 0.3em"> Wirescript Language Reference
 
-Wirescript is a high-level language that compiles to Brickadia wire graphs. It replaces manual gate-by-gate wiring with a readable, imperative syntax while preserving the underlying execution model of Brickadia's wire system.
+Wirescript is a high-level language that compiles to Brickadia's logic gates. It replaces manual gate-by-gate wiring with a readable, imperative syntax while keeping the gates' own execution model.
 
 ## Table of Contents
 
@@ -34,7 +34,7 @@ out total = count
 
 ## How It Works
 
-Wirescript compiles down to Brickadia wire graph gates and wires. Every `var` becomes a variable gate, every operator becomes an expression gate, and every `on` handler becomes an exec chain rooted at an event gate. The compiler handles gate placement, port wiring, and type coercion automatically.
+Wirescript compiles down to Brickadia's logic gates and the wires between them. Every `var` becomes a variable gate, every operator becomes an expression gate, and every `on` handler becomes an exec chain rooted at an event gate. The compiler handles gate placement, port wiring, and type coercion automatically.
 
 Wirescript has two execution contexts:
 

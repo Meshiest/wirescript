@@ -36,7 +36,7 @@ mkdirSync(join(out, 'pkg'), { recursive: true });
 
 // The playground: its page, modules and examples, and the browser compiler.
 for (const f of readdirSync(playground)) {
-  if (f === 'index.html' || f.endsWith('.js')) copyFileSync(join(playground, f), join(out, f));
+  if (f === 'index.html' || f === 'favicon.png' || f.endsWith('.js')) copyFileSync(join(playground, f), join(out, f));
 }
 cpSync(join(playground, 'sdk', 'examples'), join(out, 'sdk', 'examples'), { recursive: true });
 for (const f of ['wasm.js', 'wasm_bg.wasm']) copyFileSync(join(pkg, f), join(out, 'pkg', f));

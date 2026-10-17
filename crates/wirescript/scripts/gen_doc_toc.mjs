@@ -16,7 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { filesUnder, mdLines, repoRoot, writeOrCheck } from "./lib.mjs";
+import { filesUnder, mdLines, repoRoot, slug, writeOrCheck } from "./lib.mjs";
 
 const docsDir = join(repoRoot, "docs", "src");
 
@@ -28,18 +28,6 @@ const CLOSE = "<!-- /toc -->";
 // README is the book's landing page; SUMMARY is generated and CHANGELOG is
 // copied in by the book build, so neither is an authored page.
 const SKIP = new Set(["README.md", "SUMMARY.md", "CHANGELOG.md"]);
-
-/** GitHub's heading slug: strip markdown, drop punctuation, spaces to hyphens. */
-export function slug(heading) {
-  return heading
-    .replace(/`/g, "")
-    .replace(/\*\*|__|\*/g, "")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .trim()
-    .toLowerCase()
-    .replace(/[^\w\- ]+/g, "")
-    .replace(/ /g, "-");
-}
 
 /** Heading text as it should read in the list: markdown emphasis stripped, code spans kept. */
 function linkText(heading) {

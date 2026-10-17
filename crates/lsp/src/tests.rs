@@ -1785,3 +1785,34 @@ out r: int = 1
             "an error must not offer a ws-ignore quick fix: {actions:?}"
         );
     }
+
+    #[test]
+    fn base64_matches_rfc_4648_vectors() {
+        for (raw, encoded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(raw.as_bytes()), encoded, "{raw:?}");
+        }
+        assert_eq!(base64(&[0xff, 0xfe, 0x00]), "//4A");
+    }
+
+    /// A diagnostic whose code the docs cover links to that section; one they
+    /// don't has no link.
+    #[test]
+    fn diagnostics_link_to_their_docs() {
+        let ruler = Ruler::new("x\n");
+        let range = wirescript::diagnostic::SourceRange::default();
+        let d = to_lsp_diagnostic(&ruler, &wirescript::diagnostic::Diagnostic::error("WS012", "m", range.clone()));
+        assert_eq!(
+            d.code_description.map(|c| c.href.to_string()).as_deref(),
+            Some("https://wirescript.brickadia.dev/docs/diagnostics.html#names-declarations--imports"),
+        );
+        let d = to_lsp_diagnostic(&ruler, &wirescript::diagnostic::Diagnostic::error("WS-EMIT", "m", range));
+        assert!(d.code_description.is_none());
+    }

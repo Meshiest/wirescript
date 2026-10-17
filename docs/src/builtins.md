@@ -1,6 +1,6 @@
 # Built-in Functions
 
-Wirescript provides built-in functions that map directly to Brickadia wire graph gates. Each function is either **pure** (returns a value, no exec context needed) or **exec** (requires exec context and chains into the current execution flow).
+Wirescript provides built-in functions that map directly to Brickadia's logic gates. Each function is either **pure** (returns a value, no exec context needed) or **exec** (requires exec context and chains into the current execution flow).
 
 <!-- toc -->
 ## Contents

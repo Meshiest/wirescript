@@ -24,6 +24,29 @@ release:
 lsp:
     cargo build --release -p wirescript-lsp
 
+# Format .ws files or directories in place, following .editorconfig
+fmt +PATHS:
+    cargo run --release -q -p wirescript-cli -- fmt {{PATHS}}
+
+# List .ws files that are not formatted; fails if there are any
+fmt-check +PATHS:
+    cargo run --release -q -p wirescript-cli -- fmt --check {{PATHS}}
+
+# Build the LSP server for WASI, which the VS Code extension runs when
+# `wirescript.server` is `wasi` (needs `rustup target add wasm32-wasip1-threads`)
+lsp-wasi:
+    cargo build --release -p wirescript-lsp --target wasm32-wasip1-threads
+
+# Package the VS Code extension as editors/vscode/brickadia-wirescript.vsix, with the WASI server inside
+vscode-package: lsp-wasi
+    node editors/vscode/scripts/package-server.mjs
+    cd editors/vscode && npx vsce package --no-dependencies --out brickadia-wirescript.vsix
+
+# Open the packaged .vsix in a separate VS Code with its own profile (editors/vscode/.vscode-test), apart from your own setup
+vscode-try *FOLDER: vscode-package
+    code --extensions-dir editors/vscode/.vscode-test/extensions --user-data-dir editors/vscode/.vscode-test/user --install-extension editors/vscode/brickadia-wirescript.vsix --force
+    code --extensions-dir editors/vscode/.vscode-test/extensions --user-data-dir editors/vscode/.vscode-test/user {{FOLDER}}
+
 # Build the check and compile CLIs (release)
 check-bin:
     cargo build --release -p wirescript --bin wirescript-check
@@ -47,6 +70,10 @@ js-test:
 doc-toc:
     node crates/wirescript/scripts/gen_doc_toc.mjs
 
+# Regenerate where hovers and diagnostics link into the docs (crates/wirescript/data/doc_links.json)
+doc-links:
+    node crates/wirescript/scripts/gen_doc_links.mjs
+
 # Type-check every ```wirescript example in docs/src (CI gate)
 doc-check: check-bin
     node crates/wirescript/scripts/check_docs.mjs
@@ -54,7 +81,8 @@ doc-check: check-bin
     node crates/wirescript/scripts/gen_doc_toc.mjs --check
     node crates/wirescript/scripts/gen_book_summary.mjs --check
     node crates/wirescript/scripts/gen_learn_tree.mjs --check
-    node crates/wirescript/scripts/gen_hljs_lang.mjs --check
+    node crates/wirescript/scripts/gen_tm_grammar.mjs --check
+    node crates/wirescript/scripts/gen_doc_links.mjs --check
     cargo run -q -p wirescript --example gen_environment_doc -- --check
 
 # Regenerate the reference half of docs/src/environment.md from the game's
@@ -70,16 +98,16 @@ doc-summary:
 learn-tree:
     node crates/wirescript/scripts/gen_learn_tree.mjs
 
-# Regenerate the book's highlight.js grammar from the playground's monarch.js
-doc-hljs:
-    node crates/wirescript/scripts/gen_hljs_lang.mjs
+# Regenerate the VS Code grammar's keyword lists from the playground's monarch.js
+vscode-grammar:
+    node crates/wirescript/scripts/gen_tm_grammar.mjs
 
 # the version .github/workflows/deploy-playground.yml builds the published book with
 MDBOOK_VERSION := "0.5.2"
 
 # Build the docs book into docs/book (`just mdbook serve` previews with live reload)
 [windows]
-mdbook *ARGS='build': doc-summary doc-hljs
+mdbook *ARGS='build': doc-summary
     @if (-not (Get-Command mdbook -ErrorAction SilentlyContinue)) { \
       Write-Host "mdbook not installed. cargo install mdbook --version {{ MDBOOK_VERSION }}"; \
       Write-Host "or grab a binary from https://github.com/rust-lang/mdBook/releases"; \
@@ -90,7 +118,7 @@ mdbook *ARGS='build': doc-summary doc-hljs
 
 # Build the docs book into docs/book (`just mdbook serve` previews with live reload)
 [unix]
-mdbook *ARGS='build': doc-summary doc-hljs
+mdbook *ARGS='build': doc-summary
     @command -v mdbook >/dev/null || { \
       echo "mdbook not installed. cargo install mdbook --version {{ MDBOOK_VERSION }}" >&2; \
       echo "or grab a binary from https://github.com/rust-lang/mdBook/releases" >&2; \
@@ -102,13 +130,13 @@ mdbook *ARGS='build': doc-summary doc-hljs
 # Build the playground and the docs book (with the Learn lessons) into
 # target/learn-preview and serve them at http://localhost:8080/ (or `port`), so the
 # lessons' Compile and Open in playground buttons work. Needs wasm-pack and mdbook.
-learn-preview port='8080': doc-summary doc-hljs learn-tree
+learn-preview port='8080': doc-summary learn-tree
     wasm-pack build crates/wasm --target web --release
     node crates/wasm/preview-site.mjs --port {{port}}
 
 # The same site as learn-preview, built into target/learn-preview without serving
 # it (serve that folder with any static server, e.g. `python -m http.server`)
-learn-site: doc-summary doc-hljs learn-tree
+learn-site: doc-summary learn-tree
     wasm-pack build crates/wasm --target web --release
     node crates/wasm/preview-site.mjs --no-serve
 
@@ -152,12 +180,12 @@ ir file:
 assemble file *ARGS:
     cargo run --release -p wirescript-cli -- assemble {{file}} {{ARGS}}
 
-# Rebuild VS Code extension (compile TS + formatter)
+# Rebuild the VS Code extension (type-check, bundle into dist/, copy the docs)
 [windows]
 vscode:
     Set-Location editors/vscode; npm install; npm run build
 
-# Rebuild VS Code extension (compile TS + formatter)
+# Rebuild the VS Code extension (type-check, bundle into dist/, copy the docs)
 [unix]
 vscode:
     cd editors/vscode && npm install && npm run build

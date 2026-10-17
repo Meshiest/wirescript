@@ -374,4 +374,7 @@
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
+  // VS Code's markdown preview (the extension bundles these docs) replaces the
+  // page's content on every update instead of reloading it.
+  window.addEventListener('vscode.markdown.updateContent', init);
 })();

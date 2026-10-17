@@ -1,6 +1,6 @@
 # Types
 
-Wirescript has a static type system that maps directly to Brickadia's wire graph port types. The type checker validates that wires connect compatible ports and inserts coercion gates where needed.
+Wirescript has a static type system that maps directly to the port types of Brickadia's logic gates. The type checker validates that wires connect compatible ports and inserts coercion gates where needed.
 
 <!-- toc -->
 ## Contents
@@ -165,7 +165,7 @@ same as `holder == null`.
 
 ### Reference Types (`ref T`)
 
-A `ref T` is a reference to a mutable variable of type `T`. Variables declared with `var` have type `ref T` internally. This is how the wire graph tracks that they are mutable storage rather than pure signal values.
+A `ref T` is a reference to a mutable variable of type `T`. Variables declared with `var` have type `ref T` internally. This is how the compiler tracks that they are mutable storage rather than pure signal values.
 
 ```wirescript
 var count: int = 0  // count has type ref int internally
@@ -501,7 +501,7 @@ contributes its record's fields, and a multi-output gate contributes one leaf
 per output port, so `let c = if hit then m.get(a) else m.get(b)` gives `c` a
 real `Value` and a real `Found`, each chosen by its own `Select`.
 
-**Which fields are allowed.** Every leaf field must be a value the wire graph can
+**Which fields are allowed.** Every leaf field must be a value a logic gate can
 store: a number, `bool`, `string`, `vector`/`rotator`/`color`, an entity type,
 or a nested record/array/map. A reference-only field (`*T`, `zone`, `teleport`, a
 prefab reference) or an `exec` field cannot be stored, and a record with one is

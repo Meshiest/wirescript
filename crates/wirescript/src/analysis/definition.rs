@@ -55,6 +55,12 @@ pub fn definition_at(
 
     let word = word_at(source, line, col)?;
 
+    // An annotation's name (`@left`, `@layout`) is no symbol, even when a
+    // variable shares it.
+    if name_preceded_by(source, line, col, b'@') {
+        return None;
+    }
+
     if is_field_access(source, line, col) {
         // Variant use in a construction path (`Shape.Circle`): jump to that
         // variant's own token inside the `enum Shape` declaration. Checked
@@ -410,13 +416,18 @@ fn find_import_definition(
 }
 
 fn is_field_access(source: &str, line: usize, col: usize) -> bool {
+    name_preceded_by(source, line, col, b'.')
+}
+
+/// Whether the name under the cursor directly follows `byte`.
+fn name_preceded_by(source: &str, line: usize, col: usize, byte: u8) -> bool {
     let Some(l) = source.lines().nth(line) else { return false };
     let c = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
     let start = l[..c]
         .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
         .map(|i| i + 1)
         .unwrap_or(0);
-    start > 0 && l.as_bytes().get(start - 1) == Some(&b'.')
+    start > 0 && l.as_bytes().get(start - 1) == Some(&byte)
 }
 
 /// The referenceable name a top-level declaration binds, if any. Covers every

@@ -1,5 +1,18 @@
 # Wirescript Changelog
 
+## 2.0.2
+
+- Fixed: in the playground, a layout argument that set one `Vector2D` axis (`anchorY = 0.25` alone) wrote 0 to the other axis instead of the gate's default, and hover showed no gate defaults.
+- Fixed: the language server crashed on a deeply nested program (around 300 nested `if` blocks) instead of reporting `WSP001`.
+- The playground now builds the same save as the CLI. Two layout and lowering steps depended on hash-map order, which differs on 32-bit targets.
+- `wirescript fmt` formats `.ws` files in place (`--check` lists the unformatted ones), following `.editorconfig`: indentation, `max_line_length`, `end_of_line` and `insert_final_newline`. The playground and the language server use the same formatter, which now splits over-wide lines and honours `// fmt-ignore`.
+- Fixed: the formatter counted brackets inside block comments and inside `${...}` with quotes, indented a `}` / `else {` pair and a statement `else if` one level too deep, and rewrote nested-prefab blocks.
+- Hovers on builtins, events, keywords, annotations and types link to their docs section, and each diagnostic code links to its entry in Diagnostics. In VS Code the links open the docs bundled with the extension.
+- Fixed: go to definition on an annotation (`@left`) jumped to a variable with the same name.
+- Fixed: the language server kept running after the editor shut it down.
+- Hover on `Environment`, an environment group or a setting (`Environment.Sky.TimeOfDay`) shows what it is and its type, also inside `${...}`. An enum setting names the enum as programs write it (`ReverbEffect`, not `EBRReverbEffect`), in completion too.
+- Fixed: words in comments and in a string's text got hovers when spelled like a name. `${...}` still hovers.
+
 ## 2.0.1
 
 - Ref initializers are baked into the save: `var h: *int = &a`, `var refs: (*int)[] = [&a, &b]`, `var rows: int[][] = [row0, row1]` and `var m: Map<string, int[]> = { "x" => row0 }` start out holding those refs, with no gates. Each must name a var, array or map declared above it (`WS003`). Requires brdb 1.0.1.

@@ -1,7 +1,7 @@
 # tree-sitter-wirescript
 
 A [tree-sitter](https://tree-sitter.github.io/) grammar for **Wirescript**, the
-language that compiles to Brickadia wire graphs.
+language that compiles to Brickadia's logic gates.
 
 The grammar is derived from the authoritative Rust implementation in this repo —
 `crates/wirescript/src/lexer.rs` and `crates/wirescript/src/parser.rs` — not from

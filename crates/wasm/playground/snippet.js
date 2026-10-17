@@ -19,6 +19,9 @@ export function blockRules(words) {
     name: value('name'),
     expect: value('expect'),
     benchFor: value('bench-for'),
+    // The block is a copy of this file (relative to its page), shown for
+    // reading; doc-check keeps the two identical.
+    file: value('file'),
   };
 }
 

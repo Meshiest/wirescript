@@ -58,6 +58,7 @@ pub fn compile(input: CompileInput<'_>) -> Result<CompileResult, CompileError> {
 /// the whole process. Reserved address space only — pages are committed as
 /// used, so the worker costs nothing beyond what the compile actually
 /// touches.
+#[cfg(not(target_arch = "wasm32"))]
 const COMPILE_STACK_SIZE: usize = 256 * 1024 * 1024; // 256 MiB reserved
 
 /// Run `f` on a dedicated big-stack worker thread so every compile entry

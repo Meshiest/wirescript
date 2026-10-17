@@ -603,7 +603,7 @@ on CustomEvent("minion.init", isObject = true) -> (who: character) {
 
 Four things to watch for:
 
-- **The nested handler is not registered by the outer one.** The wire graph is
+- **The nested handler is not registered by the outer one.** The circuit is
   static, so its trigger is live from the moment the prefab spawns, a tick or
   more before the init event lands. It needs a guard on an init-set value.
   Nesting only scopes the reference for readability. It does not order the two

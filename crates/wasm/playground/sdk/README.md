@@ -1,6 +1,6 @@
 # Wirescript SDK
 
-Local development tools for Wirescript — a language that compiles to Brickadia wire graphs.
+Local development tools for Wirescript — a language that compiles to Brickadia's logic gates.
 
 ## Tools
 
@@ -53,7 +53,7 @@ Then open http://localhost:8080.
 
 ## Language Overview
 
-Wirescript compiles to Brickadia's visual wire graph system. Every `var` becomes a Variable gate, every operator becomes an expression gate, and every `on` handler becomes an exec chain.
+Wirescript compiles to Brickadia's logic gates. Every `var` becomes a Variable gate, every operator becomes an expression gate, and every `on` handler becomes an exec chain.
 
 ### Two Contexts
 - **Pure context** — expressions that define signal-flow. Evaluated whenever inputs change.

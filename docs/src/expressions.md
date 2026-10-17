@@ -1,6 +1,6 @@
 # Expressions
 
-Expressions compute values. In Wirescript, expressions map to wire graph gates: each operator or function call becomes one or more gates with their ports wired together.
+Expressions compute values. In Wirescript, expressions map to logic gates: each operator or function call becomes one or more gates with their ports wired together.
 
 <!-- toc -->
 ## Contents
@@ -441,7 +441,7 @@ let b: Point = { ...a, y: 99 }  // b.x == 1, b.y == 99
 
 Later fields override spread fields. Multiple spreads are allowed.
 
-A record *value* is a compile-time abstraction: it produces no wire graph gates, and each field resolves directly to the underlying binding of its value expression. A record used as storage (a `var`, array, or map) is the exception: it decomposes into one gate per field. See [Records as storage](types.md#records-as-storage).
+A record *value* is a compile-time abstraction: it produces no gates, and each field resolves directly to the underlying binding of its value expression. A record used as storage (a `var`, array, or map) is the exception: it decomposes into one gate per field. See [Records as storage](types.md#records-as-storage).
 
 ## Tuple Literals
 
@@ -901,7 +901,7 @@ on CharacterSpawned() -> (who) {
 > sweep finishes in one tick but runs its body N times. Spawning one chip per
 > entity moves that work into parallel gate instances, and the per-tick cost
 > stops depending on N. The nested `on ServerUptime()` above is not
-> registered by the init handler. The wire graph is static, so its trigger is
+> registered by the init handler. The circuit is static, so its trigger is
 > live from the moment the prefab spawns, before `init` lands, which is why real
 > code guards it on an init-set value. See
 > [per-entity fan-out](best-practices.md#10-per-entity-work-a-for-sweep-or-one-chip-each)

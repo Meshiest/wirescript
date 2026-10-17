@@ -2,7 +2,7 @@
 name = "wirescript-ir"
 version = "0.1.0"
 edition = "2024"
-description = "Brickadia wire-graph IR: build or load a gate graph, lay it out, and assemble it into a .brz/.brdb save"
+description = "Brickadia logic-gate IR: build or load a gate graph, lay it out, and assemble it into a .brz/.brdb save"
 
 [features]
 default = ["brdb-full"]

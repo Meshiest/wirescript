@@ -2,12 +2,12 @@
 // editor's own tokenizer (Monaco + playground/monarch.js), so a block looks the
 // same in the book as in the editor.
 //
-// highlight.js colors every block first (wirescript-hljs.js); this then loads
-// Monaco from the same CDN build the playground uses and recolors each
+// It loads Monaco from the same CDN build the playground uses and colors each
 // `wirescript` block from Monaco's tokens. The grammar is the playground's
 // `monarch.js`, one level above the book's root (the book is published at
 // /docs/, beside the playground). Where it cannot load (no network, or
-// `mdbook serve` with no playground beside it), the highlight.js colors stay.
+// `mdbook serve` with no playground beside it), the blocks keep mdBook's own
+// coloring.
 // Token colors are in ws-highlight.css.
 (function () {
   'use strict';

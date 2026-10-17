@@ -1,6 +1,6 @@
 # The `.wsir` text format
 
-`.wsir` is the text form of an `ir::Program`: a wire graph of Brickadia gates
+`.wsir` is the text form of an `ir::Program`: a graph of Brickadia logic gates
 plus the settings that decide how it is laid out and emitted. The syntax
 follows LLVM IR and MLIR's generic-op form: a gate is an instruction, and its
 operands are the wires into its input ports.
