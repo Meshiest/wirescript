@@ -47,7 +47,6 @@ Then open http://localhost:8080.
 │   ├── wasm.js
 │   └── wasm_bg.wasm
 ├── playground/      # Browser-based editor (serve with any HTTP server)
-├── vscode/          # VS Code extension (WASM-powered, no native binary)
 └── examples/        # Example programs
 ```
 
@@ -131,11 +130,9 @@ Arrays start empty unless initialized. A top-level initializer must be all liter
 
 ## VS Code Extension
 
-The `vscode/` directory contains a WASM-powered VS Code extension. To use:
-1. Copy or symlink `vscode/` into `~/.vscode/extensions/wirescript-wasm`
-2. Reload VS Code
+Install [Brickadia Wirescript](https://marketplace.visualstudio.com/items?itemName=brickadia-community.brickadia-wirescript) from the Visual Studio Marketplace, or search for "Brickadia Wirescript" in VS Code's Extensions view. It is not part of the SDK.
 
-Features: diagnostics, completions, hover, go-to-definition, formatting, rename, and **Compile and Copy Path** (`Ctrl+Shift+B`) — compiles to a temp `.brz` and copies the path to clipboard for Brickadia's load dialog.
+Features: diagnostics, completions, hover, go-to-definition, formatting, rename, the language docs inside the editor, and **Compile and Copy** (`Ctrl+Shift+B`): compiles the open file to a `.brz` and puts it on the clipboard, ready to paste into Brickadia.
 
 ## Using with Claude
 

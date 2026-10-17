@@ -35,8 +35,8 @@ minutes; subsequent runs are fast.
 
 The [playground](https://wirescript.brickadia.dev/) writes, formats, and
 compiles Wirescript to `.brz` entirely in the browser, with searchable docs
-(Ctrl-K) and a downloadable SDK (Node.js CLI tools, examples, and a VS Code
-extension).
+(Ctrl-K) and a downloadable SDK (Node.js CLI tools and examples). The VS Code
+extension is [Brickadia Wirescript](https://marketplace.visualstudio.com/items?itemName=brickadia-community.brickadia-wirescript) on the Marketplace.
 
 Every `var` becomes a Variable gate, every operator becomes an expression
 gate, and every `on` handler becomes an exec chain:
@@ -83,11 +83,13 @@ with live reload). The compiler is
 
 ## LSP + VS Code Extension
 
-The extension in [editors/vscode/](editors/vscode/) runs the LSP server (native,
-or compiled to WASI; see below) for diagnostics, hover, completions, go-to-definition, rename, organize
-imports, and inlay hints, plus a Prettier-based formatter and a
-**Compile and Copy Path** command (`Ctrl+Shift+B`) that compiles the current
-file to a `.brz` and copies its path for Brickadia's load dialog.
+The released extension is [Brickadia Wirescript](https://marketplace.visualstudio.com/items?itemName=brickadia-community.brickadia-wirescript) on the Visual Studio
+Marketplace. Its source is [editors/vscode/](editors/vscode/): it runs the LSP
+server (native, or compiled to WASI; see below) for diagnostics, hover,
+completions, go-to-definition, rename, organize imports, inlay hints and
+formatting, plus a **Compile and Copy** command (`Ctrl+Shift+B`) that compiles
+the current file to a `.brz` and puts it on the clipboard, ready to paste into
+Brickadia.
 
 A **Fill record fields** code action (the lightbulb / `Ctrl+.`) is offered
 when the cursor is inside a record literal whose expected type is a record —

@@ -60,8 +60,9 @@ fn formatting_the_repository_is_stable_and_keeps_every_token() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
     let mut files = Vec::new();
     ws_files(&root, &mut files);
-    // A wrong root finds nothing and would pass with nothing checked.
-    assert!(files.len() > 100, "found only {} .ws files under {}", files.len(), root.display());
+    // A wrong root finds nothing and would pass with nothing checked. A clean
+    // checkout has around 60; a working copy usually has more.
+    assert!(files.len() >= 20, "found only {} .ws files under {}", files.len(), root.display());
 
     let mut failures = Vec::new();
     for file in &files {

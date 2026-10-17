@@ -92,17 +92,6 @@ copy_docs _sdk/wirescript-sdk/playground/docs
 cp ../../CHANGELOG.md _sdk/wirescript-sdk/playground/docs/
 node playground/build-search-index.mjs _sdk/wirescript-sdk/playground/docs _sdk/wirescript-sdk/playground/docs/search-index.json
 
-mkdir -p _sdk/wirescript-sdk/vscode/syntaxes _sdk/wirescript-sdk/vscode/pkg
-cp playground/sdk/vscode/extension.js _sdk/wirescript-sdk/vscode/
-# The SDK extension shares the language extension's clipboard code, compiled.
-(cd ../../editors/vscode && npm ci --no-audit --no-fund && npm run build)
-cp ../../editors/vscode/out/clipboard.js _sdk/wirescript-sdk/vscode/
-cp playground/sdk/vscode/package.json _sdk/wirescript-sdk/vscode/
-cp ../../editors/vscode/language-configuration.json _sdk/wirescript-sdk/vscode/
-cp ../../editors/vscode/syntaxes/wirescript.tmLanguage.json _sdk/wirescript-sdk/vscode/syntaxes/
-cp pkg/wasm_bg.wasm _sdk/wirescript-sdk/vscode/pkg/
-cp pkg/wasm.js _sdk/wirescript-sdk/vscode/pkg/
-
 cd _sdk
 zip -r ../wirescript-sdk.zip wirescript-sdk/ -x '*.DS_Store'
 cd ..

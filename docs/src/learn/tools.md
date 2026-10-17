@@ -27,19 +27,17 @@ save, and paste the save in-game.
 file, press **Compile** (or **Ctrl+Shift+B**), and it downloads a `.brz`
 save. Errors show as red underlines as you type.
 
-**VS Code** works with the Wirescript SDK:
+**VS Code** needs the
+[Brickadia Wirescript extension](https://marketplace.visualstudio.com/items?itemName=brickadia-community.brickadia-wirescript):
+install it from that page, or search for "Brickadia Wirescript" in VS Code's
+Extensions view. Then open a `.ws` file. You get errors as you type,
+completions, hover, go to definition, rename, formatting, and these docs
+inside the editor. **Ctrl+Shift+B** compiles the open file and puts the
+`.brz` on the clipboard, ready to paste into Brickadia.
 
-1. Download the SDK: [wirescript-sdk.zip](../../wirescript-sdk.zip), or the
-   **SDK** button in the playground's toolbar.
-2. Unzip it. In VS Code, open the Command Palette (**Ctrl+Shift+P**), run
-   **Developer: Install Extension from Location...** and pick the SDK's
-   `vscode` folder.
-3. Open a `.ws` file. You get errors as you type, completions, hover, go to
-   definition, rename and formatting. **Ctrl+Shift+B** compiles the open file
-   and copies the path of the `.brz` it wrote, ready to paste into Brickadia's
-   load dialog.
-
-The SDK also has command-line tools, which need Node.js 18 or later:
+**The command line** comes with the
+[Wirescript SDK](../../wirescript-sdk.zip), also the **SDK** button in the
+playground's toolbar. Its tools need Node.js 18 or later:
 `node check.mjs door.ws` checks a file, and `node compile.mjs door.ws` writes
 `door.brz`.
 
@@ -58,8 +56,9 @@ the playground or VS Code.
 ## Pasting a circuit in-game
 
 A compiled `.brz` is an ordinary Brickadia save holding one microchip brick.
-Paste it in-game through Brickadia's load dialog, by the file's path (VS
-Code's compile command copies it for you), and place it where you want it.
+Paste it in-game, either through Brickadia's load dialog by the file's path,
+or straight from the clipboard after VS Code's **Ctrl+Shift+B**, and place it
+where you want it.
 
 The microchip is the circuit. Its pins are small bricks on its sides, each
 labeled with its name. You wire them to the rest of your build with the wire
