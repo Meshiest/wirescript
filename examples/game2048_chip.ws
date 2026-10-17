@@ -187,7 +187,7 @@ if running && moved {
       if p15 { c15 = 2 }
     }
   }
-  DisplayText(ctrl, '<color="2a2a2a"><icon>stop</></>', positionX = 0.0, positionY = 0.0, lifetime = 10.0, fontSize = 256, outlineSize = 0, scaleX = 2.5, scaleY = 2.5, textId = 17)
+  DisplayText(ctrl, '<color="2a2a2a"><icon>stop</></>', positionX = 0.0, positionY = 0.0, lifetime = 10.0, fontSize = 256, outlineSize = 0, scaleX = 2.5, scaleY = 2.5, textId = 17, justify = "Left")
   DisplayText(ctrl, '<color="ffffff">2048</>', positionX = -240.0, positionY = -280.0, justify = "Left", lifetime = 10.0, fontSize = 60, textId = 18)
   DisplayText(ctrl, '<color="bbada0">${score}</>', positionX = 240.0, positionY = -280.0, justify = "Right", lifetime = 10.0, fontSize = 60, textId = 19)
 
@@ -196,7 +196,7 @@ if running && moved {
     let bucket = if c <= 4 then 0 else if c <= 16 then 1 else if c <= 64 then 2 else if c <= 256 then 3 else if c <= 1024 then 4 else if c <= 2048 then 5 else 6
     let col = Fmt('{' .. bucket .. '}', 'eee4da', 'f2b179', 'f65e3b', 'edcf72', 'edc850', 'edc22e', '3c3a32')
     let txt = '<color="${col}">${c}</>'
-    DisplayText(ctrl, txt, positionX = px, positionY = py, lifetime = 10.0, fontSize = 40, transition = t, textId = tid)
+    DisplayText(ctrl, txt, positionX = px, positionY = py, lifetime = 10.0, fontSize = 40, transition = t, textId = tid, justify = "Left")
   }
 
   chip {

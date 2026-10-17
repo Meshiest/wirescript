@@ -287,6 +287,22 @@ fn codes(src: &str) -> Vec<String> {
     tc.diagnostics.iter().chain(&lowered.diagnostics).map(|d| d.code.clone()).collect()
 }
 
+/// A named string constant is one carrier gate; a plane that reads it gets its own copy
+/// instead of a wire across its wall, and a copy nothing outside reads is dropped.
+#[test]
+fn a_named_string_constant_is_copied_into_the_plane() {
+    // A runtime value beside the constant keeps it a shared carrier instead of folding.
+    let both = "let HEX = \"fbfbfb\"\nfn f(c: controller, s: string) {\n  c.ShowChatMessage('<color=\"${HEX}\">${s}</>')\n  c.ShowChatMessage('<color=\"${HEX}\">${s}!</>')\n}\non ChatCommand(\"t\", \"t\") -> (controller, arguments) {\n  controller.ShowChatMessage('<color=\"${HEX}\">${arguments}</>')\n  f(controller, arguments)\n}\n";
+    assert_eq!(codes(both), Vec::<String>::new());
+    let carriers = |m: &Module| {
+        all_nodes(m).iter().filter(|n| n.gate_class == gc::STRING_CONCATENATE).count()
+    };
+    assert_eq!(carriers(&lowered(both)), 2, "one in the plane, one outside");
+    let inside_only = "let HEX = \"fbfbfb\"\nfn f(c: controller, s: string) {\n  c.ShowChatMessage('<color=\"${HEX}\">${s}</>')\n  c.ShowChatMessage('<color=\"${HEX}\">${s}!</>')\n}\non ChatCommand(\"t\", \"t\") -> (controller, arguments) { f(controller, arguments) }\n";
+    assert_eq!(carriers(&lowered(inside_only)), 1, "the outer carrier is dead");
+    assert!(!brz(inside_only).is_empty());
+}
+
 #[test]
 fn fn_mistakes_are_reported() {
     // A computed outer value has no way into the plane.

@@ -564,7 +564,8 @@ fn an_array_literal_binds_no_chip_array_param() {
 
 #[test]
 fn a_dropped_ref_initializer_says_the_ref_starts_null() {
-    let r = compile("var a: int = 0\nvar h: *int = &a");
+    // `&a` bakes; a var's held ref is only known at run time, so `= h` drops.
+    let r = compile("var a: int = 0\nvar h: *int = &a\nvar g: *int = h");
     let w = r
         .diagnostics
         .iter()

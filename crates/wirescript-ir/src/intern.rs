@@ -97,6 +97,7 @@ pub mod sym {
     def!(BRICK_COLOR, "_color");
     def!(BRICK_MATERIAL, "_material");
     def!(HANDLE_TARGET, crate::ir::HANDLE_TARGET);
+    def!(HANDLE_TARGETS, crate::ir::HANDLE_TARGETS);
     // Pseudo-property (not a game field): set on every node lowered from a
     // `@nofold` declaration subtree; the fold pass must skip these nodes.
     def!(NO_FOLD, "_nofold");

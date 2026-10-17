@@ -741,6 +741,14 @@ impl<W: Write> Writer<'_, '_, W> {
         Ok(())
     }
 
+    /// `%name` of the node whose id is `id`, if it names one.
+    fn node_name(&self, id: &Literal) -> Option<String> {
+        let Literal::Int(n) = id else { return None };
+        let n = NodeId(u32::try_from(*n).ok()?);
+        self.plan.name(n)?;
+        Some(format!("%{}", self.plan.names[&n]))
+    }
+
     /// One attribute as `(key, value)`; an empty value is a bare flag.
     fn attr(&mut self, prop: &str, v: &Literal) -> io::Result<(String, String)> {
         if let Some((key, kind)) = defaults::annotation_by_prop(prop) {
@@ -751,6 +759,20 @@ impl<W: Write> Writer<'_, '_, W> {
                 (AnnValue::Node, Literal::Int(n)) if u32::try_from(*n).is_ok_and(|n| self.plan.name(NodeId(n)).is_some()) => {
                     let n = NodeId(*n as u32);
                     return Ok((key.to_string(), format!("%{}", self.plan.names[&n])));
+                }
+                (AnnValue::Nodes, Literal::Array(ids)) => {
+                    if let Some(names) = ids.iter().map(|id| self.node_name(id)).collect::<Option<Vec<_>>>() {
+                        return Ok((key.to_string(), format!("[{}]", names.join(", "))));
+                    }
+                }
+                (AnnValue::Nodes, Literal::Map(entries)) => {
+                    let entries = entries
+                        .iter()
+                        .map(|(k, id)| Some(format!("{} => {}", lit_string(k), self.node_name(id)?)))
+                        .collect::<Option<Vec<_>>>();
+                    if let Some(entries) = entries {
+                        return Ok((key.to_string(), format!("map[{}]", entries.join(", "))));
+                    }
                 }
                 _ => {}
             }

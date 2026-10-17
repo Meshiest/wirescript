@@ -290,7 +290,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
     );
     // ---- Entity custom properties ----------------------------------------
     // A key/value store on an entity, player or dynamic grid: 256 keys per
-    // holder, keys up to 100 characters. The gates save `Key` as a string.
+    // holder, keys up to 64 characters (measured in game; longer keys are not stored). The gates save `Key` as a string.
     m.insert(
         "SetCustomProperty",
         entity_exec(

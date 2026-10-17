@@ -22,10 +22,11 @@ fn const_param_placeholder(t: &Type) -> crate::ir::Literal {
 }
 
 /// Validate a top-level (non-exec) var initializer: every element must be a
-/// constant literal whose type coerces to the array's element type. Spreads and
-/// non-literal values are only meaningful when the array is built at runtime, so
-/// they're rejected here with a pointer to assigning the array in an exec
-/// handler.
+/// constant literal whose type coerces to the array's element type, or, for an
+/// array of refs, arrays or maps, a ref to storage (`&x`, or an array or map by
+/// name), which is baked into the save as a reference. Spreads and other
+/// values are only meaningful when the array is built at runtime, so they're
+/// rejected here with a pointer to assigning the array in an exec handler.
 fn check_top_level_array_init(
     ctx: &mut TypeCheckCtx,
     elements: &[ArrayElem],
@@ -40,6 +41,18 @@ fn check_top_level_array_init(
                 "spread `...` in an array initializer is only allowed when building the array inside an exec handler",
                 e.range().clone(),
             );
+        } else if crate::lower::holds_refs(elem_ty) && crate::lower::ref_shaped(e) {
+            if !coerces_at_a_baked_literal(&t, elem_ty) && !coerces_at_a_baked_literal(&unwrap_ref(&t), elem_ty) {
+                ctx.emit(
+                    "WS003",
+                    format!(
+                        "var element: expected {}, got {}",
+                        crate::analysis::type_str(elem_ty),
+                        crate::analysis::type_str(&t)
+                    ),
+                    e.range().clone(),
+                );
+            }
         } else if let Some(lit) = fold_array_init_element(ctx, e) {
             // Asset / prefab references are object references — they lower to
             // their own reference gate (e.g. AudioReference) whose output must be

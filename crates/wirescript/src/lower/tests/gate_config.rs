@@ -835,6 +835,74 @@ fn custom_event_typed_params_type_the_data_ports() {
 }
 
 #[test]
+fn send_ports_carrying_refs_keep_the_ref_type() {
+    // A ref value sent as event data must type its DataIn as the ref, not the
+    // target's type: a numeric port variant turns a ref into the number 1.
+    // A `*T` mod parameter sent as data is a place and still sends its value.
+    let src = "var a: int = 0\nvar h: *int\nvar xs: int[]\nin go: exec\n\
+               mod val(p: *int) { SendCustomEvent(\"v\", p) }\n\
+               on go {\n  h = &a\n  SendCustomEvent(\"r\", &a, h, xs)\n  val(a)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let sends = super::refs::gates(&r, crate::ir::gate_class::SEND_CUSTOM_EVENT);
+    let port_ty = |name: &str, event: &str| {
+        let node = sends
+            .iter()
+            .copied()
+            .find(|n| {
+                matches!(r.module.nodes[n].properties.get(&crate::intern::intern("EventName")),
+                    Some(Literal::String(s)) if s == event)
+            })
+            .expect("send gate");
+        r.module.nodes[&node]
+            .ports
+            .inputs
+            .iter()
+            .find(|p| p.name == crate::intern::intern(name))
+            .map(|p| p.ty.clone())
+    };
+    use crate::ir::Type;
+    assert_eq!(port_ty("DataIn1", "r"), Some(Type::Ref(Box::new(Type::Int))), "&a");
+    assert_eq!(port_ty("DataIn2", "r"), Some(Type::Ref(Box::new(Type::Int))), "a var holding a ref");
+    assert_eq!(port_ty("DataIn3", "r"), Some(Type::Array(Box::new(Type::Int))), "an array");
+    assert_eq!(port_ty("DataIn1", "v"), Some(Type::Int), "a *T place sends its value");
+}
+
+#[test]
+fn set_custom_property_value_port_takes_the_wired_type() {
+    let src = "var a: int = 0\nvar s: string = \"\"\nvar m: Map<string, int>\n\
+               on ChatCommand(\"t\", \"t\") -> (controller, arguments) {\n\
+                 controller.SetCustomProperty(\"i\", a)\n\
+                 controller.SetCustomProperty(\"s\", s)\n\
+                 controller.SetCustomProperty(\"m\", m)\n\
+                 controller.SetCustomProperty(\"r\", &a)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let sets = super::refs::gates(&r, crate::ir::gate_class::ENTITY_SET_CUSTOM_PROPERTY);
+    let value_ty = |key: &str| {
+        let node = sets
+            .iter()
+            .copied()
+            .find(|n| {
+                matches!(r.module.nodes[n].properties.get(&crate::intern::intern("Key")),
+                    Some(Literal::String(s)) if s == key)
+            })
+            .expect("set gate");
+        r.module.nodes[&node]
+            .ports
+            .inputs
+            .iter()
+            .find(|p| p.name == crate::intern::intern("Value"))
+            .map(|p| p.ty.clone())
+    };
+    use crate::ir::Type;
+    assert_eq!(value_ty("i"), Some(Type::Int));
+    assert_eq!(value_ty("s"), Some(Type::String));
+    assert_eq!(value_ty("m"), Some(Type::Map(Box::new(Type::String), Box::new(Type::Int))));
+    assert_eq!(value_ty("r"), Some(Type::Ref(Box::new(Type::Int))));
+}
+
+#[test]
 fn inferred_custom_event_ports_take_sender_types() {
     // No annotations on the receiver; the sender carries int + character.
     let src = "static var last: int = 0\n\

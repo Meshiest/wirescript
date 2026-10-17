@@ -479,6 +479,12 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<c
     let mut all = Vec::new();
     root.walk(&mut |path, m| all.extend(m.wires.iter().enumerate().map(|(i, w)| (path.to_vec(), i, *w))));
     let mut handles: HashMap<(ModPath, PortRef), NodeId> = HashMap::default();
+    let mut copies: HashMap<(ModPath, NodeId), NodeId> = HashMap::default();
+    let fed: HashSet<NodeId> = all
+        .iter()
+        .filter(|(_, _, w)| w.source.port != WirePort::Layout && w.target.port != WirePort::Layout)
+        .map(|(_, _, w)| w.target.node_id)
+        .collect();
     let mut removed: HashMap<ModPath, Vec<usize>> = HashMap::default();
     let mut added: Vec<(ModPath, Wire)> = Vec::new();
     for (holder, at, w) in all {
@@ -498,6 +504,23 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<c
         // accepts into a plane (a value held in a var is refused there). So a
         // call inside a plane, a recursive one included, keeps that wire.
         if is_definition_wire(&src, &w) {
+            continue;
+        }
+        // A pure gate with no input wired is a constant (a named string constant's carrier,
+        // say), so the plane gets its own copy rather than a wire across its wall.
+        let constant = src.kind == NodeKind::Gate
+            && src.gate_class.starts_with("BrickComponentType_Expr_")
+            && !fed.contains(&src.id);
+        if let Some(plane) = tp.clone().filter(|_| constant) {
+            let copy = *copies.entry((plane.clone(), src.id)).or_insert_with(|| {
+                let id = NodeId::fresh();
+                let mut node = src.clone();
+                node.id = id;
+                root.at_mut(&plane).nodes.insert(id, node);
+                id
+            });
+            removed.entry(holder).or_default().push(at);
+            added.push((plane, Wire { source: PortRef { node_id: copy, port: w.source.port }, target: w.target }));
             continue;
         }
         let storage_ref = matches!(src.gate_class, gc::VAR | gc::ARRAY_VAR | gc::MAP_VAR)
@@ -558,5 +581,15 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<c
     }
     for (path, w) in added {
         root.at_mut(&path).wires.push(w);
+    }
+    // A constant every plane now has its own copy of, and nothing else reads, is dead.
+    let mut read: HashSet<NodeId> = HashSet::default();
+    root.walk(&mut |_, m| read.extend(m.wires.iter().filter(|w| w.source.port != WirePort::Layout).map(|w| w.source.node_id)));
+    for (_, src) in copies.keys() {
+        if !read.contains(src) {
+            let m = root.at_mut(&owner[src]);
+            m.nodes.remove(src);
+            m.wires.retain(|w| w.source.node_id != *src && w.target.node_id != *src);
+        }
     }
 }

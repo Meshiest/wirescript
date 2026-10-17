@@ -22,7 +22,7 @@ pub mod validate;
 pub use builder::{BuildError, ModuleRef, ProgramBuilder};
 pub use validate::{PortSide, ValidationError};
 pub use program::{
-    HANDLE_TARGET, LayoutMode, MICROCHIP_BRICK, Program, ProgramSettings, SourceComment, SourceMap,
+    HANDLE_TARGET, HANDLE_TARGETS, LayoutMode, MICROCHIP_BRICK, Program, ProgramSettings, SourceComment, SourceMap,
 };
 
 use crate::collections::HashMap;

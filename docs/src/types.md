@@ -89,7 +89,7 @@ on load {
 }
 ```
 
-**References can't be inlined into an initializer.** A constant `var` initializer (`= [...]`) only bakes *value* literals (`int` / `float` / `bool` / `string` / `vector` / …) into the gate. An object reference must be wired in from its own brick, so it can't sit in a constant initializer. Build the array with `.push(...)` inside an exec handler instead. Writing `var songs: entity[] = [$Asset/…]` silently drops the elements, and the compiler warns (`WS024`).
+**References can't be inlined into an initializer.** A constant `var` initializer (`= [...]`) only bakes *value* literals (`int` / `float` / `bool` / `string` / `vector` / …) into the gate, and refs to storage (see [Reference values](#reference-values)). An object reference must be wired in from its own brick, so it can't sit in a constant initializer. Build the array with `.push(...)` inside an exec handler instead. Writing `var songs: entity[] = [$Asset/…]` silently drops the elements, and the compiler warns (`WS024`).
 
 ### `zone` & `teleport` references
 
@@ -247,6 +247,7 @@ on ReadBrickGrid() {
 - Passing a `*T` value to a `*T` parameter binds the parameter to the var the ref points at. Passing a plain var still binds that var.
 - Write an array of refs with parentheses, `(*int)[]`. A plain `*int[]` is a var that holds an array ref (below).
 - A ref to a ref (`**int`, or `&h` where `h` holds a ref) is `WS086`.
+- An initializer can hold refs: `var h: *int = &a` or `var refs: (*int)[] = [&a, &b]` starts out pointing at `a` and `b`. The refs are baked into the save, so no gate runs. Each one must name a var, array or map declared above it (`WS003`).
 
 **A null ref halts the chain.** A `*T` var or element that was never assigned holds a null ref. Reading or writing through it stops the exec chain in game, with no message. A `*T` var declared inside a handler must have an initializer (`WS025`), since a local var resets every run and a ref has no literal to reset to.
 
@@ -284,6 +285,7 @@ An array or map is only ever handled by reference, so an array value is its own 
 var row0: int[]
 var row1: int[]
 var rows: int[][]
+var grid: int[][] = [row0, row1]  // starts holding both
 var cur: *int[]             // a var holding an array ref
 
 on ReadBrickGrid() {

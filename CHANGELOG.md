@@ -1,5 +1,11 @@
 # Wirescript Changelog
 
+## 2.0.1
+
+- Ref initializers are baked into the save: `var h: *int = &a`, `var refs: (*int)[] = [&a, &b]`, `var rows: int[][] = [row0, row1]` and `var m: Map<string, int[]> = { "x" => row0 }` start out holding those refs, with no gates. Each must name a var, array or map declared above it (`WS003`). Requires brdb 1.0.1.
+- Fixed: a ref sent as custom-event data (`SendCustomEvent("ch", &x)`, or a var holding a ref) typed its data port as the target's type, a numeric variant that can turn the ref into the number 1. `SetCustomProperty`'s value port now takes its type from the value wired in, as event data does, instead of the float variant.
+- Fixed: a `fn` reading a named constant that stays a gate (a string `let` interpolated beside a runtime value) was `WS113`. The function's plane now gets its own copy.
+
 # 2.0.0
 
 Functions, loops and references as values lead this release, with components, bricks and player dialogs from the latest game build.

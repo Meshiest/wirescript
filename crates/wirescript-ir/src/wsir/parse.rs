@@ -95,6 +95,10 @@ enum PAttrVal<'a> {
     Lit(Literal),
     Word(&'a str),
     Ref(PRef<'a>),
+    /// `[%a, %b]`: a list of node references.
+    Refs(Vec<PRef<'a>>),
+    /// `map[k => %a]`: constant keys to node references.
+    RefMap(Vec<(Literal, PRef<'a>)>),
 }
 
 struct PAttr<'a> {
@@ -766,7 +770,9 @@ impl<'a> Parser<'a> {
                 }
             };
             let val = if p.eat_punct(b'=') {
+                let nodes = !quoted && defaults::annotation_by_key(&key).is_some_and(|(_, kind)| kind == AnnValue::Nodes);
                 match p.peek().clone() {
+                    _ if nodes => p.node_refs()?,
                     Tok::Value(_) => PAttrVal::Ref(p.port_ref()?),
                     Tok::Ident(w) if !defaults::is_literal_word(w) => {
                         p.bump();
@@ -781,6 +787,26 @@ impl<'a> Parser<'a> {
         })?;
         self.nodes[idx].attrs.extend(attrs);
         Ok(())
+    }
+
+    /// The value of an [`AnnValue::Nodes`] attribute: `[%a, %b]` or
+    /// `map[k => %a]`.
+    fn node_refs(&mut self) -> R<PAttrVal<'a>> {
+        if self.is_ident(word::MAP) {
+            self.bump();
+            self.expect_punct(b'[')?;
+            let entries = self.sep_list(b']', |p| {
+                let k = p.literal()?;
+                if *p.peek() != Tok::FatArrow {
+                    return Err(p.err_here("`=>` between a map key and its value"));
+                }
+                p.bump();
+                Ok((k, p.port_ref()?))
+            })?;
+            return Ok(PAttrVal::RefMap(entries));
+        }
+        self.expect_punct(b'[')?;
+        Ok(PAttrVal::Refs(self.sep_list(b']', |p| p.port_ref())?))
     }
 
     fn sig(&mut self) -> R<GateIO> {
@@ -1207,8 +1233,8 @@ impl<'a> Parser<'a> {
                     (None, PAttrVal::Word(w)) => {
                         return Err(self.err_at(a.at, format!("`{w}`"), "expected a literal value; quote a string"));
                     }
-                    (None, PAttrVal::Ref(_)) => {
-                        return Err(bad("only `handle_target` takes a value `%name`; others take a literal"));
+                    (None, PAttrVal::Ref(_) | PAttrVal::Refs(_) | PAttrVal::RefMap(_)) => {
+                        return Err(bad("only `handle_target` and `handle_targets` take values `%name`; others take a literal"));
                     }
                     (Some((prop, kind)), val) => {
                         let lit = match (kind, val) {
@@ -1217,11 +1243,20 @@ impl<'a> Parser<'a> {
                             (AnnValue::Word, PAttrVal::Word(w)) => Literal::String(w.to_string()),
                             (AnnValue::Word, PAttrVal::Lit(Literal::String(s))) => Literal::String(s.clone()),
                             (AnnValue::Node, PAttrVal::Ref(r)) => Literal::Int(i64::from(ids[lookup(r.name, r.at)?].0)),
+                            (AnnValue::Nodes, PAttrVal::Refs(rs)) => Literal::Array(
+                                rs.iter().map(|r| Ok(Literal::Int(i64::from(ids[lookup(r.name, r.at)?].0)))).collect::<R<_>>()?,
+                            ),
+                            (AnnValue::Nodes, PAttrVal::RefMap(es)) => Literal::Map(
+                                es.iter()
+                                    .map(|(k, r)| Ok((k.clone(), Literal::Int(i64::from(ids[lookup(r.name, r.at)?].0)))))
+                                    .collect::<R<_>>()?,
+                            ),
                             (_, PAttrVal::Lit(l)) => l.clone(),
                             (AnnValue::Flag, _) => return Err(bad("a flag; write it with no value")),
                             (AnnValue::Str, _) => return Err(bad("expected a string value")),
                             (AnnValue::Word, _) => return Err(bad("expected `left`, `right`, `top` or `bottom`")),
                             (AnnValue::Node, _) => return Err(bad("expected a value `%name`")),
+                            (AnnValue::Nodes, _) => return Err(bad("expected `[%a, ...]` or `map[k => %a, ...]`")),
                         };
                         props.insert(intern(prop), lit);
                     }

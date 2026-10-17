@@ -291,6 +291,9 @@ pub enum AnnValue {
     Word,
     /// A node reference, stored as the node's id.
     Node,
+    /// Node references: a list `[%a, %b]`, stored as a list of ids, or a map
+    /// `map["k" => %a]` from constant keys, stored as a map to ids.
+    Nodes,
 }
 
 /// Short attribute keys and the property each one spells.
@@ -301,6 +304,7 @@ pub static ANNOTATIONS: &[(&str, &LazyLock<Sym>, AnnValue)] = &[
     ("invisible", &sym::REROUTE_INVISIBLE, AnnValue::Flag),
     ("doc", &sym::DOC_TEXT, AnnValue::Str),
     ("handle_target", &sym::HANDLE_TARGET, AnnValue::Node),
+    ("handle_targets", &sym::HANDLE_TARGETS, AnnValue::Nodes),
 ];
 
 /// The flag that suppresses an input's or output's default `PortLabel`.

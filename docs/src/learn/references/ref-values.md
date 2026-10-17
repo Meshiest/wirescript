@@ -115,17 +115,18 @@ on add {
 Error: [WS004] operator '+' cannot be applied to a reference (*int, int): refs and bricks only compare with `==` and `!=`
 ```
 
-A ref also cannot start out pointing somewhere. The compiler warns and drops
-the `= &a`:
+A ref can start out pointing somewhere. The `= &a` is baked into the save,
+so `picked` already holds `a`'s ref when the program is pasted, with no gate
+to set it:
 
-```wirescript name=r3-no-start expect=WSP001
+```wirescript name=r3-start
 var a: int = 0
 var picked: *int = &a
 ```
 
-```text
-WARN [WSP001] 'var picked' holds a ref, and a ref initializer is not baked yet. It is dropped, so the var starts as a null ref, which halts the exec chain when used; assign the ref inside an exec handler instead
-```
+The initializer has to name a var, array or map declared above it. A ref that
+is only known while the game runs, such as one read from another var, is
+still dropped with a `WSP001` warning.
 
 ## Modify
 

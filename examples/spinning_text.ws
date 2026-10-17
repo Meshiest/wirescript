@@ -18,5 +18,5 @@ on tick {
   let angle = tick * 0.15
   let x = sin(angle) * 50.0
   let y = cos(angle) * 50.0
-  DisplayText(ctrl, "hello world", positionX = x, positionY = y, lifetime = 0.2, fontSize = 20)
+  DisplayText(ctrl, "hello world", positionX = x, positionY = y, lifetime = 0.2, fontSize = 20, justify = "Left")
 }

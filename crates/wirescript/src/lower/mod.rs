@@ -34,7 +34,8 @@ pub use predeclare::{
 };
 pub(crate) use predeclare::{
     DupConsts, build_const_env_at, certified_binop, default_literal_for_var_type, dup_key, eval_const_binop,
-    eval_const_unop, expr_to_literal_in, fold_ammo_override, fold_constructor, fold_mesh_colors,
+    eval_const_unop, expr_to_literal_in, fold_ammo_override, fold_constructor, fold_mesh_colors, holds_refs,
+    ref_shaped,
 };
 
 mod decl;

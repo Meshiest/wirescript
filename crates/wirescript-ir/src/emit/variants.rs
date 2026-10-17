@@ -204,6 +204,8 @@ pub fn wire_value_as(ty: &str, lit: &Literal) -> WireValue {
             a: 1.0,
         },
         ("weak_object", _) => WireValue::Object,
+        ("component_handle", _) => WireValue::ComponentRef(null_component_ref()),
+        ("brick_handle", _) => WireValue::BrickRef(null_brick_ref()),
         _ => WireValue::Number(0.0),
     }
 }

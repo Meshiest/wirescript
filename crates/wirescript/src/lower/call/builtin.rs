@@ -539,11 +539,14 @@ pub(in crate::lower) fn lower_builtin_call(
     // `Opaque(...)` that erased it) there is nothing to propagate. Warn rather
     // than guess: inventing a type here would silently pick a variant the
     // receiver may not declare, which is the same class of bug in a new coat.
-    let is_event_send = spec.gate_class == gc::SEND_CUSTOM_EVENT
-        || spec.gate_class == gc::SEND_CUSTOM_EVENT_GLOBAL;
+    //
+    // `SetCustomProperty`'s value is stored the same way, so it is typed the same way.
+    let types_any_from_wire = spec.gate_class == gc::SEND_CUSTOM_EVENT
+        || spec.gate_class == gc::SEND_CUSTOM_EVENT_GLOBAL
+        || spec.gate_class == gc::ENTITY_SET_CUSTOM_PROPERTY;
     for p in spec.params.iter() {
         let mut ty = concrete(&p.ty);
-        if is_event_send
+        if types_any_from_wire
             && matches!(ty, Type::Any)
             && let Some(w) = wires.iter().find(|w| w.port == p.port)
         {
@@ -551,16 +554,22 @@ pub(in crate::lower) fn lower_builtin_call(
             // node's port type. Nothing to propagate when BOTH are untyped: leave
             // `any` (float) and let typecheck's WS045 report it, rather than
             // guessing a variant the receiver may not declare.
+            // A wire that carries a ref (`&x`, a var holding one) keeps the ref
+            // type: a numeric port variant turns a ref into the number 1. The
+            // argument's own type is unwrapped below because a `*T` place
+            // (a mod's ref parameter) sends its target's value, not a ref.
             let concrete = |t: &Type| !matches!(t, Type::Any | Type::Opaque | Type::Exec);
+            let wired = ctx.source_port_type(w.val_port);
+            let from_ref = wired
+                .clone()
+                .filter(|t| matches!(t, Type::Ref(inner) if !matches!(**inner, Type::Array(_) | Type::Map(..))));
             let from_arg = arg_types
                 .iter()
                 .find(|(port, _)| *port == p.port)
                 .and_then(|(_, t)| t.clone())
                 .map(|t| unwrap_ref(&t))
                 .filter(concrete);
-            if let Some(t) = from_arg.or_else(|| {
-                ctx.source_port_type(w.val_port).filter(concrete)
-            }) {
+            if let Some(t) = from_ref.or(from_arg).or_else(|| wired.filter(concrete)) {
                 ty = t;
             }
         }

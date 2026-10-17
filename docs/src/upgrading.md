@@ -14,6 +14,21 @@ repository's [`CHANGELOG.md`](../../CHANGELOG.md).
 
 ## 2.0.0
 
+### `DisplayText` centers text unless `justify` says otherwise
+
+The game's EA 3.2 update changed the default justification of a Display Text
+gate from `Left` to `Center`, and an unset `justify` takes the game's default.
+Text laid out to start at its position now centers on it instead, moving left
+by half its width. Say `justify = Left` wherever the layout expects that:
+
+```wirescript ignore
+ctrl.DisplayText("Score", positionX = -300.0, positionY = 40.0)                  // before: left-aligned
+ctrl.DisplayText("Score", positionX = -300.0, positionY = 40.0, justify = Left)  // after
+```
+
+An unset `pivotX` follows the justification (`Left` places the text's start at the
+position, `Center` its middle, `Right` its end), so only `justify` needs to change.
+
 ### An empty `[]` or `{}` needs a type
 
 A `var` initialized with an empty literal and no annotation is `WS098`: the

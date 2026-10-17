@@ -111,6 +111,12 @@ pub struct SourceComment {
 /// their addresses.
 pub const HANDLE_TARGET: &str = "_handle_target";
 
+/// Node property on an `ArrayVar` or `MapVar` whose initializer is refs: the
+/// storage gate each element points at, as node ids. An array's is a list of
+/// ids; a map's is a map from each constant key to an id. Emit bakes each one
+/// into a reference, as for [`HANDLE_TARGET`].
+pub const HANDLE_TARGETS: &str = "_handle_targets";
+
 /// Node property marking the var that holds the program's own microchip
 /// brick (`GetMicrochipBrick()`); emit bakes it with a reference to that
 /// brick.

@@ -1382,6 +1382,112 @@ fn map_entry_literal(
     ))
 }
 
+/// Whether a container of `elem` holds refs: `*T`, arrays and maps (an array
+/// or map value is its own ref).
+pub(crate) fn holds_refs(elem: &Type) -> bool {
+    matches!(elem, Type::Ref(_) | Type::Array(_) | Type::Map(..))
+}
+
+/// Whether initializer element `e` is written as a ref to storage: `&x`, or a
+/// bare name (an array or map names its own ref). Lowering resolves it with
+/// [`storage_ref_target`]; the type checker lets it through for a container
+/// that [`holds_refs`].
+pub(crate) fn ref_shaped(e: &Expr) -> bool {
+    let operand = match e {
+        Expr::RefOf { operand, .. } => operand.as_ref(),
+        other => other,
+    };
+    matches!(operand, Expr::Ident { .. } | Expr::FieldAccess { .. } | Expr::TuplePick { .. })
+}
+
+/// The storage gate a ref initializer element names: `&x` of a var, array or
+/// map, or an array or map named bare (an array or map value is its own ref).
+/// `None` for anything else, including a var that holds a ref: what it holds
+/// is only known at run time.
+fn storage_ref_target(ctx: &LowerCtx, e: &Expr) -> Option<NodeId> {
+    let (operand, explicit) = match e {
+        Expr::RefOf { operand, .. } => (operand.as_ref(), true),
+        other => (other, false),
+    };
+    let binding = match operand {
+        Expr::Ident { name, .. } => ctx.scope.get(name),
+        Expr::FieldAccess { .. } | Expr::TuplePick { .. } => resolve_field_chain(ctx, operand),
+        _ => None,
+    }?;
+    match binding {
+        Binding::Var(v) => match v.storage {
+            VarStorage::Var if explicit && !matches!(v.inner_type, Type::Ref(_)) => Some(v.node_id),
+            VarStorage::Array | VarStorage::Map => Some(v.node_id),
+            VarStorage::Var | VarStorage::Buffer => None,
+        },
+        _ => None,
+    }
+}
+
+/// The node id a `HANDLE_TARGET(S)` property stores for `target`.
+fn target_literal(target: NodeId) -> Literal {
+    Literal::Int(i64::from(target.0))
+}
+
+/// The storage each element of an array initializer names, when every element
+/// names one (see [`storage_ref_target`]), as a `HANDLE_TARGETS` list.
+fn array_ref_targets(ctx: &LowerCtx, elements: &[ArrayElem]) -> Option<Literal> {
+    let targets = elements
+        .iter()
+        .map(|el| match el {
+            ArrayElem::Item(e) => storage_ref_target(ctx, e).map(target_literal),
+            ArrayElem::Spread(_) => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!targets.is_empty()).then_some(Literal::Array(targets))
+}
+
+/// Bake an array initializer that isn't all constants as refs, into
+/// `properties` as `HANDLE_TARGETS`. For an array of refs whose elements don't
+/// all name storage declared above, `WS003` on the first that doesn't (the type
+/// checker passed it as [`ref_shaped`]).
+fn bake_array_refs(
+    ctx: &mut LowerCtx,
+    properties: &mut HashMap<crate::intern::Sym, Literal>,
+    elem_type: &Type,
+    elements: &[ArrayElem],
+) {
+    if let Some(targets) = array_ref_targets(ctx, elements) {
+        properties.insert(*sym::HANDLE_TARGETS, targets);
+        return;
+    }
+    if !holds_refs(elem_type) {
+        return;
+    }
+    let unresolved = elements.iter().find(|el| match el {
+        ArrayElem::Item(e) => ref_shaped(e) && storage_ref_target(ctx, e).is_none(),
+        ArrayElem::Spread(_) => false,
+    });
+    if let Some(el) = unresolved {
+        ctx.error(
+            "WS003",
+            "a ref in an array initializer is `&x` of a var, or an array or map by name, declared above it",
+            el.expr().range(),
+        );
+    }
+}
+
+/// The constant key and the storage the value names of each entry of a map
+/// initializer, when every entry has both, as a `HANDLE_TARGETS` map.
+fn map_ref_targets(ctx: &LowerCtx, entries: &[crate::ast::MapLitEntry], key_ty: &Type) -> Option<Literal> {
+    let lookup = |n: &str| ctx.resolve_mod_pass1(n);
+    let cx = ctx.const_ctx(Some(&lookup));
+    let targets = entries
+        .iter()
+        .map(|en| {
+            let key = crate::const_eval::eval_expr(&en.key, &cx, &mut crate::const_eval::Budget::default()).ok()?;
+            let target = storage_ref_target(ctx, &en.value)?;
+            Some((crate::const_eval::scalar_in_type(key, key_ty), target_literal(target)))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!targets.is_empty()).then_some(Literal::Map(targets))
+}
+
 /// Why a map literal has no constant form.
 enum MapBakeMiss {
     /// Object/asset-family keys have no literal representation: `key_of`
@@ -1433,6 +1539,10 @@ fn bake_map_init(
     let Some(Expr::MapLit { entries, .. }) = init else {
         return;
     };
+    if let Some(targets) = map_ref_targets(ctx, entries, key_ty) {
+        properties.insert(*sym::HANDLE_TARGETS, targets);
+        return;
+    }
     match map_literal_pairs(ctx, entries, key_ty, val_ty) {
         Ok(pairs) => {
             properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs));
@@ -1461,9 +1571,9 @@ fn bake_map_init(
 fn var_init_unbaked<'a>(v: &'a VarDecl, ctx: &LowerCtx) -> Option<&'a Expr> {
     let init = v.init.as_ref()?;
     let unbaked = match init {
-        Expr::Array { elements, .. } => elements
-            .iter()
-            .any(|el| array_elem_literal(el, ctx).is_none()),
+        Expr::Array { elements, .. } => {
+            elements.iter().any(|el| array_elem_literal(el, ctx).is_none()) && array_ref_targets(ctx, elements).is_none()
+        }
         // A map literal is baked — and any non-bakeable case (object keys,
         // non-constant entries) is warned — by `bake_map_init`, the single
         // authority on map-init diagnostics. A constant `{ "k": v }` bakes as a
@@ -1487,9 +1597,17 @@ fn var_init_unbaked<'a>(v: &'a VarDecl, ctx: &LowerCtx) -> Option<&'a Expr> {
             expr_to_literal_in(e, &ctx.const_lookup()).is_none()
                 && const_container_init(ctx, e).is_none()
                 && !constant_record(ctx, e)
+                && !bakes_as_ref(ctx, v, e)
         }
     };
     unbaked.then_some(init)
+}
+
+/// Whether `var v: *T = e` bakes `e` as a reference: `v` holds a ref and `e`
+/// names storage (see [`storage_ref_target`]).
+fn bakes_as_ref(ctx: &LowerCtx, v: &VarDecl, e: &Expr) -> bool {
+    let holds_ref = matches!(ctx.scope.get(&v.name), Some(Binding::Var(r)) if matches!(r.inner_type, Type::Ref(_)) && r.storage == VarStorage::Var);
+    holds_ref && storage_ref_target(ctx, e).is_some()
 }
 
 /// Whether `e` names a constant record (`CP`, `ns.LP`), which bakes field by
@@ -1564,9 +1682,9 @@ pub(super) fn warn_unbaked_var_init(ctx: &mut LowerCtx, v: &VarDecl, skip_array_
         || matches!(ctx.type_of(init), Type::Ref(_));
     let msg = if holds_ref {
         format!(
-            "'var {}' holds a ref, and a ref initializer is not baked yet. It is dropped, so \
-             the var starts as a null ref, which halts the exec chain when used; assign the \
-             ref inside an exec handler instead",
+            "'var {}' holds a ref, and only a ref to a var, array or map (`&x`) is baked. This \
+             initializer is dropped, so the var starts as a null ref, which halts the exec chain \
+             when used; assign the ref inside an exec handler instead",
             v.shown_name()
         )
     } else if v.is_static {
@@ -3273,6 +3391,8 @@ fn pre_declare_var_storage(ctx: &mut LowerCtx, d: &VarDecl) {
                 .collect();
             if lits.len() == elements.len() {
                 properties.insert(intern_static("InitialValue"), Literal::Array(lits));
+            } else {
+                bake_array_refs(ctx, &mut properties, &elem_type, elements);
             }
         } else if let Some(Literal::Array(lits)) = d.init.as_ref().and_then(|e| const_container_init(ctx, e)) {
             let lits = lits.into_iter().map(|lit| bake_string_bool(lit, &elem_type)).collect();
@@ -3408,6 +3528,12 @@ fn pre_declare_var_storage(ctx: &mut LowerCtx, d: &VarDecl) {
     if let Some(lit) = init_lit {
         properties.insert(*sym::INITIAL_VALUE, lit);
     }
+    // `var h: *T = &x`: the ref is baked once bricks have addresses.
+    if matches!(inner_type, Type::Ref(_))
+        && let Some(target) = d.init.as_ref().and_then(|e| storage_ref_target(ctx, e))
+    {
+        properties.insert(*sym::HANDLE_TARGET, target_literal(target));
+    }
 
     let node_id = make_scalar_var_gate(ctx, &inner_type, properties, &d.range, None);
     ctx.scope.insert(
@@ -3485,6 +3611,8 @@ pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
             .collect();
         if lits.len() == d.init.len() {
             properties.insert(intern_static("InitialValue"), Literal::Array(lits));
+        } else {
+            bake_array_refs(ctx, &mut properties, &elem_type, &d.init);
         }
     }
     declare_array_var(ctx, &d.name, elem_type, properties, &d.range);

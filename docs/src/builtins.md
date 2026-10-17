@@ -615,7 +615,7 @@ name bakes into the gate, and any other value wires in.
 | `transition` | `float` | No | Seconds to interpolate to the new state when re-emitted with the same `textId` |
 | `textId` | `int` | No | Unique ID for updating text in-place |
 | `fontSize` | `int` | No | Font size |
-| `justify` | `DisplayTextJustification` | No | Justification: `DisplayTextJustification.Left` / `.Center` / `.Right`, or bare `Left` / `Center` / `Right` |
+| `justify` | `DisplayTextJustification` | No | Justification: `DisplayTextJustification.Left` / `.Center` / `.Right`, or bare `Left` / `Center` / `Right`. Defaults to `Center` (the game's default since its EA 3.2 update; it was `Left` before) |
 | `easing` | `DisplayTextEasing` | No | Transition curve: `DisplayTextEasing.Linear` / `.EaseIn` / `.EaseOut` / `.EaseInOut`, or bare `Linear` / `EaseIn` / `EaseOut` / `EaseInOut` |
 | `typeface` | `TextTypeface` | No | Typeface: `TextTypeface.Regular` / `.Bold` / `.Italic` / `.BoldItalic`, or bare `Regular` / `Bold` / `Italic` / `BoldItalic` (constant only) |
 | `font` | asset ref | No | Font asset reference (constant only) |
@@ -1117,9 +1117,11 @@ auto-unwrapped like a map read, and `Found` is `false` when the key is not set.
 `RemoveCustomProperty` gives whether anything was removed.
 `CopyCustomProperties` replaces the receiver's properties with a copy of
 `source`'s, for instance to give a spawned replacement the original's data. A
-holder keeps up to 256 properties, and a key is at most 100 characters. The
-value can be any wire value. Annotate the read (`let hp: int = ...`) to give it
-a type.
+holder keeps up to 256 properties, and a key is at most 64 characters: a longer
+key is silently not stored. A dynamic grid such as a spawned prefab holds
+properties; a pasted grid does not. The value can be any wire value, refs
+included. To give a read a type, store its `.Value` in a typed `var`
+(`hp = player.GetCustomProperty("hp").Value`); an annotated `let` does not narrow it.
 
 ```wirescript
 on CharacterDied() -> (character) {

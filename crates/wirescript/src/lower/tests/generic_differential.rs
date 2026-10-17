@@ -44,7 +44,22 @@ pub(super) fn shape(r: &LowerResult) -> Vec<String> {
                 .iter()
                 .map(|(k, v)| (crate::intern::resolve(*k), v))
                 .filter(|(k, _)| !k.contains("Label") && !k.contains("Doc"))
-                .map(|(k, v)| format!("{k}={v:?}"))
+                .map(|(k, v)| match v {
+                    // A baked ref names its target by node id, which differs
+                    // between two lowerings: show the target's class instead.
+                    Literal::Int(t) if k == crate::ir::HANDLE_TARGET => format!("{k}={}", class(&crate::ir::NodeId(*t as u32))),
+                    Literal::Array(ts) if k == crate::ir::HANDLE_TARGETS => {
+                        let ts: Vec<&str> = ts
+                            .iter()
+                            .map(|t| match t {
+                                Literal::Int(t) => class(&crate::ir::NodeId(*t as u32)),
+                                _ => "?",
+                            })
+                            .collect();
+                        format!("{k}={ts:?}")
+                    }
+                    _ => format!("{k}={v:?}"),
+                })
                 .collect();
             props.sort();
             out.push(format!("{} {} {}", n.gate_class, ports.join(" "), props.join(" ")));
