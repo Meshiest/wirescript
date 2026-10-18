@@ -6,7 +6,6 @@
 // and reads a defaulted payload. Any disagreement is a const-evaluation bug.
 // Run in game: build it, read chat.
 
-let start = ReadBrickGrid()
 
 enum Shape { Empty, Circle(float), Rect(float, float) }
 
@@ -19,7 +18,7 @@ mod check(pass: *int, total: *int, ok: bool, label: string) {
 // Folded at compile time: a variant path's `.ToInt()` is its discriminant.
 const CIRCLE_TOINT = Shape.Circle.ToInt()
 
-on start {
+on Loaded() {
   var pass: int = 0
   var total: int = 0
   static var s: Shape = Shape.Circle(5.0)

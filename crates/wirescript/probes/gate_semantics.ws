@@ -1,9 +1,7 @@
 /// Gate semantics probe — prints one CASE line per observed interaction.
-/// Paste into a local world; it runs itself (ReadBrickGrid fires on paste).
+/// Paste into a local world; it runs itself (`on Loaded()` fires on paste).
 /// Bump VERSION whenever the case matrix changes.
 let VERSION = 5
-
-let grid = ReadBrickGrid()
 
 // A top-level `in` port that nothing ever wires. Reading it observes how a
 // gate behaves when one of its inputs is left unconnected (its "unwired"
@@ -822,7 +820,7 @@ mod runRounding() {
   caseLine("END rounding")
 }
 
-on grid {
+on Loaded() {
   PrintToConsole("PROBE gate_semantics v${VERSION}")
   runEq()
   runBool()

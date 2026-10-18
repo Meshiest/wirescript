@@ -616,6 +616,7 @@ wire_ports! {
     TopSpeed = "TopSpeed",
     TouchCount = "TouchCount",
     Typeface = "Typeface",
+    VisibleTo = "VisibleTo",
     WaterAbsorption = "WaterAbsorption",
     WaterFogAmbientColor = "WaterFogAmbientColor",
     WaterFogAmbientScale = "WaterFogAmbientScale",

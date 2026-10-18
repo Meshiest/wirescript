@@ -17,7 +17,7 @@ mod assert<T: int | float | string>(want: T, got: T, label: string) {
   }
 }
 
-on ReadBrickGrid() {
+on Loaded() {
 
   // Counted ranges
 

@@ -7,7 +7,6 @@
 // disagreement between the folded and gate paths is a bug. Run in game: build
 // it, read chat.
 
-let start = ReadBrickGrid()
 
 enum Shape { Empty, Circle(float), Rect(float, float) }
 
@@ -20,7 +19,7 @@ mod check(pass: *int, total: *int, ok: bool, label: string) {
 // Folded at compile time: EnumToInt of a known variant is its discriminant.
 const CIRCLE_INT = EnumToInt(Shape.Circle(1.0))
 
-on start {
+on Loaded() {
   var pass: int = 0
   var total: int = 0
   static var s: Shape = Shape.Circle(5.0)

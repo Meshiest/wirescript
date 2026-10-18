@@ -3,7 +3,6 @@
 // a constructed value. Any disagreement is a const-evaluation bug. Run in
 // game: build it, then read chat.
 
-let start = ReadBrickGrid()
 
 enum Shape { Empty, Circle(float), Rect(float, float) }
 
@@ -23,7 +22,7 @@ const CIRCLE_DISC = Shape.Circle.Discriminant
 // half (no Select gate for this expression).
 const s3 = Shape.Circle(3.0)
 
-on start {
+on Loaded() {
   var pass: int = 0
   var total: int = 0
   static var s: Shape = Shape.Circle(5.0)

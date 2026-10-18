@@ -10,7 +10,7 @@
 var total: int = 0
 var runs: int = 0
 
-on ReadBrickGrid() {
+on Loaded() {
   for i in 0..10 {
     total = total + i
     runs = runs + 1

@@ -2,7 +2,8 @@
 
     #[test]
     fn all_events_registered() {
-        assert_eq!(events().len(), 24);
+        assert_eq!(events().len(), 25);
+        assert!(find_event("Loaded").is_some());
         assert!(find_event("RoundStart").is_some());
         assert!(find_event("WholeGridInteracted").is_some());
         assert!(find_event("WholeGridTargeted").is_some());
@@ -17,6 +18,15 @@
         assert!(find_event("EntityZoneEntered").is_some());
         assert!(find_event("ProjectileZoneLeft").is_some());
         assert!(find_event("Nonexistent").is_none());
+    }
+
+    #[test]
+    fn loaded_event_has_no_data_and_fires_from_exec_out() {
+        let e = find_event("Loaded").unwrap();
+        assert_eq!(e.gate_class, "BrickComponentType_Event_Loaded");
+        assert_eq!(e.exec_out, "ExecOut");
+        assert!(e.data.is_empty());
+        assert!(e.input_named.is_empty());
     }
 
     #[test]

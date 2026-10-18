@@ -13,13 +13,14 @@
 <!-- /learn-links -->
 
 Handlers so far ran when a pin turned on. The game itself also starts
-handlers: a clock that ticks, a player walking into a zone. This lesson also
+handlers: a clock that ticks, the chip loading, a player walking into a zone. This lesson also
 adds `if`, constants and the arithmetic shortcuts.
 
 <!-- toc -->
 ## Contents
 
 - [A clock](#a-clock)
+- [When it loads](#when-it-loads)
 - [Someone walks in](#someone-walks-in)
 - [Deciding with `if`](#deciding-with-if)
 - [Shortcuts](#shortcuts)
@@ -46,6 +47,26 @@ change the speed.
 
 Wire `light` to a **Point Light**'s **Enabled**. It is on for half a second,
 then off for half a second.
+
+## When it loads
+
+```wirescript name=load-count
+var loads: int = 0
+@right out sign = "Loads: ${loads.Value}"
+
+on Loaded() {
+  loads += 1
+}
+```
+
+`on Loaded()` runs its handler once when the chip is pasted, and once more
+each time the world loads with it in. Wire `sign` to the **Text** of a
+brick with a **Text Decal**: it reads "Loads: 1" as soon as you paste it. A
+variable keeps its value when the world is saved, so after the next load it
+reads "Loads: 2".
+
+Use `on Loaded()` to set a circuit up: fill a list, send a first message,
+start a sign at the right text.
 
 ## Someone walks in
 

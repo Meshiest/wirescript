@@ -225,7 +225,7 @@ var names: string[]
 var scores: Map<string, int>
 var fires: int = 0
 
-on ReadBrickGrid() {
+on Loaded() {
   fires += 1
   if fires > 1 { return }
 

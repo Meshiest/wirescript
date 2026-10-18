@@ -50,7 +50,7 @@ mod checkRow(k: int, label: string) {
   assert(origBonus[i], rows[k].bonus, "${label} row bonus ${k}")
 }
 
-on ReadBrickGrid() {
+on Loaded() {
   fires += 1
   if fires > 1 { return }
 

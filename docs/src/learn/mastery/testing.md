@@ -52,7 +52,7 @@ mod medal(n: int) -> string {
   return if n >= 10 then "gold" else if n >= 5 then "silver" else "bronze"
 }
 
-on ReadBrickGrid() {
+on Loaded() {
   pass = 0
   total = 0
   fails = ""
@@ -72,8 +72,8 @@ on ReadBrickGrid() {
   differ. `<T: int | float | string>` lets the same mod compare ints, floats
   or text. Both values must be the same type. `pass += ok` adds 1 for a
   true `ok` and 0 for a false one.
-- `on ReadBrickGrid()` runs once, when the chip appears. The checks run as
-  you paste it, with nothing to press.
+- `on Loaded()` runs once, when the chip appears. The checks run as you
+  paste it, with nothing to press.
 - The handler sets the counters back to zero first, so a second run does not
   add to the first.
 
@@ -123,7 +123,7 @@ mod medal(n: int) -> string {
   return if n >= 10 then "gold" else if n >= 5 then "silver" else "bronze"
 }
 
-on ReadBrickGrid() {
+on Loaded() {
   pass = 0
   total = 0
   fails = ""
@@ -174,7 +174,7 @@ compiler works out ahead of time, and how to tell.
      }
    }
 
-   on ReadBrickGrid() {
+   on Loaded() {
      pass = 0
      total = 0
      fails = ""
@@ -261,8 +261,8 @@ chip report -> decal Text
 
 ## Good to Know
 
-- `on ReadBrickGrid()` runs once, when the chip appears. Each pasted copy has
-  its own counters and runs its own checks.
+- `on Loaded()` runs once, when the chip appears, and again each time the
+  world loads. Each pasted copy has its own counters and runs its own checks.
 - A read past the end of an array gives the previous value read, not 0. If
   `wants` were shorter than `hits`, the last checks would compare stale
   values. The `table sizes` check catches that.

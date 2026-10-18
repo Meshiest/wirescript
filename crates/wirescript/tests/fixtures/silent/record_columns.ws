@@ -27,7 +27,7 @@ var ga: Arr<P>
 var qs: Q[]
 var fires: int = 0
 
-on ReadBrickGrid() {
+on Loaded() {
   fires += 1
   if fires > 1 { return }
 

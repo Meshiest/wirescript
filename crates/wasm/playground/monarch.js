@@ -43,7 +43,7 @@ export const monarchLanguage = {
   ],
 
   events: [
-    'RoundStart', 'RoundEnd',
+    'Loaded', 'RoundStart', 'RoundEnd',
     'CharacterSpawned', 'CharacterDied', 'CharacterDamaged', 'CharacterFiredWeapon',
     'ControllerJoined', 'ControllerLeft', 'ControllerJoinedTeam', 'ControllerLeftTeam',
     'ZoneEntered', 'ZoneLeft', 'EntityZoneEntered', 'EntityZoneLeft',

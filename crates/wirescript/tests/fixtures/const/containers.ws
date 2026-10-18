@@ -19,7 +19,6 @@
 // stayed correct. It compiled clean, which is why the check has to be a
 // differential rather than a compile.
 
-let start = ReadBrickGrid()
 
 mod checkInt(pass: *int, total: *int, cv: const int, rv: int, label: string) {
   total = total + 1
@@ -37,7 +36,7 @@ mod pick(ys: int[], at: int) -> int {
   return ys[at]
 }
 
-on start {
+on Loaded() {
   var pass: int = 0
   var total: int = 0
 

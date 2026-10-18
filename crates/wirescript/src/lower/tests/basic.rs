@@ -2593,6 +2593,72 @@ on ZoneEntered(zone = zoneA) -> { character: character } {
     );
 }
 
+/// `on Loaded()` is one Load Event gate whose `ExecOut` starts the body.
+#[test]
+fn loaded_event_drives_its_handler() {
+    let r = compile("var loads: int = 0
+on Loaded() {
+  loads += 1
+}");
+    assert_no_errors(&r);
+    let ev = find_gate(&r, "BrickComponentType_Event_Loaded");
+    assert_eq!(gate_count(&r, "BrickComponentType_Event_Loaded"), 1);
+    assert!(
+        r.module.wires.iter().any(|w| w.source.node_id == ev
+            && w.source.port == WirePort::ExecOut
+            && w.target.port == WirePort::Exec),
+        "the Load Event's ExecOut must start the handler"
+    );
+}
+
+/// `SetVisibleTo` wires `Entity` and `VisibleTo` from a player, a character
+/// or a team entity, and leaves `VisibleTo` unwired when it is left out.
+#[test]
+fn set_visible_to_wires_entity_and_visible_to() {
+    for (decl, arg) in [
+        ("in who: controller", "who"),
+        ("in who: character", "who"),
+        ("in who: character", "who.GetTeam()"),
+        ("in who: entity", "who"),
+    ] {
+        let r = compile(&format!(
+            "in t: exec
+in crate: entity
+{decl}
+on t {{
+  crate.SetVisibleTo({arg})
+}}"
+        ));
+        assert_no_errors(&r);
+        let g = find_gate(&r, "BrickComponentType_Exec_Entity_SetVisibleTo");
+        let into = |port| r.module.wires.iter().filter(|w| w.target.node_id == g && w.target.port == port).count();
+        assert_eq!(into(WirePort::Entity), 1, "{decl} / {arg}: Entity");
+        assert_eq!(into(WirePort::VisibleTo), 1, "{decl} / {arg}: VisibleTo");
+        assert_eq!(into(WirePort::Exec), 1, "{decl} / {arg}: Exec");
+    }
+    let r = compile("in t: exec
+in crate: entity
+on t {
+  SetVisibleTo(crate)
+}");
+    assert_no_errors(&r);
+    let g = find_gate(&r, "BrickComponentType_Exec_Entity_SetVisibleTo");
+    assert!(
+        !r.module.wires.iter().any(|w| w.target.node_id == g && w.target.port == WirePort::VisibleTo),
+        "a left-out visibleTo must stay unwired (everyone sees it)"
+    );
+    let bad = compile("in t: exec
+in crate: entity
+on t {
+  crate.SetVisibleTo(3)
+}");
+    assert!(
+        bad.diagnostics.iter().any(|d| d.code == "WS003" && d.message.contains("controller | character | entity")),
+        "an int is not a player or a team: {:?}",
+        bad.diagnostics
+    );
+}
+
 /// `BrickChanged` / `BrickRemoved` bind the gate's `Brick` and `Character`
 /// outputs, and a use of either reads from that port.
 #[test]

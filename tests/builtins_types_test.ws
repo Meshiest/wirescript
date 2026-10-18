@@ -1,6 +1,6 @@
 /// Self-checking test for builtins + the type system.
 ///
-/// Runs automatically on grid load (`on start`): each assertion runs its
+/// Runs automatically on grid load (`on Loaded()`): each assertion runs its
 /// builtin / coercion / generic / receiver expression, compares the result to a
 /// known constant and, on a mismatch, broadcasts `FAIL: <label>` to chat. A
 /// final line reports `ALL <n> PASS` or `<pass>/<total>`. It doubles as a
@@ -33,9 +33,7 @@ mod check(pass: *int, total: *int, ok: bool, label: string) {
   }
 }
 
-let start = ReadBrickGrid()
-
-on start {
+on Loaded() {
   var pass: int = 0
   var total: int = 0
 

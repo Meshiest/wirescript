@@ -14,14 +14,12 @@
 /// certified separately by the Rust replay gate (see
 /// crates/wirescript/tests/fold_invariants.rs and
 /// lower/fold/eval.rs's replay_every_certified_case).
-let grid = ReadBrickGrid()
-
 mod failLine(msg: string) {
   PrintToConsole(msg)
   await SleepTicks(_, delay = 1)
 }
 
-on grid {
+on Loaded() {
   PrintToConsole("VERIFIER v4")
   var pass: int = 0
   var total: int = 358

@@ -21,7 +21,6 @@
 // because that is where a `<` vs `<=` off-by-one in const evaluation hides; a
 // mid-bucket value sails straight past one.
 
-let start = ReadBrickGrid()
 
 // `cv` is `const`, which is what forces its argument through the compile-time
 // interpreter; `rv` is an ordinary wire carrying the runtime mod's result.
@@ -88,7 +87,7 @@ mod rQuad(x: int, y: int) -> int {
 const mod cPick(flag: bool) -> string { return if flag then "on" else "off" }
 mod rPick(flag: bool) -> string { return if flag then "on" else "off" }
 
-on start {
+on Loaded() {
   var pass: int = 0
   var total: int = 0
 

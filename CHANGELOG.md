@@ -1,5 +1,10 @@
 # Wirescript Changelog
 
+## 2.0.4
+
+- `on Loaded() { ... }` runs once when the chip is placed, or loaded with a world or prefab (the Load Event gate); the docs and examples use it in place of `on ReadBrickGrid()`.
+- `entity.SetVisibleTo(visibleTo?)` shows a physics object or dynamic brick grid to one player or team only; leave `visibleTo` out to show it to everyone again.
+
 ## 2.0.3
 
 - `arr.join(separator?)` joins every element of an array into one `string`, with `separator` between them (the Join Array gate, also callable as `JoinArray(a, sep?)`)

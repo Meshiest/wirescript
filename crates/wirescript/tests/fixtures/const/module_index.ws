@@ -8,7 +8,6 @@
 // instead of the real value. Only the WIRE-OPERAND channel needed the fix;
 // the bake channel (an initializer like `counts` below) already worked.
 
-let start = ReadBrickGrid()
 
 mod checkInt(pass: *int, total: *int, cv: const int, rv: int, label: string) {
   total = total + 1
@@ -24,7 +23,7 @@ const z = t[1]
 // distinctive control literal, so a dropped bake cannot pass by accident.
 var counts: int[] = [z, 12345]
 
-on start {
+on Loaded() {
   var pass: int = 0
   var total: int = 0
 

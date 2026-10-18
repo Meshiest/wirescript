@@ -307,6 +307,7 @@
     "SetVariable": "builtins.html#callable-gate-builtins",
     "SetVelocity": "builtins.html#setvelocity",
     "SetVisible": "builtins.html#setvisible",
+    "SetVisibleTo": "builtins.html#setvisibleto",
     "SetWeaponChamberAmmo": "builtins.html#character-ammo-exec",
     "ShowChatMessage": "builtins.html#showchatmessage",
     "ShowHint": "builtins.html#showhint",

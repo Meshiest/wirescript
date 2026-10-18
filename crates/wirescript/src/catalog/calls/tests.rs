@@ -25,6 +25,19 @@
         assert!(find_call("doesNotExist").is_none());
     }
 
+    /// `visibleTo` takes a player or a team, and may be left out.
+    #[test]
+    fn set_visible_to_takes_a_player_or_team() {
+        let c = find_call("SetVisibleTo").unwrap();
+        assert!(c.exec);
+        assert_eq!(c.gate_class, "BrickComponentType_Exec_Entity_SetVisibleTo");
+        assert_eq!(c.receiver, Some(Type::Entity));
+        assert_eq!((c.params[0].name, c.params[0].port, c.params[0].optional), ("entity", WirePort::Entity, false));
+        let v = &c.params[1];
+        assert_eq!((v.name, v.port, v.optional), ("visibleTo", WirePort::VisibleTo, true));
+        assert_eq!(v.ty, Type::Union(vec![Type::Controller, Type::Character, Type::Entity]));
+    }
+
     #[test]
     fn leaderboard_getters_return_int() {
         // The inventory dump types both leaderboard `Value` outputs as `int`,

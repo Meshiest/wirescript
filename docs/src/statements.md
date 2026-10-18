@@ -1139,7 +1139,7 @@ enum Shape { Empty, Circle(float) }
 static var s: Shape = Shape.Circle(5.0)
 var lastArea: float = 0.0
 
-on ReadBrickGrid() {
+on Loaded() {
   match s {
     Circle(r) => { lastArea = r * r }
     Empty     => { lastArea = 0.0 }
@@ -1164,7 +1164,7 @@ enum Opt { Some(int), None }
 static var o: Opt = Opt.Some(5)
 var result: int = 0
 
-on ReadBrickGrid() {
+on Loaded() {
   if let Some(x) = o {
     result = x
   } else {
@@ -1575,6 +1575,10 @@ on trigger {
 ### Triggering on Built-in Events
 
 ```wirescript
+on Loaded() {
+  lives = 3
+}
+
 on RoundStart() {
   score = 0
 }
@@ -2191,6 +2195,7 @@ These events are available as handler triggers. Parameters listed can be bound u
 
 | Event | Parameters | Description |
 |-------|-----------|-------------|
+| `Loaded` | (none) | Fires once when the gate is placed, and once each time a world or prefab containing it loads (a spawned prefab included). Use it to initialize a circuit |
 | `RoundStart` | `roundNumber: int` | Game round started |
 | `RoundEnd` | `roundNumber: int` | Game round ended |
 | `CharacterSpawned` | `character: character` | A character spawned |

@@ -808,6 +808,29 @@ SetVisible(entity: entity, visible: bool)
 Show or hide a physics object or dynamic brick grid. A hidden one keeps its
 collision and renders only for players holding a tool that shows hidden bricks.
 
+### SetVisibleTo
+```
+entity.SetVisibleTo(visibleTo?: controller | character | entity)
+SetVisibleTo(entity: entity, visibleTo?: controller | character | entity)
+```
+
+Show a physics object or dynamic brick grid to one player or one team only.
+`visibleTo` takes a player (a `controller` or `character`) or a team (the
+`entity` that `GetTeam` gives). Everyone else sees it as hidden, but its
+collision stays on for everyone, and builder mode always shows it. Leave
+`visibleTo` out to show it to everyone again. `SetVisible(false)` still hides
+it from everyone, the chosen player or team included.
+
+```wirescript
+@left in reveal: exec
+@left in hideAgain: exec
+@left in crate: entity
+@left in seer: controller
+
+on reveal { crate.SetVisibleTo(seer) }   // only `seer` sees the crate
+on hideAgain { crate.SetVisibleTo() }    // everyone sees it again
+```
+
 ```wirescript
 on trigger {
   entity.SetLocation(Vec(0.0, 0.0, 100.0))

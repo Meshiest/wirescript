@@ -255,7 +255,7 @@ enum Shape { Empty, Circle(float) }
 static var s: Shape = Shape.Circle(5.0)
 var lastArea: float = 0.0
 
-on ReadBrickGrid() {
+on Loaded() {
   match s {
     Circle(r) => { lastArea = r * r }
     Empty     => { lastArea = 0.0 }
@@ -385,7 +385,7 @@ enum Opt { Some(int), None }
 static var o: Opt = Opt.Some(5)
 var result: int = 0
 
-on ReadBrickGrid() {
+on Loaded() {
   if let Some(x) = o {
     result = x
   } else {
@@ -411,7 +411,7 @@ mod unwrapOr(v: Opt, fallback: int) -> int {
 static var o: Opt = Opt.Some(5)
 var result: int = 0
 
-on ReadBrickGrid() {
+on Loaded() {
   result = unwrapOr(o, -1)
 }
 ```

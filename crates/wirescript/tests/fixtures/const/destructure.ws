@@ -12,7 +12,6 @@
 // already the strongest position -- there is no weaker "gate vs gate" shape
 // for a `const` destructure to hide behind.
 
-let start = ReadBrickGrid()
 
 mod checkInt(pass: *int, total: *int, cv: const int, rv: int, label: string) {
   total = total + 1
@@ -83,7 +82,7 @@ const mod gatedC(n: const int) -> (p: int, q: int) {
 }
 const { p: gatedP, q: gatedQ } = gatedC(3)
 
-on start {
+on Loaded() {
   var pass: int = 0
   var total: int = 0
 

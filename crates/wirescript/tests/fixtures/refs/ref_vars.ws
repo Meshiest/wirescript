@@ -27,7 +27,7 @@ chip store(p: *int, v: int) {
   p = v
 }
 
-on ReadBrickGrid() {
+on Loaded() {
   fires += 1
   if fires > 1 { return }
 

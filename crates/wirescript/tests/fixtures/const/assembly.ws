@@ -46,8 +46,6 @@
 // footgun), so the caller declares an empty `var`, passes it into `rrooms`,
 // and `rrooms` pushes into it directly instead of returning a new array.
 
-let start = ReadBrickGrid()
-
 mod checkInt(pass: *int, total: *int, cv: const int, rv: int, label: string) {
   total = total + 1
   let ok = cv == rv
@@ -78,7 +76,7 @@ mod rrooms(n: int, t: int[]) {
   if n >= 3 { t.push(30) }
 }
 
-on start {
+on Loaded() {
   var pass: int = 0
   var total: int = 0
 

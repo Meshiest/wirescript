@@ -24,7 +24,7 @@ mod total3(xs: (*int)[]) -> int {
   return *xs[0] + *xs[1] + *xs[2]
 }
 
-on ReadBrickGrid() {
+on Loaded() {
   fires += 1
   if fires > 1 { return }
 

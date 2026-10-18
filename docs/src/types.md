@@ -231,7 +231,7 @@ var b: int = 0
 var h: *int                 // holds a ref; null until assigned
 var refs: (*int)[]          // an array of refs
 
-on ReadBrickGrid() {
+on Loaded() {
   h = &a                    // `&x` is x's ref as a value
   *h = 5                    // write through it: a is now 5
   let n = *h + 1            // read through it
@@ -269,7 +269,7 @@ var n: int = 0
 mod bump(q: R) { q.p = q.p + 1 }
 mod pick() -> R { return { p: &a } }
 
-on ReadBrickGrid() {
+on Loaded() {
   bump({ p: a })            // a place: bumps a
   bump({ p: &a })           // a ref value: bumps a too
   let r = pick()
@@ -288,7 +288,7 @@ var rows: int[][]
 var grid: int[][] = [row0, row1]  // starts holding both
 var cur: *int[]             // a var holding an array ref
 
-on ReadBrickGrid() {
+on Loaded() {
   rows.push(row0)
   rows.push(row1)
   rows[1].push(7)           // pushes into row1
@@ -310,7 +310,7 @@ A map nested in a map closes with `>>`, as in `Map<string, Map<string, int>>`, a
 var anchor: brick           // point it at a brick in the editor after pasting
 var seen: brick[]
 
-on ReadBrickGrid() {
+on Loaded() {
   seen.push(anchor)
   if seen[0] == anchor {
     BroadcastChatMessage("same brick")

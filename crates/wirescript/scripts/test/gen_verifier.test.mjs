@@ -26,7 +26,7 @@ test('emits header, opaque leaves, eq assertion, branch if-pattern', () => {
   assert.match(ws, /== false/);                 // asserted against expected literal
   assert.match(ws, /if Opaque\(0\)/);           // Branch case → statement if
   assert.match(ws, /VERIFY \$\{pass\}\/\$\{total\}/);
-  assert.match(ws, /let grid = ReadBrickGrid\(\)/);
+  assert.match(ws, /^on Loaded\(\) \{$/m);
 });
 
 test('unwired cases are skipped with a comment', () => {

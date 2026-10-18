@@ -265,6 +265,24 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             vec![],
         ),
     );
+    // `visibleTo` is a player or a team entity; left unwired, everyone sees
+    // it again.
+    m.insert(
+        "SetVisibleTo",
+        entity_exec(
+            "SetVisibleTo",
+            gc::ENTITY_SET_VISIBLE_TO,
+            vec![
+                CallParam::req("entity", WirePort::Entity, Type::Entity),
+                CallParam::opt(
+                    "visibleTo",
+                    WirePort::VisibleTo,
+                    Type::Union(vec![Type::Controller, Type::Character, Type::Entity]),
+                ),
+            ],
+            vec![],
+        ),
+    );
 
     // ---- Entity tags --------------------------------------------
     m.insert(

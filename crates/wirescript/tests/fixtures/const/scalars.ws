@@ -3,7 +3,6 @@
 // disagreement is a const-evaluation bug. Run in game: build it, then read
 // chat.
 
-let start = ReadBrickGrid()
 
 mod check(pass: *int, total: *int, ok: bool, label: string) {
   total = total + 1
@@ -23,7 +22,7 @@ mod rName(kind: string) -> string { return "evt_" .. kind }
 const mod cCompose(kind: string) -> string { return cName(kind) .. "!" }
 mod rCompose(kind: string) -> string { return rName(kind) .. "!" }
 
-on start {
+on Loaded() {
   var pass: int = 0
   var total: int = 0
 

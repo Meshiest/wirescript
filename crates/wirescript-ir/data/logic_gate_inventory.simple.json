@@ -1369,6 +1369,36 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Event_Loaded",
+      "brickDisplayName": "Load Event",
+      "brickSummary": "Pulses once when this gate is placed, or loaded with a world or prefab; use it to initialize a circuit.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_Event_Loaded",
+        "displayName": "Load Event",
+        "description": "Pulses once when this gate is placed, or loaded with a world or prefab; use it to initialize a circuit.",
+        "searchTags": "",
+        "category": "Events",
+        "kind": "event",
+        "family": "Loaded",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Event_WholeGridInteracted",
       "brickDisplayName": "Whole Grid Interaction",
       "brickSummary": "Makes otherwise non-interactable bricks on this gate's movable grid clickable and stays held while a player uses one. Inside a microchip it affects the outer entity grid, not the microchip's internal bricks; individual interactions still override it.",
@@ -6351,6 +6381,58 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Exec_Entity_SetVisibleTo",
+      "brickDisplayName": "Set Entity Visible To",
+      "brickSummary": "Shows a physics object or dynamic brick grid only to one player or team; an empty Visible To shows it to everyone again. Others see it as hidden, its collision stays on for everyone, and builder mode always sees it. Set Entity Visible still hides it for everyone.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_Exec_Entity_SetVisibleTo",
+        "displayName": "Set Entity Visible To",
+        "description": "Shows a physics object or dynamic brick grid only to one player or team; an empty Visible To shows it to everyone again. Others see it as hidden, its collision stays on for everyone, and builder mode always sees it. Set Entity Visible still hides it for everyone.",
+        "searchTags": "hide hidden invisible show team player exclusive only grid physics object",
+        "category": "Entity Movement",
+        "kind": "exec",
+        "family": "Entity",
+        "inputs": [
+          {
+            "name": "Entity",
+            "displayName": "Entity",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "VisibleTo",
+            "displayName": "Visible To",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Exec_Entity_Teleport",
       "brickDisplayName": "Teleport Entity",
       "brickSummary": "Teleports an entity above the connected destination brick and matches its facing; use it for portals and checkpoints.",
@@ -11309,7 +11391,7 @@
     {
       "brickAsset": "B_1x1_Gate_Exec_Zone_GetEntities",
       "brickDisplayName": "Get Entities In Zone",
-      "brickSummary": "Replaces an object array with permitted entities currently inside the connected zone, optionally filtered by exact tag; use it for area effects.",
+      "brickSummary": "Replaces an object array with permitted entities currently inside the connected zone, optionally filtered by exact tag; use it for area effects. The zone needs Detect Entities on.",
       "halfSize": {
         "X": 5,
         "Y": 5,
@@ -11318,7 +11400,7 @@
       "component": {
         "class": "BrickComponentType_Exec_Zone_GetEntities",
         "displayName": "Get Entities In Zone",
-        "description": "Replaces an object array with permitted entities currently inside the connected zone, optionally filtered by exact tag; use it for area effects.",
+        "description": "Replaces an object array with permitted entities currently inside the connected zone, optionally filtered by exact tag; use it for area effects. The zone needs Detect Entities on.",
         "searchTags": "",
         "category": "Zones",
         "kind": "exec",
@@ -11368,7 +11450,7 @@
     {
       "brickAsset": "B_1x1_Gate_Exec_Zone_GetPlayers",
       "brickDisplayName": "Get Players In Zone",
-      "brickSummary": "Replaces an object array with permitted characters currently inside the connected zone, including bots and optionally filtered by exact tag. Use it for teams or objectives.",
+      "brickSummary": "Replaces an object array with permitted characters currently inside the connected zone, including bots and optionally filtered by exact tag. Use it for teams or objectives. The zone needs a Detect Players channel on.",
       "halfSize": {
         "X": 5,
         "Y": 5,
@@ -11377,7 +11459,7 @@
       "component": {
         "class": "BrickComponentType_Exec_Zone_GetPlayers",
         "displayName": "Get Players In Zone",
-        "description": "Replaces an object array with permitted characters currently inside the connected zone, including bots and optionally filtered by exact tag. Use it for teams or objectives.",
+        "description": "Replaces an object array with permitted characters currently inside the connected zone, including bots and optionally filtered by exact tag. Use it for teams or objectives. The zone needs a Detect Players channel on.",
         "searchTags": "",
         "category": "Zones",
         "kind": "exec",
@@ -23832,6 +23914,37 @@
       }
     },
     {
+      "brickAsset": "BrickComponentType_ReadBrick",
+      "brickDisplayName": "Read Brick",
+      "brickSummary": "Outputs a reference to this brick, for wiring into gates that take a brick.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_ReadBrick",
+        "displayName": "Read Brick",
+        "description": "Outputs a reference to this brick, for wiring into gates that take a brick.",
+        "searchTags": "",
+        "category": "Utility",
+        "playerSpawnable": true,
+        "kind": "?",
+        "family": "ReadBrick",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "Brick",
+            "displayName": "Brick",
+            "tooltip": "",
+            "type": "brick",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
       "brickAsset": "Component_BrickPropertyChanger",
       "brickDisplayName": "Brick Property Changer",
       "brickSummary": "Changes this brick's visibility, collision channels, color, material, and material opacity through wire inputs.",
@@ -25708,6 +25821,13 @@
             "displayName": "Typeface",
             "tooltip": "",
             "type": "int",
+            "composite": null
+          },
+          {
+            "name": "VisibleTo",
+            "displayName": "Visible To",
+            "tooltip": "",
+            "type": "entity",
             "composite": null
           },
           {

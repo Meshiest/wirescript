@@ -2,7 +2,6 @@
 // the compiled grid into a build and read the chat: a healthy run prints only
 // the two tally lines.
 
-let start = ReadBrickGrid()
 
 mod check(pass: *int, total: *int, ok: bool, label: string) {
   total = total + 1
@@ -22,7 +21,7 @@ out quadrupled: int = doubled * 2
 static var count: int = 3
 out count: int = count + 1
 
-on start {
+on Loaded() {
   var pass: int = 0
   var total: int = 0
   check(pass, total, doubled == 14, "port carries its driver")

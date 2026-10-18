@@ -268,14 +268,12 @@ export function generateVerifier(table) {
   out.push('/// certified separately by the Rust replay gate (see');
   out.push('/// crates/wirescript/tests/fold_invariants.rs and');
   out.push('/// lower/fold/eval.rs\'s replay_every_certified_case).');
-  out.push('let grid = ReadBrickGrid()');
-  out.push('');
   out.push('mod failLine(msg: string) {');
   out.push('  PrintToConsole(msg)');
   out.push('  await SleepTicks(_, delay = 1)');
   out.push('}');
   out.push('');
-  out.push('on grid {');
+  out.push('on Loaded() {');
   out.push(`  PrintToConsole("VERIFIER v${table.probeVersion}")`);
   out.push('  var pass: int = 0');
   out.push(`  var total: int = ${cases.length}`);

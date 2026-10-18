@@ -19,7 +19,6 @@ out hueOut: Hue = Hue.Blue
 out easeLive: EasingFunction = EasingFunction.Sine
 out hueLive: Hue = Hue.Red
 
-let start = ReadBrickGrid()
 
 mod check(pass: *int, total: *int, ok: bool, label: string) {
   total = total + 1
@@ -56,7 +55,7 @@ var hs: Hue[]
 var es: EasingFunction[]
 var fires: int = 0
 
-on start {
+on Loaded() {
   fires += 1
   if fires > 1 { return }
 

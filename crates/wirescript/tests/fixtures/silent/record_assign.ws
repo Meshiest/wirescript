@@ -32,7 +32,7 @@ mod bump() -> int {
   return local.x + fresh.y
 }
 
-on ReadBrickGrid() {
+on Loaded() {
   fires += 1
   if fires > 1 { return }
 

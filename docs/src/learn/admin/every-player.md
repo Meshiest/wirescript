@@ -53,7 +53,7 @@ mod redraw() {
   shown = "${online.length()} online<br>${text}"
 }
 
-on ReadBrickGrid() {
+on Loaded() {
   players.fillFromPlayers()
   for p in players {
     online.set(p.GetUserId(), escape(p.GetDisplayName()))
@@ -74,7 +74,7 @@ on ControllerLeft() -> (userId, userName) {
 
 - `players.fillFromPlayers()` replaces everything in `players` with every
   player on the server. It is `fillFromZonePlayers` without a zone.
-- `on ReadBrickGrid()` runs once, when the chip appears. It fills the list
+- `on Loaded()` runs once, when the chip appears. It fills the list
   and stores each player's escaped name in `online`, under their user id.
 - `on ControllerJoined` and `on ControllerLeft` are player events: the game
   runs them when a player joins or leaves the server. A join adds the new

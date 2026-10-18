@@ -174,6 +174,8 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
     };
 
     let entries = vec![
+        // Pulses once when the gate is placed, or loaded with a world or prefab.
+        mk("Loaded", "BrickComponentType_Event_Loaded", vec![]),
         mk(
             "RoundStart",
             "BrickComponentType_Event_Gamemode_RoundStart",

@@ -277,6 +277,7 @@ pub const ENTITY_SET_ANGULAR_VELOCITY: &str = "BrickComponentType_Exec_Entity_Se
 pub const ENTITY_SET_GRAVITY_DIRECTION: &str = "BrickComponentType_Exec_Entity_SetGravityDirection";
 pub const ENTITY_SET_FROZEN: &str = "BrickComponentType_Exec_Entity_SetFrozen";
 pub const ENTITY_SET_VISIBLE: &str = "BrickComponentType_Exec_Entity_SetVisible";
+pub const ENTITY_SET_VISIBLE_TO: &str = "BrickComponentType_Exec_Entity_SetVisibleTo";
 
 // Gamemode
 pub const GAMEMODE_GET_TEAM_BY_NAME: &str = "BrickComponentType_Exec_Gamemode_GetTeamByName";

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Wirescript 2.0.4: `on Loaded()` and `entity.SetVisibleTo(visibleTo?)`.
+
 ## 0.1.1
 
 - Wirescript 2.0.3: `arr.join(separator?)`, and `BrickChanged` / `BrickRemoved`

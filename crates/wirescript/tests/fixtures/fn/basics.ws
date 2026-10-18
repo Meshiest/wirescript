@@ -36,7 +36,7 @@ fn bump(v: *int) {
 var counter: int = 0
 var fires: int = 0
 
-on ReadBrickGrid() {
+on Loaded() {
   fires += 1
   if fires > 1 { return }
 

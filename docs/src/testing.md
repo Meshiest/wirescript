@@ -32,7 +32,7 @@ mod assert<T: int | float | string>(want: T, got: T, label: string) {
   }
 }
 
-on ReadBrickGrid() {
+on Loaded() {
   var xs: int[]
   xs.push(10)
   xs.push(20)
@@ -48,9 +48,9 @@ The file is [`examples/assert.ws`](../../examples/assert.ws), verified against
 `just check`. The later examples reuse this `assert`, `pass`, and `total` without
 repeating them. Five parts of the example matter.
 
-**`on ReadBrickGrid()` as the trigger.** It fires when the grid loads, so the
-test runs by pasting it in. No separate binding: the handler reads the grid
-event directly.
+**`on Loaded()` as the trigger.** The Load Event fires once when the chip is
+placed, and again whenever the world loads with it, so the test runs by
+pasting it in.
 
 **Module-level counters.** `pass` and `total` live at module scope, so `assert`
 updates them in place and each call is a bare `assert(want, got, label)`. The
@@ -92,7 +92,7 @@ mod assert<T: int | float | string>(want: T, got: T, label: string) {
 ```wirescript
 mod byAddition(n: int) -> int { return n + n }
 
-on ReadBrickGrid() {
+on Loaded() {
   assert(byAddition(21), 21 * 2, "addition agrees with multiplication")
 
   BroadcastChatMessage("math checks: ${pass}/${total}")
@@ -120,7 +120,7 @@ mod assert<T: int | float | string>(want: T, got: T, label: string) {
 }
 -->
 ```wirescript
-on ReadBrickGrid() {
+on Loaded() {
   var xs: int[]
   xs.push(12345)
 

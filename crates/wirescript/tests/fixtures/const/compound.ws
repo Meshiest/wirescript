@@ -16,7 +16,6 @@
 // could not fail), so every check below is a compile-time answer versus a
 // live gate result.
 
-let start = ReadBrickGrid()
 
 mod checkInt(pass: *int, total: *int, cv: const int, rv: int, label: string) {
   total = total + 1
@@ -38,7 +37,7 @@ mod rDouble(n: int) -> int { return n * 2 }
 const mod cAddF(n: float) -> float { return n + 1.0 }
 mod rAddF(n: float) -> float { return n + 1.0 }
 
-on start {
+on Loaded() {
   var pass: int = 0
   var total: int = 0
 

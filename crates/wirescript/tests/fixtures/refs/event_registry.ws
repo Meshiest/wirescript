@@ -29,7 +29,7 @@ mod paint(c: *color, to: color) {
   c = to
 }
 
-on ReadBrickGrid() {
+on Loaded() {
   fires += 1
   if fires > 1 { return }
 

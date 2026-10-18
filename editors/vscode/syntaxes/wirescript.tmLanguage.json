@@ -208,7 +208,7 @@
         },
         {
           "name": "support.constant.event.wirescript",
-          "match": "\\b(BrickChanged|BrickRemoved|CharacterDamaged|CharacterDied|CharacterFiredWeapon|CharacterSpawned|ChatCommand|Clock|ControllerJoined|ControllerJoinedTeam|ControllerLeft|ControllerLeftTeam|CustomEvent|EntityZoneEntered|EntityZoneLeft|GlobalCustomEvent|ProjectileZoneEntered|ProjectileZoneLeft|RoundEnd|RoundStart|WholeGridInteracted|WholeGridTargeted|ZoneEntered|ZoneLeft)\\b"
+          "match": "\\b(BrickChanged|BrickRemoved|CharacterDamaged|CharacterDied|CharacterFiredWeapon|CharacterSpawned|ChatCommand|Clock|ControllerJoined|ControllerJoinedTeam|ControllerLeft|ControllerLeftTeam|CustomEvent|EntityZoneEntered|EntityZoneLeft|GlobalCustomEvent|Loaded|ProjectileZoneEntered|ProjectileZoneLeft|RoundEnd|RoundStart|WholeGridInteracted|WholeGridTargeted|ZoneEntered|ZoneLeft)\\b"
         }
       ]
     },

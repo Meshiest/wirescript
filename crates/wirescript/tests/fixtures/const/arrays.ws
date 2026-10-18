@@ -12,7 +12,6 @@
 // compile-time answer versus a live gate result, exactly like
 // `branching.ws`.
 
-let start = ReadBrickGrid()
 
 mod checkInt(pass: *int, total: *int, cv: const int, rv: int, label: string) {
   total = total + 1
@@ -28,7 +27,7 @@ mod checkInt(pass: *int, total: *int, cv: const int, rv: int, label: string) {
 const mod size(n: int) -> int { return n * 10 }
 mod rsize(n: int) -> int { return n * 10 }
 
-on start {
+on Loaded() {
   var pass: int = 0
   var total: int = 0
 

@@ -46,7 +46,7 @@ mod assertBool(want: bool, got: bool, label: string) {
   }
 }
 
-on ReadBrickGrid() {
+on Loaded() {
   takeA = Opaque(true)
 
   // ---------- record VARIABLE ----------

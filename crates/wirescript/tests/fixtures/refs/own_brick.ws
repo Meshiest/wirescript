@@ -19,7 +19,7 @@ var held: brick[]
 var seen: Map<brick, int>
 var fires: int = 0
 
-on ReadBrickGrid() {
+on Loaded() {
   fires += 1
   if fires > 1 { return }
 
