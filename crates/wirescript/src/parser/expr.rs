@@ -226,6 +226,37 @@ impl<'a> Parser<'a> {
             if tok.kind == TokenKind::Kw && tok.text == "as" && !self.stop_at_as {
                 self.advance();
                 let ty = self.parse_cast_type();
+                // `v as entity.GetLocation()` reads `entity.GetLocation` whole
+                // as the type, leaving the call's `(` stranded. Say how to
+                // write it, then read it as that (`(v as entity).GetLocation()`)
+                // so the one mistake gives one error.
+                if self.peek().kind == TokenKind::LParen
+                    && let TypeExpr::Name { name, range: ty_range } = &ty
+                    && let Some((head, method)) = name.rsplit_once('.')
+                {
+                    self.error(
+                        format!(
+                            "`{name}` reads as the type to convert to; to call `{method}` on the converted \
+                             value, put the conversion in parentheses: `(value as {head}).{method}(...)`"
+                        ),
+                        ty_range.start,
+                        ty_range.end,
+                    );
+                    let start = lhs.range().start;
+                    let cast = Expr::As {
+                        value: Box::new(lhs),
+                        ty: TypeExpr::Name { name: head.to_string(), range: ty_range.clone() },
+                        range: self.make_range(start, ty_range.end),
+                    };
+                    let call = Expr::FieldAccess {
+                        obj: Box::new(cast),
+                        field: method.to_string(),
+                        range: self.make_range(start, ty_range.end),
+                    };
+                    lhs = self.parse_postfix_from(call);
+                    lhs_op = None;
+                    continue;
+                }
                 let start = lhs.range().start;
                 let end = ty.range().end;
                 lhs = Expr::As { value: Box::new(lhs), ty, range: self.make_range(start, end) };
@@ -423,7 +454,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_postfix(&mut self) -> Expr {
-        let mut e = self.parse_primary();
+        let e = self.parse_primary();
+        self.parse_postfix_from(e)
+    }
+
+    /// The field reads, calls, indexes and picks that follow `e`.
+    fn parse_postfix_from(&mut self, mut e: Expr) -> Expr {
         loop {
             // A method/field chain may continue on a following line:
             //   let e = SpawnPrefab(...)

@@ -21,6 +21,7 @@ use crate::ir::Type;
 pub type TypeMap = HashMap<(std::sync::Arc<str>, usize, usize), Type>;
 pub type IfContextMap = HashMap<(std::sync::Arc<str>, usize), bool>;
 pub type VarReadContextMap = HashMap<(std::sync::Arc<str>, usize), bool>;
+pub type NarrowedReadMap = HashMap<(std::sync::Arc<str>, usize, usize), crate::typecheck::NarrowedRead>;
 
 pub use assets::{asset_exists, asset_names, asset_type_exists, asset_type_for_port, asset_types, component_member_completions, environment_completions};
 pub use symbols::SymbolDef;
@@ -46,5 +47,5 @@ pub use resource_estimate::{ResourceEstimate, collect_estimates, lookup_estimate
 pub use inlay_hints::{collect_inlay_hints, InlayHintInfo, InlayHintKind};
 pub use atoms::{atom_at, atom_references, AtomRef};
 pub use visit::visit_program;
-pub use completion::{completions, match_arm_head_scrutinee_at, Completion, CompletionKind};
+pub use completion::{completions, match_arm_head_scrutinee_at, prefab_path_fragment, Completion, CompletionKind};
 pub use scoped_refs::{field_name_at, prepare_rename_at, references_at, references_to_export, semantic_tokens, CrossFile, RefNs, RefSite, RefTarget, SemSpan, SemTokenKind};

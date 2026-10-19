@@ -5,7 +5,7 @@ use crate::catalog::events::find_event;
 use crate::diagnostic::SourceRange;
 use crate::ir::{Literal, Type};
 use crate::lower::ConstEnv;
-use super::{TypeMap, IfContextMap, VarReadContextMap};
+use super::{TypeMap, IfContextMap, NarrowedReadMap, VarReadContextMap};
 use super::types::{type_str, collection_kind, CollectionKind};
 use super::text::{after_char, char_col_to_byte, find_enclosing_call, word_at};
 use super::symbols::SymbolDef;
@@ -459,6 +459,7 @@ pub fn hover_at(
     doc_comments: &crate::parser::DocComments,
     if_contexts: &IfContextMap,
     var_read_contexts: &VarReadContextMap,
+    narrowed_reads: &NarrowedReadMap,
     dropped_ranges: &[(SourceRange, String)],
     resource_estimates: &HashMap<String, ResourceEstimate>,
     line: usize,
@@ -514,6 +515,7 @@ pub fn hover_at(
             hover_if_keyword(source, file, &word, if_contexts, resource_estimates, line, col)
                 .map(|h| with_doc_link(h, Doc::Keyword("if")))
         })
+        .or_else(|| hover_is_keyword(source, ast, &word, line, col).map(|h| with_doc_link(h, Doc::Keyword("is"))))
         .or_else(|| hover_named_param(source, &word, line, col))
         .or_else(|| hover_event_config_param(source, &word, line, col))
         .or_else(|| hover_data_driven_config(source, &word, line, col))
@@ -553,9 +555,9 @@ pub fn hover_at(
         .or_else(|| hover_enum_variant_path(source, ast, symbols, &word, line, col))
         .or_else(|| hover_enum_field_construction(source, ast, &word, line, col))
         .or_else(|| hover_component_property(source, file, type_map, line, col, &word))
-        .or_else(|| resolve_field_hover(source, file, type_map, symbols, line, col, &word))
+        .or_else(|| resolve_field_hover(source, file, type_map, narrowed_reads, symbols, line, col, &word))
         .or_else(|| hover_generic_call(source, file, ast, symbols, doc_comments, resource_estimates, type_map, &word, line, col))
-        .or_else(|| hover_user_symbol(source, file, ast, symbols, doc_comments, var_read_contexts, resource_estimates, &word, line, col))
+        .or_else(|| hover_user_symbol(source, file, ast, symbols, doc_comments, var_read_contexts, narrowed_reads, resource_estimates, &word, line, col))
         .or_else(|| hover_enum_type_name(source, ast, &word))
         .or_else(|| hover_type_or_class(&word))
 }
@@ -1086,11 +1088,9 @@ fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Optio
     let spec = calls().get(call_name.as_str())?;
     let p = spec.params.iter().find(|p| p.name == word)?;
 
-    let gdocs = gate_docs();
-    let gate_doc = gdocs.get(spec.gate_class);
-    let port_doc = gate_doc.and_then(|g| g.inputs.get(p.port.as_str()));
-    let display = port_doc.map(|pd| pd.display_name.as_str()).unwrap_or(p.name);
-    let tooltip = port_doc.map(|pd| pd.tooltip.as_str()).unwrap_or("");
+    let port_doc = input_port_doc(spec.gate_class, p.port.as_str());
+    let display = port_doc.map(|(d, _)| d).filter(|d| !d.is_empty()).unwrap_or(p.name);
+    let tooltip = port_doc.map(|(_, t)| t).unwrap_or("");
 
     // A param surfaced as a plain int but backed by a schema enum shows the
     // enum's name (and its members below) instead of `int`, wireable or not.
@@ -1932,6 +1932,29 @@ fn call_doc_override(name: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
+/// The game's own entry for `gate_class` in the gate inventory: its display
+/// name, what it does, and its ports' names and tooltips. The inventory is
+/// regenerated each game build, so it is the hover's first source;
+/// `gate_docs.json` is older and covers only some gates.
+fn gate_inventory(gate_class: &str) -> Option<&'static crate::catalog::ComponentSpec> {
+    crate::catalog::default_catalog().find_by_class(gate_class).map(|g| &g.component)
+}
+
+/// The display name and tooltip of input `port` on `gate_class`, from the
+/// inventory, else from `gate_docs.json`.
+fn input_port_doc(gate_class: &str, port: &str) -> Option<(&'static str, &'static str)> {
+    let from_inventory = gate_inventory(gate_class)
+        .and_then(|c| c.inputs.iter().find(|p| p.name == port))
+        .filter(|p| !p.display_name.is_empty() || !p.tooltip.is_empty())
+        .map(|p| (p.display_name.as_str(), p.tooltip.as_str()));
+    from_inventory.or_else(|| {
+        gate_docs()
+            .get(gate_class)
+            .and_then(|g| g.inputs.get(port))
+            .map(|pd| (pd.display_name.as_str(), pd.tooltip.as_str()))
+    })
+}
+
 fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
     if !word_is_call_or_method(source, line, col) {
         return None;
@@ -1939,9 +1962,11 @@ fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Opti
     let spec = calls().get(word)?;
     let gdocs = gate_docs();
     let gate_doc = gdocs.get(spec.gate_class);
+    let inventory = gate_inventory(spec.gate_class);
     let override_doc = call_doc_override(spec.name);
     let title = override_doc
         .map(|(t, _)| t)
+        .or_else(|| inventory.map(|c| c.display_name.as_str()).filter(|n| !n.is_empty()))
         .or_else(|| gate_doc.map(|g| g.display_name.as_str()))
         .unwrap_or(spec.name);
 
@@ -1970,12 +1995,22 @@ fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Opti
         if let Some(t) = tags_line { parts.push(t); }
         return Some(parts.join("\n\n"));
     }
-    if let Some(g) = gate_doc {
-        if !g.description.is_empty() { parts.push(g.description.clone()); }
-        let param_docs: Vec<String> = spec.params.iter().filter_map(|p| {
-            g.inputs.get(p.port.as_str()).filter(|pd| !pd.tooltip.is_empty()).map(|pd| format!("- **{}** - {}", pd.display_name, pd.tooltip))
-        }).collect();
-        if !param_docs.is_empty() { parts.push(format!("**Parameters:**\n{}", param_docs.join("\n"))); }
+    let description = inventory
+        .map(|c| c.description.as_str())
+        .filter(|d| !d.is_empty())
+        .or_else(|| gate_doc.map(|g| g.description.as_str()).filter(|d| !d.is_empty()));
+    if let Some(d) = description {
+        parts.push(d.to_string());
+    }
+    let param_docs: Vec<String> = spec
+        .params
+        .iter()
+        .filter_map(|p| input_port_doc(spec.gate_class, p.port.as_str()))
+        .filter(|(_, tooltip)| !tooltip.is_empty())
+        .map(|(display, tooltip)| format!("- **{display}** - {tooltip}"))
+        .collect();
+    if !param_docs.is_empty() {
+        parts.push(format!("**Parameters:**\n{}", param_docs.join("\n")));
     }
     if let Some(table) = defaults_table(spec) { parts.push(table); }
     if let Some(t) = tags_line { parts.push(t); }
@@ -2357,6 +2392,7 @@ fn hover_user_symbol(
     symbols: &[SymbolDef],
     doc_comments: &crate::parser::DocComments,
     var_read_contexts: &VarReadContextMap,
+    narrowed_reads: &NarrowedReadMap,
     resource_estimates: &HashMap<String, ResourceEstimate>,
     word: &str,
     line: usize,
@@ -2390,7 +2426,20 @@ fn hover_user_symbol(
         return Some(v);
     }
 
-    let mut v = render_decl_hover(sym, doc_comments, resource_estimates, Some((symbols, ast)));
+    // A read an `any` kind test narrowed shows the type it has here.
+    let narrowed = source.lines().nth(line).and_then(|l| {
+        let start = line_offset_at(source, line) + word_start_in_line(l, col);
+        narrowed_reads.get(&(std::sync::Arc::from(file), start, start + word.len()))
+    });
+    let mut v = match narrowed {
+        Some(n) => {
+            let here = SymbolDef { ty: Some(type_str(&n.ty)), ..sym.clone() };
+            let mut v = render_decl_hover(&here, doc_comments, resource_estimates, Some((symbols, ast)));
+            v += &narrowing_note(sym.ty.as_deref().unwrap_or("any"), n);
+            v
+        }
+        None => render_decl_hover(sym, doc_comments, resource_estimates, Some((symbols, ast))),
+    };
 
     // For var reads: show exec/pure context at the hovered location
     if sym.kind == "var" {
@@ -2766,6 +2815,9 @@ pub fn fill_record_at(
     col: usize,
 ) -> Option<RecordFill> {
     let lines: Vec<&str> = source.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
     // Find the enclosing `let name: Type = {` at or above the cursor.
     let mut record_ty: Option<String> = None;
     let mut brace_line = 0usize;
@@ -2876,6 +2928,69 @@ fn enclosing_match_expr<'a>(ast: &'a Script, line: u32, col: u32) -> Option<&'a 
             let r = e.range();
             r.end.offset.saturating_sub(r.start.offset)
         })
+}
+
+/// The smallest `value is Enum.Variant` test in `ast` whose range contains
+/// the 1-based `(line, col)` cursor.
+fn enclosing_is_expr<'a>(ast: &'a Script, line: u32, col: u32) -> Option<&'a Expr> {
+    use crate::ast::walk::{self, Node};
+    fn collect<'a>(node: Node<'a>, out: &mut Vec<&'a Expr>) {
+        if let Node::Expr(e @ Expr::Is { .. }) = node {
+            out.push(e);
+        }
+        walk::children(node, &mut |c, _| collect(c, out));
+    }
+    let mut tests: Vec<&'a Expr> = Vec::new();
+    walk::script_children(ast, &mut |n, _| collect(n, &mut tests));
+    tests
+        .into_iter()
+        .filter(|e| range_contains_1based(e.range(), line, col))
+        .min_by_key(|e| {
+            let r = e.range();
+            r.end.offset.saturating_sub(r.start.offset)
+        })
+}
+
+/// Hover on the `is` of a variant test. On a kind test
+/// (`x.getType() is Type.Int`) it also says what `x` narrows to.
+fn hover_is_keyword(source: &str, ast: &Script, word: &str, line: usize, col: usize) -> Option<String> {
+    use crate::typecheck::narrow;
+    if word != "is" {
+        return None;
+    }
+    let cursor_line = (line + 1) as u32;
+    let cursor_col = (char_col_to_byte(super::text::line_text(source, line), col) + 1) as u32;
+    let Expr::Is { value, path, range } = enclosing_is_expr(ast, cursor_line, cursor_col)? else {
+        return None;
+    };
+    // On the operator, not on a name spelled `is` inside either side.
+    if range_contains_1based(value.range(), cursor_line, cursor_col)
+        || range_contains_1based(path.range(), cursor_line, cursor_col)
+    {
+        return None;
+    }
+    if let (Some(subject), Some(test), Some(member)) =
+        (narrow::test_subject_text(value), narrow::describe_test(value), narrow::type_member(path))
+    {
+        let mut v = format!(
+            "```wirescript\n{test} is Type.{member}\n```\n**Kind test**: `true` while `{subject}` holds a `{member}` value."
+        );
+        if let Some(ty) = narrow::member_type(member) {
+            v += &format!(
+                " When this test is a whole `if` condition, `{subject}` is narrowed to `{}` inside the block.",
+                type_str(&ty)
+            );
+        }
+        return Some(v);
+    }
+    let written = source
+        .get(range.start.offset..range.end.offset)
+        .filter(|t| !t.contains('\n'))
+        .unwrap_or("value is Enum.Variant");
+    Some(format!(
+        "```wirescript\n{written}\n```\n**Variant test**: `true` while the value holds that variant. It compares \
+         tags only; use `match` or `if let` to read a payload."
+    ))
 }
 
 /// Compute a "fill missing match arms" edit for a cursor on/inside a `match`
@@ -3028,7 +3143,22 @@ fn hover_component_property(source: &str, file: &str, type_map: &TypeMap, line: 
     Some(render_component_type_hover(&format!("{}/{field}", crate::catalog::component_name(&class))))
 }
 
-fn resolve_field_hover(source: &str, file: &str, type_map: &TypeMap, symbols: &[SymbolDef], line: usize, col: usize, field: &str) -> Option<String> {
+/// The line a hover adds for a read a kind test narrowed.
+fn narrowing_note(declared: &str, n: &crate::typecheck::NarrowedRead) -> String {
+    format!("\n\nDeclared `{declared}`, narrowed to `{}` here by {}.", type_str(&n.ty), n.by)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_field_hover(
+    source: &str,
+    file: &str,
+    type_map: &TypeMap,
+    narrowed_reads: &NarrowedReadMap,
+    symbols: &[SymbolDef],
+    line: usize,
+    col: usize,
+    field: &str,
+) -> Option<String> {
     let l = source.lines().nth(line)?;
     let c = char_col_to_byte(l, col);
     let start = word_start_at_byte(l, c);
@@ -3049,7 +3179,11 @@ fn resolve_field_hover(source: &str, file: &str, type_map: &TypeMap, symbols: &[
     // `.field` that's the error-fallback type of a field that didn't resolve, so
     // fall through to structural resolution / the record-type fallback below
     // rather than showing an unhelpful `field z: any`.
-    if let Some(ty) = type_map.get(&(f.clone(), lo + obj_start, lo + field_end_col))
+    let span = (f.clone(), lo + obj_start, lo + field_end_col);
+    if let Some(n) = narrowed_reads.get(&span) {
+        return Some(fmt_field(type_str(&n.ty)) + &narrowing_note("any", n));
+    }
+    if let Some(ty) = type_map.get(&span)
         && !matches!(ty, Type::Any)
     {
         return Some(fmt_field(type_str(ty)));

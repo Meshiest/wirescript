@@ -180,10 +180,10 @@ fn ws024_is_reachable() {
     assert!(common::compile_diag_codes(src, "ws_reachability_test.ws").contains(&"WS024".to_string()));
 }
 
-// WS025 - `any` (or a zone/teleport rerouter-only reference) can't be stored in a var [typecheck]
+// WS025 - a zone/teleport/prefab reference or an exec edge can't be stored in a var [typecheck]
 #[test]
 fn ws025_is_reachable() {
-    let src = "var v: any = 0\n";
+    let src = "var c: exec\n";
     assert!(common::compile_diag_codes(src, "ws_reachability_test.ws").contains(&"WS025".to_string()));
 }
 

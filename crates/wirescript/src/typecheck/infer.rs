@@ -92,7 +92,15 @@ fn check_ws_prefab_ref(ctx: &mut TypeCheckCtx, path: &str, range: &SourceRange) 
 
 pub(crate) fn infer(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     let reported = ctx.diagnostics.len();
-    let t = infer_node(ctx, e);
+    let mut t = infer_node(ctx, e);
+    if !ctx.narrowings.is_empty()
+        && matches!(t, Type::Opaque | Type::Any)
+        && let Some(narrowed) = super::narrow::narrowed(ctx, e)
+    {
+        t = narrowed.ty.clone();
+        let r = e.range();
+        ctx.narrowed_reads.insert((r.file.clone(), r.start.offset, r.end.offset), narrowed);
+    }
     ctx.record_expr_type(e.range(), &t);
     if holds_any(&t) && (ctx.reads_untyped_var(e) || has_error_since(ctx, reported) || operand_error_typed(ctx, e)) {
         let r = e.range();
@@ -1862,7 +1870,7 @@ fn enum_branch_hint(expected: Option<&Type>) -> Option<Type> {
 
 /// `infer` with `hint` as the expected type of `e`'s own node (see
 /// [`enum_branch_hint`]).
-fn infer_hinted(ctx: &mut TypeCheckCtx, e: &Expr, hint: Option<&Type>) -> Type {
+pub(crate) fn infer_hinted(ctx: &mut TypeCheckCtx, e: &Expr, hint: Option<&Type>) -> Type {
     let prev = std::mem::replace(&mut ctx.expected_ty, hint.cloned());
     let t = infer(ctx, e);
     ctx.expected_ty = prev;
@@ -3123,7 +3131,9 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             let ct = infer(ctx, cond);
             record_read_as_one_value(ctx, cond, &ct);
             let branch = enum_branch_hint(expected.as_ref());
+            let narrowed = super::narrow::push_if(ctx, cond);
             let tt = infer_hinted(ctx, then_branch, branch.as_ref());
+            super::narrow::pop(ctx, narrowed);
             let et = infer_hinted(ctx, else_branch, branch.as_ref());
             // A component reference (`zone`, `teleport`) or a prefab reference
             // can't flow through the Select gate an if-expr compiles to: it is
@@ -3229,15 +3239,28 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
 
             let mutable = crate::typecheck::stmt::scrutinee_is_mutable(ctx, scrutinee);
             let branch = enum_branch_hint(expected.as_ref());
+            // `match x.getType()`: each arm sees `x` as the kind it names.
+            let kind_test = matches!(&scrut_ty, Type::Enum { name, .. } if name == "Type");
             let mut tys: Vec<Type> = Vec::new();
             for arm in arms {
                 ctx.push_scope();
                 check_match_pattern(ctx, &arm.pattern, &scrut_ty, mutable);
+                // A bare `Int =>` parses as a binding and names the variant.
+                let narrowed = match &arm.pattern {
+                    Pattern::Variant { variant: member, sub: crate::ast::VariantPattern::Unit, .. }
+                    | Pattern::Binding { name: member, .. }
+                        if kind_test =>
+                    {
+                        super::narrow::push_arm(ctx, scrutinee, member)
+                    }
+                    _ => false,
+                };
                 if let MatchBody::Expr(x) = &arm.body {
                     tys.push(infer_hinted(ctx, x, branch.as_ref()));
                 } else if let Some(t) = infer_match_body(ctx, &arm.body) {
                     tys.push(t);
                 }
+                super::narrow::pop(ctx, narrowed);
                 ctx.pop_scope();
             }
 
@@ -3315,6 +3338,17 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // silent: it only asks the rest to coerce INTO it, so `[1, 2.5]`
             // reads as `int[]` and stores the float in an int-variant gate,
             // while the equally mixed `["a", 1]` reads as `string[]`.
+            //
+            // An `any[]` takes elements of every kind, each keeping its own.
+            if matches!(expected.as_ref().map(unwrap_ref), Some(Type::Array(inner)) if matches!(*inner, Type::Opaque)) {
+                for el in elements {
+                    infer(ctx, el.expr());
+                    if let ArrayElem::Spread(v) = el {
+                        ctx.record_container_expr(v);
+                    }
+                }
+                return Type::Array(Box::new(Type::Opaque));
+            }
             let mut elem: Option<Type> = None;
             for el in elements {
                 let t = unwrap_ref(&infer(ctx, el.expr()));

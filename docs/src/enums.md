@@ -656,6 +656,13 @@ the value [`@material`](statements.md#color--material-brick-color-and-material)
 takes rather than a gate setting. Its members are bare only as that argument
 (`@material(Glow)`); everywhere else write them qualified, `BrickMaterial.Glow`.
 
+`Type` is what [`GetValueType` and `.getType()`](builtins.md#value-conversions-pure)
+give: the kind of value on a wire (`Bool`, `Int`, `Float`, `Color`, `Vector`,
+`Rotator`, `Quat`, `String`, `Enum`, `Object`, `Brick`, `Component`, `Exec`).
+It is built from the game's wire-kind enum, with the member names Wirescript
+uses for its types. Its members are bare only as the arms of a `match` on a
+`Type`; everywhere else write them qualified, `Type.Int`.
+
 A built-in game enum behaves like an ordinary unit-only enum (see
 [Declaration](#declaration) above): construct a variant with its qualified
 path, store it in a `var` or `static var`, and read `.Discriminant`:

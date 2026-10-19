@@ -211,3 +211,22 @@
         let easing = enums.iter().find(|e| e.clean_name == "EasingFunction").expect("EasingFunction");
         assert!(easing.variants.iter().any(|v| v.clean_name == "Bounce"));
     }
+
+    /// `Type`, what Get Value Type gives, has the numbers the gate reported in
+    /// game for each kind (`wirescript/projects/any-probes/01_value_type.ws`,
+    /// ALL 10 PASS), and its members do not resolve bare.
+    #[test]
+    fn type_enum_matches_the_game() {
+        let enums = super::builtin_game_enums();
+        let ty = enums.iter().find(|e| e.clean_name == "Type").expect("Type");
+        let members: Vec<(&str, i64)> = ty.variants.iter().map(|v| (v.clean_name.as_str(), v.disc)).collect();
+        assert_eq!(
+            members,
+            [
+                ("Bool", 0), ("Int", 1), ("Float", 2), ("Color", 3), ("Vector", 4), ("Rotator", 5),
+                ("Quat", 6), ("String", 7), ("Enum", 8), ("Object", 9), ("Brick", 10),
+                ("Component", 11), ("Exec", 12),
+            ]
+        );
+        assert!(!super::resolves_bare_members("Type"));
+    }

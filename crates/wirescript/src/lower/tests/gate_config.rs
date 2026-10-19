@@ -1740,14 +1740,10 @@ fn any_annotation_warns_but_storage_and_probe_do_not() {
             .any(|z| z.code == "WS032"),
         "Opaque() value must not warn"
     );
-    // storage `any` is WS025 (error), and must NOT also emit the WS032 warning
+    // storage `any` holds a WireValue: neither an error nor a warning
     assert!(
-        has("var v: any = 0\n", "WS025", Severity::Error),
-        "storage any is WS025 error"
-    );
-    assert!(
-        !diags("var v: any = 0\n").iter().any(|z| z.code == "WS032"),
-        "storage any must not double-fire WS032"
+        !diags("var v: any = 0\n").iter().any(|z| z.code == "WS025" || z.code == "WS032"),
+        "storage any is allowed and does not warn"
     );
 }
 

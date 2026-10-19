@@ -128,14 +128,16 @@ does. You can also write the call straight into the trigger:
 
 `||` is not a merge. It makes one value, true while either side is true, so
 `on front || back` misses a press of one button while the other is held.
-With an object on one side, it is always true, and the compiler warns:
+With an object on one side, it is true for as long as the object exists,
+and the compiler warns:
 
 ```wirescript name=e4-or expect=WS116
 @left in front: bool
+@left in rider: character
 var rings: int = 0
 @right out sign = "Rings: ${rings.Value}"
 
-on front || ReadBrickGrid() {
+on front || rider {
   rings += 1
 }
 ```

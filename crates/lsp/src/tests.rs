@@ -11,6 +11,7 @@
             type_map: tc.type_of_expr,
             if_contexts: tc.if_contexts,
             var_read_contexts: tc.var_read_contexts,
+            narrowed_reads: tc.narrowed_reads,
             dropped_ranges: tc.dropped_ranges,
             resource_estimates: Default::default(),
             pre_resolve_ast: pre_resolve.ast,
@@ -1815,4 +1816,107 @@ out r: int = 1
         );
         let d = to_lsp_diagnostic(&ruler, &wirescript::diagnostic::Diagnostic::error("WS-EMIT", "m", range));
         assert!(d.code_description.is_none());
+    }
+
+    /// Typing a program into an empty file, one character at a time, must not
+    /// panic any request the editor sends as you type. An empty document used
+    /// to take the server down from `code_action` (the record-fill scan
+    /// indexed line 0 of no lines).
+    #[tokio::test]
+    async fn typing_into_an_empty_file_never_panics_a_request() {
+        let program = "type P = { x: int, y: int }\nin go: exec\nvar n: int = 0\n\
+            mod bump(v: *int) { v += 1 }\nlet p: P = {\n  x: 1,\n}\non go {\n  bump(n)\n  \
+            match n {\n    0 => { n = 1 }\n    _ => { n = 2 }\n  }\n  \
+            BroadcastChatMessage(\"n ${n}\")\n}\nlet pf = $./a.brz\n";
+        let uri = Url::parse("file:///c:/t/main.ws").unwrap();
+        let service = build_backend();
+        let backend = service.inner();
+        let ends: Vec<usize> = std::iter::once(0).chain(program.char_indices().map(|(i, c)| i + c.len_utf8())).collect();
+        for end in ends {
+            let typed = &program[..end];
+            backend.docs.lock().unwrap().insert(uri.clone(), doc_state_with_symbols(typed));
+            let line = typed.matches('\n').count() as u32;
+            let col = typed.rsplit('\n').next().unwrap_or("").chars().count() as u32;
+            let at = || text_document_position(&uri, line, col);
+            let doc = || TextDocumentIdentifier { uri: uri.clone() };
+            let ctx = format!("after typing {typed:?}");
+            backend
+                .completion(CompletionParams {
+                    text_document_position: at(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    context: None,
+                })
+                .await
+                .expect(&ctx);
+            code_action_at(&service, &uri, line, col).await;
+            backend
+                .hover(HoverParams { text_document_position_params: at(), work_done_progress_params: Default::default() })
+                .await
+                .expect(&ctx);
+            backend
+                .goto_definition(GotoDefinitionParams {
+                    text_document_position_params: at(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                })
+                .await
+                .expect(&ctx);
+            backend
+                .references(ReferenceParams {
+                    text_document_position: at(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    context: ReferenceContext { include_declaration: true },
+                })
+                .await
+                .expect(&ctx);
+            backend.prepare_rename(at()).await.expect(&ctx);
+            backend
+                .semantic_tokens_full(SemanticTokensParams {
+                    text_document: doc(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                })
+                .await
+                .expect(&ctx);
+            backend
+                .inlay_hint(InlayHintParams {
+                    text_document: doc(),
+                    range: Range { start: Position { line: 0, character: 0 }, end: Position { line, character: col } },
+                    work_done_progress_params: Default::default(),
+                })
+                .await
+                .expect(&ctx);
+            backend
+                .formatting(DocumentFormattingParams {
+                    text_document: doc(),
+                    options: FormattingOptions { tab_size: 2, insert_spaces: true, ..Default::default() },
+                    work_done_progress_params: Default::default(),
+                })
+                .await
+                .expect(&ctx);
+            backend
+                .document_link(DocumentLinkParams {
+                    text_document: doc(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                })
+                .await
+                .expect(&ctx);
+        }
+    }
+
+    /// Completion lists the document's folder only inside a `$./` or `$/` file
+    /// reference, so ordinary typing never touches the disk.
+    #[test]
+    fn prefab_path_fragment_only_inside_a_file_reference() {
+        fn at_end(s: &str) -> Option<(usize, &str)> {
+            prefab_path_fragment(s, 0, s.chars().count())
+        }
+        assert_eq!(at_end("let pf = $./sub/a"), Some((9, "./sub/a")));
+        assert_eq!(at_end("let pf = $/abs"), Some((9, "/abs")));
+        for outside in ["", "let x = 1", "let c = $Component/Point", "let pf = $./a.brz + b", "on go {"] {
+            assert_eq!(at_end(outside), None, "{outside:?}");
+        }
     }

@@ -116,6 +116,36 @@
         );
     }
 
+    /// An `any` container is the game's Any Value: `WireValue` elements (the
+    /// schema's `types` table lists it), each literal keeping its own kind.
+    #[test]
+    fn any_containers_store_wire_values() {
+        use crate::ir::Type;
+        let arr = array_from_literals(
+            Some(&Type::Opaque),
+            &[Literal::Int(1), Literal::String("two".into()), Literal::Float(3.5), Literal::Bool(true)],
+        );
+        assert_eq!(arr.element_type, "WireValue");
+        assert_eq!(
+            arr.values,
+            vec![WireValue::Int(1), WireValue::Str("two".into()), WireValue::Number(3.5), WireValue::Bool(true)]
+        );
+        let map = map_from_type(&Type::Map(Box::new(Type::String), Box::new(Type::Opaque)));
+        assert_eq!((map.key_type, map.value_type), ("Str", "WireValue"));
+    }
+
+    #[test]
+    fn only_a_set_of_an_any_var_changes_type() {
+        use crate::ir::{GateIO, PortSpec, Type};
+        let set = |ty: Type| GateIO {
+            inputs: vec![PortSpec::new(crate::intern::intern("Value"), ty)],
+            outputs: vec![],
+        };
+        assert!(super::components::sets_any_var(crate::ir::gate_class::VAR_SET, &set(Type::Opaque)));
+        assert!(!super::components::sets_any_var(crate::ir::gate_class::VAR_SET, &set(Type::Int)));
+        assert!(!super::components::sets_any_var(crate::ir::gate_class::VAR_GET, &set(Type::Opaque)));
+    }
+
     #[test]
     fn make_vector_has_data_struct_so_literals_persist() {
         // Regression: without this entry the inlined X/Y/Z literals of

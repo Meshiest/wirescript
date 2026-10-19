@@ -38,6 +38,10 @@ let client: LanguageClient | undefined;
 let runningCopy: string | undefined;
 // The running WASI server, ended when its client stops.
 let wasiProcess: WasmProcess | undefined;
+// A WASI server that stops more than MAX_CRASHES times within CRASH_WINDOW_MS
+// is left stopped.
+const MAX_CRASHES = 4;
+const CRASH_WINDOW_MS = 3 * 60 * 1000;
 
 /** Stop the client and delete the copy of the server it ran from. */
 async function stopClient(): Promise<void> {
@@ -170,6 +174,13 @@ export function activate(context: ExtensionContext) {
   let watcher: fs.FSWatcher | undefined;
   context.subscriptions.push({ dispose: () => watcher?.close() });
 
+  // Build-error diagnostics (from the on-demand Compile command). Kept in its own
+  // collection so it never fights the language server's live typecheck diagnostics —
+  // VS Code merges the two in the Problems panel. Cleared on each compile attempt
+  // and on a server restart, since a rebuilt server may no longer report them.
+  const buildDiagnostics = languages.createDiagnosticCollection("wirescript-build");
+  context.subscriptions.push(buildDiagnostics);
+
   async function startClient() {
     const choice = chooseServer(extDir);
     if (typeof choice === "string") {
@@ -225,7 +236,8 @@ export function activate(context: ExtensionContext) {
       };
       toServer = (uri) => translateUri(uri.toString(), mounts, 0);
       fromServerPath = (p) => Uri.parse(translateUri(Uri.file(p).toString(), mounts, 1));
-      serverOptions = () => startWasiServer(Uri.file(choice.wasm), output, (p) => (wasiProcess = p));
+      serverOptions = () =>
+        startWasiServer(Uri.file(choice.wasm), output, (p) => (wasiProcess = p), onWasiExit);
       source = choice.wasm;
       mountsFolders = true;
     }
@@ -264,6 +276,27 @@ export function activate(context: ExtensionContext) {
     }
   }
 
+  // A WASI server that dies is restarted, as the language client does for a
+  // native one, unless it keeps dying.
+  const crashTimes: number[] = [];
+  function onWasiExit(ended: WasmProcess, reason: string) {
+    // `stopClient` forgets the process before ending it.
+    if (ended !== wasiProcess) return;
+    output.appendLine(`[server] the WASI server ${reason}`);
+    const now = Date.now();
+    while (crashTimes.length > 0 && now - crashTimes[0] > CRASH_WINDOW_MS) crashTimes.shift();
+    crashTimes.push(now);
+    if (crashTimes.length > MAX_CRASHES) {
+      window.showErrorMessage(
+        `The Wirescript language server stopped ${crashTimes.length} times in a few minutes, so it was not restarted. ` +
+          `The "Wirescript Language Server" output says why; run "Wirescript: Restart Language Server" to start it again.`,
+      );
+      return;
+    }
+    output.appendLine("[server] restarting");
+    void restart();
+  }
+
   // Restarts run one after another, so a burst of rebuilds or setting changes
   // never leaves two servers running.
   let restarting: Promise<void> = Promise.resolve();
@@ -271,6 +304,7 @@ export function activate(context: ExtensionContext) {
     restarting = restarting
       .then(async () => {
         await stopClient();
+        buildDiagnostics.clear();
         await startClient();
       })
       .catch((e: any) => output.appendLine(`[server] restart failed: ${e?.message ?? e}`));
@@ -539,12 +573,6 @@ export function activate(context: ExtensionContext) {
       { providedCodeActionKinds: [CodeActionKind.SourceOrganizeImports] },
     ),
   );
-
-  // Build-error diagnostics (from the on-demand Compile command). Kept in its own
-  // collection so it never fights the language server's live typecheck diagnostics —
-  // VS Code merges the two in the Problems panel. Cleared on each compile attempt.
-  const buildDiagnostics = languages.createDiagnosticCollection("wirescript-build");
-  context.subscriptions.push(buildDiagnostics);
 
   // A change to ANY .ws file makes the last compile's output stale as a whole
   // (its errors can point into imported files), so drop the entire collection —

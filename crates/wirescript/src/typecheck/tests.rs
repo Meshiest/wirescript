@@ -1967,56 +1967,24 @@
         assert_no_diags(&r);
     }
 
+    /// `any` is storable: a var holds a `WireValue` already, and an `any`
+    /// array or map stores `WireValue` elements (the game's Any Value). Only a
+    /// map key must still be a concrete kind (WS039).
     #[test]
-    fn var_any_is_ws025() {
-        let r = tc("var foo: any = 0");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS025"),
-            "`var foo: any` must be rejected as WS025, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn static_var_any_is_ws025() {
-        let r = tc("static var foo: any = 0");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS025"),
-            "`static var foo: any` must be rejected as WS025, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn array_any_element_is_ws025() {
-        let r = tc("var arr: any[]");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS025"),
-            "`var arr: any[]` must be rejected as WS025, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn buffer_any_is_ws025() {
-        let r = tc("buffer buf: any = 0");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS025"),
-            "`buffer buf: any = 0` must be rejected as WS025, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn var_any_inside_handler_is_ws025() {
-        // Same rejection for a statement-level `var` declared inside a
-        // handler body (a separate code path from the top-level decl).
-        let r = tc("in t: exec\non t { var foo: any = 0 }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS025"),
-            "statement-level `var foo: any` must be rejected as WS025, got {:?}",
-            r.diagnostics
-        );
+    fn any_is_storable() {
+        for src in [
+            "var foo: any = 0",
+            "static var foo: any = 0",
+            "var arr: any[] = [1, \"two\", 3.5]",
+            "buffer buf: any = 0",
+            "in t: exec
+on t { var foo: any = 0 }",
+            "var m: Map<string, any>",
+        ] {
+            assert_no_diags(&tc(src));
+        }
+        let r = tc("var m: Map<any, int>");
+        assert!(r.diagnostics.iter().any(|d| d.code == "WS039"), "an any key: {:?}", r.diagnostics);
     }
 
     #[test]
@@ -6396,4 +6364,50 @@
         // A mod parameter can be generic, so it still is.
         let c = codes("mod pass(x: any) -> any { return x }");
         assert!(c.iter().any(|c| c == "WS032"), "a parameter's `any` is still WS032: {c:?}");
+    }
+
+    /// A `getType()` test narrows the `any` it tests: in a `match` arm and in
+    /// an `if ... is Type.X` block it reads as that kind; outside, and in the
+    /// `_` arm, it is still `any`.
+    #[test]
+    fn get_type_narrows_the_tested_any() {
+        let src = "in e: entity\nin go: exec\nvar n: int = 0\nvar f: float = 0.0\nvar s: string = \"\"\non go {\n  \
+                   let p = e.GetCustomProperty(\"k\")\n  match p.Value.getType() {\n    Int => { n += p.Value }\n    \
+                   String => { s = p.Value }\n    _ => { s = p.Value }\n  }\n  \
+                   if p.Value.getType() is Type.Float {\n    f = p.Value\n  }\n  s = p.Value\n}";
+        let r = tc(src);
+        assert_no_diags(&r);
+        let reads: Vec<Type> = src
+            .match_indices("p.Value")
+            .filter(|(at, _)| !src[at + "p.Value".len()..].starts_with(".getType"))
+            .map(|(at, m)| {
+                r.type_of_expr
+                    .iter()
+                    .find(|((_, s, e), _)| *s == at && *e == at + m.len())
+                    .map(|(_, t)| t.clone())
+                    .expect("p.Value is typed")
+            })
+            .collect();
+        assert_eq!(reads, [Type::Int, Type::String, Type::Opaque, Type::Float, Type::Opaque]);
+    }
+
+    /// An `if ... then ... else` value narrows its `then` branch, and a `let`
+    /// that shadows the tested name inside an arm is its own, unnarrowed value.
+    #[test]
+    fn get_type_narrowing_covers_if_values_and_skips_shadows() {
+        let src = "in a: any\nin b: any\nin go: exec\nvar n: int = 0\nvar s: string = \"\"\non go {\n  \
+                   n = if a.getType() is Type.Int then a else 0\n  match a.getType() {\n    \
+                   String => {\n      let a = b\n      s = a\n    }\n    _ => {}\n  }\n}";
+        let r = tc(src);
+        assert_no_diags(&r);
+        let type_at = |needle: &str| {
+            let at = src.find(needle).unwrap() + needle.len() - 1;
+            r.type_of_expr
+                .iter()
+                .find(|((_, s, e), _)| *s == at && *e == at + 1)
+                .map(|(_, t)| t.clone())
+                .unwrap_or_else(|| panic!("{needle:?} is typed"))
+        };
+        assert_eq!(type_at("then a"), Type::Int, "the then-branch reads `a` as the kind tested");
+        assert_eq!(type_at("s = a"), Type::Opaque, "the shadowing `let a` is not the tested `a`");
     }

@@ -373,6 +373,7 @@
     "floor": "builtins.html#math--trigonometry-pure",
     "fmod": "builtins.html#math--trigonometry-pure",
     "get": "builtins.html#array-methods-exec",
+    "getType": "builtins.html#value-conversions-pure",
     "insert": "builtins.html#array-methods-exec",
     "join": "builtins.html#array-methods-exec",
     "length": "builtins.html#array-methods-exec",
@@ -414,7 +415,8 @@
     "on": "statements.html#on-event-handler",
     "chip": "chips.html#named-chips",
     "mod": "chips.html#mod-inline-chips",
-    "fn": "statements.html#fn-function"
+    "fn": "statements.html#fn-function",
+    "is": "enums.html#is"
   },
   "annotations": {
     "left": "statements.html#left--right--top--bottom-outer-rerouter-pins",

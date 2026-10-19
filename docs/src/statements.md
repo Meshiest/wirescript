@@ -1793,7 +1793,7 @@ on Union(eventA, eventB) {
 ```
 
 `||` is not a union: it joins two values into one, so `on a || b` fires when
-that one value turns true. With an object operand (`on reset || ReadBrickGrid()`)
+that one value turns true. With an object operand (`on reset || rider`, `rider` a `character`)
 the value is true for as long as the object exists, which the compiler warns
 about (`WS116`).
 

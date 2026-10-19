@@ -648,8 +648,10 @@ fn check_decl_inner(
                 if let Expr::Array { elements, .. } = init {
                     // Type the whole array expr so its element type lands in the
                     // map — lowering reads it to infer an unannotated var's type.
+                    // An `any[]` is its expected type, so its elements may mix.
+                    let any_elems = matches!(&inner, Type::Array(e) if matches!(**e, Type::Opaque));
                     ctx.in_pure(|ctx| {
-                        infer::infer(ctx, init);
+                        infer::infer_hinted(ctx, init, any_elems.then_some(&inner));
                     });
                     let elem_ty = match &inner {
                         Type::Array(e) => e.as_ref().clone(),

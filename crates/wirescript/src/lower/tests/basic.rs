@@ -2611,6 +2611,77 @@ on Loaded() {
     );
 }
 
+/// `match v.getType()` is one Get Value Type gate whose output each arm compares
+/// with its member's number (`Int` = 1, `String` = 7), bound or inline.
+#[test]
+fn match_on_value_type_compares_the_gate_output() {
+    for scrutinee in ["v.getType()", "GetValueType(v)", "t"] {
+        let r = compile(&format!(
+            "in v: any\nin go: exec\nvar n: int = 0\non go {{\n  let t: Type = v.getType()\n  \
+             match {scrutinee} {{\n    Int => {{ n = 1 }}\n    String => {{ n = 2 }}\n    _ => {{ n = 3 }}\n  }}\n}}"
+        ));
+        assert_no_errors(&r);
+        let gates: Vec<_> = r
+            .module
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.gate_class == "BrickComponentType_Expr_GetValueType")
+            .map(|(id, _)| *id)
+            .collect();
+        let mut compared: Vec<i64> = r
+            .module
+            .nodes
+            .iter()
+            .filter(|(id, n)| {
+                n.gate_class == "BrickComponentType_Expr_CompareEqual"
+                    && r.module.wires.iter().any(|w| {
+                        w.target.node_id == **id && gates.contains(&w.source.node_id) && w.source.port == WirePort::Type
+                    })
+            })
+            .filter_map(|(_, n)| match n.properties.get(&crate::intern::intern("InputB")) {
+                Some(crate::ir::Literal::Int(k)) => Some(*k),
+                _ => None,
+            })
+            .collect();
+        compared.sort_unstable();
+        assert_eq!(compared, [1, 7], "{scrutinee}: each arm compares the gate's Type output");
+    }
+}
+
+/// `.getType()` is a method of every value, `GetValueType` gives the same `Type`,
+/// and members are named through the enum outside a `match`.
+#[test]
+fn value_type_method_works_on_any_value() {
+    let r = compile(
+        "in v: any\nin e: entity\nin go: exec\nvar t: Type = Type.Bool\non go {\n  \
+         t = v.getType()\n  t = e.getType()\n  t = \"s\".getType()\n  t = GetValueType(7)\n  t = Type.Float\n}",
+    );
+    assert_no_errors(&r);
+    assert_eq!(gate_count(&r, "BrickComponentType_Expr_GetValueType"), 4);
+    let bad = compile("in v: any\nin go: exec\nvar n: int = 0\non go {\n  n = GetValueType(v)\n}");
+    assert!(
+        bad.diagnostics.iter().any(|d| d.code == "WS003"),
+        "a Type is not an int: {:?}",
+        bad.diagnostics
+    );
+}
+
+/// `v as entity.GetLocation()` reads `entity.GetLocation` as the type: one
+/// error saying to parenthesise, not a cascade, and the parenthesised form is
+/// clean.
+#[test]
+fn cast_then_method_without_parentheses_is_one_clear_error() {
+    let src = |e: &str| format!("in v: any\nin go: exec\nvar p: vector\non go {{\n  p = {e}\n}}");
+    let bad = src("v as entity.GetLocation()");
+    let parsed = crate::parser::parse(&bad, "test");
+    assert_eq!(parsed.diagnostics.len(), 1, "{:?}", parsed.diagnostics);
+    let msg = &parsed.diagnostics[0].message;
+    assert!(msg.contains("`(value as entity).GetLocation(...)`"), "{msg}");
+    let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(tc.diagnostics.is_empty(), "the recovered parse is the parenthesised form: {:?}", tc.diagnostics);
+    assert_no_errors(&compile(&src("(v as entity).GetLocation()")));
+}
+
 /// `SetVisibleTo` wires `Entity` and `VisibleTo` from a player, a character
 /// or a team entity, and leaves `VisibleTo` unwired when it is left out.
 #[test]

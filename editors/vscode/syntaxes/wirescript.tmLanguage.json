@@ -174,8 +174,8 @@
           "match": "\\bunsafe(?=\\s+[A-Za-z_])"
         },
         {
-          "comment": "`is` (the enum variant test) is contextual the same way: only the operator position, followed by the `Enum.Variant` path it tests against",
-          "name": "keyword.operator.is.wirescript",
+          "comment": "`is` (the enum variant test) is contextual the same way: only the operator position, followed by the `Enum.Variant` path it tests against. Scoped as a control keyword so it colors like `as`, not like `==`",
+          "name": "keyword.control.is.wirescript",
           "match": "\\bis(?=\\s+[A-Za-z_])"
         },
         {

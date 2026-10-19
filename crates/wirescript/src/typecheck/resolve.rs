@@ -513,14 +513,11 @@ pub(super) fn type_expr_range(t: &TypeExpr) -> SourceRange {
     t.range().clone()
 }
 
-/// `any` (`Type::Opaque`) is fine anywhere a value just flows through a wire
-/// (ports, `let`s, mod/chip params) — but a var/array/buffer's storage gate
-/// needs a concrete wire variant to hold, so an explicit `any` annotation
-/// there is rejected (WS025). The same holds for the reference types
-/// (`zone`/`teleport`/`prefab`): like a var ref, they can only be wired or
-/// rerouted, never held in a storage gate. Only fires on an *explicit*
-/// annotation: an unannotated declaration's inferred placeholder is
-/// `Type::Any`, never `Type::Opaque`, so it never reaches this check.
+/// The types a var/array/map/buffer's storage gate cannot hold (WS025). `any`
+/// (`Type::Opaque`) is storable: a var already holds a `WireValue`, and an
+/// `any` array or map stores `WireValue` elements. The reference types
+/// (`zone`/`teleport`/`prefab`) are not: like a var ref, they can only be
+/// wired or rerouted. Only fires on an *explicit* annotation.
 pub(super) fn reject_any_storage(ctx: &mut TypeCheckCtx, resolved: &Type, range: SourceRange, what: &str) {
     match resolved {
         Type::Zone | Type::Teleport | Type::PrefabRef => {
@@ -534,14 +531,6 @@ pub(super) fn reject_any_storage(ctx: &mut TypeCheckCtx, resolved: &Type, range:
                 range,
             );
         }
-        Type::Opaque => ctx.emit(
-            "WS025",
-            format!(
-                "'any' cannot be stored: {what} needs a concrete wire type \
-                 (int/float/bool/string/vector/...)"
-            ),
-            range,
-        ),
         // An exec edge is control flow, not a value: `var c: exec` wires an
         // exec rerouter's output into the storage gate's data `.Value` pin,
         // which the game will not load.

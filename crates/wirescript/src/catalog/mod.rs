@@ -166,13 +166,35 @@ pub fn clean_game_enum_variant(bare: &str) -> String {
 /// the bare `Material`, too generic a type name to claim.
 const ANNOTATION_ENUMS: &[(&str, &str)] = &[("EBrickMaterial", "BrickMaterial")];
 
+/// `Type`, what `GetValueType` and `.getType()` give: the schema's `EWireKind`,
+/// cut to the kinds a wire value can hold (its first 13 members, the save's
+/// `WireValue` variants) and named as Wirescript names its types. Each pair is
+/// the schema member and the Wirescript name. Its members never resolve bare:
+/// `Int`, `String` and `Color` would collide with too much.
+const WIRE_KIND_ENUM: &str = "Type";
+const WIRE_KIND_MEMBERS: &[(&str, &str)] = &[
+    ("Bool", "Bool"),
+    ("Integer", "Int"),
+    ("Double", "Float"),
+    ("Color", "Color"),
+    ("Vector", "Vector"),
+    ("Rotator", "Rotator"),
+    ("Quat", "Quat"),
+    ("String", "String"),
+    ("Enum", "Enum"),
+    ("Object", "Object"),
+    ("Brick", "Brick"),
+    ("Component", "Component"),
+    ("Exec", "Exec"),
+];
+
 /// Whether a bare member name of built-in game enum `clean_name` resolves on
 /// its own, anywhere. An [`ANNOTATION_ENUMS`] member is bare only inside its
 /// annotation's argument: `BrickMaterial` shares `Plastic`, `Glass`,
 /// `TranslucentPlastic` and `Glow` with `TextMaterial`, and claiming them
 /// everywhere would turn those bare names, which already resolve, ambiguous.
 pub fn resolves_bare_members(clean_name: &str) -> bool {
-    !ANNOTATION_ENUMS.iter().any(|(_, name)| *name == clean_name)
+    clean_name != WIRE_KIND_ENUM && !ANNOTATION_ENUMS.iter().any(|(_, name)| *name == clean_name)
 }
 
 /// Every built-in game enum, derived from [`config_referenced_enum_types`]
@@ -234,6 +256,18 @@ fn game_enum_table() -> &'static Vec<GameEnum> {
                 })
             })
             .collect();
+        enums.push(GameEnum {
+            clean_name: WIRE_KIND_ENUM.to_string(),
+            schema_type: "EWireKind",
+            variants: WIRE_KIND_MEMBERS
+                .iter()
+                .map(|(raw, clean)| GameEnumVariant {
+                    clean_name: clean.to_string(),
+                    raw_member: raw.to_string(),
+                    disc: enum_member_value("EWireKind", raw).expect("EWireKind member"),
+                })
+                .collect(),
+        });
         enums.sort_by(|a, b| a.clean_name.cmp(&b.clean_name));
         enums
     })

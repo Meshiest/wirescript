@@ -11,11 +11,15 @@ import { importedMemoryLimits } from "./wasmMemory";
  * as wasiPaths.ts describes. Its stderr goes to `channel`. `onProcess` gets the
  * process, which the caller terminates when it stops the client: the host
  * never closes the server's stdin, so the server cannot see the client go.
+ * `onExit` hears when the process ends, for whatever reason: the language
+ * client only sees a crash as a stream error and keeps talking to the dead
+ * server, so restarting is up to the caller.
  */
 export async function startWasiServer(
   wasmUri: Uri,
   channel: OutputChannel,
   onProcess: (process: WasmProcess) => void,
+  onExit: (process: WasmProcess, reason: string) => void,
 ): Promise<MessageTransports> {
   const wasm = await Wasm.load();
   const bits = await workspace.fs.readFile(wasmUri);
@@ -34,5 +38,16 @@ export async function startWasiServer(
   onProcess(process);
   const decoder = new TextDecoder("utf-8");
   process.stderr?.onData((data) => channel.append(decoder.decode(data)));
+  // `startServer` calls `run()` and keeps the result to itself, so wrap it to
+  // see the exit too.
+  const run = process.run.bind(process);
+  process.run = () => {
+    const ran = run();
+    ran.then(
+      (code) => onExit(process, `exited with code ${code}`),
+      (e) => onExit(process, `crashed: ${e?.message ?? e}`),
+    );
+    return ran;
+  };
   return startServer(process, process.stdout && asBuffers(process.stdout));
 }

@@ -1,8 +1,20 @@
 # Wirescript Changelog
 
+## 2.1.0
+
+- `v.getType()` and `GetValueType(v)` give the built-in enum `Type` (`Type.Int`, `Type.String`, `Type.Object`, ...), so `match v.getType() { Int => ... }` branches on what an `any` holds, and inside the `Int` arm (or an `if v.getType() is Type.Int` block) `v` is an `int`. `GetValueType` gave an `int` before; test with `is Type.Int` instead of `== 1`.
+- `any` can be stored: `var x: any`, `any[]` and `Map<K, any>` hold values of every kind, each keeping its own (the game's Any Value). A map key still cannot be `any`.
+- `GetCustomProperty(...).Value` is an `any`: an annotated `let` gives it a type, and operators take it directly.
+- `v as entity.GetLocation()` is one clear error saying to write `(v as entity).GetLocation()`.
+- Hovering a builtin shows what its gate does, from the game's gate list.
+- Hovering a narrowed `any` shows the type it has there and the test that narrowed it.
+- `is` has a hover, and colors as a keyword in VS Code.
+- Fixed: the language server crashed as you typed into an empty file.
+- Fixed: the VS Code extension's built-in server crashed on completion, and stayed stopped until the window was reloaded. Completion now reads the folder only for a `$./` path, and a crashed server restarts.
+
 ## 2.0.4
 
-- `on Loaded() { ... }` runs once when the chip is placed, or loaded with a world or prefab (the Load Event gate); the docs and examples use it in place of `on ReadBrickGrid()`.
+- `on Loaded() { ... }` runs once when the chip is placed, or loaded with a world or prefab (the Load Event gate); use it in place of `on ReadBrickGrid()`, which the game no longer runs at load.
 - `entity.SetVisibleTo(visibleTo?)` shows a physics object or dynamic brick grid to one player or team only; leave `visibleTo` out to show it to everyone again.
 
 ## 2.0.3

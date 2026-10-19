@@ -37,13 +37,14 @@ in key: string
 in amount: int
 var n: int = 0
 var gone: bool = false
+var kind: Type = Type.Bool
 on go {
   e.SetCustomProperty(key, amount)
   let g = e.GetCustomProperty(key)
   if g.Found { n = g.Value }
   gone = e.RemoveCustomProperty(key)
   other.CopyCustomProperties(e)
-  n = GetValueType(amount)
+  kind = GetValueType(amount)
 }
 ";
 

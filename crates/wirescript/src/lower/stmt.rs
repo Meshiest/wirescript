@@ -1149,8 +1149,9 @@ pub(super) fn value_record_fields(
             return Some(rec);
         }
         // A payload-free enum on one wire (an element of a port's column of
-        // tags) is the enum value whose tag is that wire.
-        if !matches!(value, Expr::Call { .. } | Expr::VariantCtor { .. })
+        // tags, a builtin's enum output like `v.getType()`) is the enum value
+        // whose tag is that wire.
+        if !matches!(value, Expr::VariantCtor { .. })
             && crate::lower::predeclare::unit_enum_port(ctx, &unwrap_ref(&ctx.type_of(value)))
             && !ctx.builder.module.nodes.get(&port.node_id).is_some_and(|n| n.gate_class == gc::UNSUPPORTED)
         {

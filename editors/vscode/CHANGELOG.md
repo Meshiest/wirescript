@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3
+
+- Wirescript 2.1.0: `any` vars, arrays and maps, `v.getType()` with the
+  `Type` enum and narrowing, and builtin hovers say what each gate does.
+- Fixed: the language server crashed as you typed into an empty file, and
+  the built-in server stayed stopped until the window was reloaded. It now
+  restarts after a crash.
+- Fixed: errors from the last Compile stayed in the Problems panel after the
+  language server restarted, even when the new server no longer reports them.
+
 ## 0.1.2
 
 - Wirescript 2.0.4: `on Loaded()` and `entity.SetVisibleTo(visibleTo?)`.

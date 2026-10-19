@@ -11,6 +11,7 @@ fn handler_param_type_str(p: &HandlerParam) -> Option<String> {
     p.ty.as_ref().map(|t| type_expr_str(t))
 }
 
+#[derive(Clone)]
 pub struct SymbolDef {
     pub name: String,
     pub kind: &'static str,

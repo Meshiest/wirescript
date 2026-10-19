@@ -13,10 +13,11 @@ use wirescript::analysis::text::Ruler;
 use wirescript::analysis::{
     asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
     cursor_byte_offset, field_name_at, fill_match_arms_at, fill_record_at, find_asset_refs,
-    find_name_range, format_with, hover_at, prepare_rename_at, references_at, FormatOptions,
+    find_name_range, format_with, hover_at, prefab_path_fragment, prepare_rename_at, references_at,
+    FormatOptions,
     references_to_export, rename_edit_text, semantic_tokens, word_at, AssetRef, CrossFile,
     InlayHintKind, RefNs, RefSite, RefTarget, ResourceEstimate, SemTokenKind, SymbolDef, TextRange,
-    TypeMap, VarReadContextMap,
+    NarrowedReadMap, TypeMap, VarReadContextMap,
 };
 use wirescript::ast::{ImportKind, LetBinding, Script, TopDecl};
 use wirescript::lexer::KEYWORDS;
@@ -428,8 +429,7 @@ fn for_each_unopened_sibling(
     let Some(dir) = file_path.parent() else {
         return;
     };
-    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let path = entry.path();
+    for path in list_dir(dir) {
         if !path.extension().map_or(false, |e| e == "ws") {
             continue;
         }
@@ -475,6 +475,22 @@ fn uri_to_file_string(uri: &Url) -> String {
         .unwrap_or_else(|_| uri.path().to_string())
 }
 
+/// The paths in `dir`, or none when it cannot be read.
+///
+/// VS Code's WASI host fails the `closedir` behind a `ReadDir`'s drop with
+/// EBADF, std turns that into a panic, and a WASI server cannot unwind, so the
+/// panic ends it. There the directory handle is leaked instead: every
+/// `DirEntry` shares it, so it stays open once the `ReadDir` is forgotten.
+fn list_dir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(mut entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let paths = entries.by_ref().flatten().map(|e| e.path()).collect();
+    #[cfg(target_os = "wasi")]
+    std::mem::forget(entries);
+    paths
+}
+
 /// Candidate prefab-reference strings for `$./…` completion: every `.brz`
 /// archive and `.ws` source file under the document's directory, as
 /// `./relative/path.ext` (forward slashes, the wirescript reference form).
@@ -490,8 +506,7 @@ fn scan_prefab_paths(uri: &Url) -> Vec<String> {
         if depth > 6 || out.len() > 500 {
             return;
         }
-        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let path = entry.path();
+        for path in list_dir(dir) {
             if path.is_dir() {
                 walk(&path, base, depth + 1, out);
             } else if path.extension().is_some_and(|e| e == "brz" || e == "ws") {
@@ -544,6 +559,7 @@ struct DocState {
     type_map: TypeMap,
     if_contexts: wirescript::analysis::IfContextMap,
     var_read_contexts: VarReadContextMap,
+    narrowed_reads: NarrowedReadMap,
     /// Ranges of `if`/`else` blocks a const-evaluable condition dropped before
     /// type-checking (never verified), with a human-readable reason for each —
     /// surfaced by `hover_dropped_range` so hovering inside one says so.
@@ -778,6 +794,7 @@ impl Backend {
                     type_map: tc.type_of_expr,
                     if_contexts: tc.if_contexts,
                     var_read_contexts: tc.var_read_contexts,
+                    narrowed_reads: tc.narrowed_reads,
                     dropped_ranges: tc.dropped_ranges,
                     resource_estimates,
                     pre_resolve_ast,
@@ -1231,10 +1248,18 @@ impl LanguageServer for Backend {
         let raw_col = pos.character as usize;
         let uri = &params.text_document_position.text_document.uri;
 
-        let prefab_paths = scan_prefab_paths(uri);
         // The keystroke that triggered this request (`$`, `/`) is usually still
         // waiting out `did_change`'s debounce, so `doc.source` lacks it.
         let newest = self.newest_text(uri);
+        // Listing the document's folder walks the disk, so only a `$./` path
+        // completion does it, not every keystroke.
+        let in_prefab_path =
+            |src: &str| prefab_path_fragment(src, line, lsp_col_to_char(src, line, pos.character)).is_some();
+        let wants_paths = match newest.as_deref() {
+            Some(src) => in_prefab_path(src),
+            None => self.docs.lock().ok().and_then(|d| d.get(uri).map(|d| in_prefab_path(&d.source))).unwrap_or(false),
+        };
+        let prefab_paths = if wants_paths { scan_prefab_paths(uri) } else { Vec::new() };
         let items = match self.docs.lock() {
             Ok(docs) => match docs.get(uri) {
                 Some(doc) => {
@@ -1387,6 +1412,7 @@ impl LanguageServer for Backend {
                         &doc.doc_comments,
                         &doc.if_contexts,
                         &doc.var_read_contexts,
+                        &doc.narrowed_reads,
                         &doc.dropped_ranges,
                         &doc.resource_estimates,
                         pos.line as usize,
@@ -2020,6 +2046,17 @@ impl LanguageServer for Backend {
 const HANDLER_STACK: usize = 64 * 1024 * 1024;
 
 fn main() {
+    // A WASI panic cannot unwind: it aborts with a trap, which the host need
+    // not report as an exit, leaving the editor talking to a dead server.
+    // Exiting does get reported, and the extension then restarts the server.
+    #[cfg(target_family = "wasm")]
+    {
+        let report = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            report(info);
+            std::process::exit(101);
+        }));
+    }
     #[cfg(not(target_family = "wasm"))]
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     #[cfg(target_family = "wasm")]

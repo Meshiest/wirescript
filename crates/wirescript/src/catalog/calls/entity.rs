@@ -333,7 +333,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             ],
             vec![CallOutput::plain(
                 WirePort::Value,
-                Type::Record(vec![("Value".into(), Type::Any), ("Found".into(), Type::Bool)]),
+                Type::Record(vec![("Value".into(), Type::Opaque), ("Found".into(), Type::Bool)]),
             )],
         ),
     );

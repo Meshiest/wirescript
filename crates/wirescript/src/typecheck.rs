@@ -34,6 +34,8 @@ pub use sig::{CallSignature, Param, ParamKind, check_args};
 
 mod ctx;
 pub use ctx::*;
+pub(crate) mod narrow;
+pub use narrow::NarrowedRead;
 pub mod resolution;
 pub use resolution::{ContainerKind, MethodTarget, Resolutions, ResolutionKey, classify_method};
 pub mod enums;
@@ -284,6 +286,7 @@ fn typecheck_round(
         op_resolutions: ctx.op_resolutions,
         if_contexts: ctx.if_contexts,
         var_read_contexts: ctx.var_read_contexts,
+        narrowed_reads: ctx.narrowed_reads,
         diagnostics: ctx.diagnostics,
         dropped_ranges: ctx.dropped_ranges,
         resolutions: ctx.resolutions,

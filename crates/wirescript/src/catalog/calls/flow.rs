@@ -398,8 +398,10 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
     // effectively reading the tag, but it is emitted per the design so that
     // game/native enums route through the real gate; the fold path keeps
     // compile-time-known enums gate-free.
-    // Which kind of value is on the wire, as an int (`docs/src/builtins.md`
-    // lists the likely kinds; the mapping is not verified in game).
+    // Which kind of value is on the wire, as the built-in enum `Type`
+    // (`catalog::WIRE_KIND_MEMBERS`). `v.getType()` is the same gate as a method
+    // of every value.
+    let value_type = || Type::Enum { name: "Type".into(), args: vec![] };
     m.insert(
         "GetValueType",
         CallSpec {
@@ -407,8 +409,19 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::GET_VALUE_TYPE,
             params: vec![CallParam::req("value", WirePort::Input, Type::Any)],
             exec: false,
-            outputs: vec![CallOutput::plain(WirePort::Type, Type::Int)],
+            outputs: vec![CallOutput::plain(WirePort::Type, value_type())],
             receiver: None,
+        },
+    );
+    m.insert(
+        "getType",
+        CallSpec {
+            name: "getType",
+            gate_class: gc::GET_VALUE_TYPE,
+            params: vec![CallParam::req("value", WirePort::Input, Type::Any)],
+            exec: false,
+            outputs: vec![CallOutput::plain(WirePort::Type, value_type())],
+            receiver: Some(Type::Any),
         },
     );
     m.insert(

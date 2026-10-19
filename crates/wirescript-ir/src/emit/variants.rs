@@ -110,6 +110,9 @@ pub(super) fn dynamic_type_name(ty: Option<&crate::ir::Type>) -> &'static str {
         // keeps bricks.
         Some(Type::Ref(_) | Type::Array(_) | Type::Map(_, _) | Type::Component(_)) => "component_handle",
         Some(Type::Brick) => "brick_handle",
+        // `any`: each element a `WireValue`, keeping its own kind (the game's
+        // Any Value).
+        Some(Type::Opaque) => "WireValue",
         _ => "f64",
     }
 }
@@ -161,6 +164,7 @@ impl AsBrdbValue for DynMap {
 /// becomes the type's default.
 pub fn wire_value_as(ty: &str, lit: &Literal) -> WireValue {
     match (ty, lit) {
+        ("WireValue", _) => literal_to_wire_value(lit).unwrap_or(WireValue::Number(0.0)),
         ("i64", Literal::Int(n)) => WireValue::Int(*n),
         ("i64", Literal::Float(f)) => WireValue::Int(*f as i64),
         ("i64", Literal::Bool(b)) => WireValue::Int(*b as i64),

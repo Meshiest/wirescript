@@ -1144,8 +1144,10 @@ auto-unwrapped like a map read, and `Found` is `false` when the key is not set.
 holder keeps up to 256 properties, and a key is at most 64 characters: a longer
 key is silently not stored. A dynamic grid such as a spawned prefab holds
 properties; a pasted grid does not. The value can be any wire value, refs
-included. To give a read a type, store its `.Value` in a typed `var`
-(`hp = player.GetCustomProperty("hp").Value`); an annotated `let` does not narrow it.
+included, so `.Value` is an `any`. Give it a type by storing it in a typed
+`var` or an annotated `let` (`let hp: int = player.GetCustomProperty("hp").Value`),
+or convert it with `as`. `.Value.getType()` says which kind it holds (see
+[GetValueType](#value-conversions-pure)).
 
 ```wirescript
 on CharacterDied() -> (character) {
@@ -1309,6 +1311,10 @@ getters/setters or wire into gates that expect a brick grid:
 let grid = ReadBrickGrid()
 let origin = grid.GetLocation()
 ```
+
+It is a value, not an event: the game no longer runs `on ReadBrickGrid() { ... }`
+when the chip is pasted or loaded. Use [`on Loaded()`](statements.md#built-in-events)
+to run something at load.
 
 ## Gate config properties
 
@@ -1788,7 +1794,8 @@ ItemToPickup(item: entity) -> entity                  // pickup asset for an ite
 color.ConvertColor(fromSpace?: ColorSpace, toSpace?: ColorSpace) -> color
 "A".ToCharCode() -> { Codepoint: int, Success: bool }
 FromCharCode(codepoint: int) -> { Character: string, Success: bool }
-GetValueType(value) -> int                            // which kind of value is on the wire
+GetValueType(value) -> Type                           // which kind of value is on the wire
+value.getType() -> Type                                  // the same, as a method of any value
 ```
 
 `Remap` follows a straight line by default. Its `function` and `direction`
@@ -1803,20 +1810,63 @@ in v: float
 out r = Remap(v, 0.0, 1.0, 0.0, 100.0, function = Quad, direction = Out)
 ```
 
-`GetValueType` reports which kind of value a wire carries, to branch on what an
-untyped value (a custom property, an `any` var) holds. The numbers likely follow
-the game's wire-kind list, which this table copies from the save schema. **The
-mapping is not verified in game.**
+`GetValueType(v)`, or `v.getType()`, reports which kind of value a wire carries,
+as the built-in enum `Type`. Use it to branch on what an untyped value (a
+custom property, an `any`) holds. In each arm of a `match` on it, the tested
+value has that arm's type, so it needs no `as`:
 
-| Kind | Value | Kind | Value |
+```wirescript
+in e: entity
+in go: exec
+var total: int = 0
+var log: string = ""
+
+on go {
+  let p = e.GetCustomProperty("score")
+  match p.Value.getType() {
+    Int    => { total += p.Value }
+    String => { log = p.Value }
+    _      => {}
+  }
+}
+```
+
+An `if` narrows the same way, in its block or its `then` branch:
+
+```wirescript
+in v: any
+in go: exec
+var total: int = 0
+
+on go {
+  if v.getType() is Type.Int {
+    total += v
+  }
+  total = if v.getType() is Type.Int then total + v else total
+}
+```
+
+The tested value must be a name or fields read off one (`v`, `p.Value`). A
+`let` of the same name inside the arm is a new value and is not narrowed.
+An `Object` arm reads the value as an `entity`. `Enum`, `Component` and
+`Exec` have no one Wirescript type, so their arms leave the value an `any`.
+
+| Member | Number | Member | Number |
 |---|---|---|---|
-| bool | 0 | string | 7 |
-| int | 1 | enum | 8 |
-| float | 2 | object | 9 |
-| color | 3 | brick | 10 |
-| vector | 4 | component | 11 |
-| rotator | 5 | exec | 12 |
-| quat | 6 | none | 29 |
+| `Type.Bool` | 0 | `Type.String` | 7 |
+| `Type.Int` | 1 | `Type.Enum` | 8 |
+| `Type.Float` | 2 | `Type.Object` | 9 |
+| `Type.Color` | 3 | `Type.Brick` | 10 |
+| `Type.Vector` | 4 | `Type.Component` | 11 |
+| `Type.Rotator` | 5 | `Type.Exec` | 12 |
+| `Type.Quat` | 6 | | |
+
+The numbers are the game's own, checked in game for every kind except `Enum`,
+`Component` and `Exec`. `Object` covers entities, characters and players. A
+custom property that was never set reads as `Float` (its value is 0), and a
+game enum value on a wire reads as `Int`. Outside a `match` arm, name a member
+through the enum (`Type.Int`): the bare names would clash with type names
+and constructors like `Color(...)`.
 
 `EnumToInt` / `IntToEnum` are the gate-backed twins of `.ToInt()` (=
 `.Discriminant`) and `Enum.FromInt(n)`. `EnumToInt` requires an enum

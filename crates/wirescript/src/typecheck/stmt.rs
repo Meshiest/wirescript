@@ -118,8 +118,8 @@ pub(super) fn record_let(ctx: &mut TypeCheckCtx, l: &LetDecl, value: LetValue) {
 /// `on a || b` desugars to `let _on_expr_N = a || b` (see `parse_handler`).
 /// With an object operand that reads as "either event", but `||` makes one
 /// value instead, and an object is true for as long as it exists: `on reset
-/// || ReadBrickGrid()` turns true once at load and stays true, so it never
-/// fires on `reset`. Firing on either is `Union(a, b)` (WS116, a warning).
+/// || rider` (a `character` pin) turns true when a rider is wired and stays
+/// true, so it never fires on `reset`. Firing on either is `Union(a, b)` (WS116, a warning).
 /// `&&` with an object is the ordinary "is set" guard, and an `exec` operand
 /// pulses for a
 /// tick (`on reset || start` works), so neither is reported.
@@ -845,9 +845,15 @@ fn check_stmt_inner(
                 let cond_cx = ctx.if_cond_const_ctx(Some(&lookup));
                 crate::const_eval::eval_expr(&i.cond, &cond_cx, &mut budget).ok()
             };
+            // `if x.getType() is Type.Int { ... }`: the block sees `x` as an int.
+            let check_then = |ctx: &mut TypeCheckCtx| {
+                let narrowed = super::narrow::push_if(ctx, &i.cond);
+                check_block(ctx, &i.then_block);
+                super::narrow::pop(ctx, narrowed);
+            };
             match cond_result {
                 Some(crate::ir::Literal::Bool(true)) => {
-                    check_block(ctx, &i.then_block);
+                    check_then(ctx);
                     if let Some(else_b) = &i.else_block {
                         ctx.dropped_ranges.push((
                             else_b.range.clone(),
@@ -865,7 +871,7 @@ fn check_stmt_inner(
                     }
                 }
                 _ => {
-                    check_block(ctx, &i.then_block);
+                    check_then(ctx);
                     if let Some(else_b) = &i.else_block {
                         check_block(ctx, else_b);
                     }

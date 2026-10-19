@@ -152,11 +152,22 @@ fn build_gate_data_map(
                     let wv = var_type_to_wire_value(port_ty);
                     Box::new(if bool_as_int { coerce_bool_to_int(wv) } else { wv })
                 }
+                None if field == "bChangeType" && sets_any_var(gate_class, ports) => Box::new(true),
                 None => continue,
             };
             data.insert(BString::Static(field), val);
         }
     Ok(Some(data))
+}
+
+/// A Set Variable writing an `any` value. It needs Change Type on: without it
+/// the game converts the value to the kind the var already holds.
+pub(super) fn sets_any_var(gate_class: &str, ports: &crate::ir::GateIO) -> bool {
+    gate_class == gc::VAR_SET
+        && ports
+            .inputs
+            .iter()
+            .any(|p| resolve(p.name) == "Value" && p.ty == crate::ir::Type::Opaque)
 }
 
 /// A constant `lit` as a native scalar field of `kind` holds it: an integer,

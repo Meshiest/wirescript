@@ -554,6 +554,22 @@ fn push_qualified_builtin_game_enum_variant_completions(
     }
 }
 
+/// The prefab file reference (`$./file.brz`, `$/abs/file.brz`) the cursor at
+/// `line`/`col` (a character column) is typing: the byte column of its `$` and
+/// the text after it. `None` anywhere else, so a frontend can skip listing
+/// files on disk for every other completion.
+pub fn prefab_path_fragment(source: &str, line: usize, col: usize) -> Option<(usize, &str)> {
+    let l = source.lines().nth(line)?;
+    let before = &l[..char_col_to_byte(l, col)];
+    let dollar = before.rfind('$')?;
+    let frag = &before[dollar + 1..];
+    let is_prefab_frag = (frag.starts_with('.') || frag.starts_with('/'))
+        && frag
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '/' | '.' | '-'));
+    is_prefab_frag.then_some((dollar, frag))
+}
+
 /// The completions at `line`/`col` (a character column) of `source`, whose
 /// symbols are `symbols`; `prefab_paths` are the `.brz` paths a `$./` reference
 /// may complete to, and `lookup` finds an enum by the text completed.
@@ -570,30 +586,19 @@ pub fn completions(
     // Prefab file reference `$./file.brz` / `$/abs/file.brz`: complete from the
     // candidate paths the frontend supplied (disk scan / drag registry). A
     // text edit over the whole `$…` fragment keeps `.`/`/` filtering robust.
-    if let Some(l) = source.lines().nth(line) {
-        let col_idx = char_col_to_byte(l, col);
-        let before = &l[..col_idx];
-        if let Some(dollar) = before.rfind('$') {
-            let frag = &before[dollar + 1..];
-            let is_prefab_frag = (frag.starts_with('.') || frag.starts_with('/'))
-                && frag
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || matches!(c, '_' | '/' | '.' | '-'));
-            if is_prefab_frag {
-                for path in prefab_paths {
-                    if path.starts_with(frag) {
-                        items.push(Completion {
-                            label: path.clone(),
-                            kind: CompletionKind::File,
-                            replace_from: Some(dollar + 1),
-                            ..Default::default()
-                        });
-                    }
-                }
-                if !items.is_empty() {
-                    return items;
-                }
+    if let Some((dollar, frag)) = prefab_path_fragment(source, line, col) {
+        for path in prefab_paths {
+            if path.starts_with(frag) {
+                items.push(Completion {
+                    label: path.clone(),
+                    kind: CompletionKind::File,
+                    replace_from: Some(dollar + 1),
+                    ..Default::default()
+                });
             }
+        }
+        if !items.is_empty() {
+            return items;
         }
     }
 

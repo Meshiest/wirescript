@@ -16,6 +16,7 @@
             &resolved.doc_comments,
             &tc.if_contexts,
             &tc.var_read_contexts,
+            &tc.narrowed_reads,
             &tc.dropped_ranges,
             &estimates,
             line,
@@ -57,6 +58,87 @@
         let fill = fill_record_at(src, &symbols, 3, 0).expect("fill for a partial literal");
         assert!(!fill.text.contains("foo:"), "present field foo skipped: {}", fill.text);
         assert!(fill.text.contains("bar: 0"), "missing field bar filled: {}", fill.text);
+    }
+
+    /// A read of an `any` a kind test narrowed hovers as the narrowed type and
+    /// names the test; a read outside the test stays `any` with no note.
+    #[test]
+    fn narrowed_any_hovers_as_its_kind_and_names_the_test() {
+        let src = "var xs: any[] = []\n\
+                   in go: exec\n\
+                   on go {\n\
+                   \x20 let a0 = xs[0]\n\
+                   \x20 var sum: int = 0\n\
+                   \x20 match a0.getType() {\n\
+                   \x20   Int => { sum = a0 + 1 }\n\
+                   \x20   _ => {}\n\
+                   \x20 }\n\
+                   \x20 let p = ReadBrickGrid().GetCustomProperty(\"k\")\n\
+                   \x20 if p.Value.getType() is Type.Int { sum = p.Value }\n\
+                   \x20 let after = a0\n\
+                   }\n";
+        let at = |needle: &str, nth: usize| {
+            let (line, l) = src.lines().enumerate().find(|(_, l)| l.contains(needle)).unwrap();
+            (line, l.match_indices(needle).nth(nth).unwrap().0 + 1)
+        };
+
+        let (line, col) = at("sum = a0", 0);
+        let h = hover_for(src, line, col + "sum = ".len()).expect("hover on the narrowed a0");
+        assert!(h.contains("a0: int"), "narrowed type: {h}");
+        assert!(h.contains("Declared `any`, narrowed to `int` here by the `Int` arm of `match a0.getType()`"), "{h}");
+
+        let (line, col) = at("sum = p.Value", 0);
+        let h = hover_for(src, line, col + "sum = p.".len()).expect("hover on the narrowed field");
+        assert!(h.contains("field Value: int"), "narrowed field type: {h}");
+        assert!(h.contains("by `if p.Value.getType() is Type.Int`"), "{h}");
+
+        let (line, col) = at("after = a0", 0);
+        let h = hover_for(src, line, col + "after = ".len()).expect("hover outside the test");
+        assert!(h.contains("a0: any") && !h.contains("narrowed"), "{h}");
+    }
+
+    /// `is` hovers as a variant test; on a kind test it names what the tested
+    /// value narrows to.
+    #[test]
+    fn is_keyword_hovers_as_a_test() {
+        let src = "enum Shape { Empty, Circle(float) }\n\
+                   static var s: Shape = Shape.Empty\n\
+                   var xs: any[] = []\n\
+                   out round = s is Shape.Circle\n\
+                   in go: exec\n\
+                   on go {\n\
+                   \x20 let a0 = xs[0]\n\
+                   \x20 if a0.getType() is Type.Int { xs.push(1) }\n\
+                   }\n";
+        let at = |needle: &str| {
+            let (line, l) = src.lines().enumerate().find(|(_, l)| l.contains(needle)).unwrap();
+            (line, l.find(needle).unwrap() + 1)
+        };
+
+        let (line, col) = at("is Shape");
+        let h = hover_for(src, line, col).expect("hover on a variant test");
+        assert!(h.contains("s is Shape.Circle") && h.contains("**Variant test**"), "{h}");
+        assert!(h.contains("enums.html#is"), "links the docs: {h}");
+
+        let (line, col) = at("is Type.Int");
+        let h = hover_for(src, line, col).expect("hover on a kind test");
+        assert!(h.contains("a0.getType() is Type.Int") && h.contains("`a0` is narrowed to `int`"), "{h}");
+    }
+
+    /// A builtin's hover says what the gate does, in the game's own words from
+    /// the gate inventory, even for a gate the older `gate_docs.json` lacks.
+    #[test]
+    fn builtin_hover_explains_the_gate_from_the_inventory() {
+        let src = "in crate: entity\nin v: any\nin go: exec\non go {\n  crate.SetVisibleTo()\n  let k = GetValueType(v)\n}";
+        for (line, name, says) in [
+            (4usize, "SetVisibleTo", "Shows a physics object or dynamic brick grid only to one player or team"),
+            (5, "GetValueType", "Outputs which type of value is on the wire"),
+        ] {
+            assert!(gate_docs().get(calls()[name].gate_class).is_none(), "{name} is meant to be missing from gate_docs.json");
+            let col = src.lines().nth(line).unwrap().find(name).unwrap();
+            let h = hover_for(src, line, col).unwrap_or_else(|| panic!("{name} should hover"));
+            assert!(h.contains(says), "{name}: {h}");
+        }
     }
 
     #[test]
@@ -231,6 +313,7 @@
             &resolved.doc_comments,
             &tc.if_contexts,
             &tc.var_read_contexts,
+            &tc.narrowed_reads,
             &tc.dropped_ranges,
             &estimates,
             1,
@@ -383,6 +466,7 @@
             &resolved.doc_comments,
             &tc.if_contexts,
             &tc.var_read_contexts,
+            &tc.narrowed_reads,
             &tc.dropped_ranges,
             &estimates,
             0,
@@ -1251,6 +1335,7 @@ const Z = 4";
             &resolved.doc_comments,
             &tc.if_contexts,
             &tc.var_read_contexts,
+            &tc.narrowed_reads,
             &tc.dropped_ranges,
             &Default::default(),
             line,

@@ -46,7 +46,7 @@ on reset {
 
 | Type | Description |
 |------|-------------|
-| `any` | Universal type, compatible with everything, but can't back a variable gate's storage. See [`any` Type](#any-type) below. |
+| `any` | Universal type, compatible with everything: a value whose kind is decided at run time. See [`any` Type](#any-type) below. |
 | `never` | Bottom type: no value inhabits this type. Used internally. |
 
 ### `any` Type
@@ -64,16 +64,33 @@ mod f(v: any) { ... }    // mod parameter
 chip C(v: any) -> (r: any) { out r = v }  // chip parameter / output
 ```
 
-It is **not** valid as a variable gate's storage type, because a Variable gate needs one concrete wire variant to hold, and `any` has none:
+It can also be stored. A variable, an array or a map value of type `any` holds a value of any kind, and each value keeps its own kind (the game's **Any Value**):
 
 ```wirescript
-var foo: any = 0          // ERROR: 'any' cannot be stored
-static var foo: any = 0   // ERROR: same
-var foo: any[]          // ERROR: same
-buffer foo: any = 0       // ERROR: same
+var last: any = 0
+var log: any[] = [1, "two", 3.5]
+var props: Map<string, any>
 ```
 
-An **unannotated** `var` or `buffer` is unaffected: its placeholder type is refined from the initializer (or left as the internal "unknown" fallback), never `any`, so this rejection never applies to it.
+A map **key** cannot be `any` (WS039): keys are int, string, object or brick.
+
+To find out what an `any` holds, test it with [`getType()`](builtins.md#value-conversions-pure). Inside a `match` arm or an `if` that tested it, the value has the kind the test found, so it needs no `as`:
+
+```wirescript
+var log: any[] = [1, "two", 3.5]
+var total: float = 0.0
+in go: exec
+
+on go {
+  for x in log {
+    match x.getType() {
+      Int   => { total += x }
+      Float => { total += x }
+      _     => {}
+    }
+  }
+}
+```
 
 ### Object references & assets
 

@@ -39,7 +39,6 @@ function classFor(scope: string): string | null | undefined {
     ["string", "ws-string"],
     ["constant.numeric", "ws-number"],
     ["constant.language", "ws-constant"],
-    ["keyword.operator.is", "ws-keyword"],
     ["keyword.operator", null],
     ["keyword.declaration", "ws-declaration"],
     ["keyword", "ws-keyword"],

@@ -480,6 +480,11 @@ pub struct TypeCheckCtx<'a> {
     /// effects), not a value. Set by the statement check and taken by the
     /// `match` it names.
     pub(super) statement_match: bool,
+    /// The `any` places a `getType()` test has narrowed for the arm or block
+    /// being checked (`super::narrow`), innermost last.
+    pub(super) narrowings: Vec<super::narrow::Narrowing>,
+    /// Each read those narrowed, keyed by its range, for hover.
+    pub(super) narrowed_reads: crate::analysis::NarrowedReadMap,
     /// Inferred custom-event receiver slot types (`infer_custom_event_slots`
     /// output), keyed by handler source range. Empty on pass 1 (nothing inferred
     /// yet); populated on pass 2 by `typecheck_with_inference`. Consulted by
@@ -685,6 +690,8 @@ impl<'a> TypeCheckCtx<'a> {
             inline_body_depth: 0,
             record_lit_map_fields: false,
             statement_match: false,
+            narrowings: Vec::new(),
+            narrowed_reads: HashMap::default(),
             ce_slots,
             out_ctx: Vec::new(),
             single_output_alias: crate::collections::HashMap::default(),
@@ -1272,6 +1279,8 @@ pub struct TypeCheckResult {
     pub if_contexts: HashMap<(Arc<str>, usize), bool>,
     /// Exec/pure context for each var identifier read; key is (file, start_offset). true = exec.
     pub var_read_contexts: HashMap<(Arc<str>, usize), bool>,
+    /// Reads of an `any` that a `getType()` test narrowed, by range.
+    pub narrowed_reads: crate::analysis::NarrowedReadMap,
     pub diagnostics: Vec<Diagnostic>,
     /// Source ranges of `if`/`else` blocks a const-evaluable condition
     /// dropped (never type-checked) — see `TypeCheckCtx::dropped_ranges`.

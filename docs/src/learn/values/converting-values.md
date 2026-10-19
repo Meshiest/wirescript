@@ -129,15 +129,22 @@ any` accepts whatever is wired to it, and `probe as string` shows it as text:
 ```
 
 `any` throws the type away, so the compiler can no longer check what you do
-with the value. A variable can never hold `any`: its Variable gate needs one
-real type to store.
+with the value. A variable can hold `any` too, and keeps whatever kind of value
+was stored last. To use it as a number again, ask for its type with
+`getType()`. Inside the `if`, the compiler knows `held` is an `int`:
 
-```wirescript name=v4-any-var expect=WS025
+```wirescript name=v4-any-var
+@left in probe: any
+@left in grab: exec
 var held: any = 0
-```
-
-```text
-Error: [WS025] 'any' cannot be stored: a variable gate needs a concrete wire type (int/float/bool/string/vector/...)
+var total: int = 0
+on grab {
+  held = probe
+  if held.getType() is Type.Int {
+    total = total + held
+  }
+}
+@right out sum: int = total
 ```
 
 Use a real type whenever you know it. The reference covers the rest in

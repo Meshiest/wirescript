@@ -33,6 +33,7 @@ const HAND = {
     chip: 'chips.md#named-chips',
     mod: 'chips.md#mod-inline-chips',
     fn: 'statements.md#fn-function',
+    is: 'enums.md#is',
   },
   annotations: {
     left: ANNOTATION_PINS,

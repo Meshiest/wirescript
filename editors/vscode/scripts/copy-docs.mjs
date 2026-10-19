@@ -1,6 +1,6 @@
 // Copy the language docs into the extension's `docs/` folder, so they open in
 // the editor offline. Run by `npm run build`; the copy is generated (ignored by
-// git). Outside a bearilog checkout there is nothing to copy and the existing
+// git). Outside a wirescript checkout there is nothing to copy and the existing
 // copy, if any, is left alone.
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
