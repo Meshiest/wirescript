@@ -1899,7 +1899,7 @@ fn a_record_element_returned_from_a_mod_is_the_element() {
 #[test]
 fn a_generic_body_that_needs_an_enum_is_rejected_for_its_other_members() {
     for (body, code) in [
-        ("mod m<T: Hue | int>(a: T) -> int { return match a { Red => 1, _ => 2 } }\non go { n = m(c) }", "WS066"),
+        ("mod m<T: Hue | int>(a: T) -> int { return match a { Red => 1, _ => 2 } }\non go { n = m(c) }", "WS120"),
         ("mod m<T: Hue | int>(a: T) -> bool { return a is Hue.Red }\non go { let q = m(c) }", "WS066"),
         ("mod m<T: Hue | int>(a: T) -> int { return a.Discriminant }\non go { n = m(c) }", "WS066"),
         ("mod m<T: Hue | int>(a: T, b: T) -> bool { return a == b }\non go { let q = m(c, d) }", "WS004"),

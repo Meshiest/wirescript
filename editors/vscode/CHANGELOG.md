@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4
+
+- Wirescript 2.2.0: `match` on strings, numbers and bools, with literal,
+  range and string patterns (`"say ${rest}"`), `|` alternatives and `if`
+  guards.
+- Fixed: the minimap no longer labels every line that opens a `{` block.
+
 ## 0.1.3
 
 - Wirescript 2.1.0: `any` vars, arrays and maps, `v.getType()` with the

@@ -16,6 +16,10 @@ use crate::ir::plane::{
 };
 use crate::typecheck::ContainerKind;
 
+/// WS119: `@sliced` on a loop that runs inside another loop's body.
+pub(crate) const SLICED_NESTED: &str = "`@sliced` only works on the outermost loop, and this loop runs \
+     inside another loop's body. Put `@sliced` on the outer loop, or remove it here";
+
 /// One node of a synthesized shell-pin expression tree.
 ///
 /// The point of the split is [`PinExpr::User`]: a sub-expression the author
@@ -236,6 +240,11 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
     };
 
     let mut shell_props = HashMap::default();
+    // One written inside a `for` body typecheck already reported; this speaks
+    // for a loop an inlined `mod` brings into another loop's body.
+    if s.sliced && ctx.loop_depth > 0 && !ctx.inside_written_loop_body(&s.range) {
+        ctx.warn_code("WS119", SLICED_NESTED, &s.range);
+    }
     if s.sliced {
         shell_props.insert(crate::intern::intern(RUN_ACROSS_TICKS), Literal::Bool(true));
     }
@@ -332,7 +341,9 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
         }
     }
     ctx.loop_body_ranges.push(s.body.range.clone());
+    ctx.loop_depth += 1;
     lower_block(ctx, &s.body);
+    ctx.loop_depth -= 1;
     ctx.loop_body_ranges.pop();
 
     ctx.pop_scope();

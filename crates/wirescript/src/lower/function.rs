@@ -319,6 +319,8 @@ fn build_plane(ctx: &mut LowerCtx, decl: &ChipDecl) -> FnPlane {
     ctx.fn_building.push(decl_key(decl));
 
     ctx.current_anon_chip = Some(shell);
+    // A function body runs on its own plane, outside any loop it is called in.
+    let saved_loop_depth = std::mem::take(&mut ctx.loop_depth);
     let entry = ctx.add_gate(AddNodeOpts {
         gate_class: spec.entry_class,
         source_range: decl.range.clone(),
@@ -417,6 +419,7 @@ fn build_plane(ctx: &mut LowerCtx, decl: &ChipDecl) -> FnPlane {
     restore_var_caches(ctx, &saved_caches);
     ctx.current_exec = saved_exec;
     ctx.current_anon_chip = saved_chip;
+    ctx.loop_depth = saved_loop_depth;
     plane
 }
 

@@ -214,9 +214,12 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 }
             }
             if ctx.current_exec.is_some()
-                && arms.iter().any(|a| match &a.body {
-                    MatchBody::Block(_) => true,
-                    MatchBody::Expr(x) => has_effects(ctx, x),
+                && arms.iter().any(|a| {
+                    a.guard.as_ref().is_some_and(|g| has_effects(ctx, g))
+                        || match &a.body {
+                            MatchBody::Block(_) => true,
+                            MatchBody::Expr(x) => has_effects(ctx, x),
+                        }
                 })
             {
                 return crate::lower::stmt::lower_match_value(ctx, scrutinee, arms, range, e);
@@ -1339,8 +1342,7 @@ pub(super) fn lower_match_expr(
     // gate reads, its first output, as `lower_if_expr` takes it.
     let result_ty = unwrap_ref(&ctx.one_value_type_at(match_expr.range()).unwrap_or(Type::Any));
     let scrut_ty = scrutinee_type(ctx, scrutinee);
-    let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
-    let decision = crate::lower::matchtree::build(ctx.enums(), &scrut_ty, &arm_patterns);
+    let decision = build_arms(ctx, &scrut_ty, arms);
 
     // An enum value lowers to a `Binding::Record` of `__disc` + payload slots.
     // A NAMED scrutinee (`match s`) resolves to that record through
@@ -1348,10 +1350,11 @@ pub(super) fn lower_match_expr(
     // {...}`) resolves through no name, so lower the construction to obtain it
     // (see `inline_scrutinee_record`). Any other non-record scrutinee (an enum
     // INPUT port, a typecheck-error program) has no record decomposition - the
-    // loud `_Unsupported` placeholder.
-    let Some(root) = match_scrutinee_record(ctx, scrutinee) else {
+    // loud `_Unsupported` placeholder. A single value sits alone in its root.
+    let Some(root) = match_root(ctx, scrutinee, &scrut_ty) else {
         return synthesise_unsupported_range(ctx, "a `match` on a value with no enum tag", range);
     };
+    let outer_concats = std::mem::take(&mut ctx.concat_cache);
 
     // Const-elision fast path: when the scrutinee's `__disc` is a
     // compile-time-known constant, resolve straight to the taken leaf and
@@ -1365,13 +1368,21 @@ pub(super) fn lower_match_expr(
     // lowers identically to before. `try_const_decision` returning `Some`
     // means the scrutinee resolved; `lower_decision` on an already-terminal
     // `Leaf`/`Fail` node builds no Switch/Select at all.
-    if ctx.nofold_depth == 0
-        && let Some(leaf) = try_const_decision(ctx, &decision, scrutinee)
-    {
-        return lower_decision(ctx, &leaf, &root, arms, &result_ty, range);
-    }
+    let decision = match ctx.nofold_depth {
+        0 => try_const_decision(ctx, &decision, scrutinee).unwrap_or(decision),
+        _ => decision,
+    };
+    let port = lower_decision(ctx, &decision, &root, arms, &result_ty, range);
+    ctx.concat_cache = outer_concats;
+    port
+}
 
-    lower_decision(ctx, &decision, &root, arms, &result_ty, range)
+/// The decision tree for `arms` matched against a `scrut_ty` value, each
+/// guarded arm marked.
+pub(super) fn build_arms(ctx: &LowerCtx, scrut_ty: &Type, arms: &[MatchArm]) -> crate::lower::matchtree::Decision {
+    let patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
+    let guarded: Vec<bool> = arms.iter().map(|a| a.guard.is_some()).collect();
+    crate::lower::matchtree::build_guarded(ctx.enums(), scrut_ty, &patterns, &guarded)
 }
 
 /// The record/enum-VALUE twin of [`lower_match_expr`]. A `match` whose arms are
@@ -1404,18 +1415,19 @@ pub(super) fn lower_match_expr_record(
         return None;
     }
     let scrut_ty = scrutinee_type(ctx, scrutinee);
-    let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
-    let decision = crate::lower::matchtree::build(ctx.enums(), &scrut_ty, &arm_patterns);
-    let root = match_scrutinee_record(ctx, scrutinee)?;
+    let decision = build_arms(ctx, &scrut_ty, arms);
+    let root = match_root(ctx, scrutinee, &scrut_ty)?;
     // Const-elision fast path, identical to `lower_match_expr`'s: a
     // compile-time-known `__disc` resolves straight to the taken leaf, so only
     // that arm lowers and no Select/compare is built for the rest.
-    if ctx.nofold_depth == 0
-        && let Some(leaf) = try_const_decision(ctx, &decision, scrutinee)
-    {
-        return lower_decision_record(ctx, &leaf, &root, arms, range);
-    }
-    lower_decision_record(ctx, &decision, &root, arms, range)
+    let decision = match ctx.nofold_depth {
+        0 => try_const_decision(ctx, &decision, scrutinee).unwrap_or(decision),
+        _ => decision,
+    };
+    let outer_concats = std::mem::take(&mut ctx.concat_cache);
+    let fields = lower_decision_record(ctx, &decision, &root, arms, range);
+    ctx.concat_cache = outer_concats;
+    fields
 }
 
 /// [`lower_decision`]'s per-field twin: walk one decision node into a field map
@@ -1453,14 +1465,14 @@ fn lower_decision_record(
             let mut acc = default
                 .as_ref()
                 .and_then(|d| lower_decision_record(ctx, d, root, arms, range));
-            for (k, sub) in cases.iter().rev() {
+            for (keys, sub) in cases.iter().rev() {
                 let sub_fields = lower_decision_record(ctx, sub, root, arms, range)?;
                 acc = Some(match acc {
                     Some(else_fields) => {
                         // `disc_port` is read whenever a test can be needed,
                         // which is exactly when `acc` is already `Some`.
                         let dp = disc_port?;
-                        let cond = emit_disc_eq(ctx, dp, *k, range);
+                        let cond = emit_disc_in(ctx, dp, keys, range);
                         crate::lower::stmt::select_record_fields(
                             ctx,
                             cond,
@@ -1475,7 +1487,59 @@ fn lower_decision_record(
             }
             acc
         }
+        Decision::Check { tests, arm, guarded, otherwise } => {
+            let else_fields = lower_decision_record(ctx, otherwise, root, arms, range);
+            let arm = &arms[*arm];
+            let (cond, then_fields) = checked_arm(ctx, arm, root, tests, *guarded, range, |ctx| match &arm.body {
+                MatchBody::Expr(expr) => crate::lower::stmt::choice_branch_fields(ctx, expr, range),
+                MatchBody::Block(_) => None,
+            });
+            let then_fields = then_fields?;
+            Some(match (cond, else_fields) {
+                (Some(cond), Some(else_fields)) => {
+                    crate::lower::stmt::select_record_fields(ctx, cond, &then_fields, &else_fields, range)
+                }
+                // Nothing to fall back on: only reachable for a non-exhaustive
+                // match, already a WS054 error.
+                _ => then_fields,
+            })
+        }
     }
+}
+
+/// The condition a `Check` runs `arm` on (its value tests and guard, `None`
+/// for neither), and what `body` makes of the arm, both lowered with the
+/// arm's captures bound.
+fn checked_arm<R>(
+    ctx: &mut LowerCtx,
+    arm: &MatchArm,
+    root: &HashMap<crate::intern::Sym, Binding>,
+    tests: &[crate::lower::matchtree::ValueCheck],
+    guarded: bool,
+    range: &SourceRange,
+    body: impl FnOnce(&mut LowerCtx) -> R,
+) -> (Option<PortRef>, R) {
+    with_arm_captures(ctx, arm, root, |ctx| {
+        let cond = arm_condition(ctx, arm, root, tests, guarded, range);
+        (cond, body(ctx))
+    })
+}
+
+/// A `Check`'s value tests and, when `guarded`, the arm's guard, all of
+/// which must hold; lowered where the arm's captures are bound.
+pub(super) fn arm_condition(
+    ctx: &mut LowerCtx,
+    arm: &MatchArm,
+    root: &HashMap<crate::intern::Sym, Binding>,
+    tests: &[crate::lower::matchtree::ValueCheck],
+    guarded: bool,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    let mut conds: Vec<PortRef> = lower_value_checks(ctx, root, tests, range).into_iter().collect();
+    if guarded && let Some(guard) = &arm.guard {
+        conds.push(lower_expr(ctx, guard));
+    }
+    all_of(ctx, conds, range)
 }
 
 /// [`lower_match_arm`]'s record twin: bind the arm's payload captures the same
@@ -1567,7 +1631,7 @@ pub(super) fn try_const_decision(
     let mut budget = crate::const_eval::Budget::default();
     let cx = ctx.if_cond_const_ctx(Some(&lookup));
     let lit = crate::const_eval::eval_expr(scrutinee, &cx, &mut budget).ok()?;
-    Some(crate::lower::matchtree::resolve_const_leaf(decision, &lit))
+    crate::lower::matchtree::resolve_const_leaf(decision, &lit)
 }
 
 /// Walk one [`crate::lower::matchtree::Decision`] node into wires, returning the
@@ -1599,12 +1663,22 @@ fn lower_decision(
                 Some(d) => lower_decision(ctx, d, root, arms, result_ty, range),
                 None => lower_decision(ctx, &Decision::Fail, root, arms, result_ty, range),
             };
-            for (k, sub) in cases.iter().rev() {
+            for (keys, sub) in cases.iter().rev() {
                 let sub_port = lower_decision(ctx, sub, root, arms, result_ty, range);
-                let cond_port = emit_disc_eq(ctx, disc_port, *k, range);
+                let cond_port = emit_disc_in(ctx, disc_port, keys, range);
                 acc = emit_select(ctx, cond_port, sub_port, acc, result_ty, range);
             }
             acc
+        }
+        Decision::Check { tests, arm, guarded, otherwise } => {
+            let else_port = lower_decision(ctx, otherwise, root, arms, result_ty, range);
+            let arm = &arms[*arm];
+            let (cond, then_port) =
+                checked_arm(ctx, arm, root, tests, *guarded, range, |ctx| arm_value(ctx, arm, result_ty, range));
+            match cond {
+                Some(cond) => emit_select(ctx, cond, then_port, else_port, result_ty, range),
+                None => then_port,
+            }
         }
     }
 }
@@ -1618,7 +1692,12 @@ fn lower_match_arm(
     result_ty: &Type,
     range: &SourceRange,
 ) -> PortRef {
-    with_arm_captures(ctx, arm, root, |ctx| match &arm.body {
+    with_arm_captures(ctx, arm, root, |ctx| arm_value(ctx, arm, result_ty, range))
+}
+
+/// One arm's value, its captures already bound.
+fn arm_value(ctx: &mut LowerCtx, arm: &MatchArm, result_ty: &Type, range: &SourceRange) -> PortRef {
+    match &arm.body {
         MatchBody::Expr(expr) => lower_expr(ctx, expr),
         // A block-bodied arm carries no value in expression position (typecheck
         // omits it from the arm-type join): yield the result type's zero rather
@@ -1627,13 +1706,14 @@ fn lower_match_arm(
             let lit = default_literal_for_var_type(result_ty).unwrap_or(Literal::Float(0.0));
             literal_node_range(ctx, range, result_ty.clone(), lit)
         }
-    })
+    }
 }
 
-/// Run `f` in a block scope with the arm's payload captures bound as
+/// Run `f` in a block scope with the arm's captures bound: payload captures as
 /// compile-time moves of the scrutinee's matching slots (a scoped bind, no
-/// gate). The scope is popped on the way out, so no arm can leak its captures
-/// into the next one.
+/// gate), a string pattern's holes as the substrings its test cut. The scope
+/// is popped on the way out, so no arm can leak its captures into the next
+/// one.
 pub(super) fn with_arm_captures<R>(
     ctx: &mut LowerCtx,
     arm: &MatchArm,
@@ -1641,59 +1721,36 @@ pub(super) fn with_arm_captures<R>(
     f: impl FnOnce(&mut LowerCtx) -> R,
 ) -> R {
     ctx.push_scope(crate::scope::ScopeTag::BLOCK);
-    let mut captures = Vec::new();
-    collect_pattern_captures(&arm.pattern, &mut Vec::new(), &mut captures);
-    for (name, slot_path) in captures {
-        if let Some(binding) = navigate_capture(root, &slot_path) {
-            ctx.scope.insert(&name, binding);
-        }
-    }
+    bind_pattern_captures(ctx, &arm.pattern, root, &arm.range);
     let out = f(ctx);
     ctx.pop_scope();
     out
 }
 
-/// Collect `(capture name, slot path)` for every binding in `pattern`. Each path
-/// is the sequence of payload-slot keys (`__{Variant}_{i}` / `__{Variant}_{f}`,
-/// matching the keys `build_enum_fields` lays down) from the scrutinee root to
-/// the captured slot. An empty path names the whole scrutinee value.
-///
-/// `pub(crate)` (not `pub(super)`) so `const_eval::expr`'s own `MatchExpr` arm
-/// can bind the same captures against a compile-time LITERAL scrutinee
-/// (`matchtree::navigate_capture_literal`) that this function's other callers
-/// bind against a lowered `Binding::Record` (`navigate_capture` below) -- one
-/// path-collection rule for both.
-pub(crate) fn collect_pattern_captures(
+/// Bind every name `pattern` captures into the current scope, read off the
+/// match `root`. Returns the names bound.
+pub(super) fn bind_pattern_captures(
+    ctx: &mut LowerCtx,
     pattern: &Pattern,
-    prefix: &mut Vec<String>,
-    out: &mut Vec<(String, Vec<String>)>,
-) {
-    match pattern {
-        Pattern::Wildcard(_) => {}
-        Pattern::Binding { name, .. } => out.push((name.clone(), prefix.clone())),
-        Pattern::Variant { variant, sub, .. } => match sub {
-            VariantPattern::Unit => {}
-            VariantPattern::Positional(subs) => {
-                for (i, sp) in subs.iter().enumerate() {
-                    prefix.push(format!("__{variant}_{i}"));
-                    collect_pattern_captures(sp, prefix, out);
-                    prefix.pop();
-                }
-            }
-            VariantPattern::Named { fields, .. } => {
-                for (fname, sp) in fields {
-                    prefix.push(format!("__{variant}_{fname}"));
-                    collect_pattern_captures(sp, prefix, out);
-                    prefix.pop();
-                }
-            }
-        },
+    root: &HashMap<crate::intern::Sym, Binding>,
+    range: &SourceRange,
+) -> Vec<String> {
+    let mut captures = Vec::new();
+    crate::lower::matchtree::collect_captures(pattern, &mut Vec::new(), &mut captures);
+    let mut names = Vec::with_capacity(captures.len());
+    for capture in captures {
+        if let Some(binding) = bind_capture(ctx, root, &capture, range) {
+            ctx.scope.insert(&capture.name, binding);
+        }
+        names.push(capture.name);
     }
+    names
 }
 
 /// Navigate the scrutinee record along `path` to the captured slot's binding,
 /// cloned for a compile-time move into the arm scope. An empty path binds the
-/// whole scrutinee record; a missing or non-record intermediate yields `None`.
+/// whole scrutinee: the record, or a single value's own binding; a missing or
+/// non-record intermediate yields `None`.
 pub(super) fn navigate_capture(root: &HashMap<crate::intern::Sym, Binding>, path: &[String]) -> Option<Binding> {
     let mut cur = root;
     for (i, seg) in path.iter().enumerate() {
@@ -1705,6 +1762,9 @@ pub(super) fn navigate_capture(root: &HashMap<crate::intern::Sym, Binding>, path
             Binding::Record(sub) => cur = sub,
             _ => return None,
         }
+    }
+    if let Some(value) = root.get(&crate::intern::intern(crate::lower::matchtree::VALUE_ROOT)) {
+        return Some(value.clone());
     }
     Some(Binding::Record(root.clone()))
 }

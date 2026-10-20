@@ -5,7 +5,7 @@
 
 **Before this:** [Text Values](text-values.md), [Reacting to the Game](../reacting-to-the-game.md)
 
-**Next steps:** [Safe Text](safe-text.md), [Chat Commands](../admin/chat-commands.md)
+**Next steps:** [Safe Text](safe-text.md), [Matching Text](matching-text.md), [Chat Commands](../admin/chat-commands.md)
 
 </div>
 <!-- /learn-links -->

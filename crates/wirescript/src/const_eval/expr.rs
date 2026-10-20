@@ -13,9 +13,9 @@ use crate::collections::HashMap;
 use crate::diagnostic::SourceRange;
 use crate::ir::{Literal, Type};
 use crate::lower::fold::eval::{self as fold_eval, Value};
-use crate::lower::matchtree::{self, Decision};
+use crate::lower::matchtree::{self, ConstOutcome};
 use crate::lower::{
-    collect_pattern_captures, eval_const_binop, eval_const_unop, expr_to_literal_in,
+    eval_const_binop, eval_const_unop, expr_to_literal_in,
     fold_constructor, ConstEnv,
 };
 use crate::typecheck::enums::EnumDef;
@@ -559,27 +559,50 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
         // this optimization, never a wrong value.
         Expr::MatchExpr { scrutinee, arms, range } => {
             let scrut_lit = eval_expr(scrutinee, cx, budget)?;
-            // Prefer the enum the SCRUTINEE names directly (`Dir.E`) so an all-unit
-            // match folds; fall back to the arms' own variant citations otherwise.
-            if let Literal::Record(_) = &scrut_lit
-                && let Some(edef) = scrutinee_enum_expr(cx, scrutinee)
+            // A single value is typed by its literal. An enum: prefer the enum
+            // the SCRUTINEE names directly (`Dir.E`) so an all-unit match folds;
+            // fall back to the arms' own variant citations otherwise.
+            let scrut_ty = match &scrut_lit {
+                Literal::Int(_) => Some(Type::Int),
+                Literal::Float(_) => Some(Type::Float),
+                Literal::Bool(_) => Some(Type::Bool),
+                Literal::String(_) => Some(Type::String),
+                Literal::Record(_) => scrutinee_enum_expr(cx, scrutinee)
                     .or_else(|| cx.enum_defs.citing_arms(arms))
-            {
-                let scrut_ty = Type::Enum { name: edef.name.clone(), args: vec![] };
+                    .map(|edef| Type::Enum { name: edef.name.clone(), args: vec![] }),
+                _ => None,
+            };
+            if let Some(scrut_ty) = scrut_ty {
                 let arm_patterns: Vec<crate::ast::Pattern> =
                     arms.iter().map(|a| a.pattern.clone()).collect();
+                let guarded: Vec<bool> = arms.iter().map(|a| a.guard.is_some()).collect();
                 let enums = crate::typecheck::patterns::Enums { defs: &cx.enum_defs, types: &cx.types };
-                let decision = matchtree::build(enums, &scrut_ty, &arm_patterns);
-                return match matchtree::resolve_const_leaf(&decision, &scrut_lit) {
-                    Decision::Leaf(i) => eval_match_arm_body(&arms[i], &scrut_lit, cx, budget),
-                    Decision::Fail => Err(ConstError {
-                        reason: ConstReason::Unsupported("a non-exhaustive const match"),
-                        range: range.clone(),
-                    }),
-                    Decision::Switch { .. } => {
-                        unreachable!("resolve_const_leaf always returns a terminal node")
+                let decision = matchtree::build_guarded(enums, &scrut_ty, &arm_patterns, &guarded);
+                let mut at = &decision;
+                loop {
+                    match matchtree::resolve_const(at, &scrut_lit) {
+                        ConstOutcome::Arm(i) => return eval_match_arm_body(&arms[i], &scrut_lit, cx, budget),
+                        ConstOutcome::Fail => {
+                            return Err(ConstError {
+                                reason: ConstReason::Unsupported("a non-exhaustive const match"),
+                                range: range.clone(),
+                            });
+                        }
+                        // A guard sees the arm's captures, as its body does.
+                        ConstOutcome::Guard { arm, otherwise } => {
+                            let Some(guard) = &arms[arm].guard else { break };
+                            let inner_cx = cx.with_consts(arm_capture_consts(&arms[arm], &scrut_lit, cx));
+                            match eval_expr(guard, &inner_cx, budget)? {
+                                Literal::Bool(true) => {
+                                    return eval_match_arm_body(&arms[arm], &scrut_lit, cx, budget);
+                                }
+                                Literal::Bool(false) => at = otherwise,
+                                _ => break,
+                            }
+                        }
+                        ConstOutcome::Unknown => break,
                     }
-                };
+                }
             }
         }
         // `a + b` where a part is a `const mod` call: `expr_to_literal_in`
@@ -887,16 +910,23 @@ fn eval_match_arm_body(
             range: arm.range.clone(),
         });
     };
+    let inner_cx = cx.with_consts(arm_capture_consts(arm, scrut_lit, cx));
+    eval_expr(body, &inner_cx, budget)
+}
+
+/// The caller's constants plus `arm`'s captures, read off the compile-time
+/// scrutinee `scrut_lit` (`matchtree::capture_literal`, the literal-value twin
+/// of the lowering's capture binding).
+fn arm_capture_consts(arm: &MatchArm, scrut_lit: &Literal, cx: &ConstCtx) -> crate::const_scope::ConstNames {
     let mut captures = Vec::new();
-    collect_pattern_captures(&arm.pattern, &mut Vec::new(), &mut captures);
+    matchtree::collect_captures(&arm.pattern, &mut Vec::new(), &mut captures);
     let mut consts = cx.consts.clone();
-    for (name, slot_path) in captures {
-        if let Some(lit) = matchtree::navigate_capture_literal(scrut_lit, &slot_path) {
-            consts.insert(name, lit);
+    for capture in captures {
+        if let Some(lit) = matchtree::capture_literal(scrut_lit, &capture) {
+            consts.insert(capture.name, lit);
         }
     }
-    let inner_cx = cx.with_consts(consts);
-    eval_expr(body, &inner_cx, budget)
+    consts
 }
 
 /// Bind a foldable constructor's call arguments to its CATALOG parameters

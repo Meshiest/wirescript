@@ -1547,11 +1547,7 @@ fn ws065_positional_form_wrong(
 /// The source range of a pattern node, for a diagnostic that must underline
 /// the pattern itself (e.g. WS010 on an unknown named field's capture).
 fn pattern_range(p: &Pattern) -> &SourceRange {
-    match p {
-        Pattern::Wildcard(r) => r,
-        Pattern::Binding { range, .. } => range,
-        Pattern::Variant { range, .. } => range,
-    }
+    p.range()
 }
 
 /// Render a `Pattern` back to compact source-like text for a diagnostic (the
@@ -1565,6 +1561,10 @@ pub(crate) fn render_pattern(p: &Pattern) -> String {
     match p {
         Pattern::Wildcard(_) => "_".to_string(),
         Pattern::Binding { name, .. } => name.clone(),
+        Pattern::Literal { expr, .. } => render_literal(expr),
+        Pattern::Range { lo, hi, .. } => format!("{}..{}", render_literal(lo), render_literal(hi)),
+        Pattern::Concat { parts, .. } => parts.iter().map(render_pattern).collect::<Vec<_>>().join(" .. "),
+        Pattern::Or { alts, .. } => alts.iter().map(render_pattern).collect::<Vec<_>>().join(" | "),
         Pattern::Variant { variant, sub, .. } => match sub {
             VariantPattern::Unit => variant.clone(),
             VariantPattern::Positional(pats) => {
@@ -1582,6 +1582,17 @@ pub(crate) fn render_pattern(p: &Pattern) -> String {
                 format!("{variant} {{ {} }}", parts.join(", "))
             }
         },
+    }
+}
+
+/// A literal pattern's source spelling.
+fn render_literal(e: &Expr) -> String {
+    match e {
+        Expr::IntLit { text, .. } | Expr::FloatLit { text, .. } => text.clone(),
+        Expr::StringLit { value, .. } => format!("{value:?}"),
+        Expr::BoolLit { value, .. } => value.to_string(),
+        Expr::AtomLit { name, .. } => format!(":{name}"),
+        _ => "_".to_string(),
     }
 }
 
@@ -1734,6 +1745,7 @@ pub(super) fn check_match_pattern(
                 }
                 _ => {}
             }
+            ctx.pattern_bound.push(name.clone());
             if !mutable {
                 // Remember this as a capture, so a later write to it is
                 // rejected in capture terms rather than as a plain `let`.
@@ -1764,8 +1776,122 @@ pub(super) fn check_match_pattern(
                 },
             );
         }
+        Pattern::Literal { expr, range } => check_literal_pattern(ctx, expr, matched, range),
+        Pattern::Range { lo, hi, range } => {
+            if !matches!(unwrap_ref(matched), Type::Int | Type::Float | Type::Any) {
+                ctx.emit(
+                    "WS120",
+                    format!(
+                        "a range pattern tests a number, but the value being matched is {}",
+                        crate::analysis::types::type_str(matched)
+                    ),
+                    range.clone(),
+                );
+                return;
+            }
+            check_literal_pattern(ctx, lo, matched, range);
+            check_literal_pattern(ctx, hi, matched, range);
+        }
+        Pattern::Concat { parts, template, range } => {
+            if !matches!(unwrap_ref(matched), Type::String | Type::Any) {
+                ctx.emit(
+                    "WS120",
+                    format!(
+                        "a string pattern tests a string, but the value being matched is {}",
+                        crate::analysis::types::type_str(matched)
+                    ),
+                    range.clone(),
+                );
+                return;
+            }
+            let mut after_hole = false;
+            for part in parts {
+                match part {
+                    Pattern::Literal { expr, .. } if matches!(**expr, Expr::StringLit { .. }) => {
+                        infer(ctx, expr);
+                        after_hole = false;
+                    }
+                    Pattern::Binding { .. } | Pattern::Wildcard(_) => {
+                        if after_hole {
+                            ctx.emit(
+                                "WS122",
+                                "two holes side by side in a string pattern: nothing says where \
+                                 one ends and the next begins. Put a string literal between them"
+                                    .to_string(),
+                                part.range().clone(),
+                            );
+                        }
+                        after_hole = true;
+                        // `"hi ${name}"` reads like it uses the `name` in
+                        // scope, but in a pattern it binds a new one.
+                        if *template
+                            && let Pattern::Binding { name, range } = part
+                            && ctx.scope.binding_frame(name).is_some_and(|(_, s)| {
+                                !matches!(
+                                    s.kind,
+                                    SymbolKind::Fn
+                                        | SymbolKind::Chip
+                                        | SymbolKind::Event
+                                        | SymbolKind::ChipInstance
+                                        | SymbolKind::Namespace
+                                        | SymbolKind::Type
+                                )
+                            })
+                        {
+                            ctx.warn(
+                                "WS123",
+                                format!(
+                                    "`${{{name}}}` binds a new `{name}` to the text it matches; it \
+                                     does not compare with the `{name}` already in scope. To match \
+                                     that value, bind another name and add a guard: \
+                                     `\"...${{s}}...\" if s == {name} =>`"
+                                ),
+                                range.clone(),
+                            );
+                        }
+                        check_match_pattern(ctx, part, &Type::String, false);
+                    }
+                    other => ctx.emit(
+                        "WS122",
+                        "each part of a string pattern is a string literal or a hole: a name \
+                         or `_`, written bare after `..` or inside `${}`"
+                            .to_string(),
+                        other.range().clone(),
+                    ),
+                }
+            }
+        }
+        Pattern::Or { alts, .. } => {
+            for alt in alts {
+                // A bare unit-variant name binds nothing; only what the
+                // alternative really binds counts.
+                let before = ctx.pattern_bound.len();
+                check_match_pattern(ctx, alt, matched, false);
+                if let Some(name) = ctx.pattern_bound.get(before).cloned() {
+                    ctx.emit(
+                        "WS121",
+                        format!(
+                            "an alternative of `|` can't bind a name (`{name}`): only one \
+                             alternative matches, so the others would leave it unset. Match it \
+                             with `_`, or give the alternatives arms of their own"
+                        ),
+                        alt.range().clone(),
+                    );
+                }
+            }
+        }
         Pattern::Variant { enum_path, variant, sub, range } => {
             let Type::Enum { name: en, args } = matched else {
+                if !matches!(unwrap_ref(matched), Type::Any) {
+                    ctx.emit(
+                        "WS120",
+                        format!(
+                            "`{variant}` is an enum variant, but the value being matched is {}",
+                            crate::analysis::types::type_str(matched)
+                        ),
+                        range.clone(),
+                    );
+                }
                 bind_sub_as_any(ctx, sub, mutable);
                 return;
             };
@@ -1854,6 +1980,65 @@ pub(super) fn check_match_pattern(
             }
         }
     }
+}
+
+/// A single value `match`, `if let` and `let ... else` can test with
+/// literal, range and string patterns.
+pub(crate) fn is_matchable_value(t: &Type) -> bool {
+    matches!(t, Type::Int | Type::Float | Type::Bool | Type::String)
+}
+
+/// The whole pattern of a test of a single value, beyond what
+/// [`check_match_pattern`] checks: a bare capitalized name reads as an enum
+/// variant (`Red`, where the value turned out to be an int, a generic member
+/// say) but catches every value instead of failing to match.
+pub(crate) fn check_value_pattern_root(ctx: &mut TypeCheckCtx, pattern: &Pattern, scrut_ty: &Type) {
+    for alt in crate::typecheck::patterns::or_alternatives(pattern) {
+        if let Pattern::Binding { name, range } = alt
+            && name.starts_with(char::is_uppercase)
+        {
+            ctx.emit(
+                "WS120",
+                format!(
+                    "`{name}` reads as an enum variant, but the value being matched is {}, \
+                     and a bare name catches every value. A name meant to catch the rest \
+                     starts lowercase",
+                    crate::analysis::types::type_str(scrut_ty)
+                ),
+                range.clone(),
+            );
+        }
+    }
+}
+
+/// A literal pattern `expr` against a value of type `matched`: the same type,
+/// or an integer against a float (which it is then built as).
+fn check_literal_pattern(ctx: &mut TypeCheckCtx, expr: &Expr, matched: &Type, range: &SourceRange) {
+    let lit_ty = infer(ctx, expr);
+    let matched = unwrap_ref(matched);
+    let fits = match (&matched, &lit_ty) {
+        (Type::Any, _) => true,
+        (Type::Float, Type::Int) => {
+            int_constants_in_slot(ctx, expr, &Type::Float);
+            true
+        }
+        (m, l) => m == l,
+    };
+    if fits {
+        return;
+    }
+    let message = match &matched {
+        Type::Enum { name, .. } => format!(
+            "`{name}` is an enum: match it by its variants, not with {} literals",
+            crate::analysis::types::type_str(&lit_ty)
+        ),
+        _ => format!(
+            "this pattern is {}, but the value being matched is {}",
+            crate::analysis::types::type_str(&lit_ty),
+            crate::analysis::types::type_str(&matched)
+        ),
+    };
+    ctx.emit("WS120", message, range.clone());
 }
 
 /// Type an arm body, returning its value type for the arm-result join. An
@@ -3217,27 +3402,32 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 }
             }
             let scrut_ty = infer_scrutinee(ctx, scrutinee);
-            if !matches!(scrut_ty, Type::Enum { .. }) {
+            let value_match = is_matchable_value(&scrut_ty);
+            if !matches!(scrut_ty, Type::Enum { .. }) && !value_match {
                 ctx.emit(
                     "WS066",
                     format!(
-                        "`match` requires an enum scrutinee, but this is {}",
+                        "`match` tests an enum, int, float, bool or string, but this is {}",
                         crate::analysis::types::type_str(&scrut_ty)
                     ),
                     range.clone(),
                 );
                 // Still walk each arm body so its own errors surface; there is
-                // no enum to type captures against, so they bind as `any`.
+                // no type to check patterns against, so captures bind as `any`.
                 for arm in arms {
                     ctx.push_scope();
-                    check_match_pattern(ctx, &arm.pattern, &scrut_ty, false);
+                    check_match_pattern(ctx, &arm.pattern, &Type::Any, false);
+                    if let Some(guard) = &arm.guard {
+                        infer(ctx, guard);
+                    }
                     infer_match_body(ctx, &arm.body);
                     ctx.pop_scope();
                 }
                 return Type::Any;
             }
 
-            let mutable = crate::typecheck::stmt::scrutinee_is_mutable(ctx, scrutinee);
+            // A capture of a single value is a copy of it, never a place.
+            let mutable = !value_match && crate::typecheck::stmt::scrutinee_is_mutable(ctx, scrutinee);
             let branch = enum_branch_hint(expected.as_ref());
             // `match x.getType()`: each arm sees `x` as the kind it names.
             let kind_test = matches!(&scrut_ty, Type::Enum { name, .. } if name == "Type");
@@ -3245,6 +3435,9 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             for arm in arms {
                 ctx.push_scope();
                 check_match_pattern(ctx, &arm.pattern, &scrut_ty, mutable);
+                if value_match {
+                    check_value_pattern_root(ctx, &arm.pattern, &scrut_ty);
+                }
                 // A bare `Int =>` parses as a binding and names the variant.
                 let narrowed = match &arm.pattern {
                     Pattern::Variant { variant: member, sub: crate::ast::VariantPattern::Unit, .. }
@@ -3255,6 +3448,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     }
                     _ => false,
                 };
+                if let Some(guard) = &arm.guard {
+                    let t = infer(ctx, guard);
+                    record_read_as_one_value(ctx, guard, &t);
+                }
                 if let MatchBody::Expr(x) = &arm.body {
                     tys.push(infer_hinted(ctx, x, branch.as_ref()));
                 } else if let Some(t) = infer_match_body(ctx, &arm.body) {
@@ -3302,17 +3499,19 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             };
 
             let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
+            let guarded: Vec<bool> = arms.iter().map(|a| a.guard.is_some()).collect();
             let usefulness =
-                crate::typecheck::patterns::analyze(ctx.enums(), &scrut_ty, &arm_patterns);
+                crate::typecheck::patterns::analyze(ctx.enums(), &scrut_ty, &arm_patterns, &guarded);
             for witness in &usefulness.missing {
-                ctx.emit(
-                    "WS054",
-                    format!(
-                        "non-exhaustive match: `{}` is not covered",
-                        render_pattern(&witness.0)
+                let message = match &witness.0 {
+                    Pattern::Wildcard(_) => format!(
+                        "non-exhaustive match: a `match` on {} values needs a last `_` arm \
+                         (or a name) for the values no other arm matches",
+                        crate::analysis::types::type_str(&scrut_ty)
                     ),
-                    range.clone(),
-                );
+                    w => format!("non-exhaustive match: `{}` is not covered", render_pattern(w)),
+                };
+                ctx.emit("WS054", message, range.clone());
             }
             for &idx in &usefulness.unreachable_arms {
                 ctx.warn(

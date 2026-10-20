@@ -420,6 +420,49 @@ fn a_const_match_folds_to_the_taken_arms_value() {
     assert_eq!(lit, Literal::Float(3.0));
 }
 
+/// A `match` on a single value folds through literal, range, string and
+/// guarded arms, first match winning, and binds what a string pattern's holes
+/// hold.
+#[test]
+fn a_const_value_match_takes_the_first_arm_that_matches() {
+    let cases: &[(&str, Literal)] = &[
+        (r#"const R = match "-" { "+" => 1, "-" | "<" => 2, _ => 3 }"#, Literal::Int(2)),
+        (r#"const R = match "?" { "+" => 1, "-" => 2, _ => 3 }"#, Literal::Int(3)),
+        (r#"const R = match 7 { 0 => "zero", 1..10 => "small", _ => "big" }"#, Literal::String("small".into())),
+        (r#"const R = match 10 { 1..10 => "small", n if n > 5 => "big", _ => "other" }"#, Literal::String("big".into())),
+        (r#"const R = match 3 { n if n > 5 => "big", _ => "other" }"#, Literal::String("other".into())),
+        (r#"const R = match "say hi" { "say " .. rest => rest, _ => "" }"#, Literal::String("hi".into())),
+        (r#"const R = match "main.ws" { "say " .. rest => rest, name .. ".ws" => name, _ => "" }"#, Literal::String("main".into())),
+        (r#"const R = match "a=b=c" { key .. "=" .. value => key .. "|" .. value, _ => "" }"#, Literal::String("a|b=c".into())),
+        (r#"const R = match "<x>" { "<" .. inner .. ">" => inner, _ => "none" }"#, Literal::String("x".into())),
+        (r#"const R = match ">" { "<" .. inner .. ">" => inner, _ => "none" }"#, Literal::String("none".into())),
+        (r#"const R = match "go" { "go " .. dest if dest != "" => dest, "go" .. _ => "bare", _ => "no" }"#, Literal::String("bare".into())),
+        (r#"const R = match 2.5 { 1 => "one", 2.5 => "two and a half", _ => "?" }"#, Literal::String("two and a half".into())),
+        (r#"const R = match true { true => 1, false => 0 }"#, Literal::Int(1)),
+        (r#"const R = match 5 { :red => 1, _ => 0 }"#, Literal::Int(0)),
+        (r#"const R = match "give sword to bob" { "give ${item} to ${who}" => who .. ":" .. item, _ => "" }"#, Literal::String("bob:sword".into())),
+        (r#"const R = match "tp home" { "tp ${_}" => 1, _ => 0 }"#, Literal::Int(1)),
+        (r#"const R = match "main.ws" { "${name}.ws" => name, _ => "" }"#, Literal::String("main".into())),
+        (r#"const R = match "anything" { "${all}" => all }"#, Literal::String("anything".into())),
+    ];
+    for (src, want) in cases {
+        assert_eq!(&eval_ok(&format!("{src}\n"), "R"), want, "{src}");
+    }
+}
+
+/// A guard sees the payload an enum pattern binds, and a failing guard falls
+/// through to the next arm rather than to no arm.
+#[test]
+fn a_const_enum_match_falls_through_a_failing_guard() {
+    // Not `Some`/`None`: the built-in `Option` has those too, and a const
+    // match finds its enum by the variants its arms name.
+    let arms = "{ Full(x) if x > 5 => 1, Full(0) => 2, Full(_) => 3, Empty => 4 }";
+    for (n, want) in [(3, 3), (9, 1), (0, 2)] {
+        let src = format!("enum Jar {{ Full(int), Empty }}\nconst R = match Jar.Full({n}) {arms}\n");
+        assert_eq!(eval_ok(&src, "R"), Literal::Int(want), "Full({n})");
+    }
+}
+
 /// The other arm: a scrutinee whose `__disc` names the UNIT variant takes
 /// that arm's value, not the payload one -- proves the fold reads the actual
 /// disc rather than always taking the first (or last) arm.

@@ -496,11 +496,12 @@ fn check_stmt_inner(
                 );
             }
             let scrut_ty = infer::infer_scrutinee(ctx, &l.scrutinee);
-            if !matches!(scrut_ty, Type::Enum { .. }) {
+            let value_match = infer::is_matchable_value(&scrut_ty);
+            if !matches!(scrut_ty, Type::Enum { .. }) && !value_match {
                 ctx.emit(
                     "WS066",
                     format!(
-                        "`let ... else` requires an enum scrutinee, but this is {}",
+                        "`let ... else` tests an enum, int, float, bool or string, but this is {}",
                         crate::analysis::types::type_str(&scrut_ty)
                     ),
                     l.scrutinee.range().clone(),
@@ -521,11 +522,12 @@ fn check_stmt_inner(
             }
             // Bind the pattern's captures into the CURRENT scope (the
             // continuation), so the rest of the enclosing block can read them.
-            let mutable = scrutinee_is_mutable(ctx, &l.scrutinee);
+            let mutable = !value_match && scrutinee_is_mutable(ctx, &l.scrutinee);
             infer::check_match_pattern(ctx, &l.pattern, &scrut_ty, mutable);
-            let mut captures = Vec::new();
-            crate::lower::collect_pattern_captures(&l.pattern, &mut Vec::new(), &mut captures);
-            for (name, _) in captures {
+            if value_match {
+                infer::check_value_pattern_root(ctx, &l.pattern, &scrut_ty);
+            }
+            for name in crate::lower::matchtree::capture_names(&l.pattern) {
                 ctx.consts.forget(&name);
             }
         }
@@ -880,11 +882,12 @@ fn check_stmt_inner(
         }
         Stmt::IfLet(i) => {
             let scrut_ty = infer::infer_scrutinee(ctx, &i.scrutinee);
-            if !matches!(scrut_ty, Type::Enum { .. }) {
+            let value_match = infer::is_matchable_value(&scrut_ty);
+            if !matches!(scrut_ty, Type::Enum { .. }) && !value_match {
                 ctx.emit(
                     "WS066",
                     format!(
-                        "`if let` requires an enum scrutinee, but this is {}",
+                        "`if let` tests an enum, int, float, bool or string, but this is {}",
                         crate::analysis::types::type_str(&scrut_ty)
                     ),
                     i.scrutinee.range().clone(),
@@ -893,9 +896,12 @@ fn check_stmt_inner(
             // The captures are scoped to the THEN block only. Bind them in a
             // fresh scope, then check the then-block's statements in it (mirrors
             // how `Expr::MatchExpr` scopes an arm's captures to its body).
-            let mutable = scrutinee_is_mutable(ctx, &i.scrutinee);
+            let mutable = !value_match && scrutinee_is_mutable(ctx, &i.scrutinee);
             ctx.push_scope();
             infer::check_match_pattern(ctx, &i.pattern, &scrut_ty, mutable);
+            if value_match {
+                infer::check_value_pattern_root(ctx, &i.pattern, &scrut_ty);
+            }
             for s in &i.then_block.stmts {
                 check_stmt(ctx, s);
             }
@@ -1123,6 +1129,9 @@ fn check_stmt_inner(
                 {
                     ctx.unbounded_typed_params.push((decl, tp.clone()));
                 }
+            }
+            if f.sliced && ctx.loop_depth > 0 {
+                ctx.warn("WS119", crate::lower::for_loop::SLICED_NESTED.to_string(), f.range.clone());
             }
             ctx.loop_depth += 1;
             check_block(ctx, &f.body);

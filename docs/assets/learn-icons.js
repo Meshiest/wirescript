@@ -86,6 +86,7 @@ window.wsLearnIcons = {
   "learn/state/reading-a-variable": "eye",
   "learn/state/resetting": "rotate-left",
   "learn/state/variables": "box",
+  "learn/strings/matching-text": "puzzle-piece",
   "learn/strings/rich-text": "paintbrush",
   "learn/strings/safe-text": "shield-halved",
   "learn/strings/taking-text-apart": "scissors",

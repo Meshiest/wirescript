@@ -558,6 +558,13 @@ pub(super) struct LowerCtx<'a> {
     /// The scratch var a value `match` with block arms stores its value into:
     /// each value arm writes it on the arm's own chain (`lower_match_value`).
     pub(super) match_value_store: Option<VarRecord>,
+    /// The string patterns lowered for the `match` being lowered, by tested
+    /// value and parts: the condition and each hole, so an arm's captures read
+    /// the same gates its test built. Taken aside around each `match`.
+    pub(super) concat_cache: Vec<crate::lower::pattern_test::ConcatLowered>,
+    /// How many `for` loop bodies enclose the code being lowered, counting a
+    /// loop an inlined `mod` brings in.
+    pub(super) loop_depth: u32,
     /// Storage vars of such outputs, by node: the output name, the call's
     /// range and a per-call id. The first read reports WS007 once for the
     /// call and drops the call's other entries.
@@ -1111,6 +1118,8 @@ impl<'a> LowerCtx<'a> {
             namespace_output_writes: Arc::new(HashMap::default()),
             record_result_call: None,
             match_value_store: None,
+            concat_cache: Vec::new(),
+            loop_depth: 0,
             unsequenced_reads: HashMap::default(),
             unsequenced_calls: 0,
             type_aliases: HashMap::default(),

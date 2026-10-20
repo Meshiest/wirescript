@@ -396,8 +396,11 @@ fn unreachable_arm_is_ws061() {
 }
 #[test]
 fn match_on_non_enum_is_ws066() {
-    let src = "in n: int\nout x = match n { _ => 0 }\n";
+    let src = "in v: vector\nout x = match v { _ => 0 }\n";
     assert!(has(src, "WS066"), "{:?}", common::compile_diag_codes(src, "diagnostic_regressions.ws"));
+    // An int, float, bool or string is matched by value.
+    let src = "in n: int\nout x = match n { _ => 0 }\n";
+    assert!(!has(src, "WS066"), "{:?}", common::compile_diag_codes(src, "diagnostic_regressions.ws"));
 }
 // A `.Discriminant` read on an actual enum-typed value must not flag - only a
 // non-enum target does.

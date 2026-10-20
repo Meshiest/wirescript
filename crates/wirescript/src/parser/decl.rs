@@ -558,8 +558,15 @@ impl<'a> Parser<'a> {
         // capitalized unit-variant name (`let None = ... else`) parses as
         // `Pattern::Binding`, not `Pattern::Variant`, so it still falls
         // through to the plain binding path below and is out of scope here.
-        if self.peek().kind == TokenKind::Ident
-            && matches!(self.peek_at(1).kind, TokenKind::LParen | TokenKind::LBrace)
+        // A literal (`let "go " .. dest = cmd else`) or a name followed by `..`
+        // (`let name .. ".ws" = file else`) starts a pattern too: neither
+        // begins a plain binding.
+        let ident_then = |p: &Self, text: &str| p.peek().kind == TokenKind::Ident && p.peek_at(1).text == text;
+        if (self.peek().kind == TokenKind::Ident
+            && matches!(self.peek_at(1).kind, TokenKind::LParen | TokenKind::LBrace))
+            || self.at_literal_pattern()
+            || self.check(TokenKind::StrInterp, None)
+            || ident_then(self, "..")
         {
             let pattern = self.parse_pattern();
             self.expect(TokenKind::Op, Some("="));

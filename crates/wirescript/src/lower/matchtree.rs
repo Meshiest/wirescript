@@ -1,18 +1,28 @@
 //! Decision-tree builder for `match` lowering (Maranget, "Compiling pattern
 //! matching to good decision trees"). Consumes the arms' `Pattern`s plus the
 //! enum registry and produces a [`Decision`] the match lowering walks: every
-//! `Switch` tests a `__disc` reached by a `path` of payload-slot steps, and
-//! first-match-wins is guaranteed by the clause-matrix construction. This
-//! module only builds the tree; it wires up no gates itself.
+//! `Switch` tests a `__disc` reached by a `path` of payload-slot steps, every
+//! `Check` runs one arm when its value tests (literals, ranges, string
+//! patterns) and guard pass, and first-match-wins is guaranteed by the
+//! clause-matrix construction. This module only builds the tree; it wires up no
+//! gates itself.
 
-use crate::ast::Pattern;
+use crate::ast::{Expr, Pattern};
 use crate::collections::HashMap;
 use crate::ir::{Literal, Type};
 use crate::typecheck::enums::{Payload, VariantDef};
 // Reused from the usefulness engine (Task 11) so the Binding->unit-variant
 // reinterpretation, payload expansion, and generic-instantiation column typing
 // stay single-sourced with typecheck.
-use crate::typecheck::patterns::{ColEnum, Enums, expand_matching, head_variant_name, payload_arity, resolve_col_type};
+use crate::typecheck::patterns::{
+    ColEnum, Enums, expand_matching, head_variant_name, is_value_test, or_alternatives, payload_arity,
+    resolve_col_type, resolve_field_type,
+};
+
+/// The key a scrutinee that is a single value (not an enum) sits under in the
+/// root map the lowering builds, so a test of the whole scrutinee reads it by
+/// the same empty path a `Switch` on an enum root uses.
+pub const VALUE_ROOT: &str = "__value";
 
 /// One step of the path from the scrutinee root to a nested payload value:
 /// navigate into a payload slot by its interned field name (the same
@@ -24,7 +34,8 @@ pub enum PathStep {
 }
 
 /// A compiled `match`: run the arm named by [`Decision::Leaf`], reached by
-/// testing `__disc` values down a tree of [`Decision::Switch`] nodes.
+/// testing `__disc` values down a tree of [`Decision::Switch`] nodes and arms'
+/// value tests and guards at [`Decision::Check`] nodes.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Decision {
     /// The arm (index into the original `arms` slice) whose body runs.
@@ -32,42 +43,296 @@ pub enum Decision {
     /// No arm matched. Only reachable for a non-exhaustive match (already a
     /// `WS054`); lowers to the else/zero path.
     Fail,
-    /// Test the `__disc` at `path`: take the case whose `disc == case.0`, or
-    /// `default` when no case matches.
+    /// Test the `__disc` at `path`: take the case one of whose discriminants
+    /// equals it, or `default` when no case matches. Variants that lead to the
+    /// same decision share one case, so `A | B => ...` builds its arm once.
     Switch {
         path: Vec<PathStep>,
-        cases: Vec<(i64, Decision)>,
+        cases: Vec<(Vec<i64>, Decision)>,
         default: Option<Box<Decision>>,
+    },
+    /// Run `arm` when every value test passes and, when `guarded`, its guard
+    /// is true; otherwise go on with `otherwise`, which has every later arm.
+    /// Linear on purpose: splitting on a string pattern that may or may not
+    /// overlap a later one would copy that later arm into both branches.
+    Check {
+        tests: Vec<ValueCheck>,
+        arm: usize,
+        guarded: bool,
+        otherwise: Box<Decision>,
     },
 }
 
+/// One value test of a [`Decision::Check`]: the value at `path`, of type `ty`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValueCheck {
+    pub path: Vec<PathStep>,
+    pub ty: Type,
+    pub test: ValueTest,
+}
+
+/// What a literal, range or string pattern requires of a value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ValueTest {
+    /// Equal to this literal, already in the value's type: an `int` literal
+    /// tested against a `float` is a float.
+    Eq(Literal),
+    /// At least the first and below the second.
+    Range(Literal, Literal),
+    /// A string made of these parts in order.
+    Concat(Vec<ConcatPart>),
+    /// Any one of these.
+    Any(Vec<ValueTest>),
+}
+
+/// One part of a string pattern: a literal run, or a hole matching any run of
+/// characters. Adjacent literals are merged, so holes sit between literals.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConcatPart {
+    Lit(String),
+    Hole,
+}
+
+/// The test a literal, range or string pattern (or alternatives of only those)
+/// makes of a value of type `ty`; `None` for any other pattern.
+pub fn value_test(p: &Pattern, ty: &Type) -> Option<ValueTest> {
+    match p {
+        Pattern::Literal { expr, .. } => pattern_literal(expr, ty).map(ValueTest::Eq),
+        Pattern::Range { lo, hi, .. } => Some(ValueTest::Range(pattern_literal(lo, ty)?, pattern_literal(hi, ty)?)),
+        Pattern::Concat { parts, .. } => Some(ValueTest::Concat(concat_parts(parts))),
+        Pattern::Or { alts, .. } => alts.iter().map(|a| value_test(a, ty)).collect::<Option<Vec<_>>>().map(ValueTest::Any),
+        _ => None,
+    }
+}
+
+/// A literal pattern's value, in the type of the value it is tested against.
+fn pattern_literal(e: &Expr, ty: &Type) -> Option<Literal> {
+    Some(match e {
+        Expr::IntLit { value, .. } if matches!(ty, Type::Float) => Literal::Float(*value as f64),
+        Expr::IntLit { value, .. } | Expr::AtomLit { value, .. } => Literal::Int(*value),
+        Expr::FloatLit { value, .. } => Literal::Float(*value),
+        Expr::StringLit { value, .. } => Literal::String(value.clone()),
+        Expr::BoolLit { value, .. } => Literal::Bool(*value),
+        _ => return None,
+    })
+}
+
+/// A string pattern's parts, adjacent literals merged.
+pub fn concat_parts(parts: &[Pattern]) -> Vec<ConcatPart> {
+    let mut out: Vec<ConcatPart> = Vec::new();
+    for p in parts {
+        match p {
+            Pattern::Literal { expr, .. } => {
+                let Expr::StringLit { value, .. } = &**expr else {
+                    out.push(ConcatPart::Hole);
+                    continue;
+                };
+                match out.last_mut() {
+                    Some(ConcatPart::Lit(prev)) => prev.push_str(value),
+                    _ => out.push(ConcatPart::Lit(value.clone())),
+                }
+            }
+            _ => out.push(ConcatPart::Hole),
+        }
+    }
+    out
+}
+
+/// Match `s` against a string pattern's parts, returning what each hole
+/// matched. A literal after a hole is found at its first occurrence, except
+/// the last literal when nothing follows it, which must end the string; the
+/// first literal, when no hole leads, must start it. Characters are counted
+/// as code points, as the game's string gates count them.
+pub fn match_concat(parts: &[ConcatPart], s: &str) -> Option<Vec<String>> {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut pos = 0;
+    let mut holes = Vec::new();
+    let mut pending = false;
+    for (j, part) in parts.iter().enumerate() {
+        match part {
+            ConcatPart::Hole => {
+                if pending {
+                    holes.push(String::new());
+                }
+                pending = true;
+            }
+            ConcatPart::Lit(l) => {
+                let lit: Vec<char> = l.chars().collect();
+                let at = |i: usize| i + lit.len() <= n && chars[i..i + lit.len()] == lit[..];
+                if !pending {
+                    if !at(pos) {
+                        return None;
+                    }
+                    pos += lit.len();
+                } else if concat_lit_ends(parts, j) {
+                    let start = n.checked_sub(lit.len())?;
+                    if start < pos || !at(start) {
+                        return None;
+                    }
+                    holes.push(chars[pos..start].iter().collect());
+                    pos = n;
+                } else {
+                    let i = (pos..=n.saturating_sub(lit.len())).find(|&i| at(i))?;
+                    holes.push(chars[pos..i].iter().collect());
+                    pos = i + lit.len();
+                }
+                pending = false;
+            }
+        }
+    }
+    if pending {
+        holes.push(chars[pos..].iter().collect());
+        pos = n;
+    }
+    (pos == n).then_some(holes)
+}
+
+/// Whether the literal at `j` must end the string: a hole leads it and nothing
+/// but literals (already merged into it) follows.
+pub fn concat_lit_ends(parts: &[ConcatPart], j: usize) -> bool {
+    !parts[j + 1..].iter().any(|p| matches!(p, ConcatPart::Hole))
+}
+
+/// Whether the compile-time value `v` passes `test`; `None` when the two are
+/// not comparable (a mistyped program).
+pub fn test_literal(test: &ValueTest, v: &Literal) -> Option<bool> {
+    fn num(l: &Literal) -> Option<f64> {
+        match l {
+            Literal::Int(i) => Some(*i as f64),
+            Literal::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+    Some(match test {
+        ValueTest::Eq(want) => match (want, v) {
+            (Literal::Int(a), Literal::Int(b)) => a == b,
+            (Literal::String(a), Literal::String(b)) => a == b,
+            (Literal::Bool(a), Literal::Bool(b)) => a == b,
+            _ => num(want)? == num(v)?,
+        },
+        ValueTest::Range(lo, hi) => match (lo, hi, v) {
+            (Literal::Int(lo), Literal::Int(hi), Literal::Int(x)) => lo <= x && x < hi,
+            _ => {
+                let x = num(v)?;
+                num(lo)? <= x && x < num(hi)?
+            }
+        },
+        ValueTest::Concat(parts) => {
+            let Literal::String(s) = v else { return None };
+            match_concat(parts, s).is_some()
+        }
+        ValueTest::Any(tests) => {
+            let mut any = false;
+            for t in tests {
+                any |= test_literal(t, v)?;
+            }
+            any
+        }
+    })
+}
+
+/// A compiled `match` arm's name bindings, each read off the scrutinee.
+#[derive(Clone, Debug)]
+pub struct Capture {
+    pub name: String,
+    /// The payload-slot keys from the scrutinee root to the value the name is
+    /// bound from (`__{Variant}_{i}` / `__{Variant}_{f}`). Empty for the whole
+    /// scrutinee.
+    pub path: Vec<String>,
+    /// For a name standing for a hole of a string pattern: that pattern's
+    /// parts, and which hole (counting holes only) it is.
+    pub hole: Option<(Vec<ConcatPart>, usize)>,
+}
+
+/// Collect every name `pattern` binds, with where its value comes from.
+pub fn collect_captures(pattern: &Pattern, prefix: &mut Vec<String>, out: &mut Vec<Capture>) {
+    match pattern {
+        Pattern::Wildcard(_) | Pattern::Literal { .. } | Pattern::Range { .. } => {}
+        // An alternative binds no names (typecheck's WS121).
+        Pattern::Or { .. } => {}
+        Pattern::Binding { name, .. } => out.push(Capture { name: name.clone(), path: prefix.clone(), hole: None }),
+        Pattern::Concat { parts, .. } => {
+            let merged = concat_parts(parts);
+            let mut hole = 0;
+            for p in parts {
+                match p {
+                    Pattern::Literal { expr, .. } if matches!(**expr, Expr::StringLit { .. }) => {}
+                    Pattern::Binding { name, .. } => {
+                        out.push(Capture { name: name.clone(), path: prefix.clone(), hole: Some((merged.clone(), hole)) });
+                        hole += 1;
+                    }
+                    _ => hole += 1,
+                }
+            }
+        }
+        Pattern::Variant { variant, sub, .. } => match sub {
+            crate::ast::VariantPattern::Unit => {}
+            crate::ast::VariantPattern::Positional(subs) => {
+                for (i, sp) in subs.iter().enumerate() {
+                    prefix.push(format!("__{variant}_{i}"));
+                    collect_captures(sp, prefix, out);
+                    prefix.pop();
+                }
+            }
+            crate::ast::VariantPattern::Named { fields, .. } => {
+                for (fname, sp) in fields {
+                    prefix.push(format!("__{variant}_{fname}"));
+                    collect_captures(sp, prefix, out);
+                    prefix.pop();
+                }
+            }
+        },
+    }
+}
+
+/// Every name `pattern` binds, in order.
+pub fn capture_names(pattern: &Pattern) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_captures(pattern, &mut Vec::new(), &mut out);
+    out.into_iter().map(|c| c.name).collect()
+}
+
 /// One clause-matrix column: the `path` from the scrutinee root to this
-/// column's value, and the concrete enum instance governing it (`None` for an
-/// opaque, always wildcard-only column - a non-enum payload field). The
-/// instance carries the enum's generic `args` so a nested type-parameter
-/// payload column resolves through the instantiation (see
-/// `typecheck::patterns::ColEnum`), keeping decision-tree column typing in step
-/// with the usefulness engine's.
+/// column's value, the concrete enum instance governing it (`None` for a
+/// column that is not an enum, which only value tests and catch-alls
+/// constrain), and the column's type. The instance carries the enum's generic
+/// `args` so a nested type-parameter payload column resolves through the
+/// instantiation (see `typecheck::patterns::ColEnum`), keeping decision-tree
+/// column typing in step with the usefulness engine's.
 struct Col<'a> {
     path: Vec<PathStep>,
     ty: Option<ColEnum<'a>>,
+    raw: Type,
 }
 
-/// One clause-matrix row: the original arm index it belongs to, plus one
-/// sub-pattern per column (parallel to the shared column list).
+/// One clause-matrix row: the original arm index it belongs to, whether that
+/// arm has a guard, plus one sub-pattern per column (parallel to the shared
+/// column list).
+#[derive(Clone)]
 struct Row {
     arm: usize,
+    guarded: bool,
     cells: Vec<Pattern>,
 }
 
 /// Build the decision tree for `arms` matched against `scrutinee`.
 pub fn build(enums: Enums<'_>, scrutinee: &Type, arms: &[Pattern]) -> Decision {
+    build_guarded(enums, scrutinee, arms, &[])
+}
+
+/// [`build`], where `guarded[i]` says arm `i` has an `if` guard.
+pub fn build_guarded(enums: Enums<'_>, scrutinee: &Type, arms: &[Pattern], guarded: &[bool]) -> Decision {
     let root = match scrutinee {
         Type::Enum { args, .. } => enums.defs.of(scrutinee).map(|edef| ColEnum { edef, args: args.clone() }),
         _ => None,
     };
-    let cols = vec![Col { path: vec![], ty: root }];
-    let rows: Vec<Row> = arms.iter().enumerate().map(|(i, p)| Row { arm: i, cells: vec![p.clone()] }).collect();
+    let cols = vec![Col { path: vec![], ty: root, raw: scrutinee.clone() }];
+    let rows: Vec<Row> = arms
+        .iter()
+        .enumerate()
+        .map(|(i, p)| Row { arm: i, guarded: guarded.get(i).copied().unwrap_or(false), cells: vec![p.clone()] })
+        .collect();
     compile(&cols, &rows, enums)
 }
 
@@ -75,60 +340,110 @@ pub fn build(enums: Enums<'_>, scrutinee: &Type, arms: &[Pattern]) -> Decision {
 /// compile-time-known scrutinee `root` (a `Literal::Record` of `__disc` +
 /// payload slots -- the same shape `const_eval::expr::eval_expr` folds enum
 /// construction to, and the shape a lowered `Binding::Record`'s VALUES would
-/// carry if they were literals). Reads each `Switch`'s `__disc` straight out
-/// of the literal instead of a lowered port/gate, so this can run either
-/// BEFORE anything is lowered (the const-elision fast path in
+/// carry if they were literals -- or the value itself for a scrutinee that is
+/// no enum). Reads each `Switch`'s `__disc` straight out of the literal instead
+/// of a lowered port/gate, so this can run either BEFORE anything is lowered
+/// (the const-elision fast path in
 /// `lower::expr::lower_match_expr`/`lower::stmt::lower_match_stmt`) or fully
 /// outside lowering (`const_eval::expr::eval_expr`'s own `MatchExpr` arm) --
 /// shared here so the two callers can never pick a different arm for the same
 /// const scrutinee. A path that fails to navigate `root` (should not happen
 /// for a genuinely fully-literal scrutinee -- see the callers' own doc
 /// comments) degrades to `Decision::Fail`, matching how a non-exhaustive
-/// match already behaves rather than guessing a wrong arm.
-pub fn resolve_const_leaf(decision: &Decision, root: &Literal) -> Decision {
+/// match already behaves rather than guessing a wrong arm. `None` when the
+/// arm depends on more than the scrutinee: a guard, or a test of a value this
+/// cannot compare.
+pub fn resolve_const_leaf(decision: &Decision, root: &Literal) -> Option<Decision> {
+    match resolve_const(decision, root) {
+        ConstOutcome::Arm(i) => Some(Decision::Leaf(i)),
+        ConstOutcome::Fail => Some(Decision::Fail),
+        ConstOutcome::Guard { .. } | ConstOutcome::Unknown => None,
+    }
+}
+
+/// Where a compile-time scrutinee leads in a decision tree.
+pub enum ConstOutcome<'d> {
+    /// This arm runs.
+    Arm(usize),
+    /// No arm matches.
+    Fail,
+    /// `arm` matches if its guard holds; otherwise matching goes on at
+    /// `otherwise`.
+    Guard { arm: usize, otherwise: &'d Decision },
+    /// A value test this cannot decide.
+    Unknown,
+}
+
+/// Walk `decision` with the compile-time scrutinee `root` as far as the value
+/// alone decides: to an arm, to no arm, or to a guard.
+pub fn resolve_const<'d>(decision: &'d Decision, root: &Literal) -> ConstOutcome<'d> {
     match decision {
-        Decision::Leaf(_) | Decision::Fail => decision.clone(),
+        Decision::Leaf(i) => ConstOutcome::Arm(*i),
+        Decision::Fail => ConstOutcome::Fail,
         Decision::Switch { path, cases, default } => match read_disc_literal(root, path) {
-            Some(k) => match cases.iter().find(|(case_k, _)| *case_k == k) {
-                Some((_, sub)) => resolve_const_leaf(sub, root),
+            Some(k) => match cases.iter().find(|(keys, _)| keys.contains(&k)) {
+                Some((_, sub)) => resolve_const(sub, root),
                 None => match default {
-                    Some(d) => resolve_const_leaf(d, root),
-                    None => Decision::Fail,
+                    Some(d) => resolve_const(d, root),
+                    None => ConstOutcome::Fail,
                 },
             },
-            None => Decision::Fail,
+            None => ConstOutcome::Fail,
         },
+        Decision::Check { tests, arm, guarded, otherwise } => {
+            for check in tests {
+                let passed = read_value_literal(root, &check.path).and_then(|v| test_literal(&check.test, &v));
+                match passed {
+                    Some(true) => {}
+                    Some(false) => return resolve_const(otherwise, root),
+                    None => return ConstOutcome::Unknown,
+                }
+            }
+            match guarded {
+                true => ConstOutcome::Guard { arm: *arm, otherwise },
+                false => ConstOutcome::Arm(*arm),
+            }
+        }
     }
 }
 
 /// Navigate `root` along `path`'s `PathStep::Field`s to the sub-record's
 /// `__disc`, the literal-value twin of `lower::expr::read_disc_at_path`.
 fn read_disc_literal(root: &Literal, path: &[PathStep]) -> Option<i64> {
-    let mut cur = root;
-    for PathStep::Field(f) in path {
-        let Literal::Record(entries) = cur else { return None };
-        cur = &entries.iter().find(|(n, _)| n == f)?.1;
-    }
-    let Literal::Record(entries) = cur else { return None };
+    let Some(Literal::Record(entries)) = read_value_literal(root, path) else { return None };
     match entries.iter().find(|(n, _)| n == "__disc")?.1 {
         Literal::Int(v) => Some(v),
         _ => None,
     }
 }
 
-/// Navigate a compile-time scrutinee literal along a capture's slot path
-/// (`lower::expr::collect_pattern_captures`'s output -- `__{Variant}_{i}` /
-/// `__{Variant}_{f}` keys) to the captured value: the literal-value twin of
-/// `lower::expr::navigate_capture`, which does the identical walk over a
-/// lowered `Binding::Record`. An empty path names the whole scrutinee; a
-/// missing or non-record intermediate is `None`.
-pub fn navigate_capture_literal(root: &Literal, path: &[String]) -> Option<Literal> {
+/// The value at `path` in `root`: `root` itself for the empty path.
+fn read_value_literal(root: &Literal, path: &[PathStep]) -> Option<Literal> {
     let mut cur = root;
-    for seg in path {
+    for PathStep::Field(f) in path {
+        let Literal::Record(entries) = cur else { return None };
+        cur = &entries.iter().find(|(n, _)| n == f)?.1;
+    }
+    Some(cur.clone())
+}
+
+/// The compile-time value a capture binds out of the scrutinee literal `root`:
+/// the literal-value twin of `lower::expr::bind_capture`, which reads the same
+/// slot off a lowered `Binding::Record`. A missing or non-record intermediate,
+/// or a string pattern that does not match, is `None`.
+pub fn capture_literal(root: &Literal, capture: &Capture) -> Option<Literal> {
+    let mut cur = root;
+    for seg in &capture.path {
         let Literal::Record(entries) = cur else { return None };
         cur = &entries.iter().find(|(n, _)| n == seg)?.1;
     }
-    Some(cur.clone())
+    match &capture.hole {
+        None => Some(cur.clone()),
+        Some((parts, k)) => {
+            let Literal::String(s) = cur else { return None };
+            match_concat(parts, s)?.into_iter().nth(*k).map(Literal::String)
+        }
+    }
 }
 
 /// The head constructor a cell names in its column's enum, or `None` for a
@@ -153,7 +468,11 @@ fn payload_columns<'a>(
     let mut push = |slot: String, te| {
         let mut path = parent.to_vec();
         path.push(PathStep::Field(slot));
-        cols.push(Col { path, ty: resolve_col_type(te, parent_ty, enums) });
+        cols.push(Col {
+            path,
+            ty: resolve_col_type(te, parent_ty, enums),
+            raw: resolve_field_type(te, parent_ty, enums),
+        });
     };
     match &v.payload {
         Payload::Unit => {}
@@ -200,7 +519,7 @@ fn specialize_rows<'a>(
         let mut cells = row.cells[..idx].to_vec();
         cells.extend(expand_matching(&row.cells[idx], v));
         cells.extend(row.cells[idx + 1..].iter().cloned());
-        new_rows.push(Row { arm: row.arm, cells });
+        new_rows.push(Row { arm: row.arm, guarded: row.guarded, cells });
     }
     (new_cols, new_rows)
 }
@@ -239,29 +558,79 @@ fn default_matrix_rows<'a>(
             let row = &rows[r];
             let mut cells = row.cells[..idx].to_vec();
             cells.extend(row.cells[idx + 1..].iter().cloned());
-            Row { arm: row.arm, cells }
+            Row { arm: row.arm, guarded: row.guarded, cells }
         })
         .collect();
     (new_cols, new_rows)
 }
 
 fn clone_cols<'a>(cols: &[Col<'a>]) -> Vec<Col<'a>> {
-    cols.iter().map(|c| Col { path: c.path.clone(), ty: c.ty.clone() }).collect()
+    cols.iter().map(|c| Col { path: c.path.clone(), ty: c.ty.clone(), raw: c.raw.clone() }).collect()
+}
+
+/// Rows with a `|` in an enum column split into one row per alternative, so
+/// each alternative names its constructor to the switch. Alternatives bind no
+/// names, so the copies run the same arm with the same captures.
+fn expand_enum_ors(cols: &[Col], rows: &[Row]) -> Vec<Row> {
+    let mut out = Vec::with_capacity(rows.len());
+    let mut stack: Vec<Row> = rows.iter().rev().cloned().collect();
+    while let Some(row) = stack.pop() {
+        let at = (0..cols.len()).find(|&i| cols[i].ty.is_some() && matches!(row.cells[i], Pattern::Or { .. }));
+        match at {
+            None => out.push(row),
+            Some(i) => {
+                for alt in or_alternatives(&row.cells[i]).into_iter().rev() {
+                    let mut r = row.clone();
+                    r.cells[i] = alt.clone();
+                    stack.push(r);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The core Maranget recursion. No row means no arm matched (`Fail`); an
-/// all-wildcard first row is `Leaf(arm)` (first-match-wins). Otherwise switch
-/// the leftmost column the first row constrains: one case per constructor
-/// present, plus a `default` (the recursion on the default matrix - which is
-/// `Fail` when nothing wildcard-like remains) whenever the cases do not cover
-/// every variant or a wildcard-like row is left to catch a stray tag.
+/// all-wildcard first row is `Leaf(arm)` (first-match-wins), or a guarded
+/// `Check` falling through to the rest. Otherwise switch the leftmost enum
+/// column the first row constrains: one case per constructor present, plus a
+/// `default` (the recursion on the default matrix - which is `Fail` when
+/// nothing wildcard-like remains) whenever the cases do not cover every
+/// variant or a wildcard-like row is left to catch a stray tag. A first row
+/// that constrains only values becomes a `Check` of all its tests.
 fn compile(cols: &[Col], rows: &[Row], enums: Enums<'_>) -> Decision {
+    let expanded;
+    let rows = if rows
+        .iter()
+        .any(|r| r.cells.iter().zip(cols).any(|(c, col)| col.ty.is_some() && matches!(c, Pattern::Or { .. })))
+    {
+        expanded = expand_enum_ors(cols, rows);
+        &expanded[..]
+    } else {
+        rows
+    };
     let Some(first) = rows.first() else {
         return Decision::Fail;
     };
-    let pick = (0..cols.len()).find(|&i| cell_head(&first.cells[i], cols[i].ty.as_ref()).is_some());
-    let Some(idx) = pick else {
-        return Decision::Leaf(first.arm);
+    let enum_pick = (0..cols.len()).find(|&i| {
+        cols[i].ty.is_some() && (cell_head(&first.cells[i], cols[i].ty.as_ref()).is_some() || is_value_test(&first.cells[i]))
+    });
+    let Some(idx) = enum_pick else {
+        let tests: Vec<ValueCheck> = (0..cols.len())
+            .filter_map(|i| {
+                value_test(&first.cells[i], &cols[i].raw)
+                    .map(|test| ValueCheck { path: cols[i].path.clone(), ty: cols[i].raw.clone(), test })
+            })
+            .collect();
+        if tests.is_empty() && !first.guarded {
+            return Decision::Leaf(first.arm);
+        }
+        return Decision::Check {
+            tests,
+            arm: first.arm,
+            guarded: first.guarded,
+            otherwise: Box::new(compile(cols, &rows[1..], enums)),
+        };
     };
     let edef = cols[idx].ty.as_ref().expect("a constrained column has a governing enum").edef;
 
@@ -270,7 +639,8 @@ fn compile(cols: &[Col], rows: &[Row], enums: Enums<'_>) -> Decision {
     // member, a bare `Binding` only a UNIT member). A wildcard-like row
     // belongs to every case AND the default; per-case rows are the ascending
     // index-merge of its own group with the wildcard rows, which is exactly
-    // what `Specialize` filtering the full row list produces.
+    // what `Specialize` filtering the full row list produces. A value test in
+    // an enum column (a type error) matches nothing and joins no group.
     let vmap: HashMap<&str, usize> = edef
         .variants
         .iter()
@@ -284,7 +654,7 @@ fn compile(cols: &[Col], rows: &[Row], enums: Enums<'_>) -> Decision {
                 .get(name.as_str())
                 .copied()
                 .filter(|&i| matches!(edef.variants[i].payload, Payload::Unit)),
-            Pattern::Wildcard(_) => None,
+            _ => None,
         }
     };
     let mut by_variant: Vec<Vec<usize>> = vec![Vec::new(); edef.variants.len()];
@@ -292,18 +662,23 @@ fn compile(cols: &[Col], rows: &[Row], enums: Enums<'_>) -> Decision {
     for (r, row) in rows.iter().enumerate() {
         match head_idx(&row.cells[idx]) {
             Some(vi) => by_variant[vi].push(r),
+            None if is_value_test(&row.cells[idx]) => {}
             None => wilds.push(r),
         }
     }
 
-    let mut cases = Vec::new();
+    let mut cases: Vec<(Vec<i64>, Decision)> = Vec::new();
     for (vi, v) in edef.variants.iter().enumerate() {
         if by_variant[vi].is_empty() {
             continue;
         }
         let (sub_cols, sub_rows) =
             specialize_rows(cols, rows, idx, v, &by_variant[vi], &wilds, enums);
-        cases.push((v.discriminant, compile(&sub_cols, &sub_rows, enums)));
+        let sub = compile(&sub_cols, &sub_rows, enums);
+        match cases.iter_mut().find(|(_, d)| *d == sub) {
+            Some((keys, _)) => keys.push(v.discriminant),
+            None => cases.push((vec![v.discriminant], sub)),
+        }
     }
 
     // A wildcard-like row after cases covering every variant still catches a
@@ -471,9 +846,9 @@ mod tests {
         // to the SOURCE-ORDER arm it came from (arm 0 Circle, arm 1 Rect, arm 2
         // Empty). A disc-vs-positional-index regression would still pass a
         // count-only check but fails here.
-        assert!(cases.contains(&(0, Decision::Leaf(2))));
-        assert!(cases.contains(&(1, Decision::Leaf(0))));
-        assert!(cases.contains(&(2, Decision::Leaf(1))));
+        assert!(cases.contains(&(vec![0], Decision::Leaf(2))));
+        assert!(cases.contains(&(vec![1], Decision::Leaf(0))));
+        assert!(cases.contains(&(vec![2], Decision::Leaf(1))));
     }
 
     #[test]
@@ -539,5 +914,68 @@ mod tests {
         // still-opaque payload would collapse both into one wildcard leaf.
         let d = build(Reg::new(opt_inner_enums()).enums(), &opt_inner_ty(), &pats(&["Some(On)", "Some(Off)", "None"]));
         assert!(any_switch_path_eq(&d, &["__Some_0"]), "{d:?}");
+    }
+
+    fn parts(p: &str) -> Vec<ConcatPart> {
+        let Pattern::Concat { parts, .. } = parse_pattern_str(p) else { panic!("{p} is no string pattern") };
+        concat_parts(&parts)
+    }
+
+    #[test]
+    fn a_string_pattern_cuts_its_holes_where_its_literals_fall() {
+        let holes = |p: &str, s: &str| match_concat(&parts(p), s);
+        let v = |xs: &[&str]| Some(xs.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+        assert_eq!(holes(r#""say " .. rest"#, "say hi"), v(&["hi"]));
+        assert_eq!(holes(r#""say " .. rest"#, "sa"), None);
+        assert_eq!(holes(r#"name .. ".ws""#, "a.ws.ws"), v(&["a.ws"]));
+        assert_eq!(holes(r#"name .. ".ws""#, ".w"), None);
+        // A middle literal is found at its first occurrence.
+        assert_eq!(holes(r#"k .. "=" .. v"#, "a=b=c"), v(&["a", "b=c"]));
+        assert_eq!(holes(r#"k .. "=" .. v"#, "abc"), None);
+        // Anchored at both ends, with room for both literals.
+        assert_eq!(holes(r#""<" .. x .. ">""#, "<>"), v(&[""]));
+        assert_eq!(holes(r#""<" .. x .. ">""#, ">"), None);
+        assert_eq!(holes(r#""ab" .. x .. "ba""#, "aba"), None);
+        // The last literal must end the string even after a middle one.
+        assert_eq!(holes(r#"a .. "-" .. b .. "!""#, "x-y-z!"), v(&["x", "y-z"]));
+        // Code points, not bytes.
+        assert_eq!(holes(r#""é" .. rest"#, "éa"), v(&["a"]));
+        // Adjacent literals merge: no hole between them.
+        assert_eq!(holes(r#""a" .. "b" .. rest"#, "abc"), v(&["c"]));
+    }
+
+    #[test]
+    fn literal_arms_become_a_chain_of_checks() {
+        let d = build(Reg::new(shape_enums()).enums(), &Type::String, &pats(&[r#""+""#, r#""-" | "<""#, "_"]));
+        let Decision::Check { tests, arm: 0, guarded: false, otherwise } = &d else { panic!("{d:?}") };
+        assert_eq!(tests[0].test, ValueTest::Eq(Literal::String("+".into())));
+        let Decision::Check { tests, arm: 1, otherwise, .. } = &**otherwise else { panic!("{d:?}") };
+        assert!(matches!(tests[0].test, ValueTest::Any(ref alts) if alts.len() == 2));
+        assert_eq!(**otherwise, Decision::Leaf(2));
+    }
+
+    #[test]
+    fn a_guarded_catch_all_falls_through_to_the_next_arm() {
+        let d = build_guarded(Reg::new(shape_enums()).enums(), &Type::Int, &pats(&["n", "_"]), &[true, false]);
+        assert_eq!(d, Decision::Check { tests: vec![], arm: 0, guarded: true, otherwise: Box::new(Decision::Leaf(1)) });
+    }
+
+    #[test]
+    fn variants_of_one_alternative_share_a_case() {
+        let d = build(Reg::new(shape_enums()).enums(), &enum_ty("Shape"), &pats(&["Circle(_) | Rect(_, _)", "Empty"]));
+        let Decision::Switch { cases, .. } = d else { panic!("{d:?}") };
+        assert!(cases.contains(&(vec![1, 2], Decision::Leaf(0))), "{cases:?}");
+        assert!(cases.contains(&(vec![0], Decision::Leaf(1))), "{cases:?}");
+    }
+
+    #[test]
+    fn a_literal_in_a_payload_checks_that_slot() {
+        let d = build(Reg::new(tree_enums()).enums(), &enum_ty("Tree"), &pats(&["Leaf(0)", "Leaf(n)", "Node(_)"]));
+        let Decision::Switch { cases, .. } = &d else { panic!("{d:?}") };
+        let leaf = cases.iter().find(|(k, _)| k == &vec![0]).map(|(_, d)| d).expect("Leaf case");
+        let Decision::Check { tests, arm: 0, otherwise, .. } = leaf else { panic!("{leaf:?}") };
+        assert_eq!(tests[0].path, vec![PathStep::Field("__Leaf_0".into())]);
+        assert_eq!(tests[0].test, ValueTest::Eq(Literal::Int(0)));
+        assert_eq!(**otherwise, Decision::Leaf(1));
     }
 }

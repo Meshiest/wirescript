@@ -1407,12 +1407,11 @@ pub enum CallArg {
     Spread(Expr),
 }
 
-/// A refutable pattern matched against an enum-typed scrutinee, shared by
-/// `match` arms (and later if-let/let-else). The parser is deliberately
-/// naive about a bare identifier: `Pattern::Binding` covers both an
-/// irrefutable capture (`v`) and a unit variant referenced by name
-/// (`Empty`) - the typechecker reclassifies the latter once the scrutinee's
-/// enum type is known.
+/// A refutable pattern, shared by `match` arms, `if let` and `let ... else`.
+/// The parser is deliberately naive about a bare identifier:
+/// `Pattern::Binding` covers both an irrefutable capture (`v`) and a unit
+/// variant referenced by name (`Empty`) - the typechecker reclassifies the
+/// latter once the scrutinee's enum type is known.
 #[derive(Clone, Debug)]
 pub enum Pattern {
     Wildcard(SourceRange),
@@ -1431,6 +1430,37 @@ pub enum Pattern {
         sub: VariantPattern,
         range: SourceRange,
     },
+    /// A literal value the matched value must equal: `"+"`, `3`, `-1`, `2.5`,
+    /// `true`, `:red`. `expr` is the literal as an expression (an `IntLit`,
+    /// `FloatLit`, `StringLit`, `BoolLit`, `AtomLit`, or a negated number), so
+    /// it types and lowers like the same literal anywhere else.
+    Literal { expr: Box<Expr>, range: SourceRange },
+    /// `lo..hi`: a number at least `lo` and below `hi`, half-open like a `for`
+    /// range. Both ends are number literals.
+    Range { lo: Box<Expr>, hi: Box<Expr>, range: SourceRange },
+    /// `"say " .. rest`: a string made of these parts in order. Each part is a
+    /// string `Literal`, or a `Binding`/`Wildcard` hole standing for any run of
+    /// characters (possibly empty); two holes never sit side by side.
+    /// `template` when written as one string (`"say ${rest}"`), whose `${name}`
+    /// reads like an interpolation but binds.
+    Concat { parts: Vec<Pattern>, template: bool, range: SourceRange },
+    /// `p | q`: matches when any alternative does. An alternative binds no
+    /// names.
+    Or { alts: Vec<Pattern>, range: SourceRange },
+}
+
+impl Pattern {
+    pub fn range(&self) -> &SourceRange {
+        match self {
+            Pattern::Wildcard(range)
+            | Pattern::Binding { range, .. }
+            | Pattern::Variant { range, .. }
+            | Pattern::Literal { range, .. }
+            | Pattern::Range { range, .. }
+            | Pattern::Concat { range, .. }
+            | Pattern::Or { range, .. } => range,
+        }
+    }
 }
 
 /// The payload shape of a `Pattern::Variant`, mirroring `EnumPayloadDecl`'s
@@ -1450,6 +1480,9 @@ pub enum VariantPattern {
 #[derive(Clone, Debug)]
 pub struct MatchArm {
     pub pattern: Pattern,
+    /// `pattern if guard => ...`: the arm runs only when the guard is also
+    /// true; otherwise matching goes on to the next arm.
+    pub guard: Option<Expr>,
     pub body: MatchBody,
     pub range: SourceRange,
 }

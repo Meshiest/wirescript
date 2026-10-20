@@ -45,6 +45,7 @@ export const LEARN = [
   { id: 'S2', key: 'Learn/Taking Text Apart', title: 'Taking Text Apart', file: 'docs/learn/strings/taking-text-apart.md', branch: 'Strings', requires: ['S1', 'T4'], icon: 'scissors', level: 1 },
   { id: 'S3', key: 'Learn/Rich Text', title: 'Rich Text', file: 'docs/learn/strings/rich-text.md', branch: 'Strings', requires: ['S1'], icon: 'paintbrush', level: 0 },
   { id: 'S4', key: 'Learn/Safe Text', title: 'Safe Text', file: 'docs/learn/strings/safe-text.md', branch: 'Strings', requires: ['S2', 'S3'], icon: 'shield-halved', level: 1 },
+  { id: 'S5', key: 'Learn/Matching Text', title: 'Matching Text', file: 'docs/learn/strings/matching-text.md', branch: 'Strings', requires: ['S2', 'L2'], icon: 'puzzle-piece', level: 1 },
   { id: 'Tp1', key: 'Learn/Interpolation', title: 'Interpolation', file: 'docs/learn/templates/interpolation.md', branch: 'Templates', requires: ['T3'], icon: 'quote-left', level: 0 },
   { id: 'Tp2', key: 'Learn/Fmt', title: 'Fmt', file: 'docs/learn/templates/fmt.md', branch: 'Templates', requires: ['Tp1'], icon: 'file-lines', level: 1 },
   { id: 'Tp3', key: 'Learn/Number Options', title: 'Number Options', file: 'docs/learn/templates/number-options.md', branch: 'Templates', requires: ['Tp2'], icon: 'percent', level: 1 },

@@ -3028,7 +3028,7 @@ pub fn fill_match_arms_at(
 
     let sr = scrutinee.range();
     let scrut_ty = type_map.get(&(sr.file.clone(), sr.start.offset, sr.end.offset))?;
-    if !matches!(scrut_ty, Type::Enum { .. }) {
+    if !matches!(scrut_ty, Type::Enum { .. } | Type::Int | Type::Float | Type::Bool | Type::String) {
         return None;
     }
 
@@ -3036,7 +3036,8 @@ pub fn fill_match_arms_at(
     let types = crate::const_eval::DeclaredTypes::for_program_in(&ast.decls, &enum_defs, &ast.imports);
     let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
     let enums = crate::typecheck::patterns::Enums { defs: &enum_defs, types: &types };
-    let usefulness = crate::typecheck::patterns::analyze(enums, scrut_ty, &arm_patterns);
+    let guarded: Vec<bool> = arms.iter().map(|a| a.guard.is_some()).collect();
+    let usefulness = crate::typecheck::patterns::analyze(enums, scrut_ty, &arm_patterns, &guarded);
     if usefulness.missing.is_empty() {
         return None;
     }

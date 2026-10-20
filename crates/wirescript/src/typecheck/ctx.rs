@@ -382,6 +382,9 @@ pub struct TypeCheckCtx<'a> {
     /// write in the capture's own terms rather than the plain `let`'s "declare
     /// it `var`", which a capture cannot do.
     pub(super) readonly_captures: crate::collections::HashSet<(Arc<str>, usize)>,
+    /// Every name a pattern has bound, in order, so a caller can tell which
+    /// names one pattern bound (an alternative of `|` may bind none).
+    pub(super) pattern_bound: Vec<String>,
     /// Typed every visited expression; key is (file, start_offset, end_offset).
     pub type_of_expr: HashMap<(Arc<str>, usize, usize), Type>,
     /// Operator rule chosen for every BinOp/UnOp; same key scheme.
@@ -666,6 +669,7 @@ impl<'a> TypeCheckCtx<'a> {
             if_contexts: HashMap::default(),
             var_read_contexts: HashMap::default(),
             readonly_captures: crate::collections::HashSet::default(),
+            pattern_bound: Vec::new(),
             type_of_expr: HashMap::default(),
             op_resolutions: HashMap::default(),
             signal_payload_types: HashMap::default(),

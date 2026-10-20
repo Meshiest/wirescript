@@ -1019,9 +1019,7 @@ fn top_level_values(decls: &[crate::ast::TopDecl]) -> Vec<String> {
             TopDecl::Out(o) => out.push(o.name.clone()),
             TopDecl::Let(l) => out.extend(crate::const_eval::bound_names(&l.binding)),
             TopDecl::LetElse(l) => {
-                let mut captures = Vec::new();
-                crate::lower::collect_pattern_captures(&l.pattern, &mut Vec::new(), &mut captures);
-                out.extend(captures.into_iter().map(|(n, _)| n));
+                out.extend(crate::lower::matchtree::capture_names(&l.pattern));
             }
             TopDecl::AnonChip(ac) => {
                 for s in &ac.body.stmts {

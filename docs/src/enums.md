@@ -305,6 +305,46 @@ out val = match t {
 A named-payload pattern can ignore the fields it doesn't need with `..`:
 `Box { w, .. }` binds only `w` and drops `h`.
 
+A payload that is an `int`, `float`, `bool` or `string` can be matched by a
+literal, a range or a string pattern, as a [`match` on a single
+value](statements.md#literals-and-ranges) is:
+
+```wirescript
+enum Cmd { Say(string), Move(int), Quit }
+
+static var c: Cmd = Cmd.Quit
+
+out text = match c {
+  Say("") => "(silent)",
+  Say("/" .. command) => "command ${command}",
+  Say(words) => words,
+  Move(0) => "stay",
+  Move(_) => "move",
+  Quit => "bye",
+}
+```
+
+### Alternatives and guards
+
+`A | B => ...` runs one arm for either variant, and builds it once. An
+alternative cannot bind a payload ([`WS121`](diagnostics.md)), since only one of
+them matches; use `_` in its place. `pattern if condition => ...` runs the arm
+only when the condition, which can read the pattern's bindings, is also true;
+otherwise matching goes on with the next arm. A guarded arm covers nothing for
+[`WS054`](diagnostics.md), since its guard may be false.
+
+```wirescript
+enum Shape { Empty, Circle(float), Rect(float, float) }
+
+static var s: Shape = Shape.Empty
+
+out kind = match s {
+  Circle(r) if r > 10.0 => "big round",
+  Circle(_) | Rect(_, _) => "shape",
+  Empty => "nothing",
+}
+```
+
 ### Enums at ports
 
 An enum value is its tag plus a slot per payload field, and a port pin carries a

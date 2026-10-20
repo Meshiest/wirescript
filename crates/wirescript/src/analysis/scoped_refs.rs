@@ -1300,11 +1300,18 @@ impl<'a> Walker<'a> {
                     // captured payload name scoped to this arm's body. There's
                     // no name-token span on the arm itself, so use the arm
                     // body's range as the extent.
-                    let arm_scope = match &arm.body {
+                    let mut arm_scope = match &arm.body {
                         MatchBody::Expr(x) => x.range().clone(),
                         MatchBody::Block(b) => b.range.clone(),
                     };
+                    // A guard reads the captures too.
+                    if let Some(g) = &arm.guard {
+                        arm_scope.start = g.range().start;
+                    }
                     self.walk_pattern_bindings(&arm.pattern, Some(arm_scope));
+                    if let Some(g) = &arm.guard {
+                        self.walk_expr(g);
+                    }
                     match &arm.body {
                         MatchBody::Expr(x) => self.walk_expr(x),
                         MatchBody::Block(b) => self.walk_block(b),
@@ -1348,9 +1355,14 @@ impl<'a> Walker<'a> {
     /// reclassifying a unit-variant-named binding.
     fn walk_pattern_bindings(&mut self, pattern: &Pattern, scope: Option<SourceRange>) {
         match pattern {
-            Pattern::Wildcard(_) => {}
+            Pattern::Wildcard(_) | Pattern::Literal { .. } | Pattern::Range { .. } => {}
             Pattern::Binding { name, range } => {
                 self.push(name.clone(), RefNs::Value, range.clone(), scope, "capture", false, false);
+            }
+            Pattern::Concat { parts: pats, .. } | Pattern::Or { alts: pats, .. } => {
+                for p in pats {
+                    self.walk_pattern_bindings(p, scope.clone());
+                }
             }
             Pattern::Variant { sub, .. } => match sub {
                 VariantPattern::Unit => {}

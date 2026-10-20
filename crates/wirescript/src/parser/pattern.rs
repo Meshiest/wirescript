@@ -1,26 +1,147 @@
-//! Pattern syntax shared by match / if-let / let-else (Task 9: parser only -
-//! no typecheck/lowering here).
+//! Pattern syntax shared by match / if-let / let-else.
 
 use super::*;
 
 impl<'a> Parser<'a> {
-    /// Parse a single pattern: `_` (wildcard), `Name(...)` / `Name { ... }`
-    /// (a variant with a positional/named payload), or a bare identifier
-    /// (`Pattern::Binding` - kept dumb here; the typechecker reclassifies a
-    /// bare capitalized name into a unit-variant match once the scrutinee's
-    /// enum type is known).
+    /// Parse a single pattern: alternatives joined by `|`, each a `..` chain
+    /// (a string concat or a number range) of pattern atoms. An atom is `_`, a
+    /// literal (`"+"`, `3`, `-1`, `2.5`, `true`, `:red`), `Name(...)` /
+    /// `Name { ... }` (a variant with a positional/named payload), or a bare
+    /// identifier (`Pattern::Binding` - kept dumb here; the typechecker
+    /// reclassifies a bare capitalized name into a unit-variant match once the
+    /// scrutinee's enum type is known).
     pub(super) fn parse_pattern(&mut self) -> Pattern {
         if !self.enter_nesting() {
             self.leave_nesting(1);
             let t = self.peek().clone();
             return Pattern::Wildcard(self.make_range(t.start, t.end));
         }
-        let p = self.parse_pattern_inner();
+        let p = self.parse_or_pattern();
         self.leave_nesting(1);
         p
     }
 
-    fn parse_pattern_inner(&mut self) -> Pattern {
+    /// Whether the current token can only begin a literal pattern atom.
+    pub(super) fn at_literal_pattern(&self) -> bool {
+        let t = self.peek();
+        match t.kind {
+            TokenKind::Str | TokenKind::Int | TokenKind::Float | TokenKind::Atom => true,
+            TokenKind::Kw => matches!(t.text.as_str(), "true" | "false"),
+            TokenKind::Op => {
+                t.text == "-" && matches!(self.peek_at(1).kind, TokenKind::Int | TokenKind::Float)
+            }
+            _ => false,
+        }
+    }
+
+    fn parse_or_pattern(&mut self) -> Pattern {
+        let first = self.parse_dotdot_pattern();
+        // An alternative may continue on the next line, led by its `|`: no
+        // arm or payload position starts with one.
+        let continues = |p: &Self| p.peek_non_nl().kind == TokenKind::Op && p.peek_non_nl().text == "|";
+        if !continues(self) {
+            return first;
+        }
+        let start = first.range().start;
+        let mut alts = vec![first];
+        while continues(self) {
+            self.eat_newlines();
+            self.advance();
+            self.eat_newlines();
+            alts.push(self.parse_dotdot_pattern());
+        }
+        let end = alts.last().map(|p| p.range().end).unwrap_or(start);
+        Pattern::Or { alts, range: self.make_range(start, end) }
+    }
+
+    /// One alternative: an atom, or atoms joined by `..`. Joined numbers are a
+    /// range (`0..10`); anything else is a string concat (`"say " .. rest`),
+    /// whose shape typecheck validates.
+    fn parse_dotdot_pattern(&mut self) -> Pattern {
+        let first = self.parse_pattern_atom();
+        if !self.check(TokenKind::Op, Some("..")) {
+            return first;
+        }
+        let start = first.range().start;
+        let is_number = |p: &Pattern| {
+            matches!(p, Pattern::Literal { expr, .. } if matches!(**expr, Expr::IntLit { .. } | Expr::FloatLit { .. }))
+        };
+        if is_number(&first) {
+            self.advance();
+            let hi = self.parse_pattern_atom();
+            let end = hi.range().end;
+            let range = self.make_range(start, end);
+            return match (first, hi) {
+                (Pattern::Literal { expr: lo, .. }, hi @ Pattern::Literal { .. }) if is_number(&hi) => {
+                    let Pattern::Literal { expr: hi, .. } = hi else { unreachable!() };
+                    Pattern::Range { lo, hi, range }
+                }
+                (_, hi) => {
+                    let r = hi.range().clone();
+                    self.error("a range pattern's end must be a number literal", r.start, r.end);
+                    Pattern::Wildcard(range)
+                }
+            };
+        }
+        let mut parts = vec![first];
+        while self.match_tok(TokenKind::Op, Some("..")).is_some() {
+            parts.push(self.parse_pattern_atom());
+        }
+        let end = parts.last().map(|p| p.range().end).unwrap_or(start);
+        Pattern::Concat { parts, template: false, range: self.make_range(start, end) }
+    }
+
+    fn parse_pattern_atom(&mut self) -> Pattern {
+        if self.at_literal_pattern() {
+            let expr = if self.check(TokenKind::Op, Some("-")) {
+                self.parse_prefix()
+            } else {
+                self.parse_primary()
+            };
+            let range = expr.range().clone();
+            return Pattern::Literal { expr: Box::new(expr), range };
+        }
+        if self.check(TokenKind::StrInterp, None) {
+            return self.parse_template_pattern();
+        }
+        self.parse_name_pattern()
+    }
+
+    /// `"give ${item} to ${who}"`: the string pattern `"give " .. item ..
+    /// " to " .. who`. Each `${name}` is a hole binding `name`, `${_}` one
+    /// binding nothing. Anything else in a `${}` stays a part typecheck
+    /// rejects (WS122), since a pattern computes nothing.
+    fn parse_template_pattern(&mut self) -> Pattern {
+        let Expr::InterpLit { parts, range } = self.parse_primary() else {
+            let t = self.peek().clone();
+            return Pattern::Wildcard(self.make_range(t.start, t.end));
+        };
+        let mut out = Vec::with_capacity(parts.len());
+        for part in parts {
+            out.push(match part {
+                InterpPart::Lit(value) if value.is_empty() => continue,
+                InterpPart::Lit(value) => Pattern::Literal {
+                    expr: Box::new(Expr::StringLit { value, range: range.clone() }),
+                    range: range.clone(),
+                },
+                InterpPart::Expr(e) => match *e {
+                    Expr::Ident { name, range } if name == "_" => Pattern::Wildcard(range),
+                    Expr::Ident { name, range } => Pattern::Binding { name, range },
+                    other => {
+                        let range = other.range().clone();
+                        Pattern::Literal { expr: Box::new(other), range }
+                    }
+                },
+            });
+        }
+        // `"${x}"` alone is the name `x`: it matches every string.
+        if let [Pattern::Binding { .. } | Pattern::Wildcard(_)] = out.as_slice() {
+            return out.pop().expect("one part");
+        }
+        Pattern::Concat { parts: out, template: true, range }
+    }
+
+    fn parse_name_pattern(&mut self) -> Pattern {
         let mut name_tok = self.expect(TokenKind::Ident, None);
         if name_tok.text == "_" {
             return Pattern::Wildcard(self.make_range(name_tok.start, name_tok.end));

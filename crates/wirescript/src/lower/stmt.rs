@@ -2389,12 +2389,14 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
 pub(super) fn lower_if_let(ctx: &mut LowerCtx, i: &IfLet) {
     let mut arms = vec![MatchArm {
         pattern: i.pattern.clone(),
+        guard: None,
         body: MatchBody::Block(i.then_block.clone()),
         range: i.then_block.range.clone(),
     }];
     if let Some(else_b) = &i.else_block {
         arms.push(MatchArm {
             pattern: Pattern::Wildcard(else_b.range.clone()),
+            guard: None,
             body: MatchBody::Block(else_b.clone()),
             range: else_b.range.clone(),
         });
@@ -2430,8 +2432,9 @@ pub(super) fn lower_let_else(ctx: &mut LowerCtx, l: &LetElse) {
     );
 
     // The scrutinee's `__disc` + payload-slot record (a NAMED var/let/param
-    // through the scope). An enum I/O port has no such record - loud placeholder.
-    let Some(root) = match_scrutinee_record(ctx, &l.scrutinee) else {
+    // through the scope), or a single value. An enum I/O port has no such
+    // record - loud placeholder.
+    let Some(root) = match_root(ctx, &l.scrutinee, &scrut_ty) else {
         synthesise_unsupported_range(ctx, "a `let ... else` on a value with no enum tag", &range);
         return;
     };
@@ -2439,7 +2442,9 @@ pub(super) fn lower_let_else(ctx: &mut LowerCtx, l: &LetElse) {
     let entry_exec = ctx.current_exec.unwrap_or(entry_exec);
 
     ctx.current_exec = Some(entry_exec);
+    let outer_concats = std::mem::take(&mut ctx.concat_cache);
     let cont = lower_let_else_decision(ctx, &decision, &root, &l.pattern, &l.else_block, entry_exec, &range);
+    ctx.concat_cache = outer_concats;
     // Continue on the fully-matched path. A decision with no reachable match
     // leaf (should not happen for a well-typed single-variant pattern) leaves
     // exec on the entry so following statements are not silently stranded.
@@ -2464,15 +2469,40 @@ fn lower_let_else_decision(
             // Full match: bind every capture (all nesting levels) as a
             // compile-time slot move into the CURRENT scope, then continue here.
             ctx.current_exec = Some(entry_exec);
-            let mut captures = Vec::new();
-            collect_pattern_captures(pattern, &mut Vec::new(), &mut captures);
-            for (name, slot_path) in captures {
-                if let Some(binding) = navigate_capture(root, &slot_path) {
-                    ctx.scope.insert(&name, binding);
-                }
+            for name in bind_pattern_captures(ctx, pattern, root, range) {
                 ctx.consts.forget(&name);
             }
             Some(entry_exec)
+        }
+        // The pattern's value tests (a string pattern, a literal in a
+        // payload): pass, and it is a full match; fail, and the `else` runs.
+        Decision::Check { tests, otherwise, .. } => {
+            ctx.current_exec = Some(entry_exec);
+            let Some(cond_port) = lower_value_checks(ctx, root, tests, range) else {
+                return lower_let_else_decision(ctx, &Decision::Leaf(0), root, pattern, else_block, entry_exec, range);
+            };
+            let branch = let_else_branch(ctx, cond_port, entry_exec, range);
+            let pre_branch_caches = snapshot_var_caches(ctx);
+            let else_cont = lower_let_else_decision(
+                ctx,
+                otherwise,
+                root,
+                pattern,
+                else_block,
+                branch.port(WirePort::ExecOutB),
+                range,
+            );
+            restore_var_caches(ctx, &pre_branch_caches);
+            let match_cont = lower_let_else_decision(
+                ctx,
+                &Decision::Leaf(0),
+                root,
+                pattern,
+                else_block,
+                branch.port(WirePort::ExecOutA),
+                range,
+            );
+            match_cont.or(else_cont)
         }
         // A disc mismatch at some level: run the diverging `else`; never rejoin.
         Decision::Fail => {
@@ -2500,7 +2530,7 @@ fn lower_let_else_decision(
 fn lower_let_else_switch(
     ctx: &mut LowerCtx,
     disc_port: PortRef,
-    cases: &[(i64, crate::lower::matchtree::Decision)],
+    cases: &[(Vec<i64>, crate::lower::matchtree::Decision)],
     default: Option<&crate::lower::matchtree::Decision>,
     root: &HashMap<crate::intern::Sym, Binding>,
     pattern: &Pattern,
@@ -2508,7 +2538,7 @@ fn lower_let_else_switch(
     entry_exec: PortRef,
     range: &SourceRange,
 ) -> Option<PortRef> {
-    let Some(((k, sub), rest)) = cases.split_first() else {
+    let Some(((keys, sub), rest)) = cases.split_first() else {
         // Past the last case: the default sub-decision (a `Fail` -> `else`), or
         // the `else` directly when there is no default.
         return match default {
@@ -2522,16 +2552,8 @@ fn lower_let_else_switch(
     };
 
     ctx.current_exec = Some(entry_exec);
-    let cond_port = emit_disc_eq(ctx, disc_port, *k, range);
-    let branch_exec_in = ctx.current_exec.unwrap_or(entry_exec);
-    let branch = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::BRANCH,
-        source_range: range.clone(),
-        ports: GateIO::exec_branch(),
-        ..Default::default()
-    });
-    ctx.connect(branch_exec_in, branch.port(WirePort::Exec));
-    ctx.connect(cond_port, branch.port(WirePort::BCond));
+    let cond_port = emit_disc_in(ctx, disc_port, keys, range);
+    let branch = let_else_branch(ctx, cond_port, entry_exec, range);
 
     // NON-matching (ExecOutB): the remaining cases, ending in the diverging
     // `else`. Bracket its var caches so its reads never leak to the match path.
@@ -2557,6 +2579,21 @@ fn lower_let_else_switch(
     match_cont.or(else_cont)
 }
 
+/// A `Branch` on `cond_port`, its Exec from the chain head (`entry_exec`, or
+/// past any read lowering the condition added).
+fn let_else_branch(ctx: &mut LowerCtx, cond_port: PortRef, entry_exec: PortRef, range: &SourceRange) -> NodeId {
+    let branch_exec_in = ctx.current_exec.unwrap_or(entry_exec);
+    let branch = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::BRANCH,
+        source_range: range.clone(),
+        ports: GateIO::exec_branch(),
+        ..Default::default()
+    });
+    ctx.connect(branch_exec_in, branch.port(WirePort::Exec));
+    ctx.connect(cond_port, branch.port(WirePort::BCond));
+    branch
+}
+
 /// to an exec-threaded `Branch`/`Union` tree - the statement twin of
 /// `lower_match_expr`. Both walk the same Task-13 `Decision`: a `Switch` reads
 /// `__disc` at its path and each case becomes an `if disc == k { arm } else
@@ -2575,15 +2612,14 @@ pub(super) fn lower_match_stmt(
         return synthesise_unsupported_range(ctx, "a `match` with block arms outside an exec chain", range);
     };
     let scrut_ty = crate::lower::expr::scrutinee_type(ctx, scrutinee);
-    let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
-    let decision = crate::lower::matchtree::build(ctx.enums(), &scrut_ty, &arm_patterns);
+    let decision = crate::lower::expr::build_arms(ctx, &scrut_ty, arms);
 
     // The scrutinee resolves to its `__disc` + payload-slot `Binding::Record`:
     // a NAMED scrutinee through the scope, an INLINE construction by lowering
-    // it (see `match_scrutinee_record`, shared with `lower_match_expr`).
-    // A scrutinee with no record decomposition (an enum INPUT port, a
-    // typecheck-error program) is a loud `_Unsupported` placeholder.
-    let Some(root) = match_scrutinee_record(ctx, scrutinee) else {
+    // it (see `match_scrutinee_record`, shared with `lower_match_expr`), or
+    // a single value. A scrutinee with no record decomposition (an enum INPUT
+    // port, a typecheck-error program) is a loud `_Unsupported` placeholder.
+    let Some(root) = match_root(ctx, scrutinee, &scrut_ty) else {
         return synthesise_unsupported_range(ctx, "a `match` on a value with no enum tag", range);
     };
     // A scrutinee that is a call ran on the chain; the test follows it.
@@ -2609,12 +2645,16 @@ pub(super) fn lower_match_stmt(
                 ctx.dropped_ranges.push(arm.range.clone());
             }
         }
+        let outer_concats = std::mem::take(&mut ctx.concat_cache);
         let exit = lower_decision_stmt(ctx, &leaf, &root, arms, entry_exec, range);
+        ctx.concat_cache = outer_concats;
         ctx.current_exec = exit;
         return exit.unwrap_or(entry_exec);
     }
 
+    let outer_concats = std::mem::take(&mut ctx.concat_cache);
     let exit = lower_decision_stmt(ctx, &decision, &root, arms, entry_exec, range);
+    ctx.concat_cache = outer_concats;
     ctx.current_exec = exit;
     exit.unwrap_or(entry_exec)
 }
@@ -2649,7 +2689,75 @@ fn lower_decision_stmt(
             let head_exec = ctx.current_exec.unwrap_or(entry_exec);
             lower_switch_cases(ctx, disc_port, cases, default.as_deref(), root, arms, head_exec, range)
         }
+        // `if tests && guard { arm } else { otherwise }`, the condition read
+        // where the arm's captures are bound, since a guard reads them.
+        Decision::Check { tests, arm, guarded, otherwise } => {
+            ctx.current_exec = Some(entry_exec);
+            let arm_ref = &arms[*arm];
+            let cond = crate::lower::expr::with_arm_captures(ctx, arm_ref, root, |ctx| {
+                crate::lower::expr::arm_condition(ctx, arm_ref, root, tests, *guarded, range)
+            });
+            let Some(cond) = cond else {
+                return lower_decision_stmt(ctx, &Decision::Leaf(*arm), root, arms, entry_exec, range);
+            };
+            let head_exec = ctx.current_exec.unwrap_or(entry_exec);
+            branch_and_join(
+                ctx,
+                cond,
+                head_exec,
+                range,
+                |ctx, exec| lower_decision_stmt(ctx, &Decision::Leaf(*arm), root, arms, exec, range),
+                |ctx, exec| lower_decision_stmt(ctx, otherwise, root, arms, exec, range),
+            )
+        }
     }
+}
+
+/// `if cond { then } else { otherwise }` on the chain at `entry_exec`: a
+/// `Branch` whose exits each side continues, rejoined by a `Union`. Each side
+/// gets `lower_if`'s var-cache discipline: a read made on one side never
+/// serves the other, and at the join only the vars a side wrote are dropped.
+fn branch_and_join(
+    ctx: &mut LowerCtx,
+    cond: PortRef,
+    entry_exec: PortRef,
+    range: &SourceRange,
+    then: impl FnOnce(&mut LowerCtx, PortRef) -> Option<PortRef>,
+    otherwise: impl FnOnce(&mut LowerCtx, PortRef) -> Option<PortRef>,
+) -> Option<PortRef> {
+    let pre_branch_caches = snapshot_var_caches(ctx);
+    let branch = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::BRANCH,
+        source_range: range.clone(),
+        ports: GateIO::exec_branch(),
+        ..Default::default()
+    });
+    ctx.connect(entry_exec, branch.port(WirePort::Exec));
+    ctx.connect(cond, branch.port(WirePort::BCond));
+
+    let then_end = then(ctx, branch.port(WirePort::ExecOutA));
+    let then_touched = cache_touched_since(ctx, &pre_branch_caches);
+    restore_var_caches(ctx, &pre_branch_caches);
+    let else_end = otherwise(ctx, branch.port(WirePort::ExecOutB));
+    let else_touched = cache_touched_since(ctx, &pre_branch_caches);
+
+    let union = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::UNION,
+        source_range: range.clone(),
+        ports: GateIO::exec_join(),
+        ..Default::default()
+    });
+    if let Some(e) = then_end {
+        ctx.connect(e, union.port(WirePort::ExecA));
+    }
+    if let Some(e) = else_end {
+        ctx.connect(e, union.port(WirePort::ExecB));
+    }
+    restore_var_caches(ctx, &pre_branch_caches);
+    for id in then_touched.iter().chain(else_touched.iter()) {
+        invalidate_var_cache(ctx, id);
+    }
+    Some(union.port(WirePort::ExecOut))
 }
 
 /// Chain a `Switch`'s cases as nested `Branch`es on `disc == k`: the head case's
@@ -2662,14 +2770,14 @@ fn lower_decision_stmt(
 fn lower_switch_cases(
     ctx: &mut LowerCtx,
     disc_port: PortRef,
-    cases: &[(i64, crate::lower::matchtree::Decision)],
+    cases: &[(Vec<i64>, crate::lower::matchtree::Decision)],
     default: Option<&crate::lower::matchtree::Decision>,
     root: &HashMap<crate::intern::Sym, Binding>,
     arms: &[MatchArm],
     entry_exec: PortRef,
     range: &SourceRange,
 ) -> Option<PortRef> {
-    let Some(((k, sub), rest)) = cases.split_first() else {
+    let Some(((keys, sub), rest)) = cases.split_first() else {
         // Past the last case: the default sub-decision, or a Fail pass-through.
         return match default {
             Some(d) => lower_decision_stmt(ctx, d, root, arms, entry_exec, range),
@@ -2680,7 +2788,7 @@ fn lower_switch_cases(
     let pre_branch_caches = snapshot_var_caches(ctx);
 
     ctx.current_exec = Some(entry_exec);
-    let cond_port = emit_disc_eq(ctx, disc_port, *k, range);
+    let cond_port = emit_disc_in(ctx, disc_port, keys, range);
     // Building the compare is pure, but re-read the chain head the way
     // `lower_if` does so a future exec-taking disc path stays wired correctly.
     let branch_exec_in = ctx.current_exec.unwrap_or(entry_exec);

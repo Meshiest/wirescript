@@ -5,7 +5,7 @@
 
 **Before this:** [Truth Tables](truth-tables.md)
 
-**Next steps:** [Toggles and Latches](toggles-and-latches.md), [Bits](bits.md), [Remote Control](../input/remote-control.md), [Ready Check](../input/ready-check.md)
+**Next steps:** [Toggles and Latches](toggles-and-latches.md), [Bits](bits.md), [Matching Text](../strings/matching-text.md), [Remote Control](../input/remote-control.md), [Ready Check](../input/ready-check.md)
 
 **Parts that use this:** [Drawbridge](../parts/drawbridge.md), [Moving Platform](../parts/moving-platform.md)
 

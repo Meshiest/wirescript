@@ -51,6 +51,7 @@ mod scope;
 mod shadow_differential;
 mod string;
 mod types;
+mod value_match;
 mod varget_cache;
 mod wire_completeness;
 

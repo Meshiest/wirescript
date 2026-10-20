@@ -66,6 +66,7 @@ fn match_arm_binding_is_registered() {
     let dummy = SourceRange::new("t.ws", Pos::default(), Pos::default());
     let arm = MatchArm {
         pattern: Pattern::Binding { name: "evt".into(), range: dummy.clone() },
+        guard: None,
         body: MatchBody::Expr(Expr::IntLit {
             value: 0,
             text: "0".into(),

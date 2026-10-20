@@ -1,5 +1,12 @@
 # Wirescript Changelog
 
+## 2.2.0
+
+- `match` tests an `int`, `float`, `bool` or `string` too, with literal arms (`"+"`, `3`, `true`, `:red`), ranges (`1..10`) and string patterns (`"say " .. rest`, `name .. ".ws"`, `key .. "=" .. value`) that bind the text their names stand for. `if let` and `let ... else` take the same patterns, and so does an enum payload (`Say("/" .. cmd)`).
+- A string pattern can also be written as one string with `${}` holes: `"give ${item} to ${who}"` is `"give " .. item .. " to " .. who`. A hole named like a value already in scope is a warning (WS123), as it binds a new name rather than comparing.
+- `match` arms take alternatives (`N | S => ...`), built once, and guards (`Some(n) if n > 10 => ...`), which fall through to the next arm when false.
+- `@sliced` on a loop inside another loop's body is a warning (WS119): only the outermost loop can be sliced.
+
 ## 2.1.0
 
 - `v.getType()` and `GetValueType(v)` give the built-in enum `Type` (`Type.Int`, `Type.String`, `Type.Object`, ...), so `match v.getType() { Int => ... }` branches on what an `any` holds, and inside the `Int` arm (or an `if v.getType() is Type.Int` block) `v` is an `int`. `GetValueType` gave an `int` before; test with `is Type.Int` instead of `== 1`.

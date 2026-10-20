@@ -131,6 +131,11 @@ impl<'a> Parser<'a> {
         while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
             let arm_start = self.peek().start;
             let pattern = self.parse_pattern();
+            let guard = if self.match_tok(TokenKind::Kw, Some("if")).is_some() {
+                Some(self.parse_expr_delimited())
+            } else {
+                None
+            };
             self.eat_newlines();
             self.expect(TokenKind::FatArrow, None);
             self.eat_newlines();
@@ -147,6 +152,7 @@ impl<'a> Parser<'a> {
             };
             arms.push(MatchArm {
                 pattern,
+                guard,
                 body,
                 range: self.make_range(arm_start, body_end),
             });
@@ -356,7 +362,7 @@ impl<'a> Parser<'a> {
         lhs
     }
 
-    fn parse_prefix(&mut self) -> Expr {
+    pub(super) fn parse_prefix(&mut self) -> Expr {
         let t = self.peek().clone();
         // `unsafe <value>.<Variant>.<field>`, an unchecked payload access.
         // Contextual, like `enum`: it opens the form only when an identifier
@@ -726,7 +732,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_primary(&mut self) -> Expr {
+    pub(super) fn parse_primary(&mut self) -> Expr {
         let t = self.peek().clone();
         match t.kind {
             TokenKind::Int => {

@@ -35,6 +35,7 @@
     - [Taking Text Apart](learn/strings/taking-text-apart.md)
     - [Rich Text](learn/strings/rich-text.md)
     - [Safe Text](learn/strings/safe-text.md)
+    - [Matching Text](learn/strings/matching-text.md)
   - [Templates]()
     - [Interpolation](learn/templates/interpolation.md)
     - [Fmt](learn/templates/fmt.md)

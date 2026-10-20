@@ -394,7 +394,10 @@ fn expr_children_in<'a>(e: &'a Expr, exits: Exits, f: &mut dyn FnMut(Node<'a>, F
         }
         Expr::MatchExpr { scrutinee, arms, range: _ } => {
             f(Node::Expr(scrutinee), Flow::Seq);
-            for MatchArm { pattern: _, body, range: _ } in arms {
+            for MatchArm { pattern: _, guard, body, range: _ } in arms {
+                if let Some(g) = guard {
+                    f(Node::Expr(g), Flow::Branch);
+                }
                 match body {
                     MatchBody::Expr(x) => f(Node::Expr(x), Flow::Branch),
                     MatchBody::Block(b) => f(Node::Block(b), Flow::Branch),

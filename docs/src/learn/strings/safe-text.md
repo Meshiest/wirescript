@@ -166,4 +166,4 @@ chip text -> decal Text
   you show it, wherever it goes.
 - `escape` only changes `<`. Text without a `<` comes out unchanged.
 
-Next: pick a lesson from the tree on the [Learn](../README.md) page.
+Next: [Matching Text](matching-text.md).

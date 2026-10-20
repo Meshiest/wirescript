@@ -49,10 +49,10 @@ use stmt::*;
 
 mod expr;
 use expr::*;
-// `const_eval::expr`'s own `MatchExpr` arm reuses the same capture-path
-// collection as `lower_match_arm`/`lower_match_arm_stmt` (see that
-// function's doc comment).
-pub(crate) use expr::{collect_pattern_captures, wire_type_of_literal};
+pub(crate) use expr::wire_type_of_literal;
+
+mod pattern_test;
+use pattern_test::*;
 
 mod ops;
 use ops::*;

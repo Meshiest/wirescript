@@ -15,8 +15,8 @@ Statements are the building blocks of Wirescript programs. They declare data, de
 - [`out`: Output Port](#out-output-port)
 - [`@left` / `@right` / `@top` / `@bottom`: Outer Rerouter Pins](#left--right--top--bottom-outer-rerouter-pins)
 - [`if`: Conditional Statement](#if-conditional-statement)
-- [`match`: Branch on an Enum Variant](#match-branch-on-an-enum-variant)
-- [`if let` / `let else`: Refutable Enum Binds](#if-let--let-else-refutable-enum-binds)
+- [`match`: Branch on a Value](#match-branch-on-a-value)
+- [`if let` / `let else`: Refutable Binds](#if-let--let-else-refutable-binds)
 - [`for` Loops](#for-loops)
 - [`fn`: Function](#fn-function)
 - [`on`: Event Handler](#on-event-handler)
@@ -1113,12 +1113,14 @@ on trigger {
 }
 ```
 
-## `match`: Branch on an Enum Variant
+## `match`: Branch on a Value
 
-`match` branches on an [enum](enums.md) value's variant, with each arm's
-pattern binding the variant's payload (if any). It works as an
-**expression** (comma-separated value arms, compiles to a `Select` tree) or
-as a **statement** (block arms, compiles to `Branch`/`Union`, exec context
+`match` tests a value against a list of patterns and runs the first arm that
+matches. The value is an [enum](enums.md), whose arms name its variants and
+bind their payloads, or a single `int`, `float`, `bool` or `string`, whose arms
+are literals, ranges and string patterns. It works as an **expression**
+(comma-separated value arms, compiles to a `Select` tree) or as a
+**statement** (block arms, compiles to `Branch`/`Union`, exec context
 required):
 
 ```wirescript
@@ -1147,16 +1149,149 @@ on Loaded() {
 }
 ```
 
-A `match` must cover every variant, or end in a `_` wildcard arm. An
-uncovered variant is a **WS054** error. See [Enums](enums.md#match) for
-exhaustiveness, nested patterns, and the scrutinee limitation (a `match`
-target must be a `var`/`let`/param/`const`, not an enum `in` port).
+### Literals and ranges
 
-## `if let` / `let else`: Refutable Enum Binds
+A literal arm matches a value equal to it: a string, a number, `true` or
+`false`, or an [atom](expressions.md#atom-literals). A range `lo..hi` matches a
+number at least `lo` and below `hi`, the same half-open range a `for` loop
+counts over. An `int` literal also matches a `float` equal to it.
 
-Single-variant shorthand for a one-armed `match`. `if let PATTERN = scrutinee
-{ ... } else { ... }` runs the block only when the scrutinee is that variant,
-with the pattern's bindings in scope; the `else` is optional:
+```wirescript
+in go: exec
+in program: string
+var ip: int = 0
+var cell: int = 0
+var running: bool = true
+
+let op = program.Substring(ip, 1)
+
+on go {
+  match op {
+    "+" => { cell = (cell + 1) % 256 }
+    "-" => { cell = (cell + 255) % 256 }
+    ""  => { running = false }
+    _   => {}
+  }
+  ip += 1
+}
+```
+
+```wirescript
+in x: int
+
+out size = match x {
+  0      => "none",
+  1..10  => "a few",
+  10..100 => "many",
+  _      => "lots",
+}
+```
+
+### String patterns (`..`)
+
+`..` joins string literals and names into a pattern for a whole string, the
+way `..` joins strings into one. Each name (or `_`) is a hole that matches any
+run of characters, possibly none, and binds what it matched:
+
+| Pattern | Matches | Binds |
+|---------|---------|-------|
+| `"say " .. rest` | a string that starts with `say ` | `rest`: everything after it |
+| `name .. ".ws"` | a string that ends with `.ws` | `name`: everything before it |
+| `key .. "=" .. value` | a string with an `=` in it | `key` and `value`: the text either side of the first `=` |
+| `"<" .. inner .. ">"` | a string that starts with `<` and ends with `>` | `inner`: what is between |
+| `_ .. "x" .. _` | a string with an `x` in it | nothing |
+
+The same pattern can be written as one string, with each hole in `${}`:
+`"say ${rest}"` is `"say " .. rest`, `"${key}=${value}"` is `key .. "=" ..
+value`, and `"tp ${_}"` is `"tp " .. _`. Only a name or `_` goes inside the
+`${}`. Unlike `${}` in an ordinary string, it binds a new name rather than
+reading one: a hole named like a value already in scope is a **WS123**
+warning, since `"hi ${player}"` would match any name, not just `player`'s. To
+compare against a value you have, bind another name and add a guard
+(`"hi ${p}" if p == player`).
+
+A literal with no hole before it must start the string, and a literal with no
+hole after it must end it. A literal between two holes is found at its first
+occurrence. Two holes cannot sit side by side (**WS122**), since nothing would
+say where one ends. String patterns are case-sensitive, and count characters
+as the game's string gates do. `match cmd.ToLower()` matches regardless of
+case.
+
+```wirescript
+in go: exec
+in cmd: string
+var target: string = ""
+var speed: int = 0
+
+on go {
+  match cmd {
+    "go " .. place   => { target = place }
+    "speed ${text}"   => { speed = text.ParseInt() }
+    "stop"           => { speed = 0 }
+    _                => {}
+  }
+}
+```
+
+### Alternatives (`|`)
+
+`p | q` matches when either pattern does, so one arm handles several values.
+The arm is built once. An alternative cannot bind a name (**WS121**), since only
+one of them matches:
+
+```wirescript
+enum Dir { N, E, S, W }
+
+in d: Dir
+
+out vertical = match d {
+  N | S => true,
+  E | W => false,
+}
+```
+
+### Guards (`if`)
+
+`pattern if condition =>` runs the arm only when the pattern matches and the
+condition is true. When the condition is false, matching goes on with the
+next arm. The condition can read the names the pattern binds:
+
+```wirescript
+enum Opt { Some(int), None }
+
+static var o: Opt = Opt.None
+
+out label = match o {
+  Some(n) if n > 100 => "big",
+  Some(0)            => "zero",
+  Some(_)            => "some",
+  None               => "none",
+}
+```
+
+### Covering every value
+
+A `match` must cover every value its scrutinee can hold, or end in a `_` arm
+(or a name, which catches the rest and binds it). An uncovered value is a
+**WS054** error that names it. A `match` on an `int`, `float` or `string` always
+needs that last `_` arm, since no list of literals covers every value; `true`
+and `false` together cover a `bool`. An arm with a guard covers nothing, since
+its guard may be false. An arm an earlier one already covers is a **WS061**
+warning. See [Enums](enums.md#match) for nested patterns and the scrutinee
+limitation (an enum `match` target must be a `var`/`let`/param/`const`, not an
+enum `in` port).
+
+Each arm costs one test (an equality gate, or a few for a range or a string
+pattern) and one `Branch` (statement) or `Select` (expression): the same gates
+as the `if`/`else if` chain it replaces. A string pattern's tests are its
+`StartsWith`, `EndsWith` and `Find` gates, plus a `Substring` for each name it
+binds.
+
+## `if let` / `let else`: Refutable Binds
+
+Single-pattern shorthand for a one-armed `match`. `if let PATTERN = scrutinee
+{ ... } else { ... }` runs the block only when the scrutinee matches the
+pattern, with the pattern's bindings in scope; the `else` is optional:
 
 ```wirescript
 enum Opt { Some(int), None }
@@ -1184,6 +1319,19 @@ enum Opt { Some(int), None }
 mod unwrapOr(v: Opt, fallback: int) -> int {
   let Some(x) = v else { return fallback }
   return x
+}
+```
+
+Both take any pattern a `match` arm takes, string patterns included:
+
+```wirescript
+in go: exec
+in cmd: string
+var target: string = ""
+
+on go {
+  let "go " .. place = cmd else { return }
+  target = place
 }
 ```
 
@@ -1402,7 +1550,9 @@ on go {
 
 `@sliced` goes on a `for` or a `let run = for` and nothing else. The body
 rules below still apply: a body cannot `await`, even when the game runs it
-across ticks.
+across ticks. Only the outermost loop can be sliced: `@sliced` on a loop
+inside another loop's body, written there or brought in by a `mod`, is a
+**WS119** warning. Put it on the outer loop instead.
 
 ### Naming the loop chip (`@label`)
 

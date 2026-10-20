@@ -490,6 +490,7 @@ pub(super) fn lower_field_access(
                     };
                     MatchArm {
                         pattern: a.pattern.clone(),
+                        guard: a.guard.clone(),
                         body: MatchBody::Expr(Expr::FieldAccess {
                             obj: Box::new(body.clone()),
                             field: field.to_string(),

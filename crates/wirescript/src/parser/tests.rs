@@ -1875,6 +1875,53 @@
     }
 
     #[test]
+    fn parses_value_patterns() {
+        let p = crate::parser::parse_pattern_str;
+        for lit in [r#""+""#, "3", "-1", "2.5", "-0.5", "true", ":red"] {
+            assert!(matches!(p(lit), Pattern::Literal { .. }), "{lit}");
+        }
+        assert!(matches!(p("0..10"), Pattern::Range { .. }));
+        assert!(matches!(p("-5..5"), Pattern::Range { .. }));
+        let Pattern::Concat { parts, .. } = p(r#"key .. "=" .. value"#) else { panic!() };
+        assert!(matches!(
+            parts.as_slice(),
+            [Pattern::Binding { .. }, Pattern::Literal { .. }, Pattern::Binding { .. }]
+        ));
+        let Pattern::Concat { parts, template: true, .. } = p(r#""give ${item} to ${_}""#) else { panic!() };
+        assert!(matches!(
+            parts.as_slice(),
+            [Pattern::Literal { .. }, Pattern::Binding { .. }, Pattern::Literal { .. }, Pattern::Wildcard(_)]
+        ));
+        assert!(matches!(p(r#""${x}""#), Pattern::Binding { .. }));
+        let Pattern::Or { alts, .. } = p(r#""a" | "b" | _"#) else { panic!() };
+        assert_eq!(alts.len(), 3);
+        let Pattern::Or { alts, .. } = p("A\n  | B") else { panic!() };
+        assert_eq!(alts.len(), 2);
+        let Pattern::Variant { sub: VariantPattern::Positional(subs), .. } = p(r#"Cmd("go " .. d | "stop")"#) else {
+            panic!()
+        };
+        assert!(matches!(subs.as_slice(), [Pattern::Or { .. }]));
+    }
+
+    #[test]
+    fn parses_a_match_guard() {
+        let src = "in x: int\nout o = match x {\n  n if n > 3 => 1,\n  _ => 2,\n}\n";
+        let r = parse(src, "t.ws");
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        let TopDecl::Out(o) = &r.ast.decls[1] else { panic!() };
+        let Some(Expr::MatchExpr { arms, .. }) = &o.value else { panic!() };
+        assert!(arms[0].guard.is_some());
+        assert!(arms[1].guard.is_none());
+    }
+
+    #[test]
+    fn let_else_starts_with_a_value_pattern() {
+        let src = "in s: string\nin go: exec\non go {\n  let \"go \" .. d = s else { return }\n  let name .. \".ws\" = s else { return }\n  let \"[${team}] ${who}\" = s else { return }\n}\n";
+        let r = parse(src, "t.ws");
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    }
+
+    #[test]
     fn parses_match_expression_and_statement() {
         let e = "enum Shape { Empty, Circle(float), Rect(float, float) }\n\
                  out area = match sh {\n  Circle(r) => 3.14 * r * r,\n  Rect(w, h) => w * h,\n  Empty => 0.0,\n}\n";

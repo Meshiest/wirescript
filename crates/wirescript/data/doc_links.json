@@ -116,6 +116,11 @@
     "WS116": "diagnostics.html#execution-context",
     "WS117": "diagnostics.html#types--operators",
     "WS118": "diagnostics.html#compile-time-constants-const",
+    "WS119": "diagnostics.html#loops",
+    "WS120": "diagnostics.html#types--operators",
+    "WS121": "diagnostics.html#types--operators",
+    "WS122": "diagnostics.html#types--operators",
+    "WS123": "diagnostics.html#types--operators",
     "WSP001": "diagnostics.html#silencing-a-warning"
   },
   "builtins": {
