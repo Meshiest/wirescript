@@ -266,33 +266,35 @@
     fn goto_pattern_field_ambiguous_variant_name_returns_none() {
         // Two different enums both declare a `Box` variant with named
         // fields - the variant name alone doesn't uniquely resolve an enum
-        // without the scrutinee's real type, so this must not guess.
+        // without the scrutinee's real type, so this must not guess a field.
+        // The shorthand `w` is also the capture it binds, which is where it
+        // may go: itself.
         let main = "enum Shape { Box { w: float, h: float } }\n\
                     enum Other { Box { n: int } }\n\
                     var s: Shape = Shape.Box { w: 1.0, h: 2.0 }\n\
                     out r = match s { Box { w, h } => w, _ => 0.0 }\n";
         let l = main.lines().nth(3).unwrap();
         let col = l.find("{ w, h }").unwrap() + 2;
+        let loc = goto(main, "", 3, col);
         assert!(
-            goto(main, "", 3, col).is_none(),
-            "an ambiguous variant name across two enums must not resolve"
+            loc.as_ref().is_none_or(|l| l.start_line == 3),
+            "an ambiguous variant name across two enums must not resolve to a field: {loc:?}"
         );
     }
 
     #[test]
     fn goto_pattern_binding_does_not_resolve_to_field_decl() {
         // The bound value `w` used in the arm BODY (not the pattern's own key)
-        // is a separate feature (local-capture goto) this task doesn't cover -
-        // must return None rather than panic or misresolve.
+        // goes to the capture that binds it, in the pattern, never to the
+        // variant's field declaration.
         let main = "enum Shape { Box { w: float, h: float } }\n\
                     var s: Shape = Shape.Box { w: 1.0, h: 2.0 }\n\
                     out r = match s { Box { w, h } => w, _ => 0.0 }\n";
         let l = main.lines().nth(2).unwrap();
         let col = l.rfind("=> w").unwrap() + 3; // the `w` in the arm body
-        assert!(
-            goto(main, "", 2, col).is_none(),
-            "arm-body capture use is a different feature; must not panic or misresolve"
-        );
+        let loc = goto(main, "", 2, col).expect("an arm-body capture use goes to its capture");
+        let capture_col = l.find("{ w, h }").unwrap() + 2;
+        assert_eq!((loc.start_line, loc.start_col), (2, capture_col), "{loc:?}");
     }
 
     #[test]

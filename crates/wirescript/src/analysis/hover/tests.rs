@@ -1535,3 +1535,38 @@ on go {
         let call = at(3, "BroadcastChatMessage", 0).expect("call hovers");
         assert!(call.contains("[Docs](https://wirescript.brickadia.dev/docs/builtins.html#broadcast-messaging-exec)"), "{call}");
     }
+
+    /// A string pattern's holes are names like any capture: hovering one, where
+    /// it is bound (inside the pattern, in either spelling) or where it is read,
+    /// shows it.
+    #[test]
+    fn hover_names_a_string_pattern_hole() {
+        let src = "in s: string\nvar n: int = 0\nin go: exec\non go {\n  if let \"tp ${where}\" = s { n = where.Length() }\n  if let \"go \" .. dest = s { n = dest.Length() }\n  match s {\n    \"${k}=${v}\" => { n = v.Length() }\n    _ => {}\n  }\n}\n";
+        let at = |line: usize, word: &str, nth: usize| {
+            let text = src.lines().nth(line).unwrap();
+            let col = text.match_indices(word).nth(nth).unwrap().0 + 1;
+            hover_for(src, line, col)
+        };
+        let mut bad = Vec::new();
+        for (line, word, nth) in [(4, "where", 0), (4, "where", 1), (5, "dest", 0), (5, "dest", 1), (7, "k", 0), (7, "v", 0), (7, "v", 1)] {
+            match at(line, word, nth) {
+                Some(h) if h.contains(word) && h.contains("string") => {}
+                other => bad.push(format!("{word}#{nth}@{line}: {other:?}")),
+            }
+        }
+        assert!(bad.is_empty(), "{bad:#?}");
+    }
+
+    /// An enum payload capture hovers as the payload's type; a bare unit
+    /// variant in a pattern is no capture.
+    #[test]
+    fn hover_names_an_enum_capture() {
+        let src = "enum Jar { Full(int), Empty }\nvar j: Jar = Jar.Empty\nvar n: int = 0\nin go: exec\non go {\n  match j {\n    Full(count) => { n = count }\n    Empty => {}\n  }\n}\n";
+        let line = 6;
+        let col = src.lines().nth(line).unwrap().find("count").unwrap() + 1;
+        let h = hover_for(src, line, col).expect("hover on the capture");
+        assert!(h.contains("count") && h.contains("int"), "{h}");
+        let line = 7;
+        let col = src.lines().nth(line).unwrap().find("Empty").unwrap() + 1;
+        assert!(!hover_for(src, line, col).is_some_and(|h| h.contains("let Empty")));
+    }

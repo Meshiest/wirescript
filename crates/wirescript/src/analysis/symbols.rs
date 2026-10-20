@@ -183,7 +183,65 @@ pub fn collect_symbols_for_file(
     for d in &script.decls {
         collect_decl(&mut syms, d, tmap, file, script);
     }
+    collect_pattern_symbols(&mut syms, script, tmap);
     syms
+}
+
+/// The names `match` arms, `if let` and `let ... else` bind, wherever they
+/// sit, typed as typecheck bound them. A bare name typecheck read as a unit
+/// variant binds nothing and has no type there, so it is no symbol.
+fn collect_pattern_symbols(syms: &mut Vec<SymbolDef>, script: &Script, tmap: &TypeMap) {
+    fn visit(node: crate::ast::walk::Node<'_>, syms: &mut Vec<SymbolDef>, tmap: &TypeMap) {
+        use crate::ast::walk::Node;
+        match node {
+            Node::Expr(Expr::MatchExpr { arms, .. }) => {
+                for arm in arms {
+                    pattern_symbols(syms, &arm.pattern, tmap);
+                }
+            }
+            Node::Stmt(Stmt::IfLet(i)) => pattern_symbols(syms, &i.pattern, tmap),
+            Node::Stmt(Stmt::LetElse(l)) => pattern_symbols(syms, &l.pattern, tmap),
+            _ => {}
+        }
+        crate::ast::walk::children(node, &mut |child, _| visit(child, syms, tmap));
+    }
+    crate::ast::walk::script_children(script, &mut |node, _| visit(node, syms, tmap));
+}
+
+fn pattern_symbols(syms: &mut Vec<SymbolDef>, pattern: &Pattern, tmap: &TypeMap) {
+    match pattern {
+        Pattern::Binding { name, range } => {
+            if let Some(t) = tmap.get(&(range.file.clone(), range.start.offset, range.end.offset)) {
+                syms.push(SymbolDef {
+                    name: name.clone(),
+                    kind: "let",
+                    range: range.clone(),
+                    ty: Some(type_str(t)),
+                    exec: false,
+                    is_const: false,
+                });
+            }
+        }
+        Pattern::Variant { sub, .. } => match sub {
+            VariantPattern::Unit => {}
+            VariantPattern::Positional(subs) => {
+                for p in subs {
+                    pattern_symbols(syms, p, tmap);
+                }
+            }
+            VariantPattern::Named { fields, .. } => {
+                for (_, p) in fields {
+                    pattern_symbols(syms, p, tmap);
+                }
+            }
+        },
+        Pattern::Concat { parts, .. } => {
+            for p in parts {
+                pattern_symbols(syms, p, tmap);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file: Option<&str>, script: &Script) {
@@ -527,6 +585,32 @@ pub fn collect_stmt(syms: &mut Vec<SymbolDef>, s: &Stmt, tmap: &TypeMap, file: O
             if let Some(eb) = &i.else_block {
                 for s in &eb.stmts {
                     collect_stmt(syms, s, tmap, file, script);
+                }
+            }
+        }
+        Stmt::IfLet(i) => {
+            for s in &i.then_block.stmts {
+                collect_stmt(syms, s, tmap, file, script);
+            }
+            if let Some(eb) = &i.else_block {
+                for s in &eb.stmts {
+                    collect_stmt(syms, s, tmap, file, script);
+                }
+            }
+        }
+        Stmt::LetElse(l) => {
+            for s in &l.else_block.stmts {
+                collect_stmt(syms, s, tmap, file, script);
+            }
+        }
+        Stmt::ExprStmt(es) => {
+            if let Expr::MatchExpr { arms, .. } = &es.expr {
+                for arm in arms {
+                    if let MatchBody::Block(b) = &arm.body {
+                        for s in &b.stmts {
+                            collect_stmt(syms, s, tmap, file, script);
+                        }
+                    }
                 }
             }
         }

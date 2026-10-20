@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5
+
+- Fixed: hovering a name a pattern binds (`where` in `if let "tp ${where}"`,
+  `x` in `Some(x)`) showed nothing, and go to definition on one went nowhere.
+  Both now find it, as do `let`s inside `if let`, `let ... else` and `match`
+  blocks.
+
 ## 0.1.4
 
 - Wirescript 2.2.0: `match` on strings, numbers and bools, with literal,

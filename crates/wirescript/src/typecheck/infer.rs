@@ -1760,6 +1760,8 @@ pub(super) fn check_match_pattern(
             } else {
                 matched.clone()
             };
+            // Hover finds a capture's type here, at the name it is bound by.
+            ctx.record_expr_type(range, &ty);
             ctx.scope.declare(
                 name,
                 SymbolInfo {
