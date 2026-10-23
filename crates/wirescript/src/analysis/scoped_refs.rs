@@ -1124,7 +1124,12 @@ impl<'a> Walker<'a> {
                 }
                 self.register_for(f, Some(scope.clone()));
             }
-            Stmt::If(_) | Stmt::Assign(_) | Stmt::ExprStmt(_) | Stmt::Return { .. } | Stmt::Break { .. } => {
+            Stmt::If(_)
+            | Stmt::Assign(_)
+            | Stmt::ExprStmt(_)
+            | Stmt::Return { .. }
+            | Stmt::Break { .. }
+            | Stmt::Continue { .. } => {
                 self.walk_children(walk::Node::Stmt(s), scope)
             }
         }

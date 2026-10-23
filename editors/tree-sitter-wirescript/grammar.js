@@ -81,6 +81,7 @@ module.exports = grammar({
         $.if_statement,
         $.for_statement,
         $.break_statement,
+        $.continue_statement,
         $.assignment_statement,
         $.expression_statement,
       ),
@@ -423,6 +424,8 @@ module.exports = grammar({
     _for_pattern: ($) => choice($.identifier, $.record_pattern),
 
     break_statement: (_$) => 'break',
+
+    continue_statement: (_$) => 'continue',
 
     assignment_statement: ($) =>
       seq(

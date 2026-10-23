@@ -930,6 +930,68 @@ fn a_statement_with_no_preceding_break_is_still_ws058() {
     assert!(!codes.contains(&"WS081"), "unexpected WS081, got {codes:?}");
 }
 
+#[test]
+fn continue_emits_no_gate() {
+    // `continue` only ends the sweep's exec chain: the plane gains no gate,
+    // and in particular no CallableBreak, which would stop later iterations.
+    let with = compile("var t: int = 0\nin go: exec\non go { for i in 0..10 { t += i\n continue } }");
+    let without = compile("var t: int = 0\nin go: exec\non go { for i in 0..10 { t += i } }");
+    assert_no_errors(&with);
+    let body = only_chip(&with, "loop body");
+    assert!(
+        !body.nodes.values().any(|n| n.gate_class == gc::CALLABLE_BREAK),
+        "continue must not lower to a CallableBreak"
+    );
+    assert_eq!(
+        body.nodes.len(),
+        only_chip(&without, "loop body").nodes.len(),
+        "a trailing continue must add no gate to the plane"
+    );
+}
+
+#[test]
+fn a_statement_after_continue_in_the_same_body_emits_no_gate() {
+    let r = compile("var t: int = 0\nin go: exec\non go { for i in 0..10 { continue\n t += i } }");
+    let increments = only_chip(&r, "loop body")
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == gc::VAR_INCREMENT)
+        .count();
+    assert_eq!(increments, 0, "a statement after continue in the same body must emit no gate");
+}
+
+#[test]
+fn a_statement_after_an_if_with_continue_runs_off_the_other_branch() {
+    // `if i == 3 { continue }` ends the then-branch's chain, so the increment
+    // after the `if` hangs off the Branch gate's false side alone.
+    let r = compile("var t: int = 0\nin go: exec\non go { for i in 0..10 { if i == 3 { continue }\n t += i } }");
+    assert_no_errors(&r);
+    let body = only_chip(&r, "loop body");
+    let inc = body
+        .nodes
+        .values()
+        .find(|n| n.gate_class == gc::VAR_INCREMENT)
+        .expect("the increment after the `if` must still lower");
+    let feeds: Vec<_> = body
+        .wires
+        .iter()
+        .filter(|w| w.target.node_id == inc.id && w.target.port == WirePort::Exec)
+        .collect();
+    assert_eq!(feeds.len(), 1, "the increment must run off exactly one exec wire");
+    let src = &body.nodes[&feeds[0].source.node_id];
+    assert_eq!(src.gate_class, gc::BRANCH, "the increment must run off the `if`'s Branch gate");
+    assert_eq!(feeds[0].source.port, WirePort::ExecOutB, "the increment must run off the false side");
+}
+
+#[test]
+fn a_statement_after_continue_is_ws081_naming_continue() {
+    let r = compile("var t: int = 0\nin go: exec\non go { for i in 0..3 { continue\n t = t + 1 } }");
+    let ws081: Vec<_> = r.diagnostics.iter().filter(|d| d.code == "WS081").collect();
+    assert_eq!(ws081.len(), 1, "expected one WS081, got {:?}", r.diagnostics);
+    assert!(ws081[0].message.contains("`continue`"), "{}", ws081[0].message);
+    assert!(!r.diagnostics.iter().any(|d| d.code == "WS058"), "WS058 must be suppressed here");
+}
+
 /// Every node of `class` anywhere in the chip tree (a loop body lands on the
 /// shell's own grid).
 /// A `for` over an array or map whose elements are enums (with or without a

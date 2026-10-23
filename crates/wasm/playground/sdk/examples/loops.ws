@@ -21,10 +21,12 @@ on go {
     squares.push(i * i)
   }
 
-  // Array: one name binds the value, two bind index and value
+  // Array: one name binds the value, two bind index and value.
+  // continue skips the rest of this iteration
   evenTotal = 0
   for i, sq in squares {
-    if i % 2 == 0 { evenTotal += sq }
+    if i % 2 == 1 { continue }
+    evenTotal += sq
   }
 
   // Map: one name binds the key, two bind key and value

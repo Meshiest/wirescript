@@ -873,7 +873,7 @@ fn stmt_has_direct_exec(
             let b = block_has_direct_exec(ctx, &f.body, locals, edges);
             s | b
         }
-        Stmt::Break { .. } => false,
+        Stmt::Break { .. } | Stmt::Continue { .. } => false,
     }
 }
 

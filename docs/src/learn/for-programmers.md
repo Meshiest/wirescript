@@ -56,7 +56,8 @@ lesson so you can skip the ones you already understand.
   one.
 - **No loops in pure code.** `for i in 0..n { }` is a step. It compiles to a
   loop plane, a chip of its own that runs every iteration within the current
-  tick, about 100,000 iterations per tick at most. Work spread over many
+  tick, about 100,000 iterations per tick at most. `break` and `continue`
+  work as usual, but a body cannot `return` or `await`. Work spread over many
   ticks is a `buffer emit` and an `await`.
 - **`mod` inlines, `fn` calls.** A mod's body is copied into every call: 50
   gates called from 10 places is 500 gates. A `fn` is one callable plane

@@ -1,5 +1,10 @@
 # Wirescript Changelog
 
+## 2.3.0
+
+- `continue` in a `for` body skips the rest of that iteration and goes on to the next one. It adds no gate. Outside a loop it is WS078, and a statement after it in the same block is the WS081 warning, as after `break`.
+- `break` and `continue` have hovers that link their docs.
+
 ## 2.2.0
 
 - `match` tests an `int`, `float`, `bool` or `string` too, with literal arms (`"+"`, `3`, `true`, `:red`), ranges (`1..10`) and string patterns (`"say " .. rest`, `name .. ".ws"`, `key .. "=" .. value`) that bind the text their names stand for. `if let` and `let ... else` take the same patterns, and so does an enum payload (`Say("/" .. cmd)`).

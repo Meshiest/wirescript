@@ -12,9 +12,10 @@
 </div>
 <!-- /learn-links -->
 
-A `for` loop can walk through an array, one element per iteration, and
-`break` can stop it as soon as it finds what it is looking for. This lesson
-keeps a list of dice rolls and searches it.
+A `for` loop can walk through an array, one element per iteration. `break`
+can stop it as soon as it finds what it is looking for, and `continue` can
+skip an element and go on to the next. This lesson keeps a list of dice rolls
+and searches it.
 
 <!-- toc -->
 ## Contents
@@ -101,9 +102,10 @@ Array's **Completed** output fires.
 The loop reads the array straight from its gate, so there is no
 **Get Array Element** in the chip.
 
-There is no `continue` to skip the rest of one iteration:
+`continue` skips the rest of one iteration and goes on to the next element.
+This counts the sixes by skipping every roll that is not one:
 
-```wirescript name=lp2-continue expect=WS078
+```wirescript name=lp2-continue
 @left in search: exec
 var rolls: int[]
 var sixes: int = 0
@@ -116,11 +118,14 @@ on search {
 }
 ```
 
-```text
-Error: [WS078] `continue` does not exist in this language, and there is no gate a loop plane could lower it to. Restructure the rest of the body under an `if`.
-```
+Open this chip and there is no gate for `continue`. The **Branch** for
+`r != 6` has nothing wired to its true side, so on a roll that is not a six
+the iteration's chain stops there, and the loop starts the next one. The
+**Increment Variable** for `sixes` hangs off the false side only.
 
-Put the rest of the iteration under an `if` instead: `if r == 6 { sixes += 1 }`.
+Here `if r == 6 { sixes += 1 }` would do the same. `continue` pays off when
+several checks come first and the rest of the body is long: each check skips
+the roll, and the body does not need to nest inside all of them.
 
 ## Modify
 
@@ -166,6 +171,8 @@ chip streak -> light Enabled
   after it. Plan for "nothing found".
 - `break` ends the whole loop, not only the current iteration. Nothing
   after the `break` in the block runs.
+- `continue` ends only the current iteration. The loop goes on with the next
+  element, and nothing after the `continue` in the block runs this time.
 - A read like `rolls[i]` past the end of the array gives a stale value, but
   `for r in rolls` visits only the elements that are there, so it never reads
   past the end.
@@ -174,6 +181,7 @@ chip streak -> light Enabled
   none), and `rolls.sum()` is the total. A loop is for tests one gate cannot
   do, such as the streak in Make.
 
-See [`break`](../../statements.md#break) in the reference.
+See [`break`](../../statements.md#break) and
+[`continue`](../../statements.md#continue) in the reference.
 
 Next: [Looping Over a Map](looping-over-a-map.md).

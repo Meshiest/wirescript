@@ -421,7 +421,9 @@
     "chip": "chips.html#named-chips",
     "mod": "chips.html#mod-inline-chips",
     "fn": "statements.html#fn-function",
-    "is": "enums.html#is"
+    "is": "enums.html#is",
+    "break": "statements.html#break",
+    "continue": "statements.html#continue"
   },
   "annotations": {
     "left": "statements.html#left--right--top--bottom-outer-rerouter-pins",

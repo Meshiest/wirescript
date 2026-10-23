@@ -86,7 +86,7 @@ pub enum InterpPart {
 pub const KEYWORDS: &[&str] = &[
     "var", "array", "map", "buffer", "chip", "fn", "on", "in", "out", "emit", "let", "if", "else",
     "then", "match", "return", "true", "false", "null", "ref", "mod", "import", "from", "as",
-    "static", "type", "await", "const", "for", "break",
+    "static", "type", "await", "const", "for", "break", "continue",
 ];
 
 fn keyword_set() -> &'static HashSet<&'static str> {

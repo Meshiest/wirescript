@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6
+
+- Wirescript 2.3.0: `continue` in loops, highlighted as a keyword, with
+  hovers on `break` and `continue`.
+
 ## 0.1.5
 
 - Fixed: hovering a name a pattern binds (`where` in `if let "tp ${where}"`,

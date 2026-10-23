@@ -6261,11 +6261,23 @@ on t { var foo: any = 0 }",
     }
 
     #[test]
-    fn continue_is_rejected() {
-        // `continue` is not a keyword, so it parses as an identifier expression and
-        // must not silently become a no-op call.
-        let c = codes("in go: exec\non go { for i in 0..3 { continue } }");
-        assert!(!c.is_empty(), "`continue` must not compile silently");
+    fn continue_in_a_loop_is_accepted() {
+        let c = codes("var t: int = 0\nin go: exec\non go { for i in 0..3 { if i == 1 { continue } t += i } }");
+        assert!(c.is_empty(), "expected a clean typecheck, got {c:?}");
+    }
+
+    #[test]
+    fn continue_outside_a_loop_is_ws078() {
+        let c = codes("in go: exec\non go { continue }");
+        assert_eq!(c, vec!["WS078"]);
+    }
+
+    #[test]
+    fn continue_in_a_mod_called_from_a_loop_is_ws078() {
+        // A mod body is checked where it is declared, outside any loop, so
+        // its `continue` has no loop of its own to end.
+        let c = codes("mod skip() { continue }\nin go: exec\non go { for i in 0..3 { skip() } }");
+        assert!(c.iter().any(|c| c == "WS078"), "expected WS078, got {c:?}");
     }
 
     #[test]

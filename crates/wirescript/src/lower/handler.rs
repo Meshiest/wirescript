@@ -544,10 +544,10 @@ fn lower_block_inner(ctx: &mut LowerCtx, block: &Block) {
             pre_declare_anon_chip(ctx, ac, false);
         }
     }
-    // A `break` ends this block's exec chain: nothing after it in the same
-    // block ever runs, so each such statement gets one WS081 in place of
-    // its own WS058.
-    let mut dead_after_break = false;
+    // A `break` or `continue` ends this block's exec chain: nothing after it
+    // in the same block ever runs, so each such statement gets one WS081 in
+    // place of its own WS058. Holds the keyword that ended it.
+    let mut dead_after: Option<&str> = None;
     // The chain a `buffer emit` in this block closed: an `await` right after
     // it still arms on it.
     let mut closed_chain: Option<PortRef> = None;
@@ -579,11 +579,13 @@ fn lower_block_inner(ctx: &mut LowerCtx, block: &Block) {
         if !ctx.handler_end_execs.is_empty() && !is_handler_stmt && ctx.current_exec.is_none() {
             flush_handler_end_execs(ctx);
         }
-        if dead_after_break {
+        if let Some(kw) = dead_after {
             ctx.warn_code(
                 "WS081",
-                "this statement never runs: a `break` earlier in the same body already \
-                 ended the loop's exec chain, so nothing after it in this block executes.",
+                format!(
+                    "this statement never runs: a `{kw}` earlier in the same body already \
+                     ended the loop's exec chain, so nothing after it in this block executes."
+                ),
                 s.range(),
             );
             let saved = ctx.dead_after_break;
@@ -593,8 +595,10 @@ fn lower_block_inner(ctx: &mut LowerCtx, block: &Block) {
         } else {
             lower_stmt(ctx, s);
         }
-        if matches!(s, Stmt::Break { .. }) {
-            dead_after_break = true;
+        match s {
+            Stmt::Break { .. } => dead_after = Some("break"),
+            Stmt::Continue { .. } => dead_after = Some("continue"),
+            _ => {}
         }
         if closes_chain(ctx, s) && ctx.current_exec.is_some() {
             closed_chain = ctx.current_exec.take();

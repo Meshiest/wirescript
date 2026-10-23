@@ -222,5 +222,30 @@ on Loaded() {
   assert(3, brokeRuns, "the loop stops after the break's iteration")
   assert(0, run.aborted, "a deliberate break is not an abort")
 
+  // continue
+
+  // `continue` ends the current iteration only: the rest of that body is
+  // skipped and the loop goes on with the next one.
+  var evenSum: int = 0
+  var visits: int = 0
+  for i in 0..10 {
+    visits = visits + 1
+    if i % 2 == 1 { continue }
+    evenSum = evenSum + i
+  }
+  assert(0 + 2 + 4 + 6 + 8, evenSum, "continue skips the rest of odd iterations")
+  assert(10, visits, "continue does not stop the loop")
+
+  // A loop that continues on every iteration still runs all of them and is
+  // not aborted.
+  var contRuns: int = 0
+  let contRun = for i in 0..4 {
+    contRuns = contRuns + 1
+    continue
+  }
+  assert(4, contRuns, "a trailing continue runs every iteration")
+  assert(4, contRun.iterations, "run.iterations counts continued iterations")
+  assert(0, contRun.aborted, "continue is not an abort")
+
   BroadcastChatMessage("for loops: ${pass}/${total}")
 }

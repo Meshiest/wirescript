@@ -15,7 +15,8 @@ pub enum Flow {
     Seq,
     /// On some of the parent's paths only: an `if`/`if let` branch, a `let
     /// else`'s `else`, a `match` arm, an `if`-expression branch, or a
-    /// statement after one that can end its block early (`return`, `break`).
+    /// statement after one that can end its block early (`return`, `break`,
+    /// `continue`).
     Branch,
     /// A `for` body: zero or more times per run of the parent.
     Loop,
@@ -171,9 +172,10 @@ pub fn any_below<'a>(
 }
 
 /// Whether running `s` can end its block before the next statement runs: a
-/// `return` or `break` on `s`'s own path.
+/// `return`, `break` or `continue` on `s`'s own path.
 pub fn leaves_early(s: &Stmt) -> bool {
-    let exits = |n: Node| matches!(n, Node::Stmt(Stmt::Return { .. } | Stmt::Break { .. }));
+    let exits =
+        |n: Node| matches!(n, Node::Stmt(Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. }));
     exits(Node::Stmt(s)) || any_below(Node::Stmt(s), Flow::on_path, &mut |n| exits(n))
 }
 
@@ -330,7 +332,7 @@ pub fn stmt_children<'a>(s: &'a Stmt, f: &mut dyn FnMut(Node<'a>, Flow)) {
             }
             f(Node::Block(body), Flow::Loop);
         }
-        Stmt::Break { range: _ } => {}
+        Stmt::Break { range: _ } | Stmt::Continue { range: _ } => {}
     }
 }
 

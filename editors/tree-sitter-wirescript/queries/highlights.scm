@@ -70,10 +70,12 @@
   "for"
 ] @keyword.conditional
 
-; `break_statement` has no other content -- the whole node is the keyword.
+; `break_statement` and `continue_statement` have no other content -- the
+; whole node is the keyword.
 [
   "return"
   (break_statement)
+  (continue_statement)
 ] @keyword.return
 
 [

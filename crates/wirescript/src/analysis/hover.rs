@@ -516,6 +516,9 @@ pub fn hover_at(
                 .map(|h| with_doc_link(h, Doc::Keyword("if")))
         })
         .or_else(|| hover_is_keyword(source, ast, &word, line, col).map(|h| with_doc_link(h, Doc::Keyword("is"))))
+        .or_else(|| {
+            hover_loop_exit_keyword(source, ast, &word, line, col).map(|h| with_doc_link(h, Doc::Keyword(&word)))
+        })
         .or_else(|| hover_named_param(source, &word, line, col))
         .or_else(|| hover_event_config_param(source, &word, line, col))
         .or_else(|| hover_data_driven_config(source, &word, line, col))
@@ -2991,6 +2994,38 @@ fn hover_is_keyword(source: &str, ast: &Script, word: &str, line: usize, col: us
         "```wirescript\n{written}\n```\n**Variant test**: `true` while the value holds that variant. It compares \
          tags only; use `match` or `if let` to read a payload."
     ))
+}
+
+/// Hover on a `break` or `continue` statement in a loop body.
+fn hover_loop_exit_keyword(source: &str, ast: &Script, word: &str, line: usize, col: usize) -> Option<String> {
+    use crate::ast::walk::{self, Node};
+    if word != "break" && word != "continue" {
+        return None;
+    }
+    fn found(node: Node, line: u32, col: u32) -> bool {
+        let hit = match node {
+            Node::Stmt(Stmt::Break { range } | Stmt::Continue { range }) => range_contains_1based(range, line, col),
+            _ => false,
+        };
+        let mut below = false;
+        walk::children(node, &mut |c, _| below = below || found(c, line, col));
+        hit || below
+    }
+    let cursor_line = (line + 1) as u32;
+    let cursor_col = (char_col_to_byte(super::text::line_text(source, line), col) + 1) as u32;
+    let mut hit = false;
+    walk::script_children(ast, &mut |n, _| hit = hit || found(n, cursor_line, cursor_col));
+    if !hit {
+        return None;
+    }
+    let what = if word == "break" {
+        "**Stop the loop**: nothing after it in the body runs, and no later iteration starts. The code after \
+         the loop runs next."
+    } else {
+        "**Skip to the next iteration**: nothing after it in the body runs this time round, and the loop carries \
+         on with its next element or number. It adds no gate: it ends this iteration's exec chain."
+    };
+    Some(format!("```wirescript\n{word}\n```\n{what}"))
 }
 
 /// Compute a "fill missing match arms" edit for a cursor on/inside a `match`

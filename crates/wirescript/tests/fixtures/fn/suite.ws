@@ -360,6 +360,26 @@ on Loaded() {
     sum = sum + i
   }
   expectInt(6, sum, "break stops the loop")
+  sum = 0
+  var visits: int = 0
+  for i in 0..10 {
+    visits += 1
+    if i % 2 == 1 { continue }
+    sum = sum + i
+  }
+  expectInt(20, sum, "continue skips the rest of one iteration")
+  expectInt(10, visits, "continue keeps the loop running")
+  var outerRuns: int = 0
+  var innerRuns: int = 0
+  for r in 0..3 {
+    for c in 0..4 {
+      if c > 0 { continue }
+      innerRuns += 1
+    }
+    outerRuns += 1
+  }
+  expectInt(3, innerRuns, "continue in an inner loop skips only that loop's body")
+  expectInt(3, outerRuns, "continue in an inner loop leaves the outer loop running")
   var cells: int = 0
   for r in 0..3 {
     for c in 0..4 {

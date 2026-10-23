@@ -435,6 +435,9 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
             // than wired to it) is what stops the rest of THIS sweep instead.
             ctx.current_exec = None;
         }
+        // An iteration ends when its sweep's chain runs dry, so ending the
+        // chain here ends this iteration and the next one runs as usual.
+        Stmt::Continue { .. } => ctx.current_exec = None,
     }
 }
 
@@ -4019,8 +4022,8 @@ fn redirect_hub(m: &mut Module, hub: NodeId, src: &PortRef) {
 /// the output's backing var.
 fn report_default_beside_emit(ctx: &mut LowerCtx, name: &str, value: &Expr, range: &SourceRange) {
     // With no other write, the output is stored only because this one comes
-    // after an early exit (a `return` or `break`) that has no exec chain to
-    // run on, which typecheck already rejects.
+    // after an early exit (a `return`, `break` or `continue`) that has no exec
+    // chain to run on, which typecheck already rejects.
     if !ctx.emitted_outputs.contains(name) && ctx.output_write_sites.get(name).is_some_and(|n| *n < 2) {
         ctx.error(
             crate::diagnostic::INTERNAL_ERROR,

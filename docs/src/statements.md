@@ -1526,6 +1526,34 @@ A `break` in the body does not set `run.aborted`. That field reports the
 runtime cutting a loop off on its own (an invocation limit, for instance),
 which a `break` is not.
 
+### `continue`
+
+`continue` ends the current iteration and moves on to the next one: nothing
+after it in the body runs this time round, and the loop carries on with its
+next number or element.
+
+```wirescript
+in go: exec
+var evenSum: int = 0
+
+on go {
+  for i in 0..10 {
+    if i % 2 == 1 { continue }
+    evenSum = evenSum + i
+  }
+}
+```
+
+`continue` adds no gate. Each iteration is one pass along the body's exec
+chain and ends when that chain does, so `continue` ends the chain where it
+stands. Statements after an `if` that holds a `continue` run off the `if`'s
+other branch only.
+
+In a nested loop, `continue` and `break` act on the innermost `for` around
+them. A statement after either one in the same block never runs and is a
+**WS081** warning. Outside a `for` (including in a `mod` body, which is
+checked where it is declared) either one is **WS078**.
+
 ### Sliced loops (`@sliced`)
 
 A loop finishes within the tick it starts. `@sliced` before the `for`
@@ -1580,7 +1608,6 @@ on go {
 
 ### What a Loop Body Can't Do
 
-- **`continue`.** No primitive exists to lower it to.
 - **`return`.** A loop body cannot cross the plane boundary back to its
   caller. Assign to a `var` declared before the loop and `return` it after the
   loop ends instead.

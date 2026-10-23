@@ -917,6 +917,9 @@ pub enum Stmt {
     Break {
         range: SourceRange,
     },
+    Continue {
+        range: SourceRange,
+    },
 }
 
 impl Stmt {
@@ -942,6 +945,7 @@ impl Stmt {
             Stmt::Return { range, .. } => range,
             Stmt::For(d) => &d.range,
             Stmt::Break { range } => range,
+            Stmt::Continue { range } => range,
         }
     }
 }

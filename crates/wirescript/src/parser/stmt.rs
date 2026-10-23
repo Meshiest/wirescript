@@ -463,6 +463,13 @@ impl<'a> Parser<'a> {
                         range: self.make_range(kw.start, kw.end),
                     });
                 }
+                "continue" => {
+                    let kw = self.advance();
+                    self.eat_stmt_end();
+                    return Some(Stmt::Continue {
+                        range: self.make_range(kw.start, kw.end),
+                    });
+                }
                 _ => {}
             }
         }

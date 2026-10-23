@@ -541,3 +541,39 @@ on go {
             (binary_expression
               (identifier)
               (integer))))))))
+
+================================================================================
+break and continue in a loop
+================================================================================
+
+on go {
+  for i in 0..n {
+    if i == 2 { continue }
+    if i == 5 { break }
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (for_statement
+        (identifier)
+        (binary_expression
+          (integer)
+          (identifier))
+        (block
+          (if_statement
+            (binary_expression
+              (identifier)
+              (integer))
+            (block
+              (continue_statement)))
+          (if_statement
+            (binary_expression
+              (identifier)
+              (integer))
+            (block
+              (break_statement))))))))

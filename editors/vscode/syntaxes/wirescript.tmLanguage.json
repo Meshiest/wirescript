@@ -166,7 +166,7 @@
         },
         {
           "name": "keyword.control.wirescript",
-          "match": "\\b(as|await|break|else|emit|for|from|if|match|on|return|then)\\b"
+          "match": "\\b(as|await|break|continue|else|emit|for|from|if|match|on|return|then)\\b"
         },
         {
           "comment": "`unsafe` is contextual: match only the marker position, so a name spelled `unsafe` stays unhighlighted",

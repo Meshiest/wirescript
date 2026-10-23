@@ -912,21 +912,6 @@ fn check_stmt_inner(
             }
         }
         Stmt::ExprStmt(es) => {
-            // `continue` is not a keyword, so it parses as a bare identifier
-            // expression statement, which would otherwise resolve as an
-            // undefined name or a silent namespace no-op; there is no gate to lower it to.
-            if ctx.loop_depth > 0
-                && let Expr::Ident { name, range } = &es.expr
-                && name == "continue"
-            {
-                ctx.emit(
-                    "WS078",
-                    "`continue` does not exist in this language, and there is no gate a loop \
-                     plane could lower it to. Restructure the rest of the body under an `if`.",
-                    range.clone(),
-                );
-                return;
-            }
             // A line that starts with `*` is a new statement, a deref, never
             // the continuation of the line above (`n = a` / `* b`), so on its
             // own it reads a value nothing uses.
@@ -1150,6 +1135,15 @@ fn check_stmt_inner(
                 ctx.emit(
                     "WS078",
                     "`break` outside a loop: there is no enclosing `for` for it to stop.",
+                    range.clone(),
+                );
+            }
+        }
+        Stmt::Continue { range } => {
+            if ctx.loop_depth == 0 {
+                ctx.emit(
+                    "WS078",
+                    "`continue` outside a loop: there is no enclosing `for` whose iteration it could end.",
                     range.clone(),
                 );
             }

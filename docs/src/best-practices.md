@@ -231,7 +231,8 @@ runs faster inside a `fn` or `for` body.
 ## When to use `for`, and what it costs
 
 Use a `for` for repeated steps that differ only by an index: per-slot ticks, per-seat
-updates, a fixed number of steps along a line. To stop at the first match, use `break`.
+updates, a fixed number of steps along a line. To stop at the first match, use `break`;
+to skip one element and go on to the next, use `continue`.
 A loop body can't `return`, so store the result in a `var` declared before the loop:
 
 ```wirescript
@@ -297,8 +298,8 @@ iteration:
   room for about 375,000 evaluations. A 2,300-gate body gets roughly 160 iterations per
   frame.
 
-**Body restrictions.** A loop body can't use `return`, `continue` or `await` (`WS078`,
-`WS079`). Set a `var` and `break` instead. A `mod` called inside the body can still
+**Body restrictions.** A loop body can't use `return` or `await` (`WS078`, `WS079`).
+Set a `var` and `break` instead. A `mod` called inside the body can still
 `return`, which leaves the `mod`, not the loop. A file with a `for` cannot be `@flat` (`WS080`), and an array of
 records is iterated by index (`WS082`). See [`for` Loops](statements.md#for-loops).
 

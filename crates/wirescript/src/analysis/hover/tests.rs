@@ -125,6 +125,21 @@
         assert!(h.contains("a0.getType() is Type.Int") && h.contains("`a0` is narrowed to `int`"), "{h}");
     }
 
+    /// `break` and `continue` hover with what they do to the loop, and link
+    /// their reference sections.
+    #[test]
+    fn loop_exit_keywords_hover() {
+        let src = "var t: int = 0\nin go: exec\non go {\n  for i in 0..9 {\n    if i == 2 { continue }\n    if i == 5 { break }\n    t += i\n  }\n}\n";
+        for (line, word, says, link) in [
+            (4usize, "continue", "**Skip to the next iteration**", "statements.html#continue"),
+            (5, "break", "**Stop the loop**", "statements.html#break"),
+        ] {
+            let col = src.lines().nth(line).unwrap().find(word).unwrap() + 1;
+            let h = hover_for(src, line, col).unwrap_or_else(|| panic!("{word} should hover"));
+            assert!(h.contains(says) && h.contains(link), "{word}: {h}");
+        }
+    }
+
     /// A builtin's hover says what the gate does, in the game's own words from
     /// the gate inventory, even for a gate the older `gate_docs.json` lacks.
     #[test]
