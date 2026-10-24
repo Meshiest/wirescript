@@ -3,8 +3,8 @@
 //! a plain literal initializer (`var t: int[] = [1, 2, 3]`), now routed
 //! through `const_eval::eval_expr` so a `const mod` call per element also
 //! qualifies, not just literals and named constants.
-use super::*;
 use super::const_params::lower_ok;
+use super::*;
 
 /// A test using plain named constants (`[N, N * 2]`) would not discriminate
 /// this path — `array_elem_literal` already routes those through
@@ -118,7 +118,9 @@ fn a_chip_local_const_mod_shadows_the_top_level_one_in_the_bake_path() {
     let baked = arrays[0].properties.get(&crate::intern::sym::INITIAL_VALUE);
     assert_eq!(
         baked,
-        Some(&crate::ir::Literal::Array(vec![crate::ir::Literal::Int(100)])),
+        Some(&crate::ir::Literal::Array(vec![crate::ir::Literal::Int(
+            100
+        )])),
         "the chip-local `size` (n * 100) must win over the top-level one \
          (n * 10) in the bake path, as it does in every other path"
     );
@@ -149,45 +151,62 @@ fn a_chip_local_const_mod_shadows_the_top_level_one_in_the_map_bake_path() {
     );
 }
 
-/// The same shadowing rule for an INLINED `mod` body. This path is the
-/// hazardous one: unlike a chip (fresh child context), an inlined mod body
-/// pre-declares onto the CALLER's `ctx`, so the nested declaration must both
-/// win inside the body AND be undone afterwards.
+/// Each array gate's `NAME_LABEL` and baked `InitialValue`, anywhere in `m`.
+fn baked_by_label(m: &crate::ir::Module) -> Vec<(String, Option<Literal>)> {
+    nodes_of(m, crate::ir::gate_class::ARRAY_VAR)
+        .iter()
+        .map(|n| {
+            let label = match n.properties.get(&crate::intern::sym::NAME_LABEL) {
+                Some(Literal::String(s)) => s.clone(),
+                _ => String::new(),
+            };
+            (
+                label,
+                n.properties
+                    .get(&crate::intern::sym::INITIAL_VALUE)
+                    .cloned(),
+            )
+        })
+        .collect()
+}
+
+/// A `mod`-local `const mod` shadows the top-level one everywhere lexically
+/// inside the inlined body and nowhere outside it. Every position resolves the
+/// same call text, `size(1)`:
 ///
-/// Both leak detectors are lowered in PASS 2, *after* `f()` is expanded — a
-/// TOP-LEVEL `var` would not discriminate, because every top-level
-/// initializer bakes during pass 1, before any inlining happens. The two
-/// that do discriminate:
-///   - `afterh`, a handler-local `static var` following the `f()` call;
-///   - `chipv`, inside a chip instantiated after it, which inherits
-///     `pass1_chips` by clone at instantiation time.
-/// With the restore removed both bake `Int(100)` instead of `Int(10)`.
+///   1. `direct`    initializer directly in the inlined mod body      -> 100
+///   2. `inchip`    chip DECLARED and INSTANTIATED inside that body   -> 100
+///   3. `deeper`    chip nested inside that chip                      -> 100
+///   4. `afterh`    handler-local `static var` after the mod call     -> 10
+///   5. `chipafter` chip instantiated after the mod call              -> 10
+///
+/// An inlined mod body pre-declares onto the caller's `ctx`, so the nested
+/// declaration must win inside the body (a chip declared there included) and
+/// be undone after it. Positions 4 and 5 lower in pass 2, after `f()` is
+/// expanded, so they see any leak.
 #[test]
-fn a_mod_local_const_mod_shadows_inside_the_body_and_does_not_leak_out() {
+fn a_mod_local_const_mod_shadows_inside_the_body_and_nowhere_outside() {
     let m = lower_ok(
         "const mod size(n: int) -> int { return n * 10 }\n\
          mod f() {\n\
         \x20 const mod size(n: int) -> int { return n * 100 }\n\
-        \x20 static var inner: int[] = [size(1)]\n\
+        \x20 static var direct: int[] = [size(1)]\n\
+        \x20 chip c1() {\n\
+        \x20   var inchip: int[] = [size(1)]\n\
+        \x20   chip c2() {\n\
+        \x20     var deeper: int[] = [size(1)]\n\
+        \x20   }\n\
+        \x20   c2()\n\
+        \x20 }\n\
+        \x20 c1()\n\
          }\n\
          chip c() {\n\
-        \x20 var chipv: int[] = [size(1)]\n\
+        \x20 var chipafter: int[] = [size(1)]\n\
          }\n\
          in go: exec\n\
          on go { f()\n static var afterh: int[] = [size(1)]\n c() }",
     );
-    let baked: Vec<_> = nodes_of(&m, crate::ir::gate_class::ARRAY_VAR)
-        .iter()
-        .map(|n| {
-            (
-                match n.properties.get(&crate::intern::sym::NAME_LABEL) {
-                    Some(crate::ir::Literal::String(s)) => s.clone(),
-                    _ => String::new(),
-                },
-                n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned(),
-            )
-        })
-        .collect();
+    let baked = baked_by_label(&m);
     let of = |name: &str| {
         baked
             .iter()
@@ -196,21 +215,31 @@ fn a_mod_local_const_mod_shadows_inside_the_body_and_does_not_leak_out() {
             .1
             .clone()
     };
+    let arr = |v: i64| Some(Literal::Array(vec![Literal::Int(v)]));
     assert_eq!(
-        of("inner"),
-        Some(crate::ir::Literal::Array(vec![crate::ir::Literal::Int(100)])),
-        "the mod-local `size` must win INSIDE the inlined body"
+        of("direct"),
+        arr(100),
+        "the mod-local `size` must win directly in the body"
+    );
+    assert_eq!(
+        of("inchip"),
+        arr(100),
+        "a chip declared and instantiated INSIDE the body sees the mod-local `size`"
+    );
+    assert_eq!(
+        of("deeper"),
+        arr(100),
+        "the mod-local `size` must survive a second level of chip nesting"
     );
     assert_eq!(
         of("afterh"),
-        Some(crate::ir::Literal::Array(vec![crate::ir::Literal::Int(10)])),
-        "the mod-local `size` must NOT leak out of the inlined body into a \
-         later handler-local initializer"
+        arr(10),
+        "the mod-local `size` must not leak into a later handler-local initializer"
     );
     assert_eq!(
-        of("chipv"),
-        Some(crate::ir::Literal::Array(vec![crate::ir::Literal::Int(10)])),
-        "the mod-local `size` must NOT leak into a chip instantiated afterwards"
+        of("chipafter"),
+        arr(10),
+        "the mod-local `size` must not leak into a chip instantiated afterwards"
     );
 }
 
@@ -232,8 +261,6 @@ fn a_plain_literal_array_still_bakes_exactly_as_before() {
         ]))
     );
 }
-
-
 
 /// WIDTH PARITY between typecheck's constant check and lowering's bake.
 ///
@@ -259,8 +286,18 @@ fn a_plain_literal_array_still_bakes_exactly_as_before() {
 fn typecheck_never_accepts_an_initializer_that_lowering_silently_drops() {
     let src = "var t: int[] = [size(1)]\n\
                const mod size(n: int) -> int { return n * 10 }";
-    let crate::compile::FrontEnd { resolved, typecheck: tc, lowered: out, .. } =
-        crate::compile::front_end(src, "test", None, crate::lower::FoldMode::ForceOff, &crate::FsLoader);
+    let crate::compile::FrontEnd {
+        resolved,
+        typecheck: tc,
+        lowered: out,
+        ..
+    } = crate::compile::front_end(
+        src,
+        "test",
+        None,
+        crate::lower::FoldMode::ForceOff,
+        &crate::FsLoader,
+    );
     let rejected = resolved
         .diagnostics
         .iter()
@@ -269,7 +306,11 @@ fn typecheck_never_accepts_an_initializer_that_lowering_silently_drops() {
 
     let baked = nodes_of(&out.module, crate::ir::gate_class::ARRAY_VAR)
         .first()
-        .and_then(|n| n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned());
+        .and_then(|n| {
+            n.properties
+                .get(&crate::intern::sym::INITIAL_VALUE)
+                .cloned()
+        });
 
     assert!(
         rejected || baked.is_some(),
@@ -299,7 +340,11 @@ fn an_out_of_range_index_in_an_initializer_reports_the_specific_reason() {
         "test",
         &crate::typecheck::CeSlotMap::default(),
     );
-    let ws046: Vec<_> = tc.diagnostics.iter().filter(|d| d.code == "WS046").collect();
+    let ws046: Vec<_> = tc
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "WS046")
+        .collect();
     assert_eq!(
         ws046.len(),
         1,
@@ -319,87 +364,6 @@ fn an_out_of_range_index_in_an_initializer_reports_the_specific_reason() {
         tc.diagnostics
     );
 }
-
-/// The four-position internal-consistency check for a `mod`-local `const mod`.
-///
-/// Every position below resolves the SAME call text, `size(1)`, and every one
-/// must answer with the declaration that is lexically in scope there. The
-/// hazard is that the bake path and the ordinary call path can disagree
-/// silently, so this pins all four at once:
-///
-///   1. `direct`   — initializer directly in the inlined mod body    -> 100
-///   2. `chipv`    — chip DECLARED and INSTANTIATED inside that body -> 100
-///   3. `deeper`   — chip nested inside that chip                    -> 100
-///   4. `sibling`  — handler-local var AFTER the mod call returns    -> 10
-///
-/// Position 2 is the one that was wrong before `pass1_chips` became
-/// scope-managed: the manual restore ran right after pre-declaration, so the
-/// chip cloned an already-restored map and resolved the OUTER `size` while an
-/// ordinary call inside the same chip resolved the inner one. Position 4 is
-/// the leak detector in the other direction — the mod-local declaration must
-/// not outlive the body.
-#[test]
-fn a_mod_local_const_mod_is_visible_everywhere_inside_the_body_and_nowhere_outside() {
-    let m = lower_ok(
-        "const mod size(n: int) -> int { return n * 10 }\n\
-         mod f() {\n\
-        \x20 const mod size(n: int) -> int { return n * 100 }\n\
-        \x20 static var direct: int[] = [size(1)]\n\
-        \x20 chip c1() {\n\
-        \x20   var chipv: int[] = [size(1)]\n\
-        \x20   chip c2() {\n\
-        \x20     var deeper: int[] = [size(1)]\n\
-        \x20   }\n\
-        \x20   c2()\n\
-        \x20 }\n\
-        \x20 c1()\n\
-         }\n\
-         in go: exec\n\
-         on go { f()\n static var sibling: int[] = [size(1)] }",
-    );
-    let baked: Vec<(String, Option<crate::ir::Literal>)> =
-        nodes_of(&m, crate::ir::gate_class::ARRAY_VAR)
-            .iter()
-            .map(|n| {
-                (
-                    match n.properties.get(&crate::intern::sym::NAME_LABEL) {
-                        Some(crate::ir::Literal::String(s)) => s.clone(),
-                        _ => String::new(),
-                    },
-                    n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned(),
-                )
-            })
-            .collect();
-    let of = |name: &str| {
-        baked
-            .iter()
-            .find(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("no array var '{name}' in {baked:?}"))
-            .1
-            .clone()
-    };
-    let arr = |v: i64| Some(crate::ir::Literal::Array(vec![crate::ir::Literal::Int(v)]));
-
-    assert_eq!(of("direct"), arr(100), "mod-local `size` must win directly in the body");
-    assert_eq!(
-        of("chipv"),
-        arr(100),
-        "a chip declared and instantiated INSIDE the inlined mod body must see \
-         the mod-local `size` — this is the case the manual restore got wrong \
-         by running before the body was lowered"
-    );
-    assert_eq!(
-        of("deeper"),
-        arr(100),
-        "the mod-local `size` must survive a second level of chip nesting"
-    );
-    assert_eq!(
-        of("sibling"),
-        arr(10),
-        "the mod-local `size` must NOT outlive the body it was declared in"
-    );
-}
-
 
 /// A record `let` whose FIELD needs a `const mod` call must still lower
 /// through the ordinary `Binding::Record` path, NOT bake as a
@@ -616,7 +580,11 @@ fn a_const_container_read_at_a_runtime_index_materializes_one_baked_gate() {
          on go { BroadcastChatMessage(\"${t[k]}\") }",
     );
     let maps = nodes_of(&m, crate::ir::gate_class::MAP_VAR);
-    assert_eq!(maps.len(), 1, "the const map gets exactly one container gate");
+    assert_eq!(
+        maps.len(),
+        1,
+        "the const map gets exactly one container gate"
+    );
     assert_eq!(
         maps[0].properties.get(&crate::intern::sym::INITIAL_VALUE),
         Some(&crate::ir::Literal::Map(vec![
@@ -676,21 +644,10 @@ fn a_mutating_method_on_a_const_container_is_rejected_and_a_read_only_one_is_not
          in go: exec\n\
          on go { BroadcastChatMessage(\"${t.METHOD()}\") }";
 
-    let r = compile(&PROGRAM.replace("METHOD", "length"));
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "a read-only method on a const container must compile: {:?}",
-        r.diagnostics
-    );
+    let _ = compile_ok(&PROGRAM.replace("METHOD", "length"));
 
     let r = compile(&PROGRAM.replace("METHOD", "reverse"));
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS044"),
-        "a mutating method on a const container must be WS044: {:?}",
-        r.diagnostics
-    );
+    crate::test_support::assert_code(&r.diagnostics, "WS044");
 
     // Through a `T[]` parameter the mutation is spelled with a name that is not
     // `const` at all, so a rule keyed on the receiver's NAME would miss it and
@@ -702,11 +659,7 @@ fn a_mutating_method_on_a_const_container_is_rejected_and_a_read_only_one_is_not
          in go: exec\n\
          on go { wipe(t) }",
     );
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS044"),
-        "mutating a const container through an array parameter must be WS044: {:?}",
-        r.diagnostics
-    );
+    crate::test_support::assert_code(&r.diagnostics, "WS044");
 }
 
 /// `.length()` on a `const` container in PURE context. Typecheck exempts a
@@ -720,14 +673,19 @@ fn a_mutating_method_on_a_const_container_is_rejected_and_a_read_only_one_is_not
 #[test]
 fn const_container_length_folds_in_pure_context() {
     for (src, want) in [
-        ("const m = { \"a\": 1, \"b\": 2 }\nconst n = m.length()\nout o = n", 2),
+        (
+            "const m = { \"a\": 1, \"b\": 2 }\nconst n = m.length()\nout o = n",
+            2,
+        ),
         ("const m = { \"a\": 1, \"b\": 2 }\nout o = m.length()", 2),
-        ("const m = { \"a\": 1, \"b\": 2 }\nlet n = m.length()\nout o = n", 2),
+        (
+            "const m = { \"a\": 1, \"b\": 2 }\nlet n = m.length()\nout o = n",
+            2,
+        ),
         ("const a = [1, 2, 3]\nconst n = a.length()\nout o = n", 3),
         ("const a = [1, 2, 3]\nout o = a.length()", 3),
     ] {
-        let r = compile(src);
-        assert_no_errors(&r);
+        let r = compile_ok(src);
         assert!(
             !has_gate(&r, crate::ir::gate_class::UNSUPPORTED),
             "`.length()` on a const container fell to a placeholder:\n{src}"
@@ -754,9 +712,10 @@ fn const_container_length_folds_in_pure_context() {
         assert!(
             !r.module.wires.iter().any(|w| {
                 matches!(w.source.port, WirePort::MapVarRef | WirePort::ArrayVarRef)
-                    && r.module.nodes.get(&w.target.node_id).is_some_and(|n| {
-                        n.gate_class == crate::ir::gate_class::MICROCHIP_OUTPUT
-                    })
+                    && r.module
+                        .nodes
+                        .get(&w.target.node_id)
+                        .is_some_and(|n| n.gate_class == crate::ir::gate_class::MICROCHIP_OUTPUT)
             }),
             "a container REF reached an output port, which is the silent miscompile:\n{src}"
         );
@@ -797,8 +756,7 @@ fn an_unfoldable_const_container_read_in_pure_context_is_reported() {
 /// Compiles `src` and asserts it lowered clean: no error, no WSP001
 /// placeholder warning, and no `_Unsupported` gate in any module.
 fn lowers_clean(src: &str) -> LowerResult {
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     assert!(
         !r.diagnostics.iter().any(|d| d.code == "WSP001"),
         "a const container fell to a placeholder:\n{src}\n{:?}",
@@ -815,12 +773,18 @@ fn lowers_clean(src: &str) -> LowerResult {
 fn baked_arrays(r: &LowerResult) -> Vec<Option<Literal>> {
     nodes_of(&r.module, crate::ir::gate_class::ARRAY_VAR)
         .into_iter()
-        .map(|n| n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned())
+        .map(|n| {
+            n.properties
+                .get(&crate::intern::sym::INITIAL_VALUE)
+                .cloned()
+        })
         .collect()
 }
 
 fn ints(xs: &[i64]) -> Option<Literal> {
-    Some(Literal::Array(xs.iter().map(|&x| Literal::Int(x)).collect()))
+    Some(Literal::Array(
+        xs.iter().map(|&x| Literal::Int(x)).collect(),
+    ))
 }
 
 /// `let x = T` aliases the const table: `x[i]` reads the materialized gate,
@@ -960,7 +924,10 @@ fn a_const_container_passed_to_a_chip_container_param_materializes() {
          in go: exec\nin i: int\nlet c = C(go, T, i)\nout r: int = c",
     );
     assert_eq!(baked_arrays(&r), vec![ints(&[10, 20, 30])]);
-    assert_eq!(nodes_of(&r.module, crate::ir::gate_class::ARRAY_GET).len(), 1);
+    assert_eq!(
+        nodes_of(&r.module, crate::ir::gate_class::ARRAY_GET).len(),
+        1
+    );
 
     let r = lowers_clean(
         "const M = { \"a\": 1, \"b\": 2 }\n\
@@ -999,8 +966,7 @@ fn a_chip_that_mutates_its_container_param_rejects_a_const_argument() {
                         chip Put(go: exec, xs: Map<string, int>) {\n  on go { xs.set(\"a\", 1) }\n}\n\
                         in go: exec\nvar v: int[]\nvar w: Map<string, int>\n\
                         const T = [10, 20, 30]\nconst M = { \"a\": 5 }\n";
-    let r = compile(&format!("{CHIP}Wipe(go, v)\nPut(go, w)"));
-    assert_no_errors(&r);
+    let _ = compile_ok(&format!("{CHIP}Wipe(go, v)\nPut(go, w)"));
     for calls in [
         "Wipe(go, T)",
         "Wipe(go, v)\nWipe(go, T)",
@@ -1022,12 +988,8 @@ fn a_chip_that_mutates_its_container_param_rejects_a_const_argument() {
 /// The node wired into `class`'s `ArrayVarRef` input, for every `class` gate.
 fn array_ref_sources(r: &LowerResult, class: &str) -> Vec<crate::ir::NodeId> {
     let gates: Vec<crate::ir::NodeId> = nodes_of(&r.module, class).iter().map(|n| n.id).collect();
-    let mut wires: Vec<&crate::ir::Wire> = r.module.wires.iter().collect();
-    for chip in r.module.chips.values() {
-        wires.extend(chip.wires.iter());
-    }
-    wires
-        .into_iter()
+    r.module
+        .wires_deep()
         .filter(|w| gates.contains(&w.target.node_id) && w.target.port == WirePort::ArrayVarRef)
         .map(|w| w.source.node_id)
         .collect()
@@ -1037,7 +999,11 @@ fn baked_of(r: &LowerResult, node: crate::ir::NodeId) -> Option<Literal> {
     nodes_of(&r.module, crate::ir::gate_class::ARRAY_VAR)
         .into_iter()
         .find(|n| n.id == node)
-        .and_then(|n| n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned())
+        .and_then(|n| {
+            n.properties
+                .get(&crate::intern::sym::INITIAL_VALUE)
+                .cloned()
+        })
 }
 
 /// A constant `let`/`const` shadows an outer binding of the same name (a
@@ -1061,13 +1027,19 @@ fn a_constant_container_let_shadows_an_outer_binding() {
         let r = lowers_clean(src);
         let sources = array_ref_sources(&r, crate::ir::gate_class::ARRAY_GET);
         assert_eq!(sources.len(), 1, "{src}");
-        assert_eq!(baked_of(&r, sources[0]), ints(&[10, 20, 30]), "the read must use the shadowing constant:\n{src}");
+        assert_eq!(
+            baked_of(&r, sources[0]),
+            ints(&[10, 20, 30]),
+            "the read must use the shadowing constant:\n{src}"
+        );
     }
     let r = compile(
         "var x: int[] = [1, 2]\nin go: exec\non go {\n  let x = [10, 20, 30]\n  x.push(4)\n}",
     );
     assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS044" && d.message.contains("would change")),
+        r.diagnostics
+            .iter()
+            .any(|d| d.code == "WS044" && d.message.contains("would change")),
         "{:?}",
         r.diagnostics
     );
@@ -1086,7 +1058,9 @@ fn a_chip_cannot_mutate_a_constant_through_a_ref_param_or_a_select_alias() {
     ] {
         let r = compile(src);
         assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS044" && d.message.contains("would change")),
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS044" && d.message.contains("would change")),
             "{src}\n{:?}",
             r.diagnostics
         );
@@ -1116,14 +1090,14 @@ fn storing_a_constant_containers_ref_is_ws044() {
         );
     }
     // A var container stores fine.
-    let r = compile("var v: int[]\nvar rows: int[][]\nin go: exec\non go { rows.push(v) }");
-    assert_no_errors(&r);
+    let _ = compile_ok("var v: int[]\nvar rows: int[][]\nin go: exec\non go { rows.push(v) }");
 }
 
 /// Whether any diagnostic is the const-mutation or const-store WS044.
 fn const_ws044(r: &LowerResult) -> bool {
     r.diagnostics.iter().any(|d| {
-        d.code == "WS044" && (d.message.contains("would change") || d.message.contains("reference to a constant"))
+        d.code == "WS044"
+            && (d.message.contains("would change") || d.message.contains("reference to a constant"))
     })
 }
 
@@ -1155,16 +1129,8 @@ fn an_array_literal_in_a_storing_position_is_loud() {
         "in n: int\nout o: int[] = [n, 2]",
     ] {
         let r = compile(src);
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WSP001"),
-            "{src}\n{:?}",
-            r.diagnostics
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS044"),
-            "{src}\n{:?}",
-            r.diagnostics
-        );
+        crate::test_support::assert_no_code(&r.diagnostics, "WSP001");
+        crate::test_support::assert_code(&r.diagnostics, "WS044");
     }
     // Read-only uses of a literal still work.
     let r = lowers_clean("var a: int[]\nin go: exec\non go { a.append([10, 20, 30]) }");

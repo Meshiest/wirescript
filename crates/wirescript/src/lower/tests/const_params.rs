@@ -3,36 +3,7 @@
 //! sharpest case: it is gate CONFIG, not a wire, so a non-constant there is an
 //! error and a constant bakes into the component data.
 
-/// Resolve, typecheck and lower `src`, asserting no errors, and return the IR.
-/// Folding is FORCED OFF so any gate that is absent is absent because const
-/// evaluation removed it, never because the optimizer did.
-pub(crate) fn lower_ok(src: &str) -> crate::ir::Module {
-    let crate::compile::FrontEnd { resolved, typecheck: tc, lowered: out, .. } =
-        crate::compile::front_end(src, "test", None, crate::lower::FoldMode::ForceOff, &crate::FsLoader);
-    assert!(
-        resolved
-            .diagnostics
-            .iter()
-            .all(|d| d.severity != crate::Severity::Error),
-        "resolve errors: {:?}",
-        resolved.diagnostics
-    );
-    assert!(
-        tc.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::Severity::Error),
-        "typecheck errors: {:?}",
-        tc.diagnostics
-    );
-    assert!(
-        out.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::Severity::Error),
-        "lower errors: {:?}",
-        out.diagnostics
-    );
-    out.module
-}
+pub(crate) use super::lower_ok;
 
 /// The baked `EventName` of every `SendCustomEvent` node. `EventName` is a
 /// data-struct field, not a pre-interned `sym::` constant (see
@@ -64,22 +35,6 @@ fn receiver_event_names(m: &crate::ir::Module) -> Vec<String> {
             },
         )
         .collect()
-}
-
-#[test]
-fn a_const_param_bakes_a_custom_event_channel_name() {
-    let m = lower_ok(
-        "mod ping(name: const string, v: int) { SendCustomEvent(name, v) }\n\
-         in go: exec\n\
-         var hp: int = 0\n\
-         on go { ping(\"died\", hp) }",
-    );
-    let names = event_name_properties(&m);
-    assert_eq!(
-        names,
-        vec!["died".to_string()],
-        "the const param must bake as the channel name, got {names:?}"
-    );
 }
 
 /// The third manifestation of the single-named-output wrapping bug (see
@@ -125,24 +80,8 @@ fn two_call_sites_bake_two_different_channels() {
 
 /// A `chip` shares ONE compiled body per cache key across call sites, unlike a
 /// `mod` (re-inlined fresh every time). A const param's value is baked into
-/// that body, so the key must carry it — otherwise call site B silently reuses
-/// the body built with call site A's constant.
-#[test]
-fn a_const_param_bakes_a_channel_name_in_a_chip_body() {
-    let m = lower_ok(
-        "chip ping(name: const string, v: int) { SendCustomEvent(name, v) }\n\
-         in go: exec\n\
-         var hp: int = 0\n\
-         on go { ping(\"died\", hp) }",
-    );
-    let names = event_name_properties(&m);
-    assert_eq!(
-        names,
-        vec!["died".to_string()],
-        "a chip's const param must bake as the channel name, got {names:?}"
-    );
-}
-
+/// that body, so the key must carry it, or call site B silently reuses the
+/// body built with call site A's constant.
 #[test]
 fn two_chip_call_sites_get_two_bodies_not_one_reused() {
     let m = lower_ok(
@@ -203,18 +142,6 @@ fn a_leading_const_param_does_not_shift_later_pins() {
     );
 }
 
-// The receiver side of a `CustomEvent` handler must bake a named
-// constant's resolved value as its `EventName`, exactly as the sender side
-// already does — otherwise a computed channel name can be sent but never
-// received (the two `EventName` properties would never match at runtime).
-#[test]
-fn a_named_constant_bakes_as_a_receiver_channel_name() {
-    let m = lower_ok(
-        "const CH = \"evt_\" .. \"died\"\nvar n: int = 0\non CustomEvent(CH) -> (v: int) { n = v }",
-    );
-    assert_eq!(receiver_event_names(&m), vec!["evt_died".to_string()]);
-}
-
 // A computed channel name sent via a named constant must reach a receiver
 // bound to the SAME constant — i.e. the sender's and receiver's baked
 // `EventName` values must be byte-identical, not just each individually
@@ -269,7 +196,6 @@ fn two_chip_call_sites_with_the_same_const_share_one_template() {
         "identical const args should share a template, got {keys:?}"
     );
 }
-
 
 /// A `const` parameter's value has no wire — `lower_chip_call_inline` records
 /// it in `scoped_consts` instead of binding a port — so reading it in a plain
@@ -345,9 +271,8 @@ fn a_const_mod_call_bakes_as_a_custom_event_channel_name() {
 /// ships with no channel.
 #[test]
 fn a_certified_method_call_bakes_as_a_custom_event_channel_name() {
-    let m = lower_ok(
-        "in go: exec\nvar hp: int = 0\non go { SendCustomEvent(\"died\".ToUpper(), hp) }",
-    );
+    let m =
+        lower_ok("in go: exec\nvar hp: int = 0\non go { SendCustomEvent(\"died\".ToUpper(), hp) }");
     assert_eq!(
         event_name_properties(&m),
         vec!["DIED".to_string()],
@@ -356,7 +281,7 @@ fn a_certified_method_call_bakes_as_a_custom_event_channel_name() {
 }
 
 /// A block-scope **`const`** destructure feeding a constant-only config slot
-/// must BAKE its value into the gate.
+/// must BAKE its value into the gate, in every scope and spelling.
 ///
 /// This asserts against the baked `EventName` PROPERTY, not the IR dump,
 /// because the dump cannot see this class of bug at all: the broken and the
@@ -366,72 +291,48 @@ fn a_certified_method_call_bakes_as_a_custom_event_channel_name() {
 /// example (0 occurrences broken vs 1 fixed).
 #[test]
 fn a_block_scope_const_destructure_bakes_a_custom_event_channel_name() {
-    let m = lower_ok(
-        "mod f(v: int) {\n\
-           const { chan } = { chan: \"evt_died\" }\n\
-           SendCustomEvent(chan, v)\n\
-         }\n\
-         in go: exec\nvar hp: int = 0\non go { f(hp) }",
-    );
-    assert_eq!(
-        event_name_properties(&m),
-        vec!["evt_died".to_string()],
-        "a const destructure must bake as the channel name, not ship an empty one"
-    );
-}
-
-/// The ALIAS form of the same thing — `{ chan: c2 }` binds `c2`, and it is
-/// `c2` that must carry the value into the config slot.
-#[test]
-fn a_block_scope_const_destructure_alias_bakes_a_custom_event_channel_name() {
-    let m = lower_ok(
-        "mod f(v: int) {\n\
-           const { chan: c2 } = { chan: \"evt_aliased\" }\n\
-           SendCustomEvent(c2, v)\n\
-         }\n\
-         in go: exec\nvar hp: int = 0\non go { f(hp) }",
-    );
-    assert_eq!(
-        event_name_properties(&m),
-        vec!["evt_aliased".to_string()],
-        "an aliased const destructure must bake the aliased name's value"
-    );
-}
-
-/// Inside a HANDLER body rather than a mod body — a separate scope path.
-#[test]
-fn a_const_destructure_in_a_handler_body_bakes_a_custom_event_channel_name() {
-    let m = lower_ok(
-        "in go: exec\nvar hp: int = 0\n\
-         on go {\n\
-           const { chan } = { chan: \"evt_handler\" }\n\
-           SendCustomEvent(chan, hp)\n\
-         }",
-    );
-    assert_eq!(
-        event_name_properties(&m),
-        vec!["evt_handler".to_string()],
-        "a const destructure in a handler body must bake too"
-    );
-}
-
-/// A destructured `const` passed to a `const` PARAMETER, which then reaches
-/// the config slot — the guarantee `const string` is supposed to make.
-#[test]
-fn a_destructured_const_satisfies_a_const_parameter_and_bakes() {
-    let m = lower_ok(
-        "mod send(name: const string, v: int) { SendCustomEvent(name, v) }\n\
-         mod f(v: int) {\n\
-           const { chan } = { chan: \"evt_param\" }\n\
-           send(chan, v)\n\
-         }\n\
-         in go: exec\nvar hp: int = 0\non go { f(hp) }",
-    );
-    assert_eq!(
-        event_name_properties(&m),
-        vec!["evt_param".to_string()],
-        "a destructured const must satisfy a const param and bake through it"
-    );
+    let rows: &[(&str, &str, &str)] = &[
+        (
+            "a const destructure in a mod body",
+            "mod f(v: int) {\n  const { chan } = { chan: \"evt_died\" }\n  SendCustomEvent(chan, v)\n}\n\
+             in go: exec\nvar hp: int = 0\non go { f(hp) }",
+            "evt_died",
+        ),
+        // `{ chan: c2 }` binds `c2`, and it is `c2` that carries the value.
+        (
+            "the alias form bakes the aliased name's value",
+            "mod f(v: int) {\n  const { chan: c2 } = { chan: \"evt_aliased\" }\n  SendCustomEvent(c2, v)\n}\n\
+             in go: exec\nvar hp: int = 0\non go { f(hp) }",
+            "evt_aliased",
+        ),
+        // A HANDLER body rather than a mod body: a separate scope path.
+        (
+            "a const destructure in a handler body",
+            "in go: exec\nvar hp: int = 0\n\
+             on go {\n  const { chan } = { chan: \"evt_handler\" }\n  SendCustomEvent(chan, hp)\n}",
+            "evt_handler",
+        ),
+        // The guarantee `const string` is supposed to make.
+        (
+            "a destructured const satisfies a const parameter and bakes through it",
+            "mod send(name: const string, v: int) { SendCustomEvent(name, v) }\n\
+             mod f(v: int) {\n  const { chan } = { chan: \"evt_param\" }\n  send(chan, v)\n}\n\
+             in go: exec\nvar hp: int = 0\non go { f(hp) }",
+            "evt_param",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for &(label, src, want) in rows {
+        let r = super::compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        let names = event_name_properties(&r.module);
+        if !errors.is_empty() || names != [want] {
+            failures.push(format!(
+                "{label}: errors {errors:?}, channels {names:?}, want [{want:?}]\n{src}"
+            ));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 /// Resolve, typecheck and lower `src`, returning LOWERING's error codes.
@@ -440,8 +341,17 @@ fn a_destructured_const_satisfies_a_const_parameter_and_bakes() {
 /// Typecheck must still be clean, or the test would be asserting about a
 /// program that never had a chance to lower.
 fn lowering_codes(src: &str) -> Vec<String> {
-    let crate::compile::FrontEnd { typecheck: tc, lowered, .. } =
-        crate::compile::front_end(src, "test", None, crate::lower::FoldMode::ForceOff, &crate::FsLoader);
+    let crate::compile::FrontEnd {
+        typecheck: tc,
+        lowered,
+        ..
+    } = crate::compile::front_end(
+        src,
+        "test",
+        None,
+        crate::lower::FoldMode::ForceOff,
+        &crate::FsLoader,
+    );
     assert!(
         tc.diagnostics
             .iter()
@@ -450,11 +360,11 @@ fn lowering_codes(src: &str) -> Vec<String> {
         tc.diagnostics
     );
     lowered
-    .diagnostics
-    .iter()
-    .filter(|d| d.severity == crate::Severity::Error)
-    .map(|d| d.code.clone())
-    .collect()
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == crate::Severity::Error)
+        .map(|d| d.code.clone())
+        .collect()
 }
 
 /// A named chip's body is a `Block`, so its `const`s never go through
@@ -509,7 +419,10 @@ fn a_chip_inside_a_chip_reads_the_enclosing_chips_constants() {
            let q = Inner(t) }\n\
          in go: exec\nlet r = Outer(go)";
     let codes = lowering_codes(src);
-    assert!(!codes.iter().any(|c| c == "WS028"), "the enclosing chip's constant did not resolve: {codes:?}");
+    assert!(
+        !codes.iter().any(|c| c == "WS028"),
+        "the enclosing chip's constant did not resolve: {codes:?}"
+    );
     assert_eq!(
         event_name_properties(&lower_ok(src)),
         vec!["deep".to_string()],

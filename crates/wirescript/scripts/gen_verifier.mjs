@@ -266,7 +266,7 @@ export function generateVerifier(table) {
   out.push('/// (3-decimal) text, which a value comparison against full live');
   out.push('/// precision cannot round-trip in general. Full-precision semantics are');
   out.push('/// certified separately by the Rust replay gate (see');
-  out.push('/// crates/wirescript/tests/fold_invariants.rs and');
+  out.push('/// crates/wirescript/tests/it/fold_invariants.rs and');
   out.push('/// lower/fold/eval.rs\'s replay_every_certified_case).');
   out.push('mod failLine(msg: string) {');
   out.push('  PrintToConsole(msg)');

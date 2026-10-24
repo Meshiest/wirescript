@@ -6,7 +6,10 @@ use super::*;
 use crate::resolve::{MemLoader, resolve};
 
 /// Resolve + typecheck + lower a two-file program (`lib.ws` + main).
-fn compile_with_lib(lib_src: &str, main_src: &str) -> (crate::typecheck::TypeCheckResult, LowerResult) {
+fn compile_with_lib(
+    lib_src: &str,
+    main_src: &str,
+) -> (crate::typecheck::TypeCheckResult, LowerResult) {
     compile_with_libs(&[("lib.ws", lib_src)], main_src)
 }
 
@@ -15,15 +18,20 @@ fn compile_with_libs(
     libs: &[(&str, &str)],
     main_src: &str,
 ) -> (crate::typecheck::TypeCheckResult, LowerResult) {
-    let mut files = std::collections::HashMap::default();
-    for (name, src) in libs {
-        files.insert((*name).to_string(), (*src).into());
-    }
-    let loader = MemLoader { files };
+    let loader = MemLoader {
+        files: libs
+            .iter()
+            .map(|(name, src)| (name.to_string(), src.to_string()))
+            .collect(),
+    };
     // Namespace-resolution structure tests; force folding off so constant
     // chip/value bodies aren't optimized away out from under the asserts.
-    let crate::compile::FrontEnd { resolved, typecheck: tc, lowered: lr, .. } =
-        crate::compile::front_end(main_src, "test", None, FoldMode::ForceOff, &loader);
+    let crate::compile::FrontEnd {
+        resolved,
+        typecheck: tc,
+        lowered: lr,
+        ..
+    } = crate::compile::front_end(main_src, "test", None, FoldMode::ForceOff, &loader);
     assert!(
         resolved.diagnostics.is_empty(),
         "import should resolve: {:?}",
@@ -32,130 +40,141 @@ fn compile_with_libs(
     (tc, lr)
 }
 
+#[track_caller]
 fn assert_clean(tc: &crate::typecheck::TypeCheckResult, lr: &LowerResult) {
+    let errors = [
+        crate::test_support::error_codes(&tc.diagnostics),
+        crate::test_support::error_codes(&lr.diagnostics),
+    ];
     assert!(
-        tc.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "typecheck errors: {:?}",
-        tc.diagnostics
-    );
-    assert!(
-        lr.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "lower errors: {:?}",
+        errors.iter().all(|e| e.is_empty()),
+        "typecheck errors: {:?}\nlower errors: {:?}",
+        tc.diagnostics,
         lr.diagnostics
     );
 }
 
 /// Every `Literal::Int` baked into any node property, anywhere in the tree.
 fn baked_ints(m: &crate::ir::Module) -> Vec<i64> {
-    let mut out = Vec::new();
-    for n in m.nodes.values() {
-        for v in n.properties.values() {
-            if let crate::ir::Literal::Int(i) = v {
-                out.push(*i);
+    m.nodes_deep()
+        .flat_map(|n| n.properties.values())
+        .filter_map(|v| match v {
+            crate::ir::Literal::Int(i) => Some(*i),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A namespaced value member resolves to its own value, wherever it is read,
+/// instead of an `_Unsupported` placeholder that read 0: each row checks clean,
+/// with no placeholder, and bakes every listed integer.
+#[test]
+fn a_namespaced_value_member_lowers_to_its_value() {
+    let rows: &[(&str, &[(&str, &str)], &str, &[i64])] = &[
+        (
+            "a namespaced scalar `let`",
+            &[("lib.ws", "let answer: int = 42")],
+            "import * as lib from \"lib\"\nout o = lib.answer",
+            &[42],
+        ),
+        (
+            "`lib.rec.value`: the namespace hop resolves the record binding, then the record-field \
+             walk continues from there",
+            &[("lib.ws", "type V = {value: int}\nlet rec: V = {value: 42}")],
+            "import * as lib from \"lib\"\nout o = lib.rec.value",
+            &[42],
+        ),
+        (
+            "a namespaced value typed `any` made every use against a concrete type a mismatch",
+            &[("lib.ws", "type V = {value: int}\nlet rec: V = {value: 42}")],
+            "import * as lib from \"lib\"\ntype Outer = {value: lib.V}\nlet r: Outer = {value: lib.rec}\nout o = r.value.value",
+            &[42],
+        ),
+        (
+            "the `any` typing showed up as a WS003 at a typed parameter",
+            &[("lib.ws", "let answer: int = 42")],
+            "import * as lib from \"lib\"\nmod takesInt(v: int) -> int { return v + 1 }\nout o = takesInt(lib.answer)",
+            &[42],
+        ),
+        (
+            "two modules each export `empty` of unrelated record types: lowering dumped every \
+             namespace's values into one bare-name scope where the last import won, so the first \
+             one's field read a placeholder while typecheck called the file clean",
+            &[
+                (
+                    "sym.ws",
+                    "type Sym = { layer1: string }\nlet empty: Sym = { layer1: \"L\" }",
+                ),
+                (
+                    "tun.ws",
+                    "type Tun = { topart: string }\nlet empty: Tun = { topart: \"T\" }",
+                ),
+            ],
+            "import * as Sym from \"sym\"\nimport * as Tun from \"tun\"\nvar sink: string[]\nlet g = ReadBrickGrid()\n\
+             on g {\n  sink.push(\"${Sym.empty.layer1}\")\n  sink.push(\"${Tun.empty.topart}\")\n}",
+            &[],
+        ),
+        (
+            "a namespaced mod reading its module's `let` bakes THAT module's value",
+            &[
+                ("mc.ws", "let g: int = 111\nmod getG() -> int { return g }"),
+                ("nc.ws", "let g: int = 222\nmod getG() -> int { return g }"),
+            ],
+            "import * as A from \"mc\"\nimport * as B from \"nc\"\nout ra = A.getG()\nout rb = B.getG()",
+            &[111, 222],
+        ),
+        (
+            "a namespaced `out` member (`L.count`): `In`/`Out` were absent from the typecheck \
+             namespace map, so it was WS002 plus a placeholder",
+            &[(
+                "lib.ws",
+                "var counter: int = 0\nin tick: exec\non tick { counter = counter + 1 }\nout count: int = counter",
+            )],
+            "import * as L from \"lib\"\nout shown: int = L.count",
+            &[],
+        ),
+        (
+            "a namespaced `in` member read as a value",
+            &[("lib.ws", "in level: int")],
+            "import * as L from \"lib\"\nout shown: int = L.level",
+            &[],
+        ),
+        (
+            "the N11 seal still lets a traveling namespace serve its origin file: `useB()`'s \
+             `B.bar()` lives in a.ws, where `B` is in scope",
+            &[
+                (
+                    "a.ws",
+                    "import * as B from \"b\"\nmod useB() -> int { return B.bar() }",
+                ),
+                ("b.ws", "mod bar() -> int { return 7 }"),
+            ],
+            "import \"a\"\nout r: int = useB()",
+            &[7],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, libs, main, ints) in rows {
+        let (tc, lr) = compile_with_libs(libs, main);
+        let errors = [
+            crate::test_support::error_codes(&tc.diagnostics),
+            crate::test_support::error_codes(&lr.diagnostics),
+        ];
+        if !errors.iter().all(|e| e.is_empty()) {
+            failures.push(format!("{label}: errors {errors:?}"));
+            continue;
+        }
+        if has_unsupported(&lr.module) {
+            failures.push(format!("{label}: a placeholder"));
+        }
+        let baked = baked_ints(&lr.module);
+        for v in *ints {
+            if !baked.contains(v) {
+                failures.push(format!("{label}: {v} is not baked, got {baked:?}"));
             }
         }
     }
-    for c in m.chips.values() {
-        out.extend(baked_ints(c));
-    }
-    out
-}
-
-#[test]
-fn namespaced_scalar_let_lowers_to_its_value() {
-    let (tc, lr) = compile_with_lib(
-        "let answer: int = 42",
-        "import * as lib from \"lib\"\nout o = lib.answer",
-    );
-    assert_clean(&tc, &lr);
-    assert!(
-        !has_unsupported(&lr.module),
-        "a namespaced scalar must lower to a real gate, not a placeholder"
-    );
-    assert!(
-        baked_ints(&lr.module).contains(&42),
-        "the namespaced constant's value must reach the output, got {:?}",
-        baked_ints(&lr.module)
-    );
-}
-
-#[test]
-fn namespaced_record_let_field_lowers_to_its_value() {
-    // `lib.rec.value` — the namespace hop resolves to the record binding, then
-    // the normal record-field walk continues from there.
-    let (tc, lr) = compile_with_lib(
-        "type V = {value: int}\nlet rec: V = {value: 42}",
-        "import * as lib from \"lib\"\nout o = lib.rec.value",
-    );
-    assert_clean(&tc, &lr);
-    assert!(!has_unsupported(&lr.module), "must not emit a placeholder");
-    assert!(
-        baked_ints(&lr.module).contains(&42),
-        "the record field's value must reach the output, got {:?}",
-        baked_ints(&lr.module)
-    );
-}
-
-#[test]
-fn namespaced_value_types_as_its_declared_type_not_any() {
-    // Typing it `any` made every use against a concrete type a spurious
-    // mismatch — this program is correct and must check clean.
-    let (tc, lr) = compile_with_lib(
-        "type V = {value: int}\nlet rec: V = {value: 42}",
-        "import * as lib from \"lib\"\ntype Outer = {value: lib.V}\nlet r: Outer = {value: lib.rec}\nout o = r.value.value",
-    );
-    assert_clean(&tc, &lr);
-    assert!(
-        baked_ints(&lr.module).contains(&42),
-        "the nested record value must survive, got {:?}",
-        baked_ints(&lr.module)
-    );
-}
-
-#[test]
-fn namespaced_value_feeding_a_typed_param_checks_clean() {
-    // The `any` typing showed up as a WS003 at any typed boundary.
-    let (tc, lr) = compile_with_lib(
-        "let answer: int = 42",
-        "import * as lib from \"lib\"\nmod takesInt(v: int) -> int { return v + 1 }\nout o = takesInt(lib.answer)",
-    );
-    assert_clean(&tc, &lr);
-    assert!(!has_unsupported(&lr.module), "must not emit a placeholder");
-}
-
-#[test]
-fn two_namespaces_sharing_a_member_name_stay_distinct() {
-    // Two imported modules each export `empty`, of unrelated record types. A
-    // record field access `a.empty.<field>` on each must resolve against the
-    // right namespace. Lowering used to dump every namespace's value members
-    // into one shared bare-name scope where the last import won, so the
-    // first-imported namespace's `empty` was overwritten and any field access
-    // on it lowered to an `_Unsupported` placeholder that silently read a
-    // default. Typecheck kept them distinct, so `wirescript-check` reported the
-    // file clean.
-    let (tc, lr) = compile_with_libs(
-        &[
-            ("sym.ws", "type Sym = { layer1: string }\nlet empty: Sym = { layer1: \"L\" }"),
-            ("tun.ws", "type Tun = { topart: string }\nlet empty: Tun = { topart: \"T\" }"),
-        ],
-        "import * as Sym from \"sym\"\n\
-         import * as Tun from \"tun\"\n\
-         var sink: string[]\n\
-         let g = ReadBrickGrid()\n\
-         on g {\n\
-           sink.push(\"${Sym.empty.layer1}\")\n\
-           sink.push(\"${Tun.empty.topart}\")\n\
-         }",
-    );
-    assert_clean(&tc, &lr);
-    assert!(
-        !has_unsupported(&lr.module),
-        "each namespace's `empty` must resolve to its own record, not collapse to one bare name"
-    );
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 /// An imported module's root-level `in` port, triggered as `on ns.port`. The
@@ -169,24 +188,11 @@ fn namespaced_input_port_can_trigger_a_handler() {
         "import * as L from \"lib\"\non L.trigger { PrintToConsole(\"fired\") }",
     );
     assert_clean(&tc, &lr);
-    let has_input = lr
-        .module
-        .nodes
-        .values()
-        .any(|n| n.gate_class == "BrickComponentType_Internal_MicrochipInput");
-    assert!(has_input, "the imported `in` port must be declared");
-    let printed = lr
-        .module
-        .nodes
-        .values()
-        .any(|n| n.gate_class.contains("PrintToConsole"));
+    let input = find_gate(&lr, gc::MICROCHIP_INPUT);
+    let print = find_gate(&lr, gc::PRINT_TO_CONSOLE);
     assert!(
-        printed,
-        "the handler body must survive: `on ns.trigger` used to drop it entirely"
-    );
-    assert!(
-        !lr.module.wires.is_empty(),
-        "the imported input must drive the handler's exec chain"
+        exec_reaches(&lr.module, input, print),
+        "the imported input must drive the handler body: `on ns.trigger` used to drop it entirely"
     );
 }
 
@@ -204,7 +210,7 @@ fn namespaced_output_port_is_declared_and_wired() {
         .module
         .nodes
         .iter()
-        .find(|(_, n)| n.gate_class == "BrickComponentType_Internal_MicrochipOutput")
+        .find(|(_, n)| n.gate_class == gc::MICROCHIP_OUTPUT)
         .map(|(id, _)| *id)
         .expect("the imported `out` port must be declared");
     assert!(
@@ -220,16 +226,24 @@ fn namespaced_chip_calls_still_work() {
         "import * as lib from \"lib\"\nlet r = lib.Double(5)\nout o = r.result",
     );
     assert_clean(&tc, &lr);
-    assert!(
-        !lr.module.chips.is_empty(),
+    assert_eq!(
+        lr.module.chips.len(),
+        1,
         "a namespaced chip call must still instantiate its chip"
+    );
+    let chip = only_chip(&lr, "the Double instance");
+    assert_eq!(
+        count_gate(chip, "BrickComponentType_Expr_MathAdd"),
+        1,
+        "the chip body's `x + x`"
     );
 }
 
-const VAR: &str = "BrickComponentType_Var";
-const VAR_SET: &str = "BrickComponentType_Exec_Var_Set";
-const OUTPUT: &str = "BrickComponentType_Internal_MicrochipOutput";
+const VAR: &str = gc::VAR;
+const VAR_SET: &str = gc::VAR_SET;
+const OUTPUT: &str = gc::MICROCHIP_OUTPUT;
 
+/// How many gates of `class` the module `m` itself holds (not its chips).
 fn count_gate(m: &crate::ir::Module, class: &str) -> usize {
     m.nodes.values().filter(|n| n.gate_class == class).count()
 }
@@ -279,8 +293,16 @@ fn two_namespaces_same_var_name_get_distinct_gates() {
         .map(|(id, _)| *id)
         .collect();
     assert_eq!(outs.len(), 2);
-    let r0 = feed_source(&lr.module, outs[0], crate::ir::port_registry::WirePort::RerInput);
-    let r1 = feed_source(&lr.module, outs[1], crate::ir::port_registry::WirePort::RerInput);
+    let r0 = feed_source(
+        &lr.module,
+        outs[0],
+        crate::ir::port_registry::WirePort::RerInput,
+    );
+    let r1 = feed_source(
+        &lr.module,
+        outs[1],
+        crate::ir::port_registry::WirePort::RerInput,
+    );
     assert!(
         r0.is_some() && r1.is_some() && r0 != r1,
         "the two namespaced reads must resolve to distinct storage gates"
@@ -294,8 +316,16 @@ fn two_namespaces_same_var_name_get_distinct_gates() {
         .map(|(id, _)| *id)
         .collect();
     assert_eq!(sets.len(), 2, "each namespaced write is its own Var_Set");
-    let w0 = feed_source(&lr.module, sets[0], crate::ir::port_registry::WirePort::VarRef);
-    let w1 = feed_source(&lr.module, sets[1], crate::ir::port_registry::WirePort::VarRef);
+    let w0 = feed_source(
+        &lr.module,
+        sets[0],
+        crate::ir::port_registry::WirePort::VarRef,
+    );
+    let w1 = feed_source(
+        &lr.module,
+        sets[1],
+        crate::ir::port_registry::WirePort::VarRef,
+    );
     assert!(
         w0.is_some() && w1.is_some() && w0 != w1,
         "the two namespaced writes must target distinct storage gates"
@@ -331,8 +361,16 @@ fn local_var_and_namespaced_var_same_name_stay_distinct() {
         .map(|(id, _)| *id)
         .collect();
     assert_eq!(sets.len(), 2);
-    let w0 = feed_source(&lr.module, sets[0], crate::ir::port_registry::WirePort::VarRef);
-    let w1 = feed_source(&lr.module, sets[1], crate::ir::port_registry::WirePort::VarRef);
+    let w0 = feed_source(
+        &lr.module,
+        sets[0],
+        crate::ir::port_registry::WirePort::VarRef,
+    );
+    let w1 = feed_source(
+        &lr.module,
+        sets[1],
+        crate::ir::port_registry::WirePort::VarRef,
+    );
     assert!(
         w0.is_some() && w1.is_some() && w0 != w1,
         "`g = 1` and `A.g = 2` must write distinct gates"
@@ -349,12 +387,11 @@ fn namespaced_import_on_handler_runs() {
         "import * as L from \"lib\"",
     );
     assert_clean(&tc, &lr);
+    let inc = find_gate(&lr, gc::VAR_INCREMENT);
+    let go = find_gate(&lr, gc::MICROCHIP_INPUT);
     assert!(
-        lr.module
-            .nodes
-            .values()
-            .any(|n| n.gate_class.contains("Var_Increment")),
-        "the namespaced module's `on go` handler body must lower"
+        exec_reaches(&lr.module, go, inc),
+        "the namespaced module's `on go` handler body must lower off `go`"
     );
 }
 
@@ -390,16 +427,13 @@ fn namespaced_import_anon_chip_runs() {
         "import * as N from \"lib\"",
     );
     assert_clean(&tc, &lr);
-    assert!(
-        !lr.module.chips.is_empty(),
-        "the namespaced anon chip must instantiate a microchip"
+    let chip = only_chip(&lr, "the namespaced anon chip must instantiate a microchip");
+    assert_eq!(lr.module.chips.len(), 1);
+    assert_eq!(
+        count_gate(chip, VAR_SET),
+        1,
+        "the namespaced anon chip's `v = 1` write must lower"
     );
-    let has_set = lr
-        .module
-        .chips
-        .values()
-        .any(|c| c.nodes.values().any(|n| n.gate_class.contains("Var_Set")));
-    assert!(has_set, "the namespaced anon chip's `v = 1` write must lower");
 }
 
 /// Two modules with a same-named private `helper`, each called by a public mod:
@@ -411,8 +445,14 @@ fn namespaced_import_anon_chip_runs() {
 fn namespaced_sibling_mod_resolves_its_own_module() {
     let (tc, lr) = compile_with_libs(
         &[
-            ("m.ws", "mod helper(x: int) -> int { return x + 1 }\nmod f(x: int) -> int { return helper(x) }"),
-            ("n.ws", "mod helper(x: int) -> int { return x * 100 }\nmod g(x: int) -> int { return helper(x) }"),
+            (
+                "m.ws",
+                "mod helper(x: int) -> int { return x + 1 }\nmod f(x: int) -> int { return helper(x) }",
+            ),
+            (
+                "n.ws",
+                "mod helper(x: int) -> int { return x * 100 }\nmod g(x: int) -> int { return helper(x) }",
+            ),
         ],
         "import * as A from \"m\"\n\
          import * as B from \"n\"\n\
@@ -433,23 +473,6 @@ fn namespaced_sibling_mod_resolves_its_own_module() {
     );
 }
 
-/// A namespaced mod reading its module's `let` constant returns THAT module's
-/// value: `A.getG()` bakes 111, `B.getG()` bakes 222.
-#[test]
-fn namespaced_mod_reads_its_own_module_const() {
-    let (tc, lr) = compile_with_libs(
-        &[
-            ("mc.ws", "let g: int = 111\nmod getG() -> int { return g }"),
-            ("nc.ws", "let g: int = 222\nmod getG() -> int { return g }"),
-        ],
-        "import * as A from \"mc\"\nimport * as B from \"nc\"\nout ra = A.getG()\nout rb = B.getG()",
-    );
-    assert_clean(&tc, &lr);
-    let ints = baked_ints(&lr.module);
-    assert!(ints.contains(&111), "A.getG() must bake m's g (111): {ints:?}");
-    assert!(ints.contains(&222), "B.getG() must bake n's g (222): {ints:?}");
-}
-
 /// A namespaced mod that mutates its module's `var` writes ITS module's gate.
 /// Both modules declare `var g` + `mod bump` (the name collision), but only
 /// `A.g` is read out; `A.bump()`'s increment must target the very gate `A.g`
@@ -465,12 +488,12 @@ fn namespaced_mod_mutates_its_own_module_var() {
     );
     assert_clean(&tc, &lr);
     assert_eq!(
-        count_class(&lr.module, "BrickComponentType_Var"),
+        count_class(&lr.module, gc::VAR),
         2,
         "A.g and B.g are distinct storage gates"
     );
     // The gate `out a = A.g` reads.
-    let out_id = find_gate(&lr, "BrickComponentType_Internal_MicrochipOutput");
+    let out_id = find_gate(&lr, gc::MICROCHIP_OUTPUT);
     let a_gate = lr
         .module
         .wires
@@ -483,7 +506,7 @@ fn namespaced_mod_mutates_its_own_module_var() {
         .module
         .nodes
         .iter()
-        .find(|(_, n)| n.gate_class.contains("Var_Increment"))
+        .find(|(_, n)| n.gate_class == gc::VAR_INCREMENT)
         .map(|(id, _)| *id)
         .expect("A.bump() must lower to a Var_Increment");
     let inc_target = lr
@@ -491,8 +514,7 @@ fn namespaced_mod_mutates_its_own_module_var() {
         .wires
         .iter()
         .find(|w| {
-            w.target.node_id == inc
-                && w.target.port == crate::ir::port_registry::WirePort::VarRef
+            w.target.node_id == inc && w.target.port == crate::ir::port_registry::WirePort::VarRef
         })
         .map(|w| w.source.node_id)
         .expect("the increment must target a storage gate");
@@ -540,16 +562,9 @@ fn namespaced_handler_free_name_does_not_leak_to_importer_state() {
         "on go { q = q + 1 }",
         "import * as L from \"lib\"\nin go: exec\nvar q: int = 0\nout result: int = q",
     );
-    assert!(
-        tc.diagnostics.iter().any(|d| d.code == "WS002"),
-        "the leaked body identifier must be reported undefined, got {:?}",
-        tc.diagnostics
-    );
-    assert!(
-        tc.diagnostics.iter().any(|d| d.code == "WS001"),
-        "the leaked trigger must be reported unknown, got {:?}",
-        tc.diagnostics
-    );
+    // The leaked body identifier is undefined, and the leaked trigger unknown.
+    crate::test_support::assert_code(&tc.diagnostics, "WS002");
+    crate::test_support::assert_code(&tc.diagnostics, "WS001");
 }
 
 /// N2: the SAME file's state imported both plain and via `import * as` must
@@ -574,9 +589,12 @@ fn same_file_state_via_plain_and_namespace_shares_one_gate() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class.contains("Var_Increment"))
+        .filter(|n| n.gate_class == gc::VAR_INCREMENT)
         .count();
-    assert_eq!(incs, 1, "the imported handler must install once, got {incs}");
+    assert_eq!(
+        incs, 1,
+        "the imported handler must install once, got {incs}"
+    );
 }
 
 /// N3: `import { g }` + `import { g as h }` of the same var must share ONE
@@ -595,7 +613,10 @@ fn same_file_var_via_named_and_aliased_shares_one_gate() {
         .values()
         .filter(|n| n.gate_class == gc::VAR)
         .count();
-    assert_eq!(vars, 1, "g and its alias h must share ONE storage gate, got {vars}");
+    assert_eq!(
+        vars, 1,
+        "g and its alias h must share ONE storage gate, got {vars}"
+    );
 }
 
 /// N11: a namespace a module privately imports (`a` does `import * as B`) must
@@ -623,37 +644,6 @@ fn private_namespace_does_not_leak_to_plain_importer() {
     );
 }
 
-/// Reading a namespaced `out` member (`L.count`) resolves to the output's
-/// value instead of WS002 "not found in namespace" plus an `_Unsupported`
-/// placeholder. `In`/`Out` were absent from the typecheck namespace map and
-/// the output's binding never reached the lowering map.
-#[test]
-fn reading_a_namespaced_output_member_resolves() {
-    let (tc, lr) = compile_with_lib(
-        "var counter: int = 0\nin tick: exec\non tick { counter = counter + 1 }\nout count: int = counter",
-        "import * as L from \"lib\"\nout shown: int = L.count",
-    );
-    assert_clean(&tc, &lr);
-    assert!(
-        !has_unsupported(&lr.module),
-        "L.count must resolve, not lower to a placeholder"
-    );
-}
-
-/// Reading a namespaced `in` member (`L.level`) as a value resolves too.
-#[test]
-fn reading_a_namespaced_input_member_resolves() {
-    let (tc, lr) = compile_with_lib(
-        "in level: int",
-        "import * as L from \"lib\"\nout shown: int = L.level",
-    );
-    assert_clean(&tc, &lr);
-    assert!(
-        !has_unsupported(&lr.module),
-        "L.level must resolve, not lower to a placeholder"
-    );
-}
-
 /// A namespaced defaulted output with NO emit is a plain direct drive: one
 /// driver, no backing var. (The 4b backing-var pass must not fire on it just
 /// because it has a default - only an actually-emitted output needs backing.)
@@ -668,7 +658,7 @@ fn namespaced_defaulted_output_no_emit_has_single_driver() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_Internal_MicrochipOutput")
+        .find(|n| n.gate_class == gc::MICROCHIP_OUTPUT)
         .map(|n| n.id)
         .expect("the namespaced output must exist");
     let drivers = lr
@@ -680,9 +670,15 @@ fn namespaced_defaulted_output_no_emit_has_single_driver() {
                 && w.target.port == crate::ir::port_registry::WirePort::RerInput
         })
         .count();
-    assert_eq!(drivers, 1, "a no-emit defaulted output must have one direct driver");
+    assert_eq!(
+        drivers, 1,
+        "a no-emit defaulted output must have one direct driver"
+    );
     assert!(
-        !lr.module.nodes.values().any(|n| n.note == Some("out_backing")),
+        !lr.module
+            .nodes
+            .values()
+            .any(|n| n.note == Some("out_backing")),
         "a no-emit defaulted output must not get a backing var"
     );
 }
@@ -702,7 +698,7 @@ fn namespaced_output_default_plus_emit_has_single_driver() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_Internal_MicrochipOutput")
+        .find(|n| n.gate_class == gc::MICROCHIP_OUTPUT)
         .map(|n| n.id)
         .expect("the namespaced output must be a port of the module");
     let drivers = lr
@@ -719,31 +715,11 @@ fn namespaced_output_default_plus_emit_has_single_driver() {
         "a namespaced defaulted out + emit must be var-backed (one driver), not a fan-in"
     );
     assert!(
-        lr.module.nodes.values().any(|n| n.note == Some("out_backing")),
+        lr.module
+            .nodes
+            .values()
+            .any(|n| n.note == Some("out_backing")),
         "a backing var must have been created for the namespaced output"
-    );
-}
-
-/// The N11 visibility rule must still let the TRAVELING namespace serve its
-/// origin file's own decls: `main` calling `a`'s `useB()` (whose body uses
-/// `B.bar()`) resolves and inlines cleanly, because that reference lives in
-/// a.ws, where `B` is in scope.
-#[test]
-fn traveling_namespace_still_serves_its_origin_files_decls() {
-    let (tc, lr) = compile_with_libs(
-        &[
-            (
-                "a.ws",
-                "import * as B from \"b\"\nmod useB() -> int { return B.bar() }",
-            ),
-            ("b.ws", "mod bar() -> int { return 7 }"),
-        ],
-        "import \"a\"\nout r: int = useB()",
-    );
-    assert_clean(&tc, &lr);
-    assert!(
-        !has_unsupported(&lr.module),
-        "useB's B.bar() must resolve, not lower to a placeholder"
     );
 }
 
@@ -757,12 +733,21 @@ fn namespaced_handler_wires_its_own_members() {
         "import * as L from \"lib\"\nout shown: int = L.counter",
     );
     assert_clean(&tc, &lr);
+    let inc = find_gate(&lr, gc::VAR_INCREMENT);
+    let tick = find_gate(&lr, gc::MICROCHIP_INPUT);
     assert!(
-        lr.module
-            .nodes
-            .values()
-            .any(|n| n.gate_class.contains("Var_Increment")),
-        "a namespaced handler referencing its own members must still lower its write"
+        exec_reaches(&lr.module, tick, inc),
+        "lib's handler runs off lib's own `tick`"
+    );
+    let counter = lr
+        .module
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == inc && w.target.port == WirePort::VarRef);
+    assert_eq!(
+        counter.map(|w| lr.module.nodes[&w.source.node_id].gate_class),
+        Some(VAR),
+        "the increment writes lib's own `counter`"
     );
 }
 
@@ -775,7 +760,10 @@ fn namespaced_handler_wires_its_own_members() {
 fn transitive_namespace_resolves_in_a_namespaced_body() {
     let (tc, lr) = compile_with_libs(
         &[
-            ("leaf.ws", "let value = 10\nmod bump(n: int) -> (r: int) { return n + value }"),
+            (
+                "leaf.ws",
+                "let value = 10\nmod bump(n: int) -> (r: int) { return n + value }",
+            ),
             (
                 "mid.ws",
                 "import * as L from \"leaf\"\n\
@@ -789,28 +777,25 @@ fn transitive_namespace_resolves_in_a_namespaced_body() {
          in go: exec\n\
          on go { a = M.useLet(1)\n b = M.useMod(2)\n c = M.topLet }",
     );
+    assert_clean(&tc, &lr);
     assert!(
-        tc.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "typecheck errors: {:?}",
-        tc.diagnostics
-    );
-    assert!(
-        !lr.module.nodes.values().any(|n| n.gate_class == "_Unsupported"),
+        !has_unsupported(&lr.module),
         "a transitive namespace read must lower to real gates: {:?}",
         lr.diagnostics
     );
     // Every one of the three reads drives its own store, so none was dropped.
     assert_eq!(
-        count_class(&lr.module, "BrickComponentType_Exec_Var_Set"),
+        count_class(&lr.module, VAR_SET),
         3,
         "each of `a`/`b`/`c` must be written"
     );
-    // The two `n + L.value` bodies and `bump`'s own add are real gates, so the
+    // `useLet`'s `n + L.value` and `bump`'s `n + value` are real gates, so the
     // transitive read reached arithmetic rather than folding to a placeholder.
-    let adds = count_class(&lr.module, "BrickComponentType_Expr_MathAdd");
-    assert!(adds >= 2, "expected the inlined `n + …` adds, got {adds}");
+    assert_eq!(
+        count_class(&lr.module, "BrickComponentType_Expr_MathAdd"),
+        2,
+        "the inlined `n + …` adds"
+    );
 }
 
 /// The alias COLLIDES: the importer and the module it imports both spell their
@@ -822,8 +807,11 @@ fn transitive_namespace_resolves_in_a_namespaced_body() {
 fn colliding_namespace_alias_resolves_per_file() {
     let (tc, lr) = compile_with_libs(
         &[
-            ("leaf.ws", "let value = 10
-mod bump(n: int) -> (r: int) { return n + value }"),
+            (
+                "leaf.ws",
+                "let value = 10
+mod bump(n: int) -> (r: int) { return n + value }",
+            ),
             (
                 "mid.ws",
                 "import * as Other from \"leaf\"
@@ -837,23 +825,27 @@ mod bump(n: int) -> (r: int) { return n + value }"),
          on go { a = Other.useIt(5) }
          out z = Other.value",
     );
+    assert_clean(&tc, &lr);
     assert!(
-        tc.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "typecheck errors: {:?}",
-        tc.diagnostics
-    );
-    assert!(
-        !lr.module.nodes.values().any(|n| n.gate_class == "_Unsupported"),
+        !has_unsupported(&lr.module),
         "both `Other`s must resolve: {:?}",
         lr.diagnostics
     );
     // `leaf`'s `n + value` really inlined, so the call went through the INNER
-    // alias rather than resolving back to the importer's same-named one.
-    assert!(
-        count_class(&lr.module, "BrickComponentType_Expr_MathAdd") >= 1,
-        "the inlined body's arithmetic must be present"
+    // alias rather than resolving back to the importer's same-named one. The
+    // other MathAdd carries the constant `out z` reads.
+    let adds = nodes_of(&lr.module, "BrickComponentType_Expr_MathAdd");
+    let carriers = adds
+        .iter()
+        .filter(|n| {
+            n.properties.get(&*crate::intern::sym::INPUT_A) == Some(&crate::ir::Literal::Int(10))
+        })
+        .filter(|n| !lr.module.wires_deep().any(|w| w.target.node_id == n.id))
+        .count();
+    assert_eq!(
+        (adds.len(), carriers),
+        (2, 1),
+        "the inlined body's `n + value` and the `out z` constant's carrier"
     );
 }
 
@@ -927,7 +919,9 @@ fn namespaced_record_type_decomposes_like_a_named_import() {
     // Decomposition must reach the LEAF field, not stop at the first level.
     assert_eq!(
         a.properties.get(&*crate::intern::sym::NAME_LABEL),
-        Some(&crate::ir::Literal::String("valueholders.value.value".into())),
+        Some(&crate::ir::Literal::String(
+            "valueholders.value.value".into()
+        )),
         "label shows how deep decomposition got: {:?}",
         a.properties
     );
@@ -944,7 +938,9 @@ fn namespaced_record_type_decomposes_like_a_named_import() {
     // flattened leaf value is storable.
     assert_eq!(
         a.properties.get(&crate::intern::intern("InitialValue")),
-        Some(&crate::ir::Literal::Array(vec![crate::ir::Literal::Int(10)])),
+        Some(&crate::ir::Literal::Array(vec![crate::ir::Literal::Int(
+            10
+        )])),
         "initializer must bake the leaf value: {:?}",
         a.properties
     );
@@ -964,8 +960,14 @@ fn namespaced_record_type_decomposes_like_a_named_import() {
 fn namespace_output_declaration_does_not_inherit_a_preceding_namespaces_exec() {
     let (tc, lr) = compile_with_libs(
         &[
-            ("a.ws", "var x: int = 0\nin tick: exec\non tick { x = x + 1 }"),
-            ("b.ws", "in bump: exec\nout n: int = 5\non bump { emit n = 9 }"),
+            (
+                "a.ws",
+                "var x: int = 0\nin tick: exec\non tick { x = x + 1 }",
+            ),
+            (
+                "b.ws",
+                "in bump: exec\nout n: int = 5\non bump { emit n = 9 }",
+            ),
         ],
         "import * as A from \"a\"\nimport * as B from \"b\"",
     );
@@ -986,7 +988,7 @@ fn namespace_output_declaration_does_not_inherit_a_preceding_namespaces_exec() {
         .module
         .nodes
         .iter()
-        .find(|(_, n)| n.gate_class.contains("Var_Increment"))
+        .find(|(_, n)| n.gate_class == gc::VAR_INCREMENT)
         .map(|(id, _)| *id)
         .expect("A's `x = x + 1` must lower to a Var_Increment");
     let sets: Vec<crate::ir::NodeId> = lr
@@ -1001,7 +1003,11 @@ fn namespace_output_declaration_does_not_inherit_a_preceding_namespaces_exec() {
         1,
         "only `emit n = 9` drives a Var_Set; the declaration must not add one"
     );
-    let set_exec_source = feed_source(&lr.module, sets[0], crate::ir::port_registry::WirePort::Exec);
+    let set_exec_source = feed_source(
+        &lr.module,
+        sets[0],
+        crate::ir::port_registry::WirePort::Exec,
+    );
     assert_ne!(
         set_exec_source,
         Some(a_increment),
@@ -1083,7 +1089,11 @@ fn assert_rebuild_chain(
         .collect();
     assert_eq!(clears.len(), 1, "exactly one {clear}: {:?}", m.nodes);
     let mut prev = clears[0];
-    assert_eq!(feed_source(m, prev, ref_port), Some(storage), "{clear} targets the member");
+    assert_eq!(
+        feed_source(m, prev, ref_port),
+        Some(storage),
+        "{clear} targets the member"
+    );
     for op in ops {
         let next = m
             .wires
@@ -1092,7 +1102,11 @@ fn assert_rebuild_chain(
             .map(|w| w.target.node_id)
             .unwrap_or_else(|| panic!("nothing chained after {prev:?}; wires: {:?}", m.wires));
         assert_eq!(m.nodes[&next].gate_class, *op, "exec order of the rebuild");
-        assert_eq!(feed_source(m, next, ref_port), Some(storage), "{op} targets the member");
+        assert_eq!(
+            feed_source(m, next, ref_port),
+            Some(storage),
+            "{op} targets the member"
+        );
         prev = next;
     }
     for op in ops {
@@ -1105,48 +1119,59 @@ fn assert_rebuild_chain(
     assert_eq!(count_gate(m, VAR_SET), 0, "no Var_Set on a container");
 }
 
-/// `u.xs = [1, 2]` on a namespace-member array lowers exactly like the bare
-/// `xs = [1, 2]`: a Clear, then one Push per item, all on the member's own
-/// ArrayVar, never the scalar field-write path (an `_Unsupported` literal
-/// feeding a Var_Set on a `VarRef` port the ArrayVar does not have).
+/// A container literal assigned to a namespace member lowers exactly like the
+/// bare assignment: a Clear, then one Push per item (or Set per entry), all on
+/// the member's own storage, never the scalar field-write path.
 #[test]
-fn namespaced_array_literal_assign_clears_and_pushes_the_member() {
-    let (tc, lr) = compile_with_lib(
-        "var xs: int[]",
-        "import * as u from \"lib\"\nin go: exec\non go { u.xs = [1, 2] }",
-    );
-    assert_no_diagnostics(&tc, &lr);
-    assert!(!has_unsupported(&lr.module));
-    let xs = storage_gates(&lr.module, gc::ARRAY_VAR);
-    assert_eq!(xs.len(), 1);
-    assert_rebuild_chain(
-        &lr.module,
-        xs[0],
-        WirePort::ArrayVarRef,
-        gc::ARRAY_CLEAR,
-        &[gc::ARRAY_PUSH, gc::ARRAY_PUSH],
-    );
-}
-
-/// `u.rec.xs = [1, 2]`, an array field of a record inside a namespace member,
-/// rebuilds that field's own ArrayVar exactly like `u.xs = [1, 2]`.
-#[test]
-fn namespaced_record_field_array_literal_assign_clears_and_pushes_the_field() {
-    let (tc, lr) = compile_with_lib(
-        "type R = { xs: int[], n: int }\nvar rec: R",
-        "import * as u from \"lib\"\nin go: exec\non go { u.rec.xs = [1, 2] }",
-    );
-    assert_no_diagnostics(&tc, &lr);
-    assert!(!has_unsupported(&lr.module));
-    let xs = storage_gates(&lr.module, gc::ARRAY_VAR);
-    assert_eq!(xs.len(), 1, "only `rec.xs` is array storage");
-    assert_rebuild_chain(
-        &lr.module,
-        xs[0],
-        WirePort::ArrayVarRef,
-        gc::ARRAY_CLEAR,
-        &[gc::ARRAY_PUSH, gc::ARRAY_PUSH],
-    );
+fn a_namespaced_container_literal_assign_clears_and_rebuilds_the_member() {
+    let rows: &[(&str, &str, &str, &str, WirePort, &str, &[&str])] = &[
+        (
+            "`u.xs = [1, 2]` on a namespace-member array",
+            "var xs: int[]",
+            "on go { u.xs = [1, 2] }",
+            gc::ARRAY_VAR,
+            WirePort::ArrayVarRef,
+            gc::ARRAY_CLEAR,
+            &[gc::ARRAY_PUSH, gc::ARRAY_PUSH],
+        ),
+        (
+            "`u.rec.xs = [1, 2]`, an array field of a record inside a namespace member",
+            "type R = { xs: int[], n: int }\nvar rec: R",
+            "on go { u.rec.xs = [1, 2] }",
+            gc::ARRAY_VAR,
+            WirePort::ArrayVarRef,
+            gc::ARRAY_CLEAR,
+            &[gc::ARRAY_PUSH, gc::ARRAY_PUSH],
+        ),
+        (
+            "`u.m = { .. }` on a namespace-member map",
+            "var m: Map<string, int>",
+            "on go { u.m = { \"a\": 1, \"b\": 2 } }",
+            gc::MAP_VAR,
+            WirePort::MapVarRef,
+            gc::MAP_CLEAR,
+            &[gc::MAP_SET, gc::MAP_SET],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, lib, body, storage, ref_port, clear, ops) in rows {
+        // Each row's own panic message is printed; the label is collected.
+        let row = std::panic::catch_unwind(|| {
+            let (tc, lr) = compile_with_lib(
+                lib,
+                &format!("import * as u from \"lib\"\nin go: exec\n{body}"),
+            );
+            assert_no_diagnostics(&tc, &lr);
+            assert!(!has_unsupported(&lr.module));
+            let gates = storage_gates(&lr.module, storage);
+            assert_eq!(gates.len(), 1, "one storage gate");
+            assert_rebuild_chain(&lr.module, gates[0], *ref_port, clear, ops);
+        });
+        if row.is_err() {
+            failures.push(label.to_string());
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 /// A spread element appends the source member's contents, in order.
@@ -1181,27 +1206,6 @@ fn namespaced_array_literal_assign_with_spread_appends_the_source() {
     );
 }
 
-/// `u.m = { .. }` on a namespace-member map lowers like the bare `m = { .. }`:
-/// a Clear, then one Set per entry, on the member's own MapVar.
-#[test]
-fn namespaced_map_literal_assign_clears_and_sets_the_member() {
-    let (tc, lr) = compile_with_lib(
-        "var m: Map<string, int>",
-        "import * as u from \"lib\"\nin go: exec\non go { u.m = { \"a\": 1, \"b\": 2 } }",
-    );
-    assert_no_diagnostics(&tc, &lr);
-    assert!(!has_unsupported(&lr.module));
-    let m = storage_gates(&lr.module, gc::MAP_VAR);
-    assert_eq!(m.len(), 1);
-    assert_rebuild_chain(
-        &lr.module,
-        m[0],
-        WirePort::MapVarRef,
-        gc::MAP_CLEAR,
-        &[gc::MAP_SET, gc::MAP_SET],
-    );
-}
-
 /// A non-literal whole-container assign to a namespace member has no gate to
 /// lower to, so it is the same WS027 error as the bare spelling, not a Var_Set
 /// wired from a port the container gate does not have.
@@ -1213,7 +1217,11 @@ fn namespaced_non_literal_container_assign_is_ws027() {
             "var m2: Map<string, int>\non go { u.m = m2 }",
             "u.m.copyFrom(src)",
         ),
-        ("var xs: int[]\nvar ys: int[]", "on go { u.xs = u.ys }", "u.xs.copyFrom(src)"),
+        (
+            "var xs: int[]\nvar ys: int[]",
+            "on go { u.xs = u.ys }",
+            "u.xs.copyFrom(src)",
+        ),
     ] {
         let (_tc, lr) = compile_with_lib(
             lib,
@@ -1226,7 +1234,11 @@ fn namespaced_non_literal_container_assign_is_ws027() {
             "`{main}` must be a WS027 error naming the target: {:?}",
             lr.diagnostics
         );
-        assert_eq!(count_gate(&lr.module, VAR_SET), 0, "`{main}` emits no Var_Set");
+        assert_eq!(
+            count_gate(&lr.module, VAR_SET),
+            0,
+            "`{main}` emits no Var_Set"
+        );
     }
 }
 
@@ -1238,6 +1250,6 @@ fn a_namespaced_array_ref_var_reads_as_the_array() {
     let src = "import * as S from \"lib\"\nin go: exec\nvar n: int = 0\nout onn: int = n\non go {\n  S.cur = S.rows[0]\n  let y: int[] = S.cur\n  n = y.length() + S.cur.length()\n}";
     let r = compile_multi(src, &[("lib", lib)]);
     assert_no_errors(&r);
-    assert!(!r.diagnostics.iter().any(|d| d.code == "WS016"), "{:?}", r.diagnostics);
-    assert_eq!(gate_count(&r, "BrickComponentType_Exec_ArrayVar_GetLength"), 2);
+    crate::test_support::assert_no_code(&r.diagnostics, "WS016");
+    assert_eq!(gate_count(&r, gc::ARRAY_GET_LENGTH), 2);
 }

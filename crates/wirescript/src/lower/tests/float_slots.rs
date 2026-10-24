@@ -21,14 +21,9 @@ fn literals(m: &crate::ir::Module, out: &mut Vec<Literal>) {
             other => out.push(other.clone()),
         }
     }
-    for n in m.nodes.values() {
-        for l in n.properties.values() {
-            push(l, out);
-        }
-    }
-    for c in m.chips.values() {
-        literals(c, out);
-    }
+    m.nodes_deep()
+        .flat_map(|n| n.properties.values())
+        .for_each(|l| push(l, out));
 }
 
 /// What a value of `kind` is written as in a route's source, and the
@@ -124,7 +119,11 @@ fn read_save(src: &str, deps: &[(&str, &str)], fold: bool) -> (Vec<Literal>, usi
 }
 
 /// [`read_save`], or the codes of the errors when `src` does not compile.
-fn try_read_save(src: &str, deps: &[(&str, &str)], fold: bool) -> Result<(Vec<Literal>, usize), Vec<String>> {
+fn try_read_save(
+    src: &str,
+    deps: &[(&str, &str)],
+    fold: bool,
+) -> Result<(Vec<Literal>, usize), Vec<String>> {
     read_save_values(src, deps, fold, false)
 }
 
@@ -148,7 +147,9 @@ fn read_save_values(
             BrdbValue::F32(f) if narrow => out.push(Literal::Float(f64::from(*f))),
             BrdbValue::Bool(b) if narrow => out.push(Literal::Bool(*b)),
             BrdbValue::Struct(s) => s.properties.values().for_each(|p| go(p, out, narrow)),
-            BrdbValue::Array(items) | BrdbValue::FlatArray(items) => items.iter().for_each(|i| go(i, out, narrow)),
+            BrdbValue::Array(items) | BrdbValue::FlatArray(items) => {
+                items.iter().for_each(|i| go(i, out, narrow))
+            }
             BrdbValue::DynamicArray(a) => a.values.iter().for_each(|i| go(i, out, narrow)),
             BrdbValue::DynamicMap(m) => m.entries.iter().for_each(|(k, v)| {
                 go(k, out, narrow);
@@ -162,28 +163,20 @@ fn read_save_values(
         }
     }
     let walk = |v: &BrdbValue, out: &mut Vec<Literal>| go(v, out, narrow);
-    let fold_mode = if fold { crate::FoldMode::ForceOn } else { crate::FoldMode::ForceOff };
-    let loader = crate::resolve::MemLoader {
-        files: deps.iter().map(|(k, v)| (format!("{k}.ws"), v.to_string())).collect(),
-    };
-    let input = crate::CompileInput { source: src, file: "main", module_name: None, fold_mode };
-    let out = match crate::compile_with_loader(input, Default::default(), &loader) {
-        Ok(out) => out,
-        Err(crate::CompileError::HasErrors(errors)) => return Err(errors.iter().map(|d| d.code.to_string()).collect()),
-        Err(e) => panic!("{e:?}\n{src}"),
-    };
-    let save = wirescript_ir::readback::Save::read(&out.brz);
-    assert!(!save.grid_ids().is_empty(), "no grid in the save\n{src}");
+    let out = super::declaring_scope::compiled(src, deps, fold)?;
+    assert!(out.grid_count() > 0, "no grid in the save\n{src}");
     let mut nums = Vec::new();
-    for c in save.components() {
+    for c in out.components() {
         c.properties.values().for_each(|p| walk(p, &mut nums));
     }
-    Ok((nums, save.grid_ids().len()))
+    Ok((nums, out.grid_count()))
 }
 
 /// Whether the module's `index`th input feeds anything.
 fn input_is_wired(m: &crate::ir::Module, index: usize) -> bool {
-    m.inputs.get(index).is_some_and(|id| m.wires.iter().any(|w| w.source.node_id == *id))
+    m.inputs
+        .get(index)
+        .is_some_and(|id| m.wires.iter().any(|w| w.source.node_id == *id))
 }
 
 /// The routes into a `float` slot: `@` is the value, and each ends in a
@@ -197,62 +190,199 @@ const FLOAT_ROUTES: &[(&str, &str, &str)] = &[
         "chip D(v: float) -> (r: float) { return v / 2 }\n",
         "out od = D(@)",
     ),
-    ("annotated let", "", "on go {\nlet l: float = @\nx = l / 2\n}"),
-    ("return value", "mod give() -> float { return @ }\n", "on go { x = give() / 2 }"),
+    (
+        "annotated let",
+        "",
+        "on go {\nlet l: float = @\nx = l / 2\n}",
+    ),
+    (
+        "return value",
+        "mod give() -> float { return @ }\n",
+        "on go { x = give() / 2 }",
+    ),
+    (
+        "chip return value",
+        "chip Sev() -> float { return @ }\n",
+        "on go { x = Sev() / 2 }",
+    ),
     ("float output", "out of: float\n", "on go { emit of = @ }"),
-    ("array push", "var fs: float[]\n", "on go { fs.push(@)\nx = fs[0] / 2 }"),
-    ("map set", "var fm: Map<int, float>\n", "on go { fm.set(1, @)\nx = fm[1] / 2 }"),
-    ("enum payload", "enum S { Circle(float), Sq }\nvar s: S = S.Sq\n", "on go { s = S.Circle(@)\nmatch s { Circle(r) => { x = r / 2 } Sq => { } } }"),
-    ("enum named payload", "enum S { Box { w: float }, Sq }\nvar s: S = S.Sq\n", "on go { s = S.Box { w: @ }\nmatch s { Box { w } => { x = w / 2 } Sq => { } } }"),
-    ("record literal push", "type P = { a: float, b: int }\nvar ps: P[]\n", "on go { ps.push({ a: @, b: 1 })\nx = ps[0].a / 2 }"),
-    ("record literal assign", "type P = { a: float, b: int }\nvar p: P = { a: 1.0, b: 1 }\n", "on go { p = { a: @, b: 1 }\nx = p.a / 2 }"),
-    ("record literal let", "type P = { a: float, b: int }\n", "on go {\nlet r: P = { a: @, b: 1 }\nx = r.a / 2\n}"),
-    ("tuple assign", "var t: (float, int) = (0.0, 0)\n", "on go { t = (@, 1)\nx = t.0 / 2 }"),
-    ("tuple let", "", "on go {\nlet u: (float, int) = (@, 1)\nx = u.0 / 2\n}"),
+    (
+        "array push",
+        "var fs: float[]\n",
+        "on go { fs.push(@)\nx = fs[0] / 2 }",
+    ),
+    (
+        "map set",
+        "var fm: Map<int, float>\n",
+        "on go { fm.set(1, @)\nx = fm[1] / 2 }",
+    ),
+    (
+        "enum payload",
+        "enum S { Circle(float), Sq }\nvar s: S = S.Sq\n",
+        "on go { s = S.Circle(@)\nmatch s { Circle(r) => { x = r / 2 } Sq => { } } }",
+    ),
+    (
+        "enum named payload",
+        "enum S { Box { w: float }, Sq }\nvar s: S = S.Sq\n",
+        "on go { s = S.Box { w: @ }\nmatch s { Box { w } => { x = w / 2 } Sq => { } } }",
+    ),
+    (
+        "record literal push",
+        "type P = { a: float, b: int }\nvar ps: P[]\n",
+        "on go { ps.push({ a: @, b: 1 })\nx = ps[0].a / 2 }",
+    ),
+    (
+        "record literal assign",
+        "type P = { a: float, b: int }\nvar p: P = { a: 1.0, b: 1 }\n",
+        "on go { p = { a: @, b: 1 }\nx = p.a / 2 }",
+    ),
+    (
+        "record literal let",
+        "type P = { a: float, b: int }\n",
+        "on go {\nlet r: P = { a: @, b: 1 }\nx = r.a / 2\n}",
+    ),
+    (
+        "tuple assign",
+        "var t: (float, int) = (0.0, 0)\n",
+        "on go { t = (@, 1)\nx = t.0 / 2 }",
+    ),
+    (
+        "tuple let",
+        "",
+        "on go {\nlet u: (float, int) = (@, 1)\nx = u.0 / 2\n}",
+    ),
     ("if join", "", "on go { x = (if c then @ else 2.5) / 2 }"),
-    ("match join", "enum E { A, B }\nvar e: E = E.A\n", "on go { x = (match e { A => @, B => 2.5 }) / 2 }"),
+    (
+        "match join",
+        "enum E { A, B }\nvar e: E = E.A\n",
+        "on go { x = (match e { A => @, B => 2.5 }) / 2 }",
+    ),
 ];
 
 /// Constant-only routes: a `const` table and map, and a constant read through
 /// an annotated `const`.
 const CONSTANT_ROUTES: &[(&str, &str, &str)] = &[
-    ("const array", "const A: float[] = [@, 4.0]\nin k: int\n", "on go { x = A[k] / 2 }"),
-    ("const map", "const M: Map<string, float> = { \"a\": @ }\n", "on go { x = M[\"a\"] / 2 }"),
-    ("annotated const", "const K: float = @\nconst KK = K / 2\n", "on go { x = KK }"),
+    (
+        "const array",
+        "const A: float[] = [@, 4.0]\nin k: int\n",
+        "on go { x = A[k] / 2 }",
+    ),
+    (
+        "const map",
+        "const M: Map<string, float> = { \"a\": @ }\n",
+        "on go { x = M[\"a\"] / 2 }",
+    ),
+    (
+        "annotated const",
+        "const K: float = @\nconst KK = K / 2\n",
+        "on go { x = KK }",
+    ),
 ];
 
+/// The IR literals and the save of `src` in both fold modes, each pair from
+/// one compile.
 fn check_float_slot(what: &str, src: &str, kind: Kind) {
-    for (mode, r) in [("nofold", compile(src)), ("fold", compile_folded(src))] {
-        assert_no_errors(&r);
+    for (mode, fold) in [("nofold", false), ("fold", true)] {
+        let compiled = super::declaring_scope::compiled(src, &[], fold)
+            .unwrap_or_else(|codes| panic!("{what} {kind:?} {mode}: {codes:?}\n{src}"));
+        let module = compiled.module();
         let mut lits = Vec::new();
-        literals(&r.module, &mut lits);
-        let saved = save_numbers(src, mode == "fold");
+        literals(module, &mut lits);
+        let saved = save_numbers(src, fold);
         for (stage, nums) in [("IR", &lits), ("save", &saved)] {
-            let ints = nums.iter().filter(|l| matches!(l, Literal::Int(13) | Literal::Int(6))).count();
-            assert_eq!(ints, 0, "{what} {kind:?} {mode} {stage}: an integer 13 or 6 in a float slot\n{src}\n{nums:?}");
-            let floats = nums.iter().any(|l| matches!(l, Literal::Float(f) if *f == 13.0 || *f == 6.5));
+            let ints = nums
+                .iter()
+                .filter(|l| matches!(l, Literal::Int(13) | Literal::Int(6)))
+                .count();
+            assert_eq!(
+                ints, 0,
+                "{what} {kind:?} {mode} {stage}: an integer 13 or 6 in a float slot\n{src}\n{nums:?}"
+            );
+            let floats = nums
+                .iter()
+                .any(|l| matches!(l, Literal::Float(f) if *f == 13.0 || *f == 6.5));
             if kind.constant() {
-                assert!(floats, "{what} {kind:?} {mode} {stage}: the float is missing\n{src}\n{nums:?}");
+                assert!(
+                    floats,
+                    "{what} {kind:?} {mode} {stage}: the float is missing\n{src}\n{nums:?}"
+                );
             } else {
-                assert!(!floats, "{what} {kind:?} {mode} {stage}: a runtime value became a constant\n{src}\n{nums:?}");
+                assert!(
+                    !floats,
+                    "{what} {kind:?} {mode} {stage}: a runtime value became a constant\n{src}\n{nums:?}"
+                );
             }
         }
         // A runtime value keeps its wire: an `int` variable reaches the slot
         // as the integer it holds (no conversion gate, documented).
         if !kind.constant() {
             let input = if kind == Kind::IntVar { 2 } else { 3 };
-            assert!(input_is_wired(&r.module, input), "{what} {kind:?} {mode}: the input's wire is gone\n{src}");
+            assert!(
+                input_is_wired(module, input),
+                "{what} {kind:?} {mode}: the input's wire is gone\n{src}"
+            );
         }
     }
 }
 
+/// Routes that take every kind in the sampled set: a store, a mod and a chip
+/// parameter, a container, an enum payload and a join.
+const FULL_FLOAT_ROUTES: &[&str] = &[
+    "assignment",
+    "mod parameter",
+    "chip parameter",
+    "map set",
+    "enum named payload",
+    "if join",
+];
+
+/// The kinds route `i` takes. `full` takes all of them; otherwise a route
+/// outside [`FULL_FLOAT_ROUTES`] takes one runtime kind and two constant
+/// kinds, each rotating with `i` so every kind meets several routes.
+fn float_route_kinds(i: usize, what: &str, full: bool) -> Vec<Kind> {
+    if full || FULL_FLOAT_ROUTES.contains(&what) {
+        return Kind::ALL.to_vec();
+    }
+    let runtime: Vec<Kind> = Kind::ALL.into_iter().filter(|k| !k.constant()).collect();
+    let constant: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.constant()).collect();
+    vec![
+        runtime[i % runtime.len()],
+        constant[(2 * i) % constant.len()],
+        constant[(2 * i + 1) % constant.len()],
+    ]
+}
+
+/// The default set runs every route with three kinds and the routes of
+/// [`FULL_FLOAT_ROUTES`] with all of them; the full product runs under
+/// `--ignored`.
 #[test]
 fn an_integer_constant_in_a_float_slot_is_a_float_on_every_route() {
+    integer_constant_in_a_float_slot_matrix(false);
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn an_integer_constant_in_a_float_slot_is_a_float_on_every_route_exhaustive() {
+    integer_constant_in_a_float_slot_matrix(true);
+}
+
+fn integer_constant_in_a_float_slot_matrix(full: bool) {
     let mut checked = 0;
-    for (what, decls, body) in FLOAT_ROUTES {
-        for kind in Kind::ALL {
-            let src = format!("{HEAD}{}{}", decls.replace('@', kind.text()), body.replace('@', kind.text()));
+    let mut kinds_seen = Vec::new();
+    let names: Vec<&str> = FLOAT_ROUTES.iter().map(|r| r.0).collect();
+    assert!(
+        FULL_FLOAT_ROUTES.iter().all(|r| names.contains(r)),
+        "a full route is not a route"
+    );
+    for (i, (what, decls, body)) in FLOAT_ROUTES.iter().enumerate() {
+        for kind in float_route_kinds(i, what, full) {
+            let src = format!(
+                "{HEAD}{}{}",
+                decls.replace('@', kind.text()),
+                body.replace('@', kind.text())
+            );
             check_float_slot(what, &src, kind);
+            kinds_seen.push(kind);
             checked += 1;
         }
         // Positive controls for the runtime kinds' absence checks: the same
@@ -260,7 +390,11 @@ fn an_integer_constant_in_a_float_slot_is_a_float_on_every_route() {
         // computed at run time stores the integer 13 it adds, so the save
         // reader sees what this route stores.
         for (text, float) in [("13", true), ("(13 + iv)", false)] {
-            let src = format!("{HEAD}{}{}", decls.replace('@', text), body.replace('@', text));
+            let src = format!(
+                "{HEAD}{}{}",
+                decls.replace('@', text),
+                body.replace('@', text)
+            );
             for fold in [false, true] {
                 let saved = save_numbers(&src, fold);
                 let found = saved.iter().any(|l| match l {
@@ -268,18 +402,37 @@ fn an_integer_constant_in_a_float_slot_is_a_float_on_every_route() {
                     Literal::Int(n) => !float && *n == 13,
                     _ => false,
                 });
-                assert!(found, "{what} {text} fold {fold}: the control's value is missing\n{src}\n{saved:?}");
+                assert!(
+                    found,
+                    "{what} {text} fold {fold}: the control's value is missing\n{src}\n{saved:?}"
+                );
             }
         }
     }
     for (what, decls, body) in CONSTANT_ROUTES {
-        for kind in [Kind::IntLiteral, Kind::FloatLiteral, Kind::ConstChain, Kind::Arithmetic, Kind::ConstIndex] {
+        for kind in [
+            Kind::IntLiteral,
+            Kind::FloatLiteral,
+            Kind::ConstChain,
+            Kind::Arithmetic,
+            Kind::ConstIndex,
+        ] {
             let src = format!("{HEAD}{}{body}", decls.replace('@', kind.text()));
             check_float_slot(what, &src, kind);
             checked += 1;
         }
     }
-    assert!(checked >= 249, "{checked}");
+    assert!(
+        Kind::ALL.iter().all(|k| kinds_seen.contains(k)),
+        "a kind never ran"
+    );
+    let routes = FLOAT_ROUTES.len() - FULL_FLOAT_ROUTES.len();
+    let want = if full {
+        FLOAT_ROUTES.len() * Kind::ALL.len() + CONSTANT_ROUTES.len() * 5
+    } else {
+        FULL_FLOAT_ROUTES.len() * Kind::ALL.len() + routes * 3 + CONSTANT_ROUTES.len() * 5
+    };
+    assert!(checked >= want, "{checked}");
 }
 
 /// A constant computed from a `float`-annotated constant is computed as a
@@ -294,8 +447,15 @@ fn a_float_annotated_constant_is_a_float_in_constant_evaluation() {
         assert_no_errors(&r);
         let mut lits = Vec::new();
         literals(&r.module, &mut lits);
-        assert!(lits.iter().any(|l| matches!(l, Literal::Float(f) if *f == 1.0)), "the branch is kept: {lits:?}");
-        assert!(!lits.iter().any(|l| matches!(l, Literal::Int(6))), "KK is not 6: {lits:?}");
+        assert!(
+            lits.iter()
+                .any(|l| matches!(l, Literal::Float(f) if *f == 1.0)),
+            "the branch is kept: {lits:?}"
+        );
+        assert!(
+            !lits.iter().any(|l| matches!(l, Literal::Int(6))),
+            "KK is not 6: {lits:?}"
+        );
     }
 }
 
@@ -309,15 +469,33 @@ fn an_annotated_let_or_const_binds_its_annotation() {
     let float = || Box::new(Type::Float);
     for (decl, name, want) in [
         ("const A: float[] = [13, 4]", "A", Type::Array(float())),
-        ("const M: Map<string, float> = { \"a\": 13 }", "M", Type::Map(Box::new(Type::String), float())),
+        (
+            "const M: Map<string, float> = { \"a\": 13 }",
+            "M",
+            Type::Map(Box::new(Type::String), float()),
+        ),
         ("let L: float = 13", "L", Type::Float),
         ("const K: float = 13", "K", Type::Float),
-        ("let T: (float, int) = (13, 1)", "T", Type::Tuple(vec![Type::Float, Type::Int])),
+        (
+            "let T: (float, int) = (13, 1)",
+            "T",
+            Type::Tuple(vec![Type::Float, Type::Int]),
+        ),
     ] {
-        let src = format!("in go: exec\n{decl}\nvar seen: float = 0.0\nout o: float = seen\non go {{\nlet r = {name}\n}}");
-        let tc = crate::typecheck::typecheck(&crate::parser::parse(&src, "t").ast, "t", &crate::typecheck::CeSlotMap::default());
+        let src = format!(
+            "in go: exec\n{decl}\nvar seen: float = 0.0\nout o: float = seen\non go {{\nlet r = {name}\n}}"
+        );
+        let tc = crate::typecheck::typecheck(
+            &crate::parser::parse(&src, "t").ast,
+            "t",
+            &crate::typecheck::CeSlotMap::default(),
+        );
         let at = src.rfind(name).unwrap();
-        let read = tc.type_of_expr.iter().find(|((_, s, e), _)| *s == at && *e == at + name.len()).map(|(_, t)| t.clone());
+        let read = tc
+            .type_of_expr
+            .iter()
+            .find(|((_, s, e), _)| *s == at && *e == at + name.len())
+            .map(|(_, t)| t.clone());
         assert_eq!(read, Some(want), "{decl}");
     }
 }
@@ -336,17 +514,38 @@ fn an_integer_constant_into_a_namespaced_float_parameter_is_a_float() {
             assert_no_errors(&r);
             let mut lits = Vec::new();
             literals(&r.module, &mut lits);
-            assert!(!lits.iter().any(|l| matches!(l, Literal::Int(13) | Literal::Int(6))), "{kind:?} {prefix:?}: {lits:?}");
-            assert!(lits.iter().any(|l| matches!(l, Literal::Float(f) if *f == 13.0 || *f == 6.5)), "{kind:?} {prefix:?}: {lits:?}");
+            assert!(
+                !lits
+                    .iter()
+                    .any(|l| matches!(l, Literal::Int(13) | Literal::Int(6))),
+                "{kind:?} {prefix:?}: {lits:?}"
+            );
+            assert!(
+                lits.iter()
+                    .any(|l| matches!(l, Literal::Float(f) if *f == 13.0 || *f == 6.5)),
+                "{kind:?} {prefix:?}: {lits:?}"
+            );
         }
     }
     // The argument itself is typed `float` at the call, as a flat call's is.
-    let loader = crate::resolve::MemLoader { files: [("lib.ws".to_string(), lib.to_string())].into_iter().collect() };
+    let loader = crate::resolve::MemLoader {
+        files: [("lib.ws".to_string(), lib.to_string())]
+            .into_iter()
+            .collect(),
+    };
     let src = "import * as u from \"lib\"\nin go: exec\nvar x: float = 0.0\nout ox: float = x\non go { x = u.half(13) }";
     let resolved = crate::resolve::resolve(src, "main", &loader);
-    let tc = crate::typecheck::typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
+    let tc = crate::typecheck::typecheck(
+        &resolved.ast,
+        "main",
+        &crate::typecheck::CeSlotMap::default(),
+    );
     let at = src.find("13").unwrap();
-    let arg = tc.type_of_expr.iter().find(|((f, s, e), _)| &**f == "main" && *s == at && *e == at + 2).map(|(_, t)| t.clone());
+    let arg = tc
+        .type_of_expr
+        .iter()
+        .find(|((f, s, e), _)| &**f == "main" && *s == at && *e == at + 2)
+        .map(|(_, t)| t.clone());
     assert_eq!(arg, Some(crate::ir::Type::Float));
 }
 
@@ -369,23 +568,48 @@ fn an_integer_constant_in_an_int_slot_stays_an_integer() {
         ("", "on go { n = pick(c, @, abs(k)) / 2 }"),
         ("", "on go { n = pick(c, @, clamp(k, 0, 9)) / 2 }"),
         ("", "on go { n = if c then @ else fk }"),
-        ("chip D(v: int) -> (r: int) { return v / 2 }\n", "out od = D(@)"),
+        (
+            "chip D(v: int) -> (r: int) { return v / 2 }\n",
+            "out od = D(@)",
+        ),
         ("var is: int[]\n", "on go { is.push(@)\nn = is[0] / 2 }"),
-        ("enum S { Sq(int), No }\nvar s: S = S.No\n", "on go { s = S.Sq(@) }"),
-        ("type P = { a: int }\nvar ps: P[]\n", "on go { ps.push({ a: @ }) }"),
+        (
+            "enum S { Sq(int), No }\nvar s: S = S.No\n",
+            "on go { s = S.Sq(@) }",
+        ),
+        (
+            "type P = { a: int }\nvar ps: P[]\n",
+            "on go { ps.push({ a: @ }) }",
+        ),
         ("const A: int[] = [@, 4]\n", "on go { n = A[k] / 2 }"),
-        ("mod give() -> int { return @ }\n", "on go { n = give() / 2 }"),
+        (
+            "mod give() -> int { return @ }\n",
+            "on go { n = give() / 2 }",
+        ),
     ];
     for (decls, body) in routes {
-        for kind in Kind::ALL.into_iter().filter(|k| k.constant() && *k != Kind::FloatLiteral) {
-            let text = if decls.starts_with("const") { "13" } else { kind.text() };
-            let src = format!("{head}{}{}", decls.replace('@', text), body.replace('@', text));
+        for kind in Kind::ALL
+            .into_iter()
+            .filter(|k| k.constant() && *k != Kind::FloatLiteral)
+        {
+            let text = if decls.starts_with("const") {
+                "13"
+            } else {
+                kind.text()
+            };
+            let src = format!(
+                "{head}{}{}",
+                decls.replace('@', text),
+                body.replace('@', text)
+            );
             for (mode, r) in [("nofold", compile(&src)), ("fold", compile_folded(&src))] {
                 assert_no_errors(&r);
                 let mut lits = Vec::new();
                 literals(&r.module, &mut lits);
                 assert!(
-                    !lits.iter().any(|l| matches!(l, Literal::Float(f) if *f == 13.0 || *f == 6.5)),
+                    !lits
+                        .iter()
+                        .any(|l| matches!(l, Literal::Float(f) if *f == 13.0 || *f == 6.5)),
                     "{body} {kind:?} {mode}: a float in an int slot\n{lits:?}"
                 );
             }
@@ -403,17 +627,31 @@ fn each_read_of_a_constant_expression_takes_its_own_slot() {
                const N = 3\nconst N2 = N + 2\nlet L5 = N + 2\non go {\nf = half(N2)\nf2 = half(L5)\nn = N2 / 2\n}";
     for fold in [false, true] {
         let saved = save_numbers(src, fold);
-        assert!(saved.iter().any(|l| matches!(l, Literal::Float(f) if *f == 5.0)), "fold {fold}: no float 5\n{saved:?}");
-        let r = if fold { compile_folded(src) } else { compile(src) };
-        assert_no_errors(&r);
+        assert!(
+            saved
+                .iter()
+                .any(|l| matches!(l, Literal::Float(f) if *f == 5.0)),
+            "fold {fold}: no float 5\n{saved:?}"
+        );
+        let r = if fold {
+            compile_ok_folded(src)
+        } else {
+            compile_ok(src)
+        };
         let divides = gate_count(&r, "BrickComponentType_Expr_MathDivide");
         if fold {
             // `N2 / 2` folds to the integer 2; the float route keeps a live
             // division of the float 5.
-            assert!(saved.iter().any(|l| matches!(l, Literal::Int(2))), "fold: n is not the integer 2\n{saved:?}");
+            assert!(
+                saved.iter().any(|l| matches!(l, Literal::Int(2))),
+                "fold: n is not the integer 2\n{saved:?}"
+            );
             assert_eq!(divides, 1, "fold: one float division");
         } else {
-            assert_eq!(divides, 2, "nofold: the float and the integer routes have their own division");
+            assert_eq!(
+                divides, 2,
+                "nofold: the float and the integer routes have their own division"
+            );
         }
     }
 }
@@ -424,18 +662,43 @@ fn each_read_of_a_constant_expression_takes_its_own_slot() {
 #[test]
 fn integer_math_builtins_type_as_the_join_of_their_operands() {
     let head = "in k: int\nin f: float\n";
-    for call in ["min(k, 3)", "max(k, 3)", "clamp(k, 0, 9)", "abs(k)", "sign(k)", "floor(k)", "ceil(k)", "round(k)"] {
+    for call in [
+        "min(k, 3)",
+        "max(k, 3)",
+        "clamp(k, 0, 9)",
+        "abs(k)",
+        "sign(k)",
+        "floor(k)",
+        "ceil(k)",
+        "round(k)",
+    ] {
         let src = format!("{head}let r = {call}\nlet t: int = r");
-        let tc = crate::typecheck::typecheck(&crate::parser::parse(&src, "t").ast, "t", &crate::typecheck::CeSlotMap::default());
+        let tc = crate::typecheck::typecheck(
+            &crate::parser::parse(&src, "t").ast,
+            "t",
+            &crate::typecheck::CeSlotMap::default(),
+        );
         let at = src.find(call).unwrap();
-        let r_ty = tc.type_of_expr.iter().find(|((_, s, e), _)| *s == at && *e == at + call.len()).map(|(_, t)| t.clone());
+        let r_ty = tc
+            .type_of_expr
+            .iter()
+            .find(|((_, s, e), _)| *s == at && *e == at + call.len())
+            .map(|(_, t)| t.clone());
         assert_eq!(r_ty, Some(crate::ir::Type::Int), "{call}");
     }
     for call in ["min(k, f)", "max(f, 3)", "clamp(f, 0, 9)", "abs(f)"] {
         let src = format!("{head}let r = {call}");
-        let tc = crate::typecheck::typecheck(&crate::parser::parse(&src, "t").ast, "t", &crate::typecheck::CeSlotMap::default());
+        let tc = crate::typecheck::typecheck(
+            &crate::parser::parse(&src, "t").ast,
+            "t",
+            &crate::typecheck::CeSlotMap::default(),
+        );
         let at = src.find(call).unwrap();
-        let r_ty = tc.type_of_expr.iter().find(|((_, s, e), _)| *s == at && *e == at + call.len()).map(|(_, t)| t.clone());
+        let r_ty = tc
+            .type_of_expr
+            .iter()
+            .find(|((_, s, e), _)| *s == at && *e == at + call.len())
+            .map(|(_, t)| t.clone());
         assert_eq!(r_ty, Some(crate::ir::Type::Float), "{call}");
     }
 }
@@ -448,26 +711,43 @@ fn an_integer_constant_a_float_cannot_hold_warns() {
     let head = "in go: exec\nvar x: float = 0.0\nout ox: float = x\nvar n: int = 0\nout onn: int = n\n\
                 mod half(v: float) -> float { return v / 2 }\nconst BIG = 9007199254740993\n";
     let count = |body: &str| {
-        let r = compile(&format!("{head}{body}"));
-        assert_no_errors(&r);
+        let r = compile_ok(&format!("{head}{body}"));
         r.diagnostics.iter().filter(|d| d.code == "WS104").count()
     };
     assert_eq!(count("on go { x = 9007199254740993 }"), 1);
     assert_eq!(count("on go { x = half(BIG) }"), 1);
     assert_eq!(count("on go { x = half(BIG + 2) }"), 1);
-    assert_eq!(count("var y: float = -9007199254740993\nout oy: float = y"), 1);
+    assert_eq!(
+        count("var y: float = -9007199254740993\nout oy: float = y"),
+        1
+    );
     assert_eq!(count("on go { x = 9007199254740992 }"), 0);
     assert_eq!(count("on go { n = 9007199254740993 }"), 0);
     assert_eq!(count("on go { x = 3 }"), 0);
     // A top-level `float[]` initializer's elements.
-    assert_eq!(count("var arr: float[] = [BIG, 1]\non go { x = arr[0] }"), 1);
-    assert_eq!(count("var arr: float[] = [9007199254740993, BIG]\non go { x = arr[0] }"), 2);
+    assert_eq!(
+        count("var arr: float[] = [BIG, 1]\non go { x = arr[0] }"),
+        1
+    );
+    assert_eq!(
+        count("var arr: float[] = [9007199254740993, BIG]\non go { x = arr[0] }"),
+        2
+    );
     assert_eq!(count("var arr: int[] = [BIG, 1]\non go { n = arr[0] }"), 0);
-    assert_eq!(count("var arr: float[] = [9007199254740992, 1]\non go { x = arr[0] }"), 0);
+    assert_eq!(
+        count("var arr: float[] = [9007199254740992, 1]\non go { x = arr[0] }"),
+        0
+    );
     // A parameter named like the constant is not the constant, read directly
     // or through a `let` copying it.
-    assert_eq!(count("mod g(BIG: int) -> float { return BIG }\non go { x = g(n) }"), 0);
-    assert_eq!(count("mod g(BIG: int) -> float { let q = BIG\nreturn q }\non go { x = g(n) }"), 0);
+    assert_eq!(
+        count("mod g(BIG: int) -> float { return BIG }\non go { x = g(n) }"),
+        0
+    );
+    assert_eq!(
+        count("mod g(BIG: int) -> float { let q = BIG\nreturn q }\non go { x = g(n) }"),
+        0
+    );
     assert_eq!(count("on go { for BIG in 0..n { x = half(BIG) } }"), 0);
 }
 
@@ -492,14 +772,62 @@ fn a_local_named_like_a_constant_keeps_its_own_value() {
     // (binding form, the name it shadows, declarations, body, the input the
     // local is given); `@` is the binding's name.
     let rows: &[(&str, &str, &str, &str, usize)] = &[
-        ("float mod parameter", "N", "mod h(@: float) -> float { return N / 2 }\n", "on go { f = h(fa) }", 2),
-        ("int mod parameter", "N", "mod h(@: int) -> float { return half(N) }\n", "on go { f = h(a) }", 1),
-        ("annotated let of a parameter", "N", "mod h(@: int) -> float { let q: float = N\nreturn q }\n", "on go { f = h(a) }", 1),
-        ("parameter shadowing a let", "W", "mod scale(@: float) -> float { return W * 2.0 }\n", "on go { f = scale(fa) }", 2),
-        ("chip parameter", "N", "chip C(t: exec, @: int) -> (r: float) { on t { emit r = half(N) } }\n", "on go { f = C(go, a) }", 1),
-        ("handler let", "N", "", "on go { let @ = a\nf = half(N) }", 1),
-        ("handler var", "N", "", "on go { var @: int = a\nf = half(N) }", 1),
-        ("for variable", "N", "", "on go { for @ in 0..k { f = f + half(N) } }", 3),
+        (
+            "float mod parameter",
+            "N",
+            "mod h(@: float) -> float { return N / 2 }\n",
+            "on go { f = h(fa) }",
+            2,
+        ),
+        (
+            "int mod parameter",
+            "N",
+            "mod h(@: int) -> float { return half(N) }\n",
+            "on go { f = h(a) }",
+            1,
+        ),
+        (
+            "annotated let of a parameter",
+            "N",
+            "mod h(@: int) -> float { let q: float = N\nreturn q }\n",
+            "on go { f = h(a) }",
+            1,
+        ),
+        (
+            "parameter shadowing a let",
+            "W",
+            "mod scale(@: float) -> float { return W * 2.0 }\n",
+            "on go { f = scale(fa) }",
+            2,
+        ),
+        (
+            "chip parameter",
+            "N",
+            "chip C(t: exec, @: int) -> (r: float) { on t { emit r = half(N) } }\n",
+            "on go { f = C(go, a) }",
+            1,
+        ),
+        (
+            "handler let",
+            "N",
+            "",
+            "on go { let @ = a\nf = half(N) }",
+            1,
+        ),
+        (
+            "handler var",
+            "N",
+            "",
+            "on go { var @: int = a\nf = half(N) }",
+            1,
+        ),
+        (
+            "for variable",
+            "N",
+            "",
+            "on go { for @ in 0..k { f = f + half(N) } }",
+            3,
+        ),
         (
             "match binding",
             "N",
@@ -507,21 +835,46 @@ fn a_local_named_like_a_constant_keeps_its_own_value() {
             "on go { sv = S.A(a)\nmatch sv { A(@) => { f = half(N) }, B => { f = 0.0 } } }",
             1,
         ),
-        ("record destructuring", "N", "", "on go { let { N: @ } = { N: a }\nf = half(N) }", 1),
-        ("tuple destructuring", "N", "", "on go { let (@, q) = (a, 1)\nf = half(N) }", 1),
+        (
+            "record destructuring",
+            "N",
+            "",
+            "on go { let { N: @ } = { N: a }\nf = half(N) }",
+            1,
+        ),
+        (
+            "tuple destructuring",
+            "N",
+            "",
+            "on go { let (@, q) = (a, 1)\nf = half(N) }",
+            1,
+        ),
     ];
     for (form, name, decls, body, input) in rows {
         for (binding, shadows) in [(*name, true), ("Q", false)] {
-            let src = format!("{head}{}{}", decls.replace('@', binding), body.replace('@', binding));
+            let src = format!(
+                "{head}{}{}",
+                decls.replace('@', binding),
+                body.replace('@', binding)
+            );
             for fold in [false, true] {
-                let r = if fold { compile_folded(&src) } else { compile(&src) };
-                assert_no_errors(&r);
+                let compiled = super::declaring_scope::compiled(&src, &[], fold)
+                    .unwrap_or_else(|codes| panic!("{form} fold {fold}: {codes:?}\n{src}"));
                 let (saved, _) = read_save(&src, &[], fold);
                 if shadows {
-                    assert!(!saved.iter().any(from_77), "{form} fold {fold}: the local read as the constant\n{src}\n{saved:?}");
-                    assert!(input_is_wired(&r.module, *input), "{form} fold {fold}: the local's input is unwired\n{src}");
+                    assert!(
+                        !saved.iter().any(from_77),
+                        "{form} fold {fold}: the local read as the constant\n{src}\n{saved:?}"
+                    );
+                    assert!(
+                        input_is_wired(compiled.module(), *input),
+                        "{form} fold {fold}: the local's input is unwired\n{src}"
+                    );
                 } else {
-                    assert!(saved.iter().any(from_77), "{form} fold {fold}: the control lost the constant\n{src}\n{saved:?}");
+                    assert!(
+                        saved.iter().any(from_77),
+                        "{form} fold {fold}: the control lost the constant\n{src}\n{saved:?}"
+                    );
                 }
             }
         }
@@ -537,10 +890,19 @@ fn a_local_named_like_a_constant_keeps_its_own_value() {
             assert_no_errors(&r);
             let (saved, _) = read_save(src, &[("clib", &lib)], fold);
             if shadows {
-                assert!(!saved.iter().any(from_77), "imported parameter fold {fold}: read as the let\n{saved:?}");
-                assert!(input_is_wired(&r.module, 1), "imported parameter: the input is unwired");
+                assert!(
+                    !saved.iter().any(from_77),
+                    "imported parameter fold {fold}: read as the let\n{saved:?}"
+                );
+                assert!(
+                    input_is_wired(&r.module, 1),
+                    "imported parameter: the input is unwired"
+                );
             } else {
-                assert!(saved.iter().any(from_77), "imported control fold {fold}: the let is missing\n{saved:?}");
+                assert!(
+                    saved.iter().any(from_77),
+                    "imported control fold {fold}: the let is missing\n{saved:?}"
+                );
             }
         }
     }
@@ -549,9 +911,14 @@ fn a_local_named_like_a_constant_keeps_its_own_value() {
     let src = format!("{head}on go {{ const N = 5\nf = half(N) }}");
     for fold in [false, true] {
         let (saved, _) = read_save(&src, &[], fold);
-        assert!(!saved.iter().any(from_77), "inner const fold {fold}: {saved:?}");
         assert!(
-            saved.iter().any(|l| matches!(l, Literal::Float(f) if *f == 5.0 || *f == 2.5)),
+            !saved.iter().any(from_77),
+            "inner const fold {fold}: {saved:?}"
+        );
+        assert!(
+            saved
+                .iter()
+                .any(|l| matches!(l, Literal::Float(f) if *f == 5.0 || *f == 2.5)),
             "inner const fold {fold}: {saved:?}"
         );
     }
@@ -568,30 +935,64 @@ fn an_integer_expression_without_a_certified_result_keeps_its_gate() {
                 const mod plus1(v: int) -> int { return v + 1 }\n";
     let wrapped = |l: &Literal| matches!(l, Literal::Float(f) if *f == -9223372036854775808.0 || *f == -4611686018427387904.0);
     for (body, baked, kept) in [
-        ("on go { x = half(BIG + 1) }", wrapped as fn(&Literal) -> bool, Literal::Int(i64::MAX)),
+        (
+            "on go { x = half(BIG + 1) }",
+            wrapped as fn(&Literal) -> bool,
+            Literal::Int(i64::MAX),
+        ),
         ("on go { x = BIG + 1 }", wrapped, Literal::Int(i64::MAX)),
-        ("on go { let q: float = BIG * 2\nx = q }", wrapped, Literal::Int(i64::MAX)),
+        (
+            "on go { let q: float = BIG * 2\nx = q }",
+            wrapped,
+            Literal::Int(i64::MAX),
+        ),
         ("on go { x = half(B2) }", wrapped, Literal::Int(i64::MAX)),
         ("on go { x = plus1(BIG) }", wrapped, Literal::Int(i64::MAX)),
-        ("on go { x = plus1(1) + BIG }", wrapped, Literal::Int(i64::MAX)),
-        ("on go { let q = B2\nx = q }", wrapped, Literal::Int(i64::MAX)),
-        ("on go { x = half(-(BIG + 1)) }", wrapped, Literal::Int(i64::MAX)),
-        ("on go { x = half(M7 / 2) }", |l| matches!(l, Literal::Float(f) if *f == -3.0 || *f == -1.5), Literal::Int(-7)),
+        (
+            "on go { x = plus1(1) + BIG }",
+            wrapped,
+            Literal::Int(i64::MAX),
+        ),
+        (
+            "on go { let q = B2\nx = q }",
+            wrapped,
+            Literal::Int(i64::MAX),
+        ),
+        (
+            "on go { x = half(-(BIG + 1)) }",
+            wrapped,
+            Literal::Int(i64::MAX),
+        ),
+        (
+            "on go { x = half(M7 / 2) }",
+            |l| matches!(l, Literal::Float(f) if *f == -3.0 || *f == -1.5),
+            Literal::Int(-7),
+        ),
     ] {
         let src = format!("{head}{body}");
         for fold in [false, true] {
-            let r = if fold { compile_folded(&src) } else { compile(&src) };
-            assert_no_errors(&r);
-            assert!(!r.diagnostics.iter().any(|d| d.code == "WS104"), "{body}: {:?}", r.diagnostics);
+            let compiled = super::declaring_scope::compiled(&src, &[], fold)
+                .unwrap_or_else(|codes| panic!("{body} fold {fold}: {codes:?}"));
+            let diagnostics = &compiled.out.diagnostics;
+            crate::test_support::assert_no_code(diagnostics, "WS104");
             let saved = save_numbers(&src, fold);
-            assert!(!saved.iter().any(baked), "{body} fold {fold}: baked\n{saved:?}");
-            assert!(saved.contains(&kept), "{body} fold {fold}: the gate's operand is gone\n{saved:?}");
+            assert!(
+                !saved.iter().any(baked),
+                "{body} fold {fold}: baked\n{saved:?}"
+            );
+            assert!(
+                saved.contains(&kept),
+                "{body} fold {fold}: the gate's operand is gone\n{saved:?}"
+            );
         }
     }
     let src = format!("{head}on go {{ x = half(M7 / Z) }}");
     for fold in [false, true] {
         let saved = save_numbers(&src, fold);
-        assert!(!saved.contains(&Literal::Int(-7)), "division by zero fold {fold}: not baked\n{saved:?}");
+        assert!(
+            !saved.contains(&Literal::Int(-7)),
+            "division by zero fold {fold}: not baked\n{saved:?}"
+        );
     }
 }
 
@@ -604,12 +1005,27 @@ const INTRODUCTIONS: &[(&str, &str)] = &[
     ("let", "let X: {T} = {V}\non go { {R} = {U} }"),
     ("handler let", "on go {\nlet X: {T} = {V}\n{R} = {U}\n}"),
     ("handler const", "on go {\nconst X: {T} = {V}\n{R} = {U}\n}"),
-    ("mod const parameter", "mod m(X: const {T}) -> {RT} { return {U} }\non go { {R} = m({V}) }"),
-    ("chip const parameter", "chip c(X: const {T}) -> (r: {RT}) { on go { emit r = {U} } }\non go { {R} = c({V}) }"),
-    ("const mod parameter", "const mod cm(X: {T}) -> {RT} { return {C} }\nconst Y = cm({V})\non go { {R} = Y }"),
-    ("const mod result", "const mod cm() -> {T} { return {V} }\nconst X = cm()\non go { {R} = {U} }"),
+    (
+        "mod const parameter",
+        "mod m(X: const {T}) -> {RT} { return {U} }\non go { {R} = m({V}) }",
+    ),
+    (
+        "chip const parameter",
+        "chip c(X: const {T}) -> (r: {RT}) { on go { emit r = {U} } }\non go { {R} = c({V}) }",
+    ),
+    (
+        "const mod parameter",
+        "const mod cm(X: {T}) -> {RT} { return {C} }\nconst Y = cm({V})\non go { {R} = Y }",
+    ),
+    (
+        "const mod result",
+        "const mod cm() -> {T} { return {V} }\nconst X = cm()\non go { {R} = {U} }",
+    ),
     ("var", "var X: {T} = {V}\non go { {R} = {U} }"),
-    ("static var", "on go {\nstatic var X: {T} = {V}\n{R} = {U}\n}"),
+    (
+        "static var",
+        "on go {\nstatic var X: {T} = {V}\n{R} = {U}\n}",
+    ),
     ("handler var", "on go {\nvar X: {T} = {V}\n{R} = {U}\n}"),
     ("buffer", "on go {\nbuffer X: {T} = {V}\n{R} = {U}\n}"),
 ];
@@ -623,12 +1039,47 @@ const SHAPES: &[(&str, &str, &str, &str, &str, &str)] = &[
     ("scalar", "{N}", "@", "X", "X", ""),
     ("scalar alias", "FA", "@", "X", "X", "type FA = {N}\n"),
     ("array", "{N}[]", "[@, @]", "X[k]", "X[1]", ""),
-    ("map", "Map<string, {N}>", "{ \"a\": @ }", "X[s]", "X[\"a\"]", ""),
-    ("record", "Q", "{ f: @, g: 7 }", "X.f", "X.f", "type Q = { f: {N}, g: int }\n"),
-    ("nested record", "O", "{ q: { f: @, g: 7 } }", "X.q.f", "X.q.f", "type Q = { f: {N}, g: int }\ntype O = { q: Q }\n"),
-    ("record array field", "A", "{ fs: [@, @] }", "X.fs[k]", "X.fs[1]", "type A = { fs: {N}[] }\n"),
+    (
+        "map",
+        "Map<string, {N}>",
+        "{ \"a\": @ }",
+        "X[s]",
+        "X[\"a\"]",
+        "",
+    ),
+    (
+        "record",
+        "Q",
+        "{ f: @, g: 7 }",
+        "X.f",
+        "X.f",
+        "type Q = { f: {N}, g: int }\n",
+    ),
+    (
+        "nested record",
+        "O",
+        "{ q: { f: @, g: 7 } }",
+        "X.q.f",
+        "X.q.f",
+        "type Q = { f: {N}, g: int }\ntype O = { q: Q }\n",
+    ),
+    (
+        "record array field",
+        "A",
+        "{ fs: [@, @] }",
+        "X.fs[k]",
+        "X.fs[1]",
+        "type A = { fs: {N}[] }\n",
+    ),
     ("tuple", "({N}, int)", "(@, 7)", "X.0", "X.0", ""),
-    ("enum payload", "S", "S.C(@)", "(match X { C(v) => v, E => {Z} })", "(match X { C(v) => v, E => {Z} })", "enum S { C({N}), E }\n"),
+    (
+        "enum payload",
+        "S",
+        "S.C(@)",
+        "(match X { C(v) => v, E => {Z} })",
+        "(match X { C(v) => v, E => {Z} })",
+        "enum S { C({N}), E }\n",
+    ),
     (
         "generic enum payload",
         "GE<{N}>",
@@ -637,55 +1088,188 @@ const SHAPES: &[(&str, &str, &str, &str, &str, &str)] = &[
         "(match X { C(v) => v, E => {Z} })",
         "type W = string\nenum GE<W> { C(W), E }\n",
     ),
-    ("generic record alias", "GQ", "{ f: @, g: 7 }", "X.f", "X.f", "type E = string\ntype GP<E> = { f: E, g: int }\ntype GQ = GP<{N}>\n"),
+    (
+        "generic record alias",
+        "GQ",
+        "{ f: @, g: 7 }",
+        "X.f",
+        "X.f",
+        "type E = string\ntype GP<E> = { f: E, g: int }\ntype GQ = GP<{N}>\n",
+    ),
 ];
 
 /// The uses of the number: `(name, use with `@` for the read, result type)`.
-const USES: &[(&str, &str, &str)] = &[("divide", "(@) / 2", "{N}"), ("compare", "(@) > 12", "bool"), ("store", "@", "{N}")];
+const USES: &[(&str, &str, &str)] = &[
+    ("divide", "(@) / 2", "{N}"),
+    ("compare", "(@) > 12", "bool"),
+    ("store", "@", "{N}"),
+];
 
 /// The routes the route table leaves out, each loud: (introduction, shape,
 /// error codes every row of it reports, why).
 const UNREACHABLE: &[(&str, &str, &[&str], &str)] = &[
-    ("let", "map", &["WS026"], "a map literal initializes only a map `var` or `const`"),
-    ("handler let", "map", &["WS026"], "a map literal initializes only a map `var` or `const`"),
-    ("mod const parameter", "map", &["WS026"], "a map literal is not an argument"),
-    ("chip const parameter", "map", &["WS026"], "a map literal is not an argument"),
-    ("chip const parameter", "enum payload", &["WS049"], "an enum does not cross a chip port"),
-    ("chip const parameter", "generic enum payload", &["WS049"], "an enum does not cross a chip port"),
-    ("const mod parameter", "array", &["WS007"], "a `const mod` reading a container is an exec call"),
-    ("const mod parameter", "map", &["WS026", "WS007"], "both of the above"),
-    ("const mod parameter", "tuple", &["WS046"], "a tuple element of a parameter is not evaluated"),
-    ("const mod result", "map", &["WS026"], "a map literal is not a return value"),
-    ("const mod result", "tuple", &["WSP001", "WS002"], "`->` takes named outputs, so a tuple type does not parse there"),
-    ("buffer", "map", &["WS026"], "a map literal initializes only a map `var` or `const`"),
-    ("buffer", "record", &["WSP001"], "a buffer holds one wire, not a record, tuple or enum"),
-    ("buffer", "nested record", &["WSP001"], "a buffer holds one wire, not a record, tuple or enum"),
-    ("buffer", "record array field", &["WSP001"], "a buffer holds one wire, not a record, tuple or enum"),
-    ("buffer", "tuple", &["WSP001"], "a buffer holds one wire, not a record, tuple or enum"),
-    ("buffer", "enum payload", &["WSP001"], "a buffer holds one wire, not a record, tuple or enum"),
-    ("buffer", "generic enum payload", &["WSP001"], "a buffer holds one wire, not a record, tuple or enum"),
-    ("buffer", "generic record alias", &["WSP001"], "a buffer holds one wire, not a record, tuple or enum"),
+    (
+        "let",
+        "map",
+        &["WS026"],
+        "a map literal initializes only a map `var` or `const`",
+    ),
+    (
+        "handler let",
+        "map",
+        &["WS026"],
+        "a map literal initializes only a map `var` or `const`",
+    ),
+    (
+        "mod const parameter",
+        "map",
+        &["WS026"],
+        "a map literal is not an argument",
+    ),
+    (
+        "chip const parameter",
+        "map",
+        &["WS026"],
+        "a map literal is not an argument",
+    ),
+    (
+        "chip const parameter",
+        "enum payload",
+        &["WS049"],
+        "an enum does not cross a chip port",
+    ),
+    (
+        "chip const parameter",
+        "generic enum payload",
+        &["WS049"],
+        "an enum does not cross a chip port",
+    ),
+    (
+        "const mod parameter",
+        "array",
+        &["WS007"],
+        "a `const mod` reading a container is an exec call",
+    ),
+    (
+        "const mod parameter",
+        "map",
+        &["WS026", "WS007"],
+        "both of the above",
+    ),
+    (
+        "const mod parameter",
+        "tuple",
+        &["WS046"],
+        "a tuple element of a parameter is not evaluated",
+    ),
+    (
+        "const mod result",
+        "map",
+        &["WS026"],
+        "a map literal is not a return value",
+    ),
+    (
+        "const mod result",
+        "tuple",
+        &["WSP001", "WS002"],
+        "`->` takes named outputs, so a tuple type does not parse there",
+    ),
+    (
+        "buffer",
+        "map",
+        &["WS026"],
+        "a map literal initializes only a map `var` or `const`",
+    ),
+    (
+        "buffer",
+        "record",
+        &["WSP001"],
+        "a buffer holds one wire, not a record, tuple or enum",
+    ),
+    (
+        "buffer",
+        "nested record",
+        &["WSP001"],
+        "a buffer holds one wire, not a record, tuple or enum",
+    ),
+    (
+        "buffer",
+        "record array field",
+        &["WSP001"],
+        "a buffer holds one wire, not a record, tuple or enum",
+    ),
+    (
+        "buffer",
+        "tuple",
+        &["WSP001"],
+        "a buffer holds one wire, not a record, tuple or enum",
+    ),
+    (
+        "buffer",
+        "enum payload",
+        &["WSP001"],
+        "a buffer holds one wire, not a record, tuple or enum",
+    ),
+    (
+        "buffer",
+        "generic enum payload",
+        &["WSP001"],
+        "a buffer holds one wire, not a record, tuple or enum",
+    ),
+    (
+        "buffer",
+        "generic record alias",
+        &["WSP001"],
+        "a buffer holds one wire, not a record, tuple or enum",
+    ),
 ];
 
 /// A constant is held in its declared type wherever it is introduced: an
 /// integer declared `float` (directly, or as a field, element, entry or
 /// payload) is the float it names in the save, whatever reads it and in both
 /// fold modes, and an integer declared `int` stays an integer.
+///
+/// The default set gives each (introduction, shape, type) one row per use,
+/// the numbers rotating across the uses, and a route the table pins runs
+/// fold off only (its codes are type errors); the full product runs under
+/// `--ignored`.
 #[test]
 fn a_constant_is_held_in_its_declared_type_wherever_it_is_introduced() {
+    constant_held_in_its_declared_type_matrix(false);
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn a_constant_is_held_in_its_declared_type_wherever_it_is_introduced_exhaustive() {
+    constant_held_in_its_declared_type_matrix(true);
+}
+
+fn constant_held_in_its_declared_type_matrix(full: bool) {
     let head = "in go: exec\nin k: int\nin s: string\nconst THIRTEEN = 13\nvar x: float = 0.0\nvar n: int = 0\n\
                 var b: bool = false\nout ox: float = x\nout on_: int = n\nout ob: bool = b\n";
     let mut failures = Vec::new();
     let mut rejected: Vec<(String, String)> = Vec::new();
     let mut checked = 0;
-    for (intro, template) in INTRODUCTIONS {
-        for (shape, ty, value, read, const_read, decls) in SHAPES {
+    let mut seen: Vec<(bool, &str, &str)> = Vec::new();
+    for (i, (intro, template)) in INTRODUCTIONS.iter().enumerate() {
+        for (j, (shape, ty, value, read, const_read, decls)) in SHAPES.iter().enumerate() {
+            let pinned = UNREACHABLE
+                .iter()
+                .find(|(p, s, _, _)| p == intro && s == shape);
             for float in [true, false] {
                 let num = if float { "float" } else { "int" };
                 let zero = if float { "0.0" } else { "0" };
-                let numbers: &[&str] = if float { &["13", "THIRTEEN", "13.0"] } else { &["13", "THIRTEEN"] };
-                for number in numbers {
-                    for (use_name, use_of, result_ty) in USES {
+                let numbers: &[&str] = if float {
+                    &["13", "THIRTEEN", "13.0"]
+                } else {
+                    &["13", "THIRTEEN"]
+                };
+                for (n, number) in numbers.iter().enumerate() {
+                    for (u, (use_name, use_of, result_ty)) in USES.iter().enumerate() {
+                        if !full && (n + i + j) % numbers.len() != u % numbers.len() {
+                            continue;
+                        }
+                        seen.push((float, *number, *use_name));
                         let fill = |t: &str| t.replace("{N}", num).replace("{Z}", zero);
                         let result_ty = fill(result_ty);
                         let result = match result_ty.as_str() {
@@ -705,20 +1289,28 @@ fn a_constant_is_held_in_its_declared_type_wherever_it_is_introduced() {
                                 .replace("{C}", &use_of.replace('@', &fill(const_read)))
                         );
                         let row = format!("{intro} / {shape} / {num} {number} / {use_name}");
-                        let pinned = UNREACHABLE.iter().find(|(i, s, _, _)| i == intro && s == shape);
-                        for fold in [false, true] {
+                        let folds: &[bool] = if !full && pinned.is_some() {
+                            &[false]
+                        } else {
+                            &[false, true]
+                        };
+                        for &fold in folds {
                             checked += 1;
                             // Every row of a pinned route fails with the pinned
                             // codes, and every row of any other route compiles.
                             let saved = match (try_read_save(&src, &[], fold), pinned) {
                                 (Ok(_), Some(_)) => {
-                                    failures.push(format!("{row} fold {fold}: a pinned route compiles\n{src}"));
+                                    failures.push(format!(
+                                        "{row} fold {fold}: a pinned route compiles\n{src}"
+                                    ));
                                     continue;
                                 }
                                 (Ok((saved, _)), None) => saved,
                                 (Err(codes), Some((_, _, want, _))) => {
                                     if !want.iter().all(|w| codes.iter().any(|c| c == w)) {
-                                        failures.push(format!("{row} fold {fold}: {codes:?}, pinned {want:?}\n{src}"));
+                                        failures.push(format!(
+                                            "{row} fold {fold}: {codes:?}, pinned {want:?}\n{src}"
+                                        ));
                                     }
                                     if !rejected.iter().any(|(i, s)| i == intro && s == shape) {
                                         rejected.push((intro.to_string(), shape.to_string()));
@@ -726,25 +1318,44 @@ fn a_constant_is_held_in_its_declared_type_wherever_it_is_introduced() {
                                     continue;
                                 }
                                 (Err(codes), None) => {
-                                    failures.push(format!("{row} fold {fold}: does not compile: {codes:?}\n{src}"));
+                                    failures.push(format!(
+                                        "{row} fold {fold}: does not compile: {codes:?}\n{src}"
+                                    ));
                                     continue;
                                 }
                             };
                             let has = |want: &dyn Fn(&Literal) -> bool| saved.iter().any(want);
                             if has(&|l| matches!(l, Literal::Float(f) if *f == 7.0)) {
-                                failures.push(format!("{row} fold {fold}: the int field is a float\n{src}\n{saved:?}"));
+                                failures.push(format!(
+                                    "{row} fold {fold}: the int field is a float\n{src}\n{saved:?}"
+                                ));
                             }
                             let stored = *use_name != "compare";
                             if float {
                                 if has(&|l| matches!(l, Literal::Int(13) | Literal::Int(6))) {
-                                    failures.push(format!("{row} fold {fold}: an integer\n{src}\n{saved:?}"));
-                                } else if stored && !has(&|l| matches!(l, Literal::Float(f) if *f == 13.0 || *f == 6.5)) {
-                                    failures.push(format!("{row} fold {fold}: the float is missing\n{src}\n{saved:?}"));
+                                    failures.push(format!(
+                                        "{row} fold {fold}: an integer\n{src}\n{saved:?}"
+                                    ));
+                                } else if stored
+                                    && !has(
+                                        &|l| matches!(l, Literal::Float(f) if *f == 13.0 || *f == 6.5),
+                                    )
+                                {
+                                    failures.push(format!(
+                                        "{row} fold {fold}: the float is missing\n{src}\n{saved:?}"
+                                    ));
                                 }
-                            } else if has(&|l| matches!(l, Literal::Float(f) if *f == 13.0 || *f == 6.5)) {
-                                failures.push(format!("{row} fold {fold}: a float\n{src}\n{saved:?}"));
-                            } else if stored && !has(&|l| matches!(l, Literal::Int(13) | Literal::Int(6))) {
-                                failures.push(format!("{row} fold {fold}: the integer is missing\n{src}\n{saved:?}"));
+                            } else if has(
+                                &|l| matches!(l, Literal::Float(f) if *f == 13.0 || *f == 6.5),
+                            ) {
+                                failures
+                                    .push(format!("{row} fold {fold}: a float\n{src}\n{saved:?}"));
+                            } else if stored
+                                && !has(&|l| matches!(l, Literal::Int(13) | Literal::Int(6)))
+                            {
+                                failures.push(format!(
+                                    "{row} fold {fold}: the integer is missing\n{src}\n{saved:?}"
+                                ));
                             }
                         }
                     }
@@ -753,10 +1364,37 @@ fn a_constant_is_held_in_its_declared_type_wherever_it_is_introduced() {
         }
     }
     let got: Vec<String> = rejected.iter().map(|(i, s)| format!("{i} / {s}")).collect();
-    let want: Vec<String> = UNREACHABLE.iter().map(|(i, s, _, _)| format!("{i} / {s}")).collect();
-    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n\n"));
+    let want: Vec<String> = UNREACHABLE
+        .iter()
+        .map(|(i, s, _, _)| format!("{i} / {s}"))
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} failures:\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
     assert_eq!(got, want, "the routes that do not compile");
-    assert_eq!(checked, 2 * INTRODUCTIONS.len() * SHAPES.len() * 5 * USES.len(), "{checked}");
+    let routes = INTRODUCTIONS.len() * SHAPES.len();
+    let want_checked = if full {
+        2 * routes * 5 * USES.len()
+    } else {
+        (routes - UNREACHABLE.len()) * 2 * 2 * USES.len() + UNREACHABLE.len() * 2 * USES.len()
+    };
+    assert_eq!(checked, want_checked, "{checked}");
+    for (float, numbers) in [
+        (true, &["13", "THIRTEEN", "13.0"][..]),
+        (false, &["13", "THIRTEEN"][..]),
+    ] {
+        for number in numbers {
+            for (use_name, _, _) in USES {
+                assert!(
+                    seen.contains(&(float, *number, *use_name)),
+                    "{float} {number} {use_name} never ran"
+                );
+            }
+        }
+    }
 }
 
 /// How a number type `{N}` is written in a declaration: its spelling, and the
@@ -774,25 +1412,57 @@ const NUMBER_SPELLINGS: &[(&str, &str, &str, &str)] = &[
 /// of the read, of type `{RT}`. An `int` beside the number holds 7.
 const STORAGE_INTRODUCTIONS: &[(&str, &str, &str)] = &[
     ("var", "var X: {S} = {V}\non go { {R} = {U} }", "X"),
-    ("handler var", "on go {\nvar X: {S} = {V}\n{R} = {U}\n}", "X"),
-    ("static var", "on go {\nstatic var X: {S} = {V}\n{R} = {U}\n}", "X"),
-    ("record field", "type RS = { f: {S}, g: int }\nvar X: RS = { f: {V}, g: 7 }\non go { {R} = {U} }", "X.f"),
+    (
+        "handler var",
+        "on go {\nvar X: {S} = {V}\n{R} = {U}\n}",
+        "X",
+    ),
+    (
+        "static var",
+        "on go {\nstatic var X: {S} = {V}\n{R} = {U}\n}",
+        "X",
+    ),
+    (
+        "record field",
+        "type RS = { f: {S}, g: int }\nvar X: RS = { f: {V}, g: 7 }\non go { {R} = {U} }",
+        "X.f",
+    ),
     (
         "record field of an aliased record",
         "type RS = { f: {S}, g: int }\ntype RA = RS\nvar X: RA = { f: {V}, g: 7 }\non go { {R} = {U} }",
         "X.f",
     ),
-    ("handler record var", "type RS = { f: {S}, g: int }\non go {\nvar X: RS = { f: {V}, g: 7 }\n{R} = {U}\n}", "X.f"),
+    (
+        "handler record var",
+        "type RS = { f: {S}, g: int }\non go {\nvar X: RS = { f: {V}, g: 7 }\n{R} = {U}\n}",
+        "X.f",
+    ),
     (
         "static record var",
         "type RS = { f: {S}, g: int }\non go {\nstatic var X: RS = { f: {V}, g: 7 }\n{R} = {U}\n}",
         "X.f",
     ),
-    ("tuple element", "var X: ({S}, int) = ({V}, 7)\non go { {R} = {U} }", "X.0"),
-    ("tuple alias element", "type TS = ({S}, int)\nvar X: TS = ({V}, 7)\non go { {R} = {U} }", "X.0"),
+    (
+        "tuple element",
+        "var X: ({S}, int) = ({V}, 7)\non go { {R} = {U} }",
+        "X.0",
+    ),
+    (
+        "tuple alias element",
+        "type TS = ({S}, int)\nvar X: TS = ({V}, 7)\non go { {R} = {U} }",
+        "X.0",
+    ),
     ("buffer", "buffer X: {S} = {V}\non go { {R} = {U} }", "X"),
-    ("handler buffer", "on go {\nbuffer X: {S} = {V}\n{R} = {U}\n}", "X"),
-    ("ref parameter", "var X: {S} = {V}\nmod rd(p: *{S}) -> {RT} { return {U} }\non go { {R} = rd(X) }", "p"),
+    (
+        "handler buffer",
+        "on go {\nbuffer X: {S} = {V}\n{R} = {U}\n}",
+        "X",
+    ),
+    (
+        "ref parameter",
+        "var X: {S} = {V}\nmod rd(p: *{S}) -> {RT} { return {U} }\non go { {R} = rd(X) }",
+        "p",
+    ),
 ];
 
 /// An integer declared `float` is stored as that float wherever storage is
@@ -802,25 +1472,54 @@ const STORAGE_INTRODUCTIONS: &[(&str, &str, &str)] = &[
 /// alias spelling and for any `buffer`, so dividing it was an integer division.
 /// An `int` declared through an alias stays an integer, and so does an `int`
 /// beside the number.
+///
+/// The default set gives each (spelling, introduction, type) one row per use,
+/// the numbers rotating across the uses; the full product runs under
+/// `--ignored`.
 #[test]
 fn a_float_declared_through_an_alias_stores_an_integer_as_that_float() {
+    float_declared_through_an_alias_matrix(false);
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn a_float_declared_through_an_alias_stores_an_integer_as_that_float_exhaustive() {
+    float_declared_through_an_alias_matrix(true);
+}
+
+fn float_declared_through_an_alias_matrix(full: bool) {
     let head = "in go: exec\nconst THIRTEEN = 13\nvar x: float = 0.0\nvar n: int = 0\nout ox: float = x\nout on_: int = n\n";
     let mut failures = Vec::new();
     let mut checked = 0;
-    for (spelling, spelled, before, after) in NUMBER_SPELLINGS {
-        for (intro, template, read) in STORAGE_INTRODUCTIONS {
+    let mut seen: Vec<(bool, &str, &str)> = Vec::new();
+    for (i, (spelling, spelled, before, after)) in NUMBER_SPELLINGS.iter().enumerate() {
+        for (j, (intro, template, read)) in STORAGE_INTRODUCTIONS.iter().enumerate() {
             for float in [true, false] {
                 let num = if float { "float" } else { "int" };
-                let numbers: &[&str] = if float { &["13", "THIRTEEN", "13.0"] } else { &["13", "THIRTEEN"] };
+                let numbers: &[&str] = if float {
+                    &["13", "THIRTEEN", "13.0"]
+                } else {
+                    &["13", "THIRTEEN"]
+                };
                 let fill = |t: &str| t.replace("{N}", num);
                 let (import, deps) = if spelled.starts_with("u.") {
-                    ("import * as u from \"lib\"\n", vec![("lib", fill("type F = {N}\n"))])
+                    (
+                        "import * as u from \"lib\"\n",
+                        vec![("lib", fill("type F = {N}\n"))],
+                    )
                 } else {
                     ("", Vec::new())
                 };
                 let deps: Vec<(&str, &str)> = deps.iter().map(|(k, v)| (*k, v.as_str())).collect();
-                for number in numbers {
-                    for (use_name, use_of) in [("divide", "(@) / 2"), ("store", "@")] {
+                for (n, number) in numbers.iter().enumerate() {
+                    for (u, (use_name, use_of)) in [("divide", "(@) / 2"), ("store", "@")]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        if !full && (n + i + j) % numbers.len() != u % numbers.len() {
+                            continue;
+                        }
+                        seen.push((float, *number, use_name));
                         let result = if float { "x" } else { "n" };
                         let src = format!(
                             "{import}{head}{}{}{}",
@@ -836,12 +1535,15 @@ fn a_float_declared_through_an_alias_stores_an_integer_as_that_float() {
                         let row = format!("{spelling} / {intro} / {num} {number} / {use_name}");
                         // A top-level declaration reads only the aliases
                         // declared above it.
-                        let unknown = !after.is_empty() && template.find("{S}") < template.find("on go");
+                        let unknown =
+                            !after.is_empty() && template.find("{S}") < template.find("on go");
                         for fold in [false, true] {
                             checked += 1;
                             let saved = match (try_read_save(&src, &deps, fold), unknown) {
                                 (Ok((saved, _)), false) => saved,
-                                (Err(codes), true) if codes.iter().any(|c| c == "WS002") => continue,
+                                (Err(codes), true) if codes.iter().any(|c| c == "WS002") => {
+                                    continue;
+                                }
                                 (result, _) => {
                                     let codes = result.err();
                                     failures.push(format!("{row} fold {fold}: {codes:?}\n{src}"));
@@ -849,13 +1551,18 @@ fn a_float_declared_through_an_alias_stores_an_integer_as_that_float() {
                                 }
                             };
                             let has = |want: &dyn Fn(&Literal) -> bool| saved.iter().any(want);
-                            let int_of = |l: &Literal| matches!(l, Literal::Int(13) | Literal::Int(6));
+                            let int_of =
+                                |l: &Literal| matches!(l, Literal::Int(13) | Literal::Int(6));
                             let float_of = |l: &Literal| matches!(l, Literal::Float(f) if *f == 13.0 || *f == 6.5);
                             if float && (has(&int_of) || !has(&float_of)) {
-                                failures.push(format!("{row} fold {fold}: not stored as a float\n{src}\n{saved:?}"));
+                                failures.push(format!(
+                                    "{row} fold {fold}: not stored as a float\n{src}\n{saved:?}"
+                                ));
                             }
                             if !float && (has(&float_of) || !has(&int_of)) {
-                                failures.push(format!("{row} fold {fold}: not stored as an integer\n{src}\n{saved:?}"));
+                                failures.push(format!(
+                                    "{row} fold {fold}: not stored as an integer\n{src}\n{saved:?}"
+                                ));
                             }
                             if has(&|l| matches!(l, Literal::Float(f) if *f == 7.0)) {
                                 failures.push(format!("{row} fold {fold}: the int beside it is a float\n{src}\n{saved:?}"));
@@ -866,8 +1573,31 @@ fn a_float_declared_through_an_alias_stores_an_integer_as_that_float() {
             }
         }
     }
-    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n\n"));
-    assert_eq!(checked, NUMBER_SPELLINGS.len() * STORAGE_INTRODUCTIONS.len() * 5 * 2 * 2, "{checked}");
+    assert!(
+        failures.is_empty(),
+        "{} failures:\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+    let rows_per_route = if full { 5 * 2 } else { 2 * 2 };
+    assert_eq!(
+        checked,
+        NUMBER_SPELLINGS.len() * STORAGE_INTRODUCTIONS.len() * rows_per_route * 2,
+        "{checked}"
+    );
+    for (float, numbers) in [
+        (true, &["13", "THIRTEEN", "13.0"][..]),
+        (false, &["13", "THIRTEEN"][..]),
+    ] {
+        for number in numbers {
+            for use_name in ["divide", "store"] {
+                assert!(
+                    seen.contains(&(float, *number, use_name)),
+                    "{float} {number} {use_name} never ran"
+                );
+            }
+        }
+    }
 }
 
 /// A `const mod`'s type parameter is the type the call binds it to (from the
@@ -876,9 +1606,25 @@ fn a_float_declared_through_an_alias_stores_an_integer_as_that_float() {
 /// body, whatever an alias, enum or record named like it declares. A type
 /// parameter named like a `float` alias held an integer argument as a float,
 /// and a call binding `float` kept an integer argument an integer.
+///
+/// The default set runs every call under no collision and under the `float`
+/// alias, and each other collision under half the calls (each half binds
+/// both types through all three mods); the full product runs under
+/// `--ignored`.
 #[test]
 fn a_const_mod_type_parameter_is_the_type_the_call_binds() {
-    let head = "in go: exec\nvar x: float = 0.0\nvar n: int = 0\nout ox: float = x\nout on_: int = n\n";
+    const_mod_type_parameter_matrix(false);
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn a_const_mod_type_parameter_is_the_type_the_call_binds_exhaustive() {
+    const_mod_type_parameter_matrix(true);
+}
+
+fn const_mod_type_parameter_matrix(full: bool) {
+    let head =
+        "in go: exec\nvar x: float = 0.0\nvar n: int = 0\nout ox: float = x\nout on_: int = n\n";
     let collisions = [
         ("nothing", ""),
         ("a float alias", "type T = float\n"),
@@ -887,7 +1633,8 @@ fn a_const_mod_type_parameter_is_the_type_the_call_binds() {
         ("a record", "type T = { a: float }\n"),
     ];
     let id = "const mod f<T>(a: T) -> T { return a }\n";
-    let pick = "const mod pick<T: int | float>(c: bool, a: T, b: T) -> T { return if c then a else b }\n";
+    let pick =
+        "const mod pick<T: int | float>(c: bool, a: T, b: T) -> T { return if c then a else b }\n";
     let body_let = "const mod g<T: int | float>(a: T) -> T { let y: T = 5\nreturn y + a }\n";
     // (call, declarations, whether the call binds `float`)
     let calls = [
@@ -901,28 +1648,40 @@ fn a_const_mod_type_parameter_is_the_type_the_call_binds() {
         ("g(0.0)", body_let, true),
     ];
     let mut failures = Vec::new();
-    for (collision, decl) in collisions {
-        for (call, mods, float) in calls {
+    for (ci, (collision, decl)) in collisions.into_iter().enumerate() {
+        for (ki, (call, mods, float)) in calls.into_iter().enumerate() {
+            if !full && ci >= 2 && (ki + ci) % 2 != 0 {
+                continue;
+            }
             let program = |p: &str| {
-                let mods = mods.replace("<T", &format!("<{p}")).replace(": T", &format!(": {p}"));
+                let mods = mods
+                    .replace("<T", &format!("<{p}"))
+                    .replace(": T", &format!(": {p}"));
                 let mods = mods.replace("-> T", &format!("-> {p}"));
                 format!("{head}{decl}{mods}const K = {call}\non go {{ x = K / 2\nn = K / 2 }}\n")
             };
             let (src, twin) = (program("T"), program("U"));
             let row = format!("{collision} / {call}");
             for fold in [false, true] {
-                let (Ok((saved, _)), Ok((twin_saved, _))) = (try_read_save(&src, &[], fold), try_read_save(&twin, &[], fold))
-                else {
+                let (Ok((saved, _)), Ok((twin_saved, _))) = (
+                    try_read_save(&src, &[], fold),
+                    try_read_save(&twin, &[], fold),
+                ) else {
                     failures.push(format!("{row} fold {fold}: does not compile\n{src}"));
                     continue;
                 };
                 let has = |want: &dyn Fn(&Literal) -> bool| saved.iter().any(want);
-                let five_float = |l: &Literal| matches!(l, Literal::Float(f) if *f == 5.0 || *f == 2.5);
+                let five_float =
+                    |l: &Literal| matches!(l, Literal::Float(f) if *f == 5.0 || *f == 2.5);
                 if float && (has(&|l| *l == Literal::Int(5)) || !has(&five_float)) {
-                    failures.push(format!("{row} fold {fold}: not the float 5\n{src}\n{saved:?}"));
+                    failures.push(format!(
+                        "{row} fold {fold}: not the float 5\n{src}\n{saved:?}"
+                    ));
                 }
                 if !float && has(&five_float) {
-                    failures.push(format!("{row} fold {fold}: not the integer 5\n{src}\n{saved:?}"));
+                    failures.push(format!(
+                        "{row} fold {fold}: not the integer 5\n{src}\n{saved:?}"
+                    ));
                 }
                 let spelled = |ls: &[Literal]| {
                     let mut v: Vec<String> = ls.iter().map(|l| format!("{l:?}")).collect();
@@ -930,12 +1689,19 @@ fn a_const_mod_type_parameter_is_the_type_the_call_binds() {
                     v
                 };
                 if spelled(&saved) != spelled(&twin_saved) {
-                    failures.push(format!("{row} fold {fold}: differs from the renamed twin\n{src}"));
+                    failures.push(format!(
+                        "{row} fold {fold}: differs from the renamed twin\n{src}"
+                    ));
                 }
             }
         }
     }
-    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n\n"));
+    assert!(
+        failures.is_empty(),
+        "{} failures:\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
 }
 
 /// A generic enum value built where its instantiation is declared (an
@@ -945,8 +1711,21 @@ fn a_const_mod_type_parameter_is_the_type_the_call_binds() {
 /// float 7, with no warning, and declared `Opt<int>` the integer. It held the
 /// integer with a `WS016` warning, and the `var`, assignment and parameter
 /// forms were `WS003`.
+///
+/// The default set gives each (form, constructor, spelling, type) one of
+/// the numbers, rotating; the full product runs under `--ignored`.
 #[test]
 fn a_generic_enum_payload_is_held_in_its_instantiated_type() {
+    generic_enum_payload_matrix(false);
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn a_generic_enum_payload_is_held_in_its_instantiated_type_exhaustive() {
+    generic_enum_payload_matrix(true);
+}
+
+fn generic_enum_payload_matrix(full: bool) {
     let head = "in go: exec\nconst SEVEN = 7\nvar x: float = 0.0\nvar n: int = 0\nout ox: float = x\nout on_: int = n\n\
                 enum Opt<T> { Some(T), None }\nenum Box<T> { B { w: T }, N }\ntype OF = Opt<{N}>\n";
     let read = "(match K { Some(v) => v, None => {Z} }) / 2";
@@ -954,25 +1733,51 @@ fn a_generic_enum_payload_is_held_in_its_instantiated_type() {
         ("const", "const K: {E} = {C}\non go { {R} = {U} }"),
         ("handler let", "on go {\nlet K: {E} = {C}\n{R} = {U}\n}"),
         ("var", "var K: {E} = {C}\non go { {R} = {U} }"),
-        ("assignment", "var K: {E} = {NONE}\non go {\nK = {C}\n{R} = {U}\n}"),
-        ("mod const parameter", "mod m(K: const {E}) -> {N} { return {U} }\non go { {R} = m({C}) }"),
-        ("mod parameter", "mod m(K: {E}) -> {N} { return {U} }\non go { {R} = m({C}) }"),
-        ("return value", "mod mk() -> {E} { return {C} }\non go {\nlet K = mk()\n{R} = {U}\n}"),
+        (
+            "assignment",
+            "var K: {E} = {NONE}\non go {\nK = {C}\n{R} = {U}\n}",
+        ),
+        (
+            "mod const parameter",
+            "mod m(K: const {E}) -> {N} { return {U} }\non go { {R} = m({C}) }",
+        ),
+        (
+            "mod parameter",
+            "mod m(K: {E}) -> {N} { return {U} }\non go { {R} = m({C}) }",
+        ),
+        (
+            "return value",
+            "mod mk() -> {E} { return {C} }\non go {\nlet K = mk()\n{R} = {U}\n}",
+        ),
     ];
     let mut failures = Vec::new();
-    for (form, template) in forms {
+    let mut seen: Vec<(bool, &str)> = Vec::new();
+    for (fi, (form, template)) in forms.into_iter().enumerate() {
         for (named, ctor) in [(false, "Opt.Some(@)"), (true, "Box.B { w: @ }")] {
-            for spelling in ["Opt<{N}>", "OF"] {
+            for (si, spelling) in ["Opt<{N}>", "OF"].into_iter().enumerate() {
                 if named && spelling == "OF" {
                     continue;
                 }
                 for float in [true, false] {
                     let num = if float { "float" } else { "int" };
                     let zero = if float { "0.0" } else { "0" };
-                    let numbers: &[&str] = if float { &["7", "SEVEN", "7.0"] } else { &["7", "SEVEN"] };
-                    for number in numbers {
+                    let numbers: &[&str] = if float {
+                        &["7", "SEVEN", "7.0"]
+                    } else {
+                        &["7", "SEVEN"]
+                    };
+                    let combo = usize::from(named) * 2 + si;
+                    for (n, number) in numbers.iter().enumerate() {
+                        if !full && n != (fi + combo) % numbers.len() {
+                            continue;
+                        }
+                        seen.push((float, *number));
                         let ty = if named { "Box<{N}>" } else { spelling };
-                        let use_of = if named { read.replace("Some(v) => v, None", "B { w } => w, N") } else { read.to_string() };
+                        let use_of = if named {
+                            read.replace("Some(v) => v, None", "B { w } => w, N")
+                        } else {
+                            read.to_string()
+                        };
                         let fill = |t: &str| t.replace("{N}", num).replace("{Z}", zero);
                         let src = fill(&format!(
                             "{head}{}",
@@ -985,23 +1790,37 @@ fn a_generic_enum_payload_is_held_in_its_instantiated_type() {
                         ));
                         let row = format!("{form} / {ctor} / {spelling} / {num} {number}");
                         for fold in [false, true] {
-                            let r = if fold { compile_folded(&src) } else { compile(&src) };
-                            if r.diagnostics.iter().any(|d| d.code == "WS016" || d.code == "WS003") {
-                                failures.push(format!("{row} fold {fold}: {:?}\n{src}", r.diagnostics));
+                            let codes = match super::declaring_scope::compiled(&src, &[], fold) {
+                                Ok(c) => c
+                                    .out
+                                    .diagnostics
+                                    .iter()
+                                    .map(|d| d.code.to_string())
+                                    .collect(),
+                                Err(codes) => codes,
+                            };
+                            if codes.iter().any(|c| c == "WS016" || c == "WS003") {
+                                failures.push(format!("{row} fold {fold}: {codes:?}\n{src}"));
                                 continue;
                             }
                             let Ok((saved, _)) = try_read_save(&src, &[], fold) else {
-                                failures.push(format!("{row} fold {fold}: does not compile\n{src}"));
+                                failures
+                                    .push(format!("{row} fold {fold}: does not compile\n{src}"));
                                 continue;
                             };
                             let has = |want: &dyn Fn(&Literal) -> bool| saved.iter().any(want);
-                            let int_of = |l: &Literal| matches!(l, Literal::Int(7) | Literal::Int(3));
+                            let int_of =
+                                |l: &Literal| matches!(l, Literal::Int(7) | Literal::Int(3));
                             let float_of = |l: &Literal| matches!(l, Literal::Float(f) if *f == 7.0 || *f == 3.5);
                             if float && (has(&int_of) || !has(&float_of)) {
-                                failures.push(format!("{row} fold {fold}: not the float 7\n{src}\n{saved:?}"));
+                                failures.push(format!(
+                                    "{row} fold {fold}: not the float 7\n{src}\n{saved:?}"
+                                ));
                             }
                             if !float && (has(&float_of) || !has(&int_of)) {
-                                failures.push(format!("{row} fold {fold}: not the integer 7\n{src}\n{saved:?}"));
+                                failures.push(format!(
+                                    "{row} fold {fold}: not the integer 7\n{src}\n{saved:?}"
+                                ));
                             }
                         }
                     }
@@ -1009,7 +1828,24 @@ fn a_generic_enum_payload_is_held_in_its_instantiated_type() {
             }
         }
     }
-    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n\n"));
+    for (float, number) in [
+        (true, "7"),
+        (true, "SEVEN"),
+        (true, "7.0"),
+        (false, "7"),
+        (false, "SEVEN"),
+    ] {
+        assert!(
+            seen.contains(&(float, number)),
+            "{float} {number} never ran"
+        );
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failures:\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
 }
 
 /// A constant for a gate setting the gate stores as an integer, a float or a
@@ -1021,18 +1857,66 @@ fn a_generic_enum_payload_is_held_in_its_instantiated_type() {
 fn a_constant_gate_setting_is_stored_as_the_kind_the_gate_holds() {
     let head = "in go: exec\nin c: controller\nin s: string\nvar n: int = 0\nvar b: bool = false\nout on_: int = n\nout ob: bool = b\n";
     let rows: &[(&str, &str, Option<Literal>)] = &[
-        ("const D: float = 2\non go { await SleepTicks(_, delay = D)\nn = 1 }", "float constant tick count", Some(Literal::Int(2))),
-        ("type F = float\nconst D: F = 2\non go { await SleepTicks(_, delay = D)\nn = 1 }", "alias", Some(Literal::Int(2))),
-        ("on go { await SleepTicks(_, delay = 2.5)\nn = 1 }", "float literal tick count", Some(Literal::Int(2))),
-        ("const D = 2.0\non go { await SleepTicks(_, delay = D)\nn = 1 }", "float constant", Some(Literal::Int(2))),
-        ("const D = 2\non go { await Sleep(_, delay = D)\nn = 1 }", "int seconds", Some(Literal::Float(2.0))),
-        ("on go { c.DisplayText(\"hi\", fontSize = 40.5) }", "float font size", Some(Literal::Int(40))),
-        ("on go { c.DisplayText(\"hi\", fontSize = true) }", "bool font size", Some(Literal::Int(1))),
-        ("on go { c.DisplayText(\"hi\", outlineSize = 3.5) }", "float outline", Some(Literal::Int(3))),
-        ("on go { c.DisplayText(\"hi\", angle = true) }", "bool angle", Some(Literal::Float(1.0))),
-        ("on go { c.DisplayText(\"hi\", justify = 1.0) }", "float enum setting", None),
-        ("on go { b = s.Contains(\"b\", caseSensitive = 1.5) }", "float flag", None),
-        ("out o: bool = Edge(true)", "bool into a float field", Some(Literal::Float(1.0))),
+        (
+            "const D: float = 2\non go { await SleepTicks(_, delay = D)\nn = 1 }",
+            "float constant tick count",
+            Some(Literal::Int(2)),
+        ),
+        (
+            "type F = float\nconst D: F = 2\non go { await SleepTicks(_, delay = D)\nn = 1 }",
+            "alias",
+            Some(Literal::Int(2)),
+        ),
+        (
+            "on go { await SleepTicks(_, delay = 2.5)\nn = 1 }",
+            "float literal tick count",
+            Some(Literal::Int(2)),
+        ),
+        (
+            "const D = 2.0\non go { await SleepTicks(_, delay = D)\nn = 1 }",
+            "float constant",
+            Some(Literal::Int(2)),
+        ),
+        (
+            "const D = 2\non go { await Sleep(_, delay = D)\nn = 1 }",
+            "int seconds",
+            Some(Literal::Float(2.0)),
+        ),
+        (
+            "on go { c.DisplayText(\"hi\", fontSize = 40.5) }",
+            "float font size",
+            Some(Literal::Int(40)),
+        ),
+        (
+            "on go { c.DisplayText(\"hi\", fontSize = true) }",
+            "bool font size",
+            Some(Literal::Int(1)),
+        ),
+        (
+            "on go { c.DisplayText(\"hi\", outlineSize = 3.5) }",
+            "float outline",
+            Some(Literal::Int(3)),
+        ),
+        (
+            "on go { c.DisplayText(\"hi\", angle = true) }",
+            "bool angle",
+            Some(Literal::Float(1.0)),
+        ),
+        (
+            "on go { c.DisplayText(\"hi\", justify = 1.0) }",
+            "float enum setting",
+            None,
+        ),
+        (
+            "on go { b = s.Contains(\"b\", caseSensitive = 1.5) }",
+            "float flag",
+            None,
+        ),
+        (
+            "out o: bool = Edge(true)",
+            "bool into a float field",
+            Some(Literal::Float(1.0)),
+        ),
     ];
     for (body, what, want) in rows {
         let src = format!("{head}{body}\n");
@@ -1042,7 +1926,10 @@ fn a_constant_gate_setting_is_stored_as_the_kind_the_gate_holds() {
                 Err(codes) => panic!("{what} fold {fold}: {codes:?}\n{src}"),
             };
             if let Some(want) = want {
-                assert!(saved.contains(want), "{what} fold {fold}: {want:?} is not in the save\n{saved:?}");
+                assert!(
+                    saved.contains(want),
+                    "{what} fold {fold}: {want:?} is not in the save\n{saved:?}"
+                );
             }
         }
     }

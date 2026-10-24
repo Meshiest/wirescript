@@ -397,9 +397,21 @@ pub fn program_settings(resolved: &crate::resolve::ResolveResult, file: &str) ->
 /// sends it after the `.brz` encode, which is work this function does not do.
 fn compile_to_world_inner(
     input: CompileInput<'_>,
+    opts: EmitOptions,
+    progress: Option<ProgressCallback>,
+    loader: &dyn FileLoader,
+) -> Result<CompileWorldResult, CompileError> {
+    compile_to_world_keeping(input, opts, progress, loader, None)
+}
+
+/// [`compile_to_world_inner`], also handing the lowered module of a program
+/// rejected with errors to `rejected` when it is given.
+fn compile_to_world_keeping(
+    input: CompileInput<'_>,
     mut opts: EmitOptions,
     progress: Option<ProgressCallback>,
     loader: &dyn FileLoader,
+    rejected: Option<&mut Option<crate::ir::Module>>,
 ) -> Result<CompileWorldResult, CompileError> {
     use std::sync::atomic::{AtomicU32, Ordering};
     // Four fixed phases (resolve, lower, layout, emit), plus one step per embedded
@@ -491,6 +503,9 @@ fn compile_to_world_inner(
         .cloned()
         .collect();
     if !errors.is_empty() {
+        if let Some(slot) = rejected {
+            *slot = Some(lowered.module);
+        }
         return Err(CompileError::HasErrors(errors));
     }
 
@@ -572,6 +587,37 @@ fn compile_with_opts_inner(
         brz,
         diagnostics: built.diagnostics,
         placements: built.layout.placements,
+    })
+}
+
+/// [`compile_with_loader`] that also returns the module lowering made, from
+/// the same run: `None` only when emit failed.
+#[cfg(test)]
+pub(crate) fn compile_keeping_lowered(
+    input: CompileInput<'_>,
+    opts: EmitOptions,
+    loader: &(dyn FileLoader + Sync),
+) -> (
+    Option<crate::ir::Module>,
+    Result<CompileResult, CompileError>,
+) {
+    on_compile_stack(move || {
+        let mut rejected = None;
+        match compile_to_world_keeping(input, opts, None, loader, Some(&mut rejected)) {
+            Ok(built) => {
+                let result = built
+                    .world
+                    .to_brz_vec()
+                    .map_err(|e| CompileError::Emit(EmitError::Brdb(e)))
+                    .map(|brz| CompileResult {
+                        brz,
+                        diagnostics: built.diagnostics,
+                        placements: built.layout.placements,
+                    });
+                (Some(built.program.module), result)
+            }
+            Err(e) => (rejected, Err(e)),
+        }
     })
 }
 

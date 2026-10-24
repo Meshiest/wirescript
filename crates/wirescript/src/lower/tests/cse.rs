@@ -1,226 +1,117 @@
 use super::*;
-
-/// Every wire in the tree whose source is `node` (any output port) — the
-/// consumer count a merged gate must still feed.
-fn fanout(m: &crate::ir::Module, node: crate::ir::NodeId) -> usize {
-    let mut n = m.wires.iter().filter(|w| w.source.node_id == node).count();
-    for c in m.chips.values() {
-        n += fanout(c, node);
-    }
-    n
-}
-
-fn find_one(m: &crate::ir::Module, class: &str) -> Option<crate::ir::NodeId> {
-    m.nodes
-        .iter()
-        .find(|(_, n)| n.gate_class == class)
-        .map(|(id, _)| *id)
-        .or_else(|| m.chips.values().find_map(|c| find_one(c, class)))
-}
+use crate::ir::gate_class as gc;
 
 const ADD: &str = "BrickComponentType_Expr_MathAdd";
 const MUL: &str = "BrickComponentType_Expr_MathMultiply";
 const SUB: &str = "BrickComponentType_Expr_MathSubtract";
 const GT: &str = "BrickComponentType_Expr_CompareGreater";
-const EQ: &str = "BrickComponentType_Expr_CompareEqual";
 const AND: &str = "BrickComponentType_Expr_LogicalAND";
-const FMT: &str = "BrickComponentType_Expr_String_FormatText";
-const CHANGE: &str = "BrickComponentType_Expr_ChangeDetector";
-const EDGE: &str = "BrickComponentType_Expr_EdgeDetector";
 
 // A handler wrapper for exec-context programs.
 fn go(body: &str) -> String {
     format!("in go: exec\non go {{\n{body}\n}}")
 }
 
-// ---------------------------------------------------------------------------
-// Positive — identical pure subexpressions collapse to one gate.
-// ---------------------------------------------------------------------------
-
 #[test]
 fn three_uses_merge_to_one_and_fan_out_to_all() {
     // The merge must be behavior-preserving: the surviving gate feeds every
     // original consumer, so no output loses its value.
-    let r = compile("var x: int = 5\nout y = x + 1\nout z = x + 1\nout w = x + 1");
-    assert_no_errors(&r);
-    assert_eq!(count_class(&r.module, ADD), 1, "three `x + 1` collapse to one");
-    let add = find_one(&r.module, ADD).unwrap();
-    assert_eq!(fanout(&r.module, add), 3, "the keeper feeds all three outputs");
+    let r = compile_ok("var x: int = 5\nout y = x + 1\nout z = x + 1\nout w = x + 1");
+    assert_eq!(
+        count_class(&r.module, ADD),
+        1,
+        "three `x + 1` collapse to one"
+    );
+    let add = nodes_of(&r.module, ADD)[0].id;
+    assert_eq!(
+        r.module
+            .wires_deep()
+            .filter(|w| w.source.node_id == add)
+            .count(),
+        3,
+        "the keeper feeds all three outputs"
+    );
 }
 
+/// Identical pure subexpressions collapse to one gate; gates that only LOOK
+/// alike stay separate. Each row gives exact counts over the whole module tree.
 #[test]
-fn deep_expression_merges_at_every_layer() {
-    // The pass is a fixpoint, so it scales to any depth: it merges the leaves
-    // first, which makes their consumers structurally equal, which merge next
-    // round, up the whole tree. A fully-duplicated five-deep chain collapses
-    // every single layer, not just the first.
-    let e = "((((x + 1) * 2) - 3) % 7) / 4";
-    let r = compile(&format!("var x: int = 5\nout a = {e}\nout b = {e}"));
-    assert_no_errors(&r);
-    for (class, name) in [
-        (ADD, "add"),
-        (MUL, "multiply"),
-        (SUB, "subtract"),
-        ("BrickComponentType_Expr_MathModulo", "modulo"),
-        ("BrickComponentType_Expr_MathDivide", "divide"),
-    ] {
-        assert_eq!(count_class(&r.module, class), 1, "the {name} layer merges");
+fn identical_pure_gates_merge_and_lookalikes_do_not() {
+    let rows: Vec<(&str, String, &[(&str, usize)])> = vec![
+        // The pass is a fixpoint: it merges the leaves first, which makes their
+        // consumers structurally equal, which merge next round, up the tree.
+        (
+            "a fully-duplicated five-deep chain merges at every layer",
+            "var x: int = 5\nout a = ((((x + 1) * 2) - 3) % 7) / 4\nout b = ((((x + 1) * 2) - 3) % 7) / 4".into(),
+            &[(ADD, 1), (MUL, 1), (SUB, 1), ("BrickComponentType_Expr_MathModulo", 1), ("BrickComponentType_Expr_MathDivide", 1)],
+        ),
+        (
+            "a shared deep `x + 1` merges under divergent tops, which stay separate",
+            "var x: int = 5\nout a = (x + 1) * 2\nout b = (x + 1) * 3".into(),
+            &[(ADD, 1), (MUL, 2)],
+        ),
+        ("identical FormatText merges", "var s: string\nout a = \"hi ${s}\"\nout b = \"hi ${s}\"".into(), &[(gc::STRING_FORMAT_TEXT, 1)]),
+        ("string equality merges", "var s: string\nout a = s == \"x\"\nout b = s == \"x\"".into(), &[(gc::COMPARE_EQUAL, 1)]),
+        ("comparison merges", "var x: int = 5\nout a = x > 3\nout b = x > 3".into(), &[(GT, 1)]),
+        ("boolean op merges", "var p: bool\nvar q: bool\nout a = p && q\nout b = p && q".into(), &[(AND, 1)]),
+        ("vector op merges", "var v: vector\nout a = v + Vec(1.0, 0.0, 0.0)\nout b = v + Vec(1.0, 0.0, 0.0)".into(), &[(ADD, 1)]),
+        ("same operand order merges", "var x: int = 5\nvar y: int = 3\nout a = x - y\nout b = x - y".into(), &[(SUB, 1)]),
+        (
+            "two inlined `dbl(x)` bodies in one module merge",
+            "var x: int = 5\nmod dbl(v: int) -> int { return v * 2 }\nout y = dbl(x)\nout z = dbl(x)".into(),
+            &[(MUL, 1)],
+        ),
+        ("a different baked constant keeps both", "var x: int = 5\nout a = x + 1\nout b = x + 2".into(), &[(ADD, 2)]),
+        ("a different source var keeps both", "var x: int = 5\nvar y: int = 3\nout a = x + 1\nout b = y + 1".into(), &[(ADD, 2)]),
+        // The key is port-keyed: `x - y` and `y - x` bind different sources to InputA/InputB.
+        (
+            "swapped operands of a non-commutative gate keep both",
+            "var x: int = 5\nvar y: int = 3\nout a = x - y\nout b = y - x".into(),
+            &[(SUB, 2)],
+        ),
+        // The second `x + 1` reads a FRESH Var_Get after the write, or `b` would
+        // compute from the pre-mutation value.
+        (
+            "a mutation between two reads keeps both adds",
+            format!("var x: int = 5\nvar a: int = 0\nvar b: int = 0\n{}", go("  a = x + 1\n  x = 10\n  b = x + 1")),
+            &[(ADD, 2)],
+        ),
+        // The join invalidates `x`'s read cache, so the post-branch `x + 1` is fresh.
+        (
+            "a mutation inside a branch keeps both adds",
+            format!("var x: int = 5\nvar a: int = 0\nvar b: int = 0\n{}", go("  a = x + 1\n  if a > 0 { x = 99 }\n  b = x + 1")),
+            &[(ADD, 2)],
+        ),
+        // Change/Edge outputs depend on eval history, not just current inputs.
+        ("change detectors stay separate", "var x: int = 5\nout a = Changed(x)\nout b = Changed(x)".into(), &[(gc::CHANGE_DETECTOR, 2)]),
+        ("edge detectors stay separate", "var x: float = 5.0\nout a = Edge(x).Rising\nout b = Edge(x).Rising".into(), &[(gc::EDGE_DETECTOR, 2)]),
+        // A `@nofold` declaration marks its gates with the `_nofold` barrier, which CSE respects.
+        (
+            "a and b merge to one; the @nofold c stays separate",
+            "var x: int = 5\nout a = x + 1\nout b = x + 1\n@nofold out c = x + 1".into(),
+            &[(ADD, 2)],
+        ),
+        // Merging across chip instances would land a keeper in the wrong grid.
+        (
+            "each chip instance keeps its own body",
+            "chip Inc(v: int) -> (r: int) { out r = v + 1 }\nvar x: int = 5\nlet p = Inc(x)\nlet q = Inc(x)\nout oa = p\nout ob = q".into(),
+            &[(ADD, 2)],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, want) in &rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        if !errors.is_empty() {
+            failures.push(format!("{label}: errors {errors:?}\n{src}"));
+            continue;
+        }
+        for &(class, n) in *want {
+            let got = count_class(&r.module, class);
+            if got != n {
+                failures.push(format!("{label}: {got} x {class}, want {n}\n{src}"));
+            }
+        }
     }
-}
-
-#[test]
-fn shared_deep_subexpression_merges_under_divergent_tops() {
-    // Two expressions that share a deep subtree but diverge at the top: the
-    // whole common subtree collapses, and only the parts that actually differ
-    // stay separate. `(x + 1)` is shared and merges to one; the two multiplies
-    // that consume it keep their distinct constants.
-    let r = compile("var x: int = 5\nout a = (x + 1) * 2\nout b = (x + 1) * 3");
-    assert_no_errors(&r);
-    assert_eq!(count_class(&r.module, ADD), 1, "the shared `x + 1` merges");
-    assert_eq!(count_class(&r.module, MUL), 2, "the divergent tops stay separate");
-}
-
-#[test]
-fn string_interpolation_merges() {
-    let r = compile("var s: string\nout a = \"hi ${s}\"\nout b = \"hi ${s}\"");
-    assert_no_errors(&r);
-    assert_eq!(count_class(&r.module, FMT), 1, "identical FormatText merges");
-}
-
-#[test]
-fn string_equality_merges() {
-    let r = compile("var s: string\nout a = s == \"x\"\nout b = s == \"x\"");
-    assert_no_errors(&r);
-    assert_eq!(count_class(&r.module, EQ), 1);
-}
-
-#[test]
-fn comparison_and_boolean_and_vector_ops_merge() {
-    let cmp = compile("var x: int = 5\nout a = x > 3\nout b = x > 3");
-    assert_eq!(count_class(&cmp.module, GT), 1, "comparison merges");
-
-    let b = compile("var p: bool\nvar q: bool\nout a = p && q\nout b = p && q");
-    assert_eq!(count_class(&b.module, AND), 1, "boolean op merges");
-
-    let v = compile(
-        "var v: vector\nout a = v + Vec(1.0, 0.0, 0.0)\nout b = v + Vec(1.0, 0.0, 0.0)",
-    );
-    assert_eq!(count_class(&v.module, ADD), 1, "vector op merges");
-}
-
-#[test]
-fn commutative_gate_same_operand_order_merges() {
-    let r = compile("var x: int = 5\nvar y: int = 3\nout a = x - y\nout b = x - y");
-    assert_eq!(count_class(&r.module, SUB), 1);
-}
-
-#[test]
-fn duplicate_inline_mod_body_is_collapsed() {
-    // Two `dbl(x)` inline two identical `v * 2` bodies (same module) -> merged.
-    let r = compile(
-        "var x: int = 5\nmod dbl(v: int) -> int { return v * 2 }\nout y = dbl(x)\nout z = dbl(x)",
-    );
-    assert_no_errors(&r);
-    assert_eq!(count_class(&r.module, MUL), 1);
-}
-
-// ---------------------------------------------------------------------------
-// Negative — gates that only LOOK alike must stay separate.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn different_constant_operand_not_merged() {
-    let r = compile("var x: int = 5\nout a = x + 1\nout b = x + 2");
-    assert_eq!(count_class(&r.module, ADD), 2, "different baked constant");
-}
-
-#[test]
-fn different_variable_operand_not_merged() {
-    let r = compile("var x: int = 5\nvar y: int = 3\nout a = x + 1\nout b = y + 1");
-    assert_eq!(count_class(&r.module, ADD), 2, "different source var");
-}
-
-#[test]
-fn noncommutative_operand_order_not_merged() {
-    // `x - y` and `y - x` bind different sources to InputA/InputB — the key is
-    // port-keyed, so they must not merge (subtraction isn't commutative).
-    let r = compile("var x: int = 5\nvar y: int = 3\nout a = x - y\nout b = y - x");
-    assert_eq!(count_class(&r.module, SUB), 2);
-}
-
-#[test]
-fn mutation_between_reads_is_not_merged() {
-    // `x` is mutated between the two `x + 1`, so the second reads a FRESH
-    // Var_Get (different source node) — the two adds must NOT merge, or `b`
-    // would compute from the pre-mutation value.
-    let full = format!(
-        "var x: int = 5\nvar a: int = 0\nvar b: int = 0\n{}",
-        go("  a = x + 1\n  x = 10\n  b = x + 1")
-    );
-    let r = compile(&full);
-    assert_no_errors(&r);
-    assert_eq!(
-        count_class(&r.module, ADD),
-        2,
-        "a mutation between reads must keep the two adds distinct"
-    );
-}
-
-#[test]
-fn mutation_inside_a_branch_is_not_merged() {
-    // Same, but the write hides in a conditional: the join invalidates `x`'s
-    // read cache, so the post-branch `x + 1` is a fresh gate.
-    let full = format!(
-        "var x: int = 5\nvar a: int = 0\nvar b: int = 0\n{}",
-        go("  a = x + 1\n  if a > 0 { x = 99 }\n  b = x + 1")
-    );
-    let r = compile(&full);
-    assert_no_errors(&r);
-    assert_eq!(count_class(&r.module, ADD), 2);
-}
-
-#[test]
-fn stateful_change_detector_not_merged() {
-    // `Changed`/`Edge` outputs depend on eval history, not just current inputs,
-    // so two of them are excluded from CSE even with identical inputs.
-    let r = compile("var x: int = 5\nout a = Changed(x)\nout b = Changed(x)");
-    assert_no_errors(&r);
-    assert_eq!(count_class(&r.module, CHANGE), 2, "change detectors stay separate");
-}
-
-#[test]
-fn stateful_edge_detector_not_merged() {
-    let r = compile("var x: float = 5.0\nout a = Edge(x).Rising\nout b = Edge(x).Rising");
-    assert_no_errors(&r);
-    assert_eq!(count_class(&r.module, EDGE), 2, "edge detectors stay separate");
-}
-
-#[test]
-fn nofold_barriered_gates_not_merged() {
-    // A `@nofold` declaration marks its gates with the `_nofold` barrier
-    // property; CSE respects it and leaves them alone, even next to a normal
-    // pair that DOES merge.
-    let r = compile("var x: int = 5\nout a = x + 1\nout b = x + 1\n@nofold out c = x + 1");
-    assert_no_errors(&r);
-    assert_eq!(
-        count_class(&r.module, ADD),
-        2,
-        "a and b merge to one; the @nofold c stays separate = 2 total"
-    );
-}
-
-#[test]
-fn identical_gates_in_distinct_chips_not_merged() {
-    // Two chip INSTANCES partition their bodies into distinct `chip_id` modules;
-    // merging across them would land a keeper in the wrong grid, so the `v + 1`
-    // in each instance is kept.
-    let r = compile(
-        "chip Inc(v: int) -> (r: int) { out r = v + 1 }\nvar x: int = 5\nlet p = Inc(x)\nlet q = Inc(x)\nout oa = p\nout ob = q",
-    );
-    assert_no_errors(&r);
-    assert_eq!(
-        count_class(&r.module, ADD),
-        2,
-        "each chip instance keeps its own body"
-    );
+    crate::test_support::report_failures(&failures, rows.len());
 }

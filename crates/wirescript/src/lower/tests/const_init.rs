@@ -7,75 +7,177 @@
 
 use super::*;
 use crate::ir::Literal;
-use crate::typecheck::typecheck;
 
-/// The `InitialValue` baked into the first array gate of a module.
-fn baked_array(src: &str) -> Vec<Literal> {
+/// The `InitialValue` baked into the first array gate of the module tree. An
+/// array declared inside a `chip { }` lives in that chip's own module.
+fn baked_array(src: &str) -> Result<Vec<Literal>, String> {
     let r = compile(src);
-    assert_no_errors(&r);
-    // Recurses into child modules: an array declared inside a `chip { }` lives
-    // in that chip's own module, not the root's node table.
-    fn find(m: &crate::ir::Module) -> Option<Vec<Literal>> {
-        for n in m.nodes.values() {
-            if let Some(Literal::Array(items)) =
-                n.properties.get(&crate::intern::intern_static("InitialValue"))
+    let errors = crate::test_support::error_codes(&r.diagnostics);
+    if !errors.is_empty() {
+        return Err(format!("errors {errors:?}"));
+    }
+    r.module
+        .nodes_deep()
+        .find_map(|n| {
+            match n
+                .properties
+                .get(&crate::intern::intern_static("InitialValue"))
             {
-                return Some(items.clone());
+                Some(Literal::Array(items)) => Some(items.clone()),
+                _ => None,
             }
-        }
-        m.chips.values().find_map(find)
-    }
-    find(&r.module).expect("no array gate with a baked InitialValue")
+        })
+        .ok_or_else(|| "no array gate with a baked InitialValue".to_string())
 }
 
-/// Whether `needle` appears anywhere in the lowered graph, child chip modules
-/// included — the tree-shaking oracle for a `const` condition's untaken arm.
+/// Whether a string property containing `needle` appears anywhere in the
+/// lowered graph, child chip modules included: the tree-shaking oracle for a
+/// `const` condition's untaken arm.
 fn graph_contains(r: &LowerResult, needle: &str) -> bool {
-    fn walk(m: &crate::ir::Module, needle: &str) -> bool {
-        m.nodes
+    r.module.nodes_deep().any(|n| {
+        n.properties
             .values()
-            .any(|n| format!("{:?}", n.properties).contains(needle))
-            || m.chips.values().any(|c| walk(c, needle))
+            .any(|v| matches!(v, Literal::String(s) if s.contains(needle)))
+    })
+}
+
+/// A constant initializer bakes into the array gate's `InitialValue`. Values
+/// are distinguishable per element (and a trailing `12345` literal control
+/// bakes either way), so a swapped or zeroed element fails as a wrong value,
+/// not as "nothing was baked".
+#[test]
+fn a_constant_initializer_bakes_into_the_array() {
+    use Literal::{Bool, Int, String as Str};
+    let rows: Vec<(&str, &str, Vec<Literal>)> = vec![
+        // The motivating case: a bitmask table written as `1 << C_FLAG`.
+        (
+            "a shift of a named constant",
+            "let C_A = 0\nlet C_B = 3\nvar m: int[] = [1 << C_A, 1 << C_B]",
+            vec![Int(1), Int(8)],
+        ),
+        (
+            "a bare named constant",
+            "let LO = 2\nlet HI = 9\nvar m: int[] = [LO, HI]",
+            vec![Int(2), Int(9)],
+        ),
+        (
+            "arithmetic",
+            "var m: int[] = [2 + 3, 10 * 4, 7 - 9]",
+            vec![Int(5), Int(40), Int(-2)],
+        ),
+        // `B` is defined in terms of `A`, and `C` in terms of `B`, so the constant
+        // environment iterates rather than evaluating once per declaration.
+        (
+            "a constant chain through the const-env fixpoint",
+            "let A = 5\nlet B = A + 1\nlet C = B * 2\nvar m: int[] = [A, B, C]",
+            vec![Int(5), Int(6), Int(12)],
+        ),
+        // `A` comes from a `const mod` call, which resolves like a plain
+        // constant. `f` is declared before its call, since a call to a later
+        // mod is WS021 (`tests/it/const_differential.rs`); the same holds
+        // between the `let`s.
+        (
+            "a constant chain through a const mod call",
+            "const mod f(n: int) -> int { return n + 1 }\nlet A = f(4)\nlet B = A + 1\nvar m: int[] = [A, B]",
+            vec![Int(5), Int(6)],
+        ),
+        // A top-level destructuring `const` lands its names in the constant
+        // environment: pass 1 evaluates `p`, pass 2 splits it, pass 3 resolves
+        // `SUM`. A swapped x/y bakes [222, 111, 222111].
+        (
+            "a destructured constant chain",
+            "const p = { x: 111, y: 222 }\nconst { x, y } = p\nconst SUM = x * 1000 + y\nvar m: int[] = [x, y, SUM]",
+            vec![Int(111), Int(222), Int(111222)],
+        ),
+        // A `const mod` with one named output (`-> (r: int)`) is typed as the
+        // bare output type, so const evaluation gives the bare value, not a
+        // 1-field record baking the element's zero. `docs/src/chips.md` points
+        // users at this shape.
+        (
+            "a single named output const mod result bakes as a scalar",
+            "const mod C(v: const int) -> (r: int) { out r = v }\nconst got = C(7)\nvar arr: int[] = [got, 12345]",
+            vec![Int(7), Int(12345)],
+        ),
+        (
+            "division by zero bakes zero like the gates",
+            "var m: int[] = [8 / 0, 8 % 0]",
+            vec![Int(0), Int(0)],
+        ),
+        (
+            "string concat",
+            "let A = \"x\"\nvar m: string[] = [A .. \"y\"]",
+            vec![Str("xy".into())],
+        ),
+        (
+            "bool ops",
+            "let T = true\nvar m: bool[] = [T && false, T || false, !T]",
+            vec![Bool(false), Bool(true), Bool(false)],
+        ),
+        // A constructor's named arguments bind by parameter name when baked into
+        // gates, as on the runtime path (`lower::call::builtin`), so a `const`
+        // and a non-`const` spelling of one expression agree.
+        (
+            "a constructor with named arguments bakes on the named axes",
+            "var v: vector[] = [Vec(z = 3.0, x = 1.0, y = 2.0)]",
+            vec![Literal::Vector {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            }],
+        ),
+        // An anonymous `chip { }` shares its parent's scope, so its body-level
+        // `const`s live in the parent's constant environment: `const b = a + 1`
+        // resolves `a` rather than reporting WS046 "'a' is a runtime value".
+        (
+            "a const in an anonymous chip body",
+            "chip {\n  const a = 20\n  const b = a + 2\n  var m: int[] = [a, b, 12345]\n}",
+            vec![Int(20), Int(22), Int(12345)],
+        ),
+        // Each nested anonymous chip shares the same parent scope in turn, so the
+        // descent recurses rather than stopping at the first body.
+        (
+            "a const in a nested anonymous chip body",
+            "chip {\n  chip {\n    const a = 5\n    const b = a * 3\n    var m: int[] = [b, 12345]\n  }\n}",
+            vec![Int(15), Int(12345)],
+        ),
+        // The flattening merges into one environment rather than an isolated second one.
+        (
+            "an anonymous chip body const reads a top-level const",
+            "const outer = 5\nchip {\n  const inner = outer * 2\n  var m: int[] = [inner, 12345]\n}",
+            vec![Int(10), Int(12345)],
+        ),
+        // `predeclare`'s `AnonChip` arm registers it into the parent scope, so a
+        // `const` anywhere can CALL it; `scope_mods` descends as `scope_lets` does.
+        (
+            "a const mod in an anonymous chip body",
+            "chip {\n  const mod dbl(n: const int) -> int { return n * 2 }\n}\nconst t = dbl(6)\nvar m: int[] = [t, 12345]",
+            vec![Int(12), Int(12345)],
+        ),
+        // A tuple pattern binds POSITIONALLY; a multi-output `const mod` result
+        // types as a NAME-keyed record in declaration order, so `const (a, b) =
+        // pair(..)` reads it as `const { a, b }` does. It was rejected (WS010 in
+        // `bind_let`, then WS046 from `const_eval`'s stub arm).
+        (
+            "a tuple destructure of a multi-output const mod",
+            "const mod trio(n: const int) -> (a: int, b: int, c: int) {\nout a = n\n  out b = n + 1\n  out c = n + 2\n}\n\
+             const (x, y, z) = trio(41)\nvar m: int[] = [x, y, z, 12345]",
+            vec![Int(41), Int(42), Int(43), Int(12345)],
+        ),
+        // A tuple LITERAL evaluates to an index-keyed record; it reported WS046.
+        (
+            "a tuple destructure of a tuple literal",
+            "const (a, b) = (7, 8)\nvar m: int[] = [a, b, 12345]",
+            vec![Int(7), Int(8), Int(12345)],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, want) in &rows {
+        match baked_array(src) {
+            Ok(got) if got == *want => {}
+            got => failures.push(format!("{label}: baked {got:?}, want {want:?}\n{src}")),
+        }
     }
-    walk(&r.module, needle)
-}
-
-/// Typecheck errors only (the gate that rejects a non-constant element).
-fn errors(src: &str) -> Vec<String> {
-    let parsed = crate::parser::parse(src, "test");
-    typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default())
-        .diagnostics
-        .into_iter()
-        .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-        .map(|d| d.code.to_string())
-        .collect()
-}
-
-#[test]
-fn shift_of_named_constant_bakes() {
-    // The motivating case: a bitmask table written as `1 << C_FLAG`.
-    let v = baked_array("let C_A = 0\nlet C_B = 3\nvar m: int[] = [1 << C_A, 1 << C_B]");
-    assert_eq!(v, vec![Literal::Int(1), Literal::Int(8)]);
-}
-
-#[test]
-fn bare_named_constant_bakes() {
-    let v = baked_array("let LO = 2\nlet HI = 9\nvar m: int[] = [LO, HI]");
-    assert_eq!(v, vec![Literal::Int(2), Literal::Int(9)]);
-}
-
-#[test]
-fn arithmetic_bakes() {
-    let v = baked_array("var m: int[] = [2 + 3, 10 * 4, 7 - 9]");
-    assert_eq!(v, vec![Literal::Int(5), Literal::Int(40), Literal::Int(-2)]);
-}
-
-#[test]
-fn a_constant_chain_bakes_through_the_const_env_fixpoint() {
-    // `B` is defined in terms of `A`, and `C` in terms of `B`, so the constant
-    // environment has to iterate rather than evaluate once per declaration.
-    let v = baked_array("let A = 5\nlet B = A + 1\nlet C = B * 2\nvar m: int[] = [A, B, C]");
-    assert_eq!(v, vec![Literal::Int(5), Literal::Int(6), Literal::Int(12)]);
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 /// Declare-before-use holds for a top-level `let` too, as it does for a
@@ -101,96 +203,6 @@ fn a_forward_reference_between_top_level_lets_is_reported() {
 }
 
 #[test]
-fn a_constant_chain_through_a_const_mod_call_bakes() {
-    // Same shape as `a_constant_chain_bakes_through_the_const_env_fixpoint`
-    // above, but `A`'s value comes from a `const mod` CALL rather than a
-    // literal. `build_const_env` collects every top-level `const mod` from the
-    // whole decls list up front, not incrementally alongside the fixpoint that
-    // resolves `let`/`const` values, so a dependency on a const-mod-derived
-    // constant resolves like a plain one.
-    //
-    // `f` is declared before its call site because a call to a mod declared
-    // LATER is a WS021 (see
-    // `a_const_mod_call_must_still_be_declared_before_its_use` in
-    // `tests/const_differential.rs`), and the same rule holds between the
-    // `let`s.
-    let v = baked_array(
-        "const mod f(n: int) -> int { return n + 1 }\n\
-         let A = f(4)\n\
-         let B = A + 1\n\
-         var m: int[] = [A, B]",
-    );
-    assert_eq!(v, vec![Literal::Int(5), Literal::Int(6)]);
-}
-
-#[test]
-fn a_destructured_constant_bakes() {
-    // A top-level destructuring `const` must land its names in the constant
-    // environment like any other, so a `var` initializer can name one.
-    // Distinguishable per-field values: a swapped binding bakes [222, 111].
-    let v = baked_array("const p = { x: 111, y: 222 }\nconst { x, y } = p\nvar m: int[] = [x, y]");
-    assert_eq!(v, vec![Literal::Int(111), Literal::Int(222)]);
-}
-
-#[test]
-fn a_destructured_constant_chain_bakes() {
-    // The destructuring analogue of the plain constant chain above: `p` is a
-    // record, `{ x, y }` splits it, and `SUM` is built from the split names.
-    // `build_const_env` reaches all three in one build by iterating: pass 1
-    // evaluates `p`, pass 2 splits it, pass 3 resolves `SUM`.
-    //
-    // Values are chosen so every field is distinguishable and the combination
-    // pins the mapping: a swapped x/y bakes [222, 111, 222111].
-    let v = baked_array(
-        "const p = { x: 111, y: 222 }\n\
-         const { x, y } = p\n\
-         const SUM = x * 1000 + y\n\
-         var m: int[] = [x, y, SUM]",
-    );
-    assert_eq!(v, vec![Literal::Int(111), Literal::Int(222), Literal::Int(111222)]);
-}
-
-/// A `const mod` with ONE NAMED output (`-> (r: int)`, its value set by an
-/// `out` rather than a `return`) is typed by `typecheck::call` as the bare
-/// output type, so const evaluation must produce the bare value too. Wrapping
-/// it in a 1-field record instead did not error anywhere — it baked the
-/// element's ZERO value: this exact program baked `[0, 12345]`, silently
-/// losing the 7, with no diagnostic at all.
-///
-/// `12345` is a plain literal control: it bakes correctly either way, so a
-/// failure here means "wrong value", not "nothing was baked".
-///
-/// `docs/src/chips.md` sends users directly at this shape — it rejects
-/// `const chip C(v: int) -> (r: int)` and tells them to use a `mod` instead.
-#[test]
-fn a_single_named_output_const_mod_result_bakes_as_a_scalar() {
-    let v = baked_array(
-        "const mod C(v: const int) -> (r: int) { out r = v }\n\
-         const got = C(7)\n\
-         var arr: int[] = [got, 12345]",
-    );
-    assert_eq!(v, vec![Literal::Int(7), Literal::Int(12345)]);
-}
-
-#[test]
-fn division_by_zero_bakes_zero_like_the_gates() {
-    let v = baked_array("var m: int[] = [8 / 0, 8 % 0]");
-    assert_eq!(v, vec![Literal::Int(0), Literal::Int(0)]);
-}
-
-#[test]
-fn string_concat_and_bool_ops_bake() {
-    let s = baked_array(r#"let A = "x"
-var m: string[] = [A .. "y"]"#);
-    assert_eq!(s, vec![Literal::String("xy".into())]);
-    let b = baked_array("let T = true\nvar m: bool[] = [T && false, T || false, !T]");
-    assert_eq!(
-        b,
-        vec![Literal::Bool(false), Literal::Bool(true), Literal::Bool(false)]
-    );
-}
-
-#[test]
 fn operator_folding_does_not_leak_outside_initializers() {
     // `expr_to_literal` (no constant environment) decides bake-vs-wire in many
     // places besides initializers. It must NOT fold operators, or a call whose
@@ -198,15 +210,12 @@ fn operator_folding_does_not_leak_outside_initializers() {
     // should have emitted — `Rotation(0.0 + 0.0, ...)` losing its MakeRotation
     // is the case that caught this. Guards `fold::make_rotation_does_not_fold`
     // from the other direction: here at the source, not at the fold pass.
-    use crate::ir::gate_class as gc;
     let r = compile("out r: rotator = Rotation(0.0 + 0.0, 90.0 + 0.0, 45.5 + 0.0)");
-    let n = r
-        .module
-        .nodes
-        .values()
-        .filter(|x| x.gate_class == gc::MAKE_ROTATION)
-        .count();
-    assert_eq!(n, 1, "arithmetic args must still produce a real gate");
+    assert_eq!(
+        count_class(&r.module, crate::ir::gate_class::MAKE_ROTATION),
+        1,
+        "arithmetic args must still produce a real gate"
+    );
 }
 
 #[test]
@@ -232,11 +241,7 @@ fn constant_named_in_an_initializer_counts_as_used() {
         "test",
         &Loader,
     );
-    let unused: Vec<_> = r
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == "WS014")
-        .collect();
+    let unused: Vec<_> = r.diagnostics.iter().filter(|d| d.code == "WS014").collect();
     assert!(unused.is_empty(), "false unused-import warning: {unused:?}");
 }
 
@@ -280,28 +285,41 @@ fn constants_travel_with_an_imported_array() {
         })
         .collect();
     for want in ["table", "K_ONE", "K_TWO"] {
-        assert!(names.contains(&want.to_string()), "{want} not pulled in: {names:?}");
+        assert!(
+            names.contains(&want.to_string()),
+            "{want} not pulled in: {names:?}"
+        );
     }
 }
 
+/// An initializer with no compile-time value is still WS003 at typecheck,
+/// never a silently baked wrong value.
 #[test]
-fn non_constant_element_still_errors() {
-    // A runtime value has no compile-time form — the initializer must still be
-    // rejected rather than silently baking a wrong value.
-    assert!(errors("in x: int\nvar m: int[] = [x]").contains(&"WS003".to_string()));
-}
-
-#[test]
-fn out_of_range_shift_is_not_folded() {
-    // 1 << 64 is undefined for i64; refuse rather than guess.
-    assert!(errors("var m: int[] = [1 << 64]").contains(&"WS003".to_string()));
-}
-
-#[test]
-fn cyclic_constants_do_not_hang_or_bake() {
-    // A depends on B depends on A: neither resolves, the fixpoint terminates,
-    // and the initializer stays an error.
-    assert!(errors("let A = B + 1\nlet B = A + 1\nvar m: int[] = [A]").contains(&"WS003".to_string()));
+fn a_non_constant_initializer_is_ws003() {
+    let rows: &[(&str, &str)] = &[
+        (
+            "a runtime value has no compile-time form",
+            "in x: int\nvar m: int[] = [x]",
+        ),
+        // 1 << 64 is undefined for i64; refuse rather than guess.
+        (
+            "an out-of-range shift is not folded",
+            "var m: int[] = [1 << 64]",
+        ),
+        // A depends on B depends on A: the fixpoint terminates and neither resolves.
+        (
+            "cyclic constants do not hang or bake",
+            "let A = B + 1\nlet B = A + 1\nvar m: int[] = [A]",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for &(label, src) in rows {
+        let codes = errs(src);
+        if !codes.iter().any(|c| c == "WS003") {
+            failures.push(format!("{label}: expected WS003, got {codes:?}\n{src}"));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 // `lower::expr::wire_type_of_literal`'s `Literal::Object` arm returns `None`
@@ -324,87 +342,12 @@ fn literal_object_is_never_produced_by_const_eval() {
     // therefore always reject as non-constant, so `wire_type_of_literal`'s
     // `const_lookup()` caller can never hand it an `Object` literal.
     assert!(
-        errors("const e = FindPlayer(\"x\")").contains(&"WS046".to_string()),
+        errs("const e = FindPlayer(\"x\")").contains(&"WS046".to_string()),
         "an entity-typed initializer must never be accepted as a compile-time constant"
     );
 }
 
-// A constructor's NAMED arguments must bind by PARAMETER NAME all the way
-// through the pipeline that actually bakes values into gates, not just in
-// `const_eval`'s own unit tests. Binding them by source position instead
-// silently baked `Vector { x: 3.0, y: 1.0, z: 2.0 }` here — a wrong constant
-// in the emitted gate, with no diagnostic to notice it by. The runtime path
-// (`lower::call::builtin`) has always bound these by name, so this is also
-// what keeps a `const` and a non-`const` spelling of one expression agreeing.
-#[test]
-fn a_constructor_with_named_arguments_bakes_on_the_named_axes() {
-    assert_eq!(
-        baked_array("var v: vector[] = [Vec(z = 3.0, x = 1.0, y = 2.0)]"),
-        vec![Literal::Vector { x: 1.0, y: 2.0, z: 3.0 }]
-    );
-}
-
 // ---------- `const` inside an anonymous `chip { }` ----------
-
-/// An anonymous `chip { }` SHARES its parent's scope — `typecheck::register`
-/// and `typecheck::decl` register its body's declarations into the parent, and
-/// `lower::decl::lower_anon_chip` lowers the body with no `push_scope`. Its
-/// body-level `const`s must therefore live in the same constant environment as
-/// the top-level ones.
-///
-/// They did not: `build_const_env`/`build_const_declared_names` matched
-/// `TopDecl::Let` only and never descended into `TopDecl::AnonChip`, and
-/// nothing else opens a `scoped_consts` frame there — so the value was
-/// recorded NOWHERE. `const a = 1` was silent (a literal always evaluates) and
-/// the failure surfaced at the next line instead, blamed on a different
-/// binding: `const b = a + 1` reported WS046 "'a' is a runtime value".
-#[test]
-fn a_const_in_an_anonymous_chip_body_is_compile_time() {
-    let v = baked_array(
-        "chip {\n  const a = 20\n  const b = a + 2\n  var m: int[] = [a, b, 12345]\n}",
-    );
-    assert_eq!(
-        v,
-        vec![Literal::Int(20), Literal::Int(22), Literal::Int(12345)]
-    );
-}
-
-/// A `const` declared in an anonymous chip nested inside another anonymous
-/// chip resolves the same way: each shares the same parent scope in turn, so
-/// the descent recurses rather than stopping at the first body.
-#[test]
-fn a_const_in_a_nested_anonymous_chip_body_is_compile_time() {
-    let v = baked_array(
-        "chip {\n  chip {\n    const a = 5\n    const b = a * 3\n    \
-         var m: int[] = [b, 12345]\n  }\n}",
-    );
-    assert_eq!(v, vec![Literal::Int(15), Literal::Int(12345)]);
-}
-
-/// The reverse direction: an anonymous chip body reads a TOP-LEVEL constant
-/// and re-exports it through one of its own, proving the flattening merges
-/// into one environment rather than building a second, isolated one.
-#[test]
-fn an_anonymous_chip_body_const_may_read_a_top_level_const() {
-    let v = baked_array(
-        "const outer = 5\nchip {\n  const inner = outer * 2\n  \
-         var m: int[] = [inner, 12345]\n}",
-    );
-    assert_eq!(v, vec![Literal::Int(10), Literal::Int(12345)]);
-}
-
-/// A `const mod` declared in an anonymous chip body is registered into the
-/// parent scope by `predeclare`'s own `AnonChip` arm, so a `const` anywhere in
-/// the module can CALL it. `scope_mods` has to descend for the same
-/// reason `scope_lets` does.
-#[test]
-fn a_const_mod_in_an_anonymous_chip_body_resolves() {
-    let v = baked_array(
-        "chip {\n  const mod dbl(n: const int) -> int { return n * 2 }\n}\n\
-         const t = dbl(6)\nvar m: int[] = [t, 12345]",
-    );
-    assert_eq!(v, vec![Literal::Int(12), Literal::Int(12345)]);
-}
 
 /// Both stages must agree about an anonymous chip's constants, not just the
 /// baked value: a `const` condition inside one has to tree-shake exactly as it
@@ -415,8 +358,7 @@ fn a_const_if_inside_an_anonymous_chip_elides_like_a_top_level_one() {
     let body = "  in go: exec\n  on go {\n    if flag { PrintToConsole(\"taken\") } \
                 else { PrintToConsole(\"SENTINEL\") }\n  }\n";
     let has_sentinel = |src: &str| {
-        let r = compile(src);
-        assert_no_errors(&r);
+        let r = compile_ok(src);
         graph_contains(&r, "SENTINEL")
     };
     assert!(
@@ -461,7 +403,7 @@ fn a_const_that_is_recorded_never_reports_at_its_binding() {
         // a namespaced import's members are checked in their own pushed scope
         "const a = 1",
     ] {
-        let diags = errors(src);
+        let diags = errs(src);
         assert!(
             !diags.contains(&"WS046".to_string()),
             "a recorded `const` must not report at its binding\n  src: {src}\n  got: {diags:?}"
@@ -471,45 +413,13 @@ fn a_const_that_is_recorded_never_reports_at_its_binding() {
 
 // ---------- compile-time tuple destructuring ----------
 
-/// A tuple pattern binds POSITIONALLY. A multi-output `const mod`'s result
-/// types as a NAME-keyed record in the signature's declaration order, which is
-/// exactly what "positional" means — so `const (a, b) = pair(…)` reads it the
-/// same way `const { a, b } = pair(…)` does. This was rejected outright
-/// (WS010 in `bind_let`, then WS046 from `const_eval`'s stub arm).
-#[test]
-fn a_tuple_destructure_of_a_multi_output_const_mod_is_compile_time() {
-    let v = baked_array(
-        "const mod trio(n: const int) -> (a: int, b: int, c: int) {\n\
-         out a = n\n  out b = n + 1\n  out c = n + 2\n}\n\
-         const (x, y, z) = trio(41)\nvar m: int[] = [x, y, z, 12345]",
-    );
-    assert_eq!(
-        v,
-        vec![
-            Literal::Int(41),
-            Literal::Int(42),
-            Literal::Int(43),
-            Literal::Int(12345)
-        ]
-    );
-}
-
-/// The other shape that reaches the same arm: a genuine tuple LITERAL, which
-/// evaluates to an index-keyed record. It used to report WS046 alone (the type
-/// side already accepted it; only the const evaluator refused).
-#[test]
-fn a_tuple_destructure_of_a_tuple_literal_is_compile_time() {
-    let v = baked_array("const (a, b) = (7, 8)\nvar m: int[] = [a, b, 12345]");
-    assert_eq!(v, vec![Literal::Int(7), Literal::Int(8), Literal::Int(12345)]);
-}
-
 /// A width mismatch stays an error, and names BOTH counts — the value is
 /// perfectly constant and perfectly positional, so "expected tuple[2], got
 /// Record(...)" was describing the compiler's internals rather than the
 /// program's mistake.
 #[test]
 fn a_tuple_destructure_of_the_wrong_width_reports_both_counts() {
-    let diags = errors(
+    let diags = errs(
         "const mod pair(n: const int) -> (a: int, b: int) {\n out a = n\n out b = n + 1\n}\n\
          const (p, q, r) = pair(1)",
     );
@@ -523,122 +433,84 @@ fn a_tuple_destructure_of_the_wrong_width_reports_both_counts() {
 fn a_runtime_tuple_destructure_matches_the_record_spelling() {
     let mod_src = "mod pair(n: int) -> (a: int, b: int) {\n out a = n * 10\n out b = n + 5\n}\n\
                    in n: int\n";
-    let tuple = compile(&format!("{mod_src}let (x, y) = pair(n)\nout r = x + y"));
-    let record = compile(&format!("{mod_src}let {{ a: x, b: y }} = pair(n)\nout r = x + y"));
-    assert_no_errors(&tuple);
-    assert_no_errors(&record);
+    let tuple = compile_ok(&format!("{mod_src}let (x, y) = pair(n)\nout r = x + y"));
+    let record = compile_ok(&format!(
+        "{mod_src}let {{ a: x, b: y }} = pair(n)\nout r = x + y"
+    ));
     assert_eq!(
-        tuple.module.wires.len(),
-        record.module.wires.len(),
+        wiring_shape(&tuple.module),
+        wiring_shape(&record.module),
         "tuple and record spellings of the same destructure must wire identically"
     );
-    assert_eq!(tuple.module.nodes.len(), record.module.nodes.len());
 }
 
+/// A `var` initializer naming a constant bakes the constant's value, widened
+/// to the declared type through `const_eval::scalar_in_type`. Asserts the
+/// baked `InitialValue`, not a gate count: a var left at its type default
+/// emits the same gates.
 #[test]
 fn a_var_initializer_naming_a_constant_bakes_the_constant() {
-    // Regression: the scalar and record-field initializer paths resolved the
-    // initializer with the const-env-LESS `expr_to_literal`, which sees literals
-    // but not names. `var h: float = K` is an `Ident`, so it resolved to nothing
-    // and the var fell back to its type default -- silently, with no diagnostic,
-    // so the program shipped a 0 where the constant should be.
-    //
-    // Asserts the BAKED `InitialValue`, not a gate count: the wrong-value bug
-    // emits exactly the same gates as the right one.
-    let baked = |src: &str, label: &str| -> Option<crate::ir::Literal> {
-        let r = compile(src);
-        assert_no_errors(&r);
-        r.module
-            .nodes
-            .values()
-            .find(|n| {
-                matches!(
-                    n.properties.get(&crate::intern::sym::NAME_LABEL),
-                    Some(crate::ir::Literal::String(s)) if s == label
-                )
-            })
-            .and_then(|n| n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned())
-    };
     use crate::ir::Literal as L;
-    let cases: Vec<(&str, &str, L)> = vec![
+    let rows: Vec<(&str, &str, L)> = vec![
         (
-            "const K: float = 123.45
-var h: float = K
-out v: float = h
-",
+            "const K: float = 123.45\nvar h: float = K\nout v: float = h\n",
             "h",
             L::Float(123.45),
         ),
-        ("const K: int = 7
-var h: int = K
-out v: int = h
-", "h", L::Int(7)),
         (
-            "const K: bool = true
-var h: bool = K
-out v: bool = h
-",
+            "const K: int = 7\nvar h: int = K\nout v: int = h\n",
+            "h",
+            L::Int(7),
+        ),
+        (
+            "const K: bool = true\nvar h: bool = K\nout v: bool = h\n",
             "h",
             L::Bool(true),
         ),
         (
-            "const K: string = \"hi\"
-var h: string = K
-out v: string = h
-",
+            "const K: string = \"hi\"\nvar h: string = K\nout v: string = h\n",
             "h",
             L::String("hi".into()),
         ),
         // an inferred constant, and an expression OVER constants
-        ("const K = 2.0
-var h: float = K
-out v: float = h
-", "h", L::Float(2.0)),
         (
-            "const K: float = 2.0
-var h: float = K * 3.0
-out v: float = h
-",
+            "const K = 2.0\nvar h: float = K\nout v: float = h\n",
+            "h",
+            L::Float(2.0),
+        ),
+        (
+            "const K: float = 2.0\nvar h: float = K * 3.0\nout v: float = h\n",
             "h",
             L::Float(6.0),
         ),
         // a record FIELD initializer, the second path with the same gap
         (
-            "type P = { x: float }
-const K: float = 9.5
-var p: P = { x: K }
-out v: float = p.x
-",
+            "type P = { x: float }\nconst K: float = 9.5\nvar p: P = { x: K }\nout v: float = p.x\n",
             "p.x",
             L::Float(9.5),
         ),
+        // an INT constant still builds a float variable rather than an integer one
+        (
+            "const K: int = 3\nvar h: float = K\nout v: float = h\n",
+            "h",
+            L::Float(3.0),
+        ),
     ];
-    for (src, label, want) in cases {
-        assert_eq!(baked(src, label), Some(want), "wrong baked initializer for:
-{src}");
+    let mut failures = Vec::new();
+    for (src, label, want) in &rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        let got = r
+            .module
+            .nodes
+            .values()
+            .find(|n| matches!(n.properties.get(&crate::intern::sym::NAME_LABEL), Some(L::String(s)) if s == label))
+            .and_then(|n| n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned());
+        if !errors.is_empty() || got.as_ref() != Some(want) {
+            failures.push(format!(
+                "errors {errors:?}, `{label}` baked {got:?}, want {want:?}\n{src}"
+            ));
+        }
     }
-}
-
-#[test]
-fn a_constant_initializer_widens_to_the_declared_type() {
-    // The const-resolved literal goes through the same `const_eval::scalar_in_type`
-    // as a spelled-out one, so `var h: float = K` with an INT constant still
-    // builds a float variable rather than an integer one.
-    let r = compile("const K: int = 3
-var h: float = K
-out v: float = h
-");
-    assert_no_errors(&r);
-    let init = r
-        .module
-        .nodes
-        .values()
-        .find(|n| {
-            matches!(
-                n.properties.get(&crate::intern::sym::NAME_LABEL),
-                Some(crate::ir::Literal::String(s)) if s == "h"
-            )
-        })
-        .and_then(|n| n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned());
-    assert_eq!(init, Some(crate::ir::Literal::Float(3.0)));
+    crate::test_support::report_failures(&failures, rows.len());
 }

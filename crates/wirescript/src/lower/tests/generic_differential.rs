@@ -13,7 +13,8 @@ use crate::ir::{Module, Type};
 
 const S6: &str = "int | float | string | bool | vector | color";
 
-const PRELUDE: &str = "enum Hue { Red, Green, Blue }\ntype Box<T> = { v: T }\nvar k: int = 3\nvar k2: int = 4\n\
+const PRELUDE: &str =
+    "enum Hue { Red, Green, Blue }\ntype Box<T> = { v: T }\nvar k: int = 3\nvar k2: int = 4\n\
 var fl: float = 1.5\nvar fo: float = 0.0\nvar n: int = 0\nvar t0: int = 0\nvar c: Hue = Hue.Green\n\
 var d: Hue = Hue.Red
 var flag: bool = true
@@ -47,7 +48,9 @@ pub(super) fn shape(r: &LowerResult) -> Vec<String> {
                 .map(|(k, v)| match v {
                     // A baked ref names its target by node id, which differs
                     // between two lowerings: show the target's class instead.
-                    Literal::Int(t) if k == crate::ir::HANDLE_TARGET => format!("{k}={}", class(&crate::ir::NodeId(*t as u32))),
+                    Literal::Int(t) if k == crate::ir::HANDLE_TARGET => {
+                        format!("{k}={}", class(&crate::ir::NodeId(*t as u32)))
+                    }
                     Literal::Array(ts) if k == crate::ir::HANDLE_TARGETS => {
                         let ts: Vec<&str> = ts
                             .iter()
@@ -62,7 +65,12 @@ pub(super) fn shape(r: &LowerResult) -> Vec<String> {
                 })
                 .collect();
             props.sort();
-            out.push(format!("{} {} {}", n.gate_class, ports.join(" "), props.join(" ")));
+            out.push(format!(
+                "{} {} {}",
+                n.gate_class,
+                ports.join(" "),
+                props.join(" ")
+            ));
         }
         for w in &m.wires {
             out.push(format!(
@@ -86,32 +94,48 @@ pub(super) fn shape(r: &LowerResult) -> Vec<String> {
 /// Assert `generic` and `mono` compile, in both fold modes, to the same shape
 /// with the same diagnostics, none of them an error.
 fn assert_same_as_monomorph(generic: &str, mono: &str, what: &str) {
-    let codes = |r: &LowerResult| r.diagnostics.iter().map(|d| d.code.clone()).collect::<Vec<_>>();
+    let codes = |r: &LowerResult| {
+        r.diagnostics
+            .iter()
+            .map(|d| d.code.clone())
+            .collect::<Vec<_>>()
+    };
     for ((mode, g), (_, m)) in both_folds(generic).into_iter().zip(both_folds(mono)) {
         let what = format!("{what}, {mode}");
         for (r, which) in [(&g, "generic"), (&m, "monomorphized copy")] {
             assert!(
-                r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
+                r.diagnostics
+                    .iter()
+                    .all(|d| d.severity != crate::diagnostic::Severity::Error),
                 "{what} ({which}): {:?}",
                 r.diagnostics
             );
-            assert!(!has_gate(r, "_Unsupported"), "{what} ({which})");
+            assert!(!has_unsupported(&r.module), "{what} ({which})");
             emit_ok(r).unwrap_or_else(|e| panic!("{what} ({which}): {e}"));
         }
         assert_eq!(codes(&g), codes(&m), "{what}: diagnostics");
         let (gs, ms) = (shape(&g), shape(&m));
         let only_generic: Vec<&String> = gs.iter().filter(|s| !ms.contains(s)).collect();
         let only_mono: Vec<&String> = ms.iter().filter(|s| !gs.contains(s)).collect();
-        assert_eq!(gs, ms, "{what}\nonly in the generic: {only_generic:#?}\nonly in the copy: {only_mono:#?}");
+        assert_eq!(
+            gs, ms,
+            "{what}\nonly in the generic: {only_generic:#?}\nonly in the copy: {only_mono:#?}"
+        );
     }
 }
 
 /// Whether typecheck checked a body under the substitution `key` only because
 /// a call demanded it: the combinations of the bounds leave it out.
 fn demanded(src: &str, key: &[Type]) -> bool {
+    demanded_any(src, &[key])
+}
+
+/// [`demanded`] for any of `keys`, from one type check.
+fn demanded_any(src: &str, keys: &[&[Type]]) -> bool {
     let parsed = crate::parser::parse(src, "test");
     let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
-    tc.demanded_instantiations.iter().any(|k| *k.3 == *key)
+    keys.iter()
+        .any(|key| tc.demanded_instantiations.iter().any(|k| *k.3 == **key))
 }
 
 fn scalar(t: &str) -> Type {
@@ -127,7 +151,13 @@ fn scalar(t: &str) -> Type {
 /// int instance of `H`; its copy writes `A` and `B` out as `a_ty`, `b_ty`.
 /// `body` names `A`/`B` only as `A[]`, `<A>` and `<B>`. Whether either
 /// instantiation is past the cap: checked only because its call demanded it.
-fn mod_case(bounds: (&str, &str), body: &str, result: &str, args: &str, (a_ty, b_ty): (&str, &str)) -> bool {
+fn mod_case(
+    bounds: (&str, &str),
+    body: &str,
+    result: &str,
+    args: &str,
+    (a_ty, b_ty): (&str, &str),
+) -> bool {
     let (a_bound, b_bound) = bounds;
     let generic = format!(
         "{PRELUDE}mod f<A: {a_bound}, B: {b_bound}, C: {S6}, D: {S6}, H: Hue | int>(a: A, b: B, cc: C, dd: D, h: H) \
@@ -150,21 +180,43 @@ fn mod_case(bounds: (&str, &str), body: &str, result: &str, args: &str, (a_ty, b
         one("f_int", "int")
     );
     let what = format!("`{body}` at {a_ty}, {b_ty}");
-    let hue = Type::Enum { name: "Hue".into(), args: vec![] };
+    let hue = Type::Enum {
+        name: "Hue".into(),
+        args: vec![],
+    };
     let int_key = [scalar(a_ty), scalar(b_ty), Type::Int, Type::Int, Type::Int];
     let hue_key = [scalar(a_ty), scalar(b_ty), Type::Int, Type::Int, hue];
-    let past_cap = demanded(&generic, &int_key) || demanded(&generic, &hue_key);
+    let past_cap = demanded_any(&generic, &[&int_key, &hue_key]);
     assert_same_as_monomorph(&generic, &mono, &what);
     past_cap
 }
 
-const INSTANCES: [(&str, (&str, &str)); 3] =
-    [("k, fl, k, k", ("int", "float")), ("k, k2, k, k", ("int", "int")), ("fl, k, k, k", ("float", "int"))];
+const INSTANCES: [(&str, (&str, &str)); 3] = [
+    ("k, fl, k, k", ("int", "float")),
+    ("k, k2, k, k", ("int", "int")),
+    ("fl, k, k, k", ("float", "int")),
+];
 
 const MIXED: (&str, &str) = ("float | int", "int | float");
 
+/// The instances body `i` of a mod-shaped test runs at: all three with
+/// `full`, else `int, int` and one of the two mirrored mixed instances,
+/// alternating with `i`.
+fn instances(i: usize, full: bool) -> Vec<(&'static str, (&'static str, &'static str))> {
+    if full {
+        INSTANCES.to_vec()
+    } else {
+        vec![INSTANCES[1], INSTANCES[if i % 2 == 0 { 0 } else { 2 }]]
+    }
+}
+
 /// [`mod_case`] at every instance; whether any of them reaches the cap.
-fn past_cap(bounds: (&str, &str), body: &str, result: &str, instances: &[(&str, (&str, &str))]) -> bool {
+fn past_cap(
+    bounds: (&str, &str),
+    body: &str,
+    result: &str,
+    instances: &[(&str, (&str, &str))],
+) -> bool {
     instances
         .iter()
         .map(|(args, types)| mod_case(bounds, body, result, args, *types))
@@ -173,16 +225,35 @@ fn past_cap(bounds: (&str, &str), body: &str, result: &str, instances: &[(&str, 
 
 /// `a + b` over an `int` and a `float` is a `float`, though every combination
 /// typecheck checked had the type of `a`.
+///
+/// The default set runs each body at two of the three instances, the mixed
+/// one alternating; all three run under `--ignored`.
 #[test]
 fn a_value_depending_on_two_type_params_past_the_cap_takes_both() {
-    for (body, result) in [
+    two_type_params_matrix(false);
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn a_value_depending_on_two_type_params_past_the_cap_takes_both_exhaustive() {
+    two_type_params_matrix(true);
+}
+
+fn two_type_params_matrix(full: bool) {
+    for (i, (body, result)) in [
         ("var t = a + b", "t"),
         ("var t = a + b\n var u = t * a\n var w = u + 1", "w"),
         ("var u = -a + b", "u"),
         ("var cc2 = a < b\n var u = if cc2 then a else b", "u"),
         ("var u = a * a + b * b\n var m = min(a, b)", "u + m"),
-    ] {
-        assert!(past_cap(MIXED, body, result, &INSTANCES), "`{body}` never reaches the cap");
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            past_cap(MIXED, body, result, &instances(i, full)),
+            "`{body}` never reaches the cap"
+        );
     }
 }
 
@@ -191,23 +262,50 @@ fn a_value_depending_on_two_type_params_past_the_cap_takes_both() {
 /// division after it is an integer one (`7 / 2` is 3).
 #[test]
 fn a_type_every_checked_combination_agreed_on_is_not_assumed_past_the_cap() {
-    for (body, result) in [("var t = a + b\n var u = t / 2", "u"), ("var t = a / b", "t")] {
-        let instances = [("k, k2, k, k", ("int", "int")), ("k, fl, k, k", ("int", "float"))];
-        assert!(past_cap(("float | int", "float | int"), body, result, &instances), "`{body}` never reaches the cap");
+    for (body, result) in [
+        ("var t = a + b\n var u = t / 2", "u"),
+        ("var t = a / b", "t"),
+    ] {
+        let instances = [
+            ("k, k2, k, k", ("int", "int")),
+            ("k, fl, k, k", ("int", "float")),
+        ];
+        assert!(
+            past_cap(("float | int", "float | int"), body, result, &instances),
+            "`{body}` never reaches the cap"
+        );
     }
 }
 
 /// An `if` joining an `A` and a `B` is their widening past the cap.
 #[test]
 fn an_if_join_past_the_cap_takes_both_branches() {
-    assert!(past_cap(MIXED, "var t = if flag then a else b", "t", &INSTANCES));
+    assert!(past_cap(
+        MIXED,
+        "var t = if flag then a else b",
+        "t",
+        &INSTANCES
+    ));
 }
 
 /// A chain of `let`s, a `let` named like a top-level var, a tuple, an array
 /// of `A`, a record of `A`/`B`, and a body of constants, past the cap.
+///
+/// The default set runs each body at two of the three instances, the mixed
+/// one alternating; all three run under `--ignored`.
 #[test]
 fn lets_containers_records_and_constants_past_the_cap_keep_their_types() {
-    for (body, result) in [
+    lets_containers_records_matrix(false);
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn lets_containers_records_and_constants_past_the_cap_keep_their_types_exhaustive() {
+    lets_containers_records_matrix(true);
+}
+
+fn lets_containers_records_matrix(full: bool) {
+    for (i, (body, result)) in [
         ("let t = a * b\n var u = t", "u"),
         ("let t = a * b\n let w = t + 1\n var u = w", "u"),
         ("let t0 = a * b\n var u = t0", "u"),
@@ -217,38 +315,88 @@ fn lets_containers_records_and_constants_past_the_cap_keep_their_types() {
         ("var bx: Box<B> = { v: b }\n var u = bx.v + a", "u"),
         ("var t = 2 * 3\n var s = 1.5 + 1.0\n var q = \"x\"", "t + s"),
         ("var u = abs(a) + max(a, b)\n var q = sqrt(b)", "u + q"),
-    ] {
-        assert!(past_cap(MIXED, body, result, &INSTANCES), "`{body}` never reaches the cap");
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            past_cap(MIXED, body, result, &instances(i, full)),
+            "`{body}` never reaches the cap"
+        );
     }
 }
 
 /// A `match` past the cap on an enum declared outside the generic, directly
 /// or through a `let` of the body, chooses between its arms instead of
 /// storing the first.
+///
+/// The default set runs each body at two of the three instances, the mixed
+/// one alternating; all three run under `--ignored`.
 #[test]
 fn a_match_past_the_cap_on_an_outer_enum_chooses_its_arm() {
-    for body in [
+    match_on_an_outer_enum_matrix(false);
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn a_match_past_the_cap_on_an_outer_enum_chooses_its_arm_exhaustive() {
+    match_on_an_outer_enum_matrix(true);
+}
+
+fn match_on_an_outer_enum_matrix(full: bool) {
+    for (i, body) in [
         "var u = match c { Hue.Red => a, _ => b }",
         "let e2 = c\n var u = match e2 { Hue.Red => a, Hue.Green => b, _ => a * b }",
-    ] {
-        assert!(past_cap(MIXED, body, "u", &INSTANCES), "`{body}` never reaches the cap");
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            past_cap(MIXED, body, "u", &instances(i, full)),
+            "`{body}` never reaches the cap"
+        );
     }
 }
 
 /// Calls, container methods, refs and enum values past the cap: each takes
 /// the type the call, method, ref or variant gives, not `any`.
+///
+/// The default set runs each body at two of the three instances, the mixed
+/// one alternating; all three run under `--ignored`.
 #[test]
 fn calls_methods_refs_and_enum_values_past_the_cap_keep_their_types() {
-    for (body, result) in [
+    calls_methods_refs_matrix(false);
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn calls_methods_refs_and_enum_values_past_the_cap_keep_their_types_exhaustive() {
+    calls_methods_refs_matrix(true);
+}
+
+fn calls_methods_refs_matrix(full: bool) {
+    for (i, (body, result)) in [
         ("let (l, h2) = two(b)\n var u = l + h2 + a", "u"),
-        ("var xs: A[]\n xs.push(a)\n var l = xs.length()\n var u = l + b", "u"),
+        (
+            "var xs: A[]\n xs.push(a)\n var l = xs.length()\n var u = l + b",
+            "u",
+        ),
         ("var u = Select(flag, a, a) + b", "u"),
         ("var u = a + b\n var w = &u\n var z = *w + a", "z"),
         ("hs.push(c)\n var e3 = hs[0]\n d = e3\n var u = a * b", "u"),
-        ("var e2 = Hue.Blue\n d = e2\n var i = c.Discriminant\n var u = a + b + i", "u"),
+        (
+            "var e2 = Hue.Blue\n d = e2\n var i = c.Discriminant\n var u = a + b + i",
+            "u",
+        ),
         ("var t = c is Hue.Red\n var u = if t then a else b", "u"),
-    ] {
-        assert!(past_cap(MIXED, body, result, &INSTANCES), "`{body}` never reaches the cap");
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            past_cap(MIXED, body, result, &instances(i, full)),
+            "`{body}` never reaches the cap"
+        );
     }
 }
 
@@ -280,7 +428,10 @@ fn a_generic_chip_past_the_cap_matches_its_monomorphized_copy() {
                 one("f_int", "int"),
                 one("f_str", "string")
             );
-            past_cap |= demanded(&generic, &[scalar(a_ty), scalar(b_ty), Type::Int, Type::Int, Type::Int]);
+            past_cap |= demanded(
+                &generic,
+                &[scalar(a_ty), scalar(b_ty), Type::Int, Type::Int, Type::Int],
+            );
             assert_same_as_monomorph(&generic, &mono, &format!("chip `{body}` at {a_ty}, {b_ty}"));
         }
         assert!(past_cap, "chip `{body}` never reaches the cap");
@@ -294,7 +445,10 @@ fn a_generic_chip_past_the_cap_matches_its_monomorphized_copy() {
 #[test]
 fn a_plain_mod_called_from_a_generic_body_keeps_its_own_operators() {
     let callee = "mod g(x: float, y: float) -> float { var t = x / 2\n var u = if flag then x else y\n var w = -x\n return t + u + w }\n";
-    for body in ["emit r = g(a, k2)", "let (l, h2) = two(a)\n emit r = l / 2 + h2"] {
+    for body in [
+        "emit r = g(a, k2)",
+        "let (l, h2) = two(a)\n emit r = l / 2 + h2",
+    ] {
         let generic = format!(
             "{PRELUDE}{callee}mod f<A: float | int, H: Hue | int>(a: A, h: H) -> (r: float, e: H) {{ emit e = h\n {body} }}\n\
              on go {{ let x = f(k, c)\n fo = x.r\n d = x.e\n let y = f(k, k)\n n = y.e + 0 }}\n"
@@ -341,7 +495,10 @@ fn body_case(body: &str) {
     let mono = format!(
         "{WIDE_PRELUDE}mod f(a: int, b: int, cc: int, dd: int, h: int) {{ {mono_body} }}\non go {{ f(k, k2, k, k2, k) }}\n"
     );
-    assert!(demanded(&generic, &vec![Type::Int; 5]), "`{body}` does not reach the cap");
+    assert!(
+        demanded(&generic, &vec![Type::Int; 5]),
+        "`{body}` does not reach the cap"
+    );
     assert_same_as_monomorph(&generic, &mono, &format!("`{body}`"));
 }
 
@@ -448,19 +605,33 @@ fn namespace_calls_past_the_cap_keep_their_types() {
              on go {{ f(k, k2, k, k2, k) }}\n"
         );
         let loader = crate::resolve::MemLoader {
-            files: deps.iter().map(|(k, v)| (format!("{k}.ws"), v.to_string())).collect(),
+            files: deps
+                .iter()
+                .map(|(k, v)| (format!("{k}.ws"), v.to_string()))
+                .collect(),
         };
         let resolved = crate::resolve::resolve(&generic, "main", &loader);
-        let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
-        assert!(tc.demanded_instantiations.iter().any(|k| *k.3 == *vec![Type::Int; 5]), "`{body}` does not reach the cap");
+        let tc = typecheck(
+            &resolved.ast,
+            "main",
+            &crate::typecheck::CeSlotMap::default(),
+        );
+        assert!(
+            tc.demanded_instantiations
+                .iter()
+                .any(|k| *k.3 == *vec![Type::Int; 5]),
+            "`{body}` does not reach the cap"
+        );
         let (g, m) = (compile_multi(&generic, &deps), compile_multi(&mono, &deps));
         for (r, which) in [(&g, "generic"), (&m, "copy")] {
             assert!(
-                r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
+                r.diagnostics
+                    .iter()
+                    .all(|d| d.severity != crate::diagnostic::Severity::Error),
                 "`{body}` ({which}): {:?}",
                 r.diagnostics
             );
-            assert!(!has_gate(r, "_Unsupported"), "`{body}` ({which})");
+            assert!(!has_unsupported(&r.module), "`{body}` ({which})");
         }
         assert_eq!(shape(&g), shape(&m), "`{body}`");
     }
@@ -483,14 +654,21 @@ fn a_generic_chip_past_the_cap_keeps_method_types() {
             "{WIDE_PRELUDE}chip f(a: int, b: float, cc: int, dd: int, h: int) -> (r: float) {{ {body}\n out r = {result} }}\n\
              let x = f(k, fl, k, k2, k)\non go {{ fo = x }}\n"
         );
-        assert!(demanded(&generic, &[Type::Int, Type::Float, Type::Int, Type::Int, Type::Int]), "chip `{body}` does not reach the cap");
+        assert!(
+            demanded(
+                &generic,
+                &[Type::Int, Type::Float, Type::Int, Type::Int, Type::Int]
+            ),
+            "chip `{body}` does not reach the cap"
+        );
         assert_same_as_monomorph(&generic, &mono, &format!("chip `{body}`"));
     }
 }
 
 /// A chain 24 operators deep over a method result, past the cap, compiles in
 /// time linear in its depth: each type is read from the instantiation's own
-/// check, never re-derived from its operands.
+/// check, never re-derived from its operands. Re-deriving doubles the work per
+/// level (2^24 at this depth), so the limit sits far above a loaded debug build.
 #[test]
 fn a_deep_expression_past_the_cap_compiles_promptly() {
     let mut chain = "st.Length()".to_string();
@@ -501,5 +679,8 @@ fn a_deep_expression_past_the_cap_compiles_promptly() {
     let start = std::time::Instant::now();
     body_case(&body);
     let elapsed = start.elapsed();
-    assert!(elapsed < std::time::Duration::from_secs(5), "depth 24 took {elapsed:?}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(60),
+        "depth 24 took {elapsed:?}"
+    );
 }

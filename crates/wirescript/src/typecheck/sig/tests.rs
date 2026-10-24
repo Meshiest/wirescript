@@ -2,6 +2,7 @@ use super::*;
 use crate::ast::{CallArg, Expr};
 use crate::diagnostic::SourceRange;
 use crate::ir::Type;
+use crate::test_support::report_failures;
 use crate::typecheck::{SymbolInfo, SymbolKind, TypeCheckCtx};
 
 // Build a bare Wire-param signature for testing check_args directly.
@@ -18,6 +19,27 @@ fn wire_sig(name: &str, params: &[(&str, Type, bool)]) -> CallSignature {
             })
             .collect(),
         config_gate: None,
+    }
+}
+
+/// A signature with one optional config param, or none, on `gate`.
+fn config_sig(
+    name: &str,
+    param: Option<(&str, Type, ParamKind)>,
+    gate: Option<&'static str>,
+) -> CallSignature {
+    CallSignature {
+        name: name.into(),
+        params: param
+            .into_iter()
+            .map(|(n, ty, kind)| Param {
+                name: n.into(),
+                ty,
+                optional: true,
+                kind,
+            })
+            .collect(),
+        config_gate: gate,
     }
 }
 
@@ -45,102 +67,55 @@ fn ident(name: &str) -> Expr {
     }
 }
 
-/// Register `a: int` in `ctx`'s scope and return two positional `CallArg`s
-/// (both reading `a`, so both infer to `int`) plus a call range to attach
-/// diagnostics to.
-fn two_int_args(ctx: &mut TypeCheckCtx) -> (Vec<CallArg>, SourceRange) {
-    declare_var(ctx, "a", Type::Int);
-    let range = SourceRange::default();
-    let arg = || CallArg::Positional(ident("a"));
-    (vec![arg(), arg()], range)
+fn pos(name: &str) -> CallArg {
+    CallArg::Positional(ident(name))
 }
 
-#[test]
-fn check_args_flags_arity_and_mismatch() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    let (args, range) = two_int_args(&mut ctx);
-
-    // too few args -> WS011
-    let sig3 = wire_sig(
-        "f",
-        &[
-            ("x", Type::Int, false),
-            ("y", Type::Int, false),
-            ("z", Type::Int, false),
-        ],
-    );
-    check_args(&mut ctx, &sig3, &args, 0, true, true, &range);
-    assert!(
-        ctx.diagnostics.iter().any(|d| d.code == "WS011"),
-        "expected WS011 for too-few args, got {:?}",
-        ctx.diagnostics
-    );
-
-    // right arity, param 1 expects vector, got int -> WS003
-    ctx.diagnostics.clear();
-    let sig2 = wire_sig(
-        "f",
-        &[("x", Type::Int, false), ("y", Type::Vector, false)],
-    );
-    check_args(&mut ctx, &sig2, &args, 0, true, true, &range);
-    assert!(
-        ctx.diagnostics
-            .iter()
-            .any(|d| d.code == "WS003" && d.message.contains("vector")),
-        "expected WS003 mentioning 'vector', got {:?}",
-        ctx.diagnostics
-    );
+fn named(name: &str, value: &str) -> CallArg {
+    CallArg::Named {
+        name_range: SourceRange::default(),
+        name: name.into(),
+        value: ident(value),
+    }
 }
 
-#[test]
-fn check_args_too_many_positional_is_ws011() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    let (args, range) = two_int_args(&mut ctx);
-
-    let sig1 = wire_sig("f", &[("x", Type::Int, false)]);
-    check_args(&mut ctx, &sig1, &args, 0, true, true, &range);
-    assert!(
-        ctx.diagnostics.iter().any(|d| d.code == "WS011"),
-        "expected WS011 for too-many args, got {:?}",
-        ctx.diagnostics
-    );
+/// What `check_args` must report for a row.
+#[derive(Debug)]
+enum Want {
+    /// No diagnostic at all.
+    Clean,
+    /// A diagnostic with this code whose message contains every fragment.
+    Has(&'static str, &'static [&'static str]),
+    /// No diagnostic with this code.
+    Lacks(&'static str),
 }
 
-#[test]
-fn check_args_matching_types_is_clean() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    let (args, range) = two_int_args(&mut ctx);
-
-    let sig2 = wire_sig("f", &[("x", Type::Int, false), ("y", Type::Int, false)]);
-    check_args(&mut ctx, &sig2, &args, 0, true, true, &range);
-    assert!(
-        ctx.diagnostics.is_empty(),
-        "expected no diagnostics, got {:?}",
-        ctx.diagnostics
-    );
+struct Row {
+    label: &'static str,
+    vars: Vec<(&'static str, Type)>,
+    sig: CallSignature,
+    args: Vec<CallArg>,
+    check_arity: bool,
+    check_named: bool,
+    wants: Vec<Want>,
 }
 
-#[test]
-fn check_args_optional_param_omitted_is_ok() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    declare_var(&mut ctx, "a", Type::Int);
-    let range = SourceRange::default();
-    let args = vec![CallArg::Positional(ident("a"))];
-
-    let sig = wire_sig(
-        "f",
-        &[("x", Type::Int, false), ("y", Type::Int, true)],
-    );
-    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
-    assert!(
-        ctx.diagnostics.is_empty(),
-        "omitting a trailing optional param should not error, got {:?}",
-        ctx.diagnostics
-    );
+fn row(
+    label: &'static str,
+    vars: Vec<(&'static str, Type)>,
+    sig: CallSignature,
+    args: Vec<CallArg>,
+    wants: Vec<Want>,
+) -> Row {
+    Row {
+        label,
+        vars,
+        sig,
+        args,
+        check_arity: true,
+        check_named: true,
+        wants,
+    }
 }
 
 // A real gate carrying settable settings-menu config fields, used to exercise
@@ -148,334 +123,230 @@ fn check_args_optional_param_omitted_is_ok() {
 //   - `bOnlyHitPlayerBodyParts` (bool) and `Direction` (enum) are scalar config.
 const SWEEP_GATE: &str = crate::ir::gate_class::SWEEP_SIMPLE;
 
-// A `ConfigScalar` param given a non-constant value emits the constant-only
-// WS028 — reached via a NAMED arg matched by SURFACE name (`bodyPartsOnly`).
 #[test]
-fn config_scalar_named_arg_nonconstant_is_ws028() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    declare_var(&mut ctx, "live", Type::Bool);
-    let range = SourceRange::default();
-
-    let sig = CallSignature {
-        name: "SweepSimple".into(),
-        // Surface name `bodyPartsOnly` differs from its port `bOnlyHitPlayerBodyParts`.
-        params: vec![Param {
-            name: "bodyPartsOnly".into(),
-            ty: Type::Bool,
-            optional: true,
-            kind: ParamKind::ConfigScalar("bOnlyHitPlayerBodyParts"),
-        }],
-        config_gate: Some(SWEEP_GATE),
-    };
-    let args = vec![CallArg::Named {
-        name_range: SourceRange::default(),
-        name: "bodyPartsOnly".into(),
-        value: ident("live"),
-    }];
-    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
-    let diag = ctx.diagnostics.iter().find(|d| d.code == "WS028");
-    assert!(
-        diag.is_some(),
-        "non-constant scalar config via named arg should be WS028, got {:?}",
-        ctx.diagnostics
-    );
-    // The message shows the SURFACE name, not the port name.
-    assert!(
-        diag.unwrap().message.contains("'bodyPartsOnly'"),
-        "WS028 should name the surface param, got {:?}",
-        diag.unwrap().message
-    );
-}
-
-// A `ConfigEnum(et)` param validates a bare member name against the schema:
-// a known member is clean; an unknown one is WS028 (and never WS002).
-#[test]
-fn config_enum_arm_validates_bare_member() {
-    let enum_type = crate::catalog::config_field_enum_type(SWEEP_GATE, "Direction")
+fn check_args_reports_arity_types_config_and_named_args() {
+    use Want::*;
+    let int = || Type::Int;
+    let a = || vec![("a", Type::Int)];
+    let direction = crate::catalog::config_field_enum_type(SWEEP_GATE, "Direction")
         .expect("SweepSimple.Direction should back a schema enum");
-    let range = SourceRange::default();
-    let sig = CallSignature {
-        name: "SweepSimple".into(),
-        params: vec![Param {
-            name: "direction".into(),
-            ty: Type::Int,
-            optional: true,
-            kind: ParamKind::ConfigEnum(enum_type),
-        }],
-        config_gate: Some(SWEEP_GATE),
-    };
-
-    // A valid bare member -> no diagnostic.
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    let good = vec![CallArg::Positional(ident("Y_Positive"))];
-    check_args(&mut ctx, &sig, &good, 0, true, true, &range);
-    assert!(
-        ctx.diagnostics.is_empty(),
-        "a valid enum member should not error, got {:?}",
-        ctx.diagnostics
-    );
-
-    // An unknown member -> WS028, not WS002 (must not read as a variable).
-    ctx.diagnostics.clear();
-    let bad = vec![CallArg::Positional(ident("Nope"))];
-    check_args(&mut ctx, &sig, &bad, 0, true, true, &range);
-    assert!(
-        ctx.diagnostics.iter().any(|d| d.code == "WS028"),
-        "unknown enum member should be WS028, got {:?}",
-        ctx.diagnostics
-    );
-    assert!(
-        !ctx.diagnostics.iter().any(|d| d.code == "WS002"),
-        "a bare enum member must not read as an unknown identifier, got {:?}",
-        ctx.diagnostics
-    );
-}
-
-// A named arg that matches NO declared param falls back to the gate's
-// data-driven settings config via `config_gate` (`bOnlyHitPlayerBodyParts` is a
-// raw schema field); a non-constant value there is WS028.
-#[test]
-fn named_arg_data_driven_config_fallback_is_ws028() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    declare_var(&mut ctx, "live", Type::Bool);
-    let range = SourceRange::default();
-
-    let sig = CallSignature {
-        name: "SweepSimple".into(),
-        params: vec![], // no declared param by this name -> data-driven fallback
-        config_gate: Some(SWEEP_GATE),
-    };
-    let args = vec![CallArg::Named {
-        name_range: SourceRange::default(),
-        name: "bOnlyHitPlayerBodyParts".into(),
-        value: ident("live"),
-    }];
-    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
-    assert!(
-        ctx.diagnostics.iter().any(|d| d.code == "WS028"),
-        "non-constant data-driven config should be WS028, got {:?}",
-        ctx.diagnostics
-    );
-}
-
-// A `ConfigComposite(port)` param rejects a non-constant value (can't fold
-// to the expected shape) with WS028, and the message names the SURFACE param.
-#[test]
-fn config_composite_arm_rejects_nonconstant() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    declare_var(&mut ctx, "live", Type::Color);
-    let range = SourceRange::default();
-
-    let sig = CallSignature {
-        name: "AddInventoryItemAdv".into(),
-        params: vec![Param {
-            name: "meshColors".into(),
-            ty: Type::Any,
-            optional: true,
-            kind: ParamKind::ConfigComposite("MeshColors"),
-        }],
-        config_gate: None,
-    };
-    // A bare identifier can't fold to a constant Color[].
-    let args = vec![CallArg::Named {
-        name_range: SourceRange::default(),
-        name: "meshColors".into(),
-        value: ident("live"),
-    }];
-    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
-    let diag = ctx.diagnostics.iter().find(|d| d.code == "WS028");
-    assert!(
-        diag.is_some(),
-        "non-constant composite config should be WS028, got {:?}",
-        ctx.diagnostics
-    );
-    // Message uses the surface name (`meshColors`), not the port (`MeshColors`).
-    assert!(
-        diag.unwrap().message.contains("'meshColors'"),
-        "WS028 should name the surface param, got {:?}",
-        diag.unwrap().message
-    );
-}
-
-// A named arg matching no declared param and no data-driven config field
-// does nothing at lower time (both typecheck and emit silently drop it), so it
-// is flagged WS041 — the `p.DisplayText(t, positionX = 0.0)` typo. The message
-// names the call and the unknown parameter.
-#[test]
-fn unknown_named_arg_is_ws041() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    declare_var(&mut ctx, "a", Type::Int);
-    let range = SourceRange::default();
-    // `position` is the real param; `positionX` is the removed per-axis alias.
-    let sig = wire_sig("DisplayText", &[("position", Type::Vector, true)]);
-    let args = vec![CallArg::Named {
-        name_range: SourceRange::default(),
-        name: "positionX".into(),
-        value: ident("a"),
-    }];
-    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
-    let diag = ctx.diagnostics.iter().find(|d| d.code == "WS041");
-    assert!(
-        diag.is_some(),
-        "an unknown named arg should be WS041, got {:?}",
-        ctx.diagnostics
-    );
-    assert!(
-        diag.unwrap().message.contains("positionX")
-            && diag.unwrap().message.contains("DisplayText"),
-        "WS041 should name the call and the unknown parameter, got {:?}",
-        diag.unwrap().message
-    );
-}
-
-// `exec = ...` is the universal exec-override for a pure-context call, never
-// a declared param — it must NOT be flagged unknown.
-#[test]
-fn exec_named_arg_is_not_ws041() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    declare_var(&mut ctx, "go", Type::Any);
-    let range = SourceRange::default();
-    let sig = wire_sig("Get", &[("k", Type::Int, true)]);
-    let args = vec![CallArg::Named {
-        name_range: SourceRange::default(),
-        name: "exec".into(),
-        value: ident("go"),
-    }];
-    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
-    assert!(
-        !ctx.diagnostics.iter().any(|d| d.code == "WS041"),
-        "the `exec =` override must not be flagged unknown, got {:?}",
-        ctx.diagnostics
-    );
-}
-
-// A variadic call that opts out of arity checking (`check_arity == false`,
-// e.g. `arr.sortMultiple(other, descending = true)`) can't enumerate its legal
-// named args in a fixed `Param` list, so no WS041 fires there.
-#[test]
-fn unknown_named_arg_skipped_when_arity_unchecked() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    declare_var(&mut ctx, "d", Type::Bool);
-    let range = SourceRange::default();
-    let sig = wire_sig("sortMultiple", &[]);
-    let args = vec![CallArg::Named {
-        name_range: SourceRange::default(),
-        name: "descending".into(),
-        value: ident("d"),
-    }];
-    check_args(&mut ctx, &sig, &args, 0, /*check_arity=*/ false, /*check_named=*/ false, &range);
-    assert!(
-        !ctx.diagnostics.iter().any(|d| d.code == "WS041"),
-        "a variadic (arity-unchecked) call must not flag its named args, got {:?}",
-        ctx.diagnostics
-    );
-}
-
-// A REQUIRED param supplied by name satisfies arity — it must not also be
-// demanded positionally (`Sweep(origin, dir, distance = 100.0)` is complete).
-#[test]
-fn required_param_given_by_name_satisfies_arity() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    declare_var(&mut ctx, "d", Type::Float);
-    let range = SourceRange::default();
-    let sig = wire_sig("Sweep", &[("origin", Type::Float, false), ("distance", Type::Float, false)]);
-    let args = vec![
-        CallArg::Positional(ident("d")),
-        CallArg::Named {
-            name_range: SourceRange::default(),
-            name: "distance".into(),
-            value: ident("d"),
+    let rows = vec![
+        row(
+            "too few args",
+            a(),
+            wire_sig(
+                "f",
+                &[
+                    ("x", int(), false),
+                    ("y", int(), false),
+                    ("z", int(), false),
+                ],
+            ),
+            vec![pos("a"), pos("a")],
+            vec![Has("WS011", &[])],
+        ),
+        row(
+            "right arity, param 1 expects vector, got int",
+            a(),
+            wire_sig("f", &[("x", int(), false), ("y", Type::Vector, false)]),
+            vec![pos("a"), pos("a")],
+            vec![Has("WS003", &["vector"])],
+        ),
+        row(
+            "too many positional args",
+            a(),
+            wire_sig("f", &[("x", int(), false)]),
+            vec![pos("a"), pos("a")],
+            vec![Has("WS011", &[])],
+        ),
+        row(
+            "matching types",
+            a(),
+            wire_sig("f", &[("x", int(), false), ("y", int(), false)]),
+            vec![pos("a"), pos("a")],
+            vec![Clean],
+        ),
+        row(
+            "a trailing optional param omitted",
+            a(),
+            wire_sig("f", &[("x", int(), false), ("y", int(), true)]),
+            vec![pos("a")],
+            vec![Clean],
+        ),
+        // A `ConfigScalar` param given a non-constant value emits the constant-only
+        // WS028, reached via a NAMED arg matched by SURFACE name (`bodyPartsOnly`,
+        // port `bOnlyHitPlayerBodyParts`); the message names the surface param.
+        row(
+            "non-constant scalar config by surface name",
+            vec![("live", Type::Bool)],
+            config_sig(
+                "SweepSimple",
+                Some((
+                    "bodyPartsOnly",
+                    Type::Bool,
+                    ParamKind::ConfigScalar("bOnlyHitPlayerBodyParts"),
+                )),
+                Some(SWEEP_GATE),
+            ),
+            vec![named("bodyPartsOnly", "live")],
+            vec![Has("WS028", &["'bodyPartsOnly'"])],
+        ),
+        // A `ConfigEnum(et)` param validates a bare member name against the schema.
+        row(
+            "a valid bare enum member",
+            vec![],
+            config_sig(
+                "SweepSimple",
+                Some(("direction", int(), ParamKind::ConfigEnum(direction))),
+                Some(SWEEP_GATE),
+            ),
+            vec![pos("Y_Positive")],
+            vec![Clean],
+        ),
+        // An unknown member is WS028, never WS002: it must not read as a variable.
+        row(
+            "an unknown bare enum member",
+            vec![],
+            config_sig(
+                "SweepSimple",
+                Some(("direction", int(), ParamKind::ConfigEnum(direction))),
+                Some(SWEEP_GATE),
+            ),
+            vec![pos("Nope")],
+            vec![Has("WS028", &[]), Lacks("WS002")],
+        ),
+        // A named arg that matches NO declared param falls back to the gate's
+        // data-driven settings config via `config_gate` (`bOnlyHitPlayerBodyParts`
+        // is a raw schema field): validated (WS028 for a non-constant value) but
+        // a known name, so never WS041.
+        row(
+            "non-constant data-driven config fallback",
+            vec![("live", Type::Bool)],
+            config_sig("SweepSimple", None, Some(SWEEP_GATE)),
+            vec![named("bOnlyHitPlayerBodyParts", "live")],
+            vec![Has("WS028", &[]), Lacks("WS041")],
+        ),
+        // A `ConfigComposite(port)` param rejects a non-constant value (can't fold
+        // to a Color[]); the message uses the surface name, not the port.
+        row(
+            "non-constant composite config",
+            vec![("live", Type::Color)],
+            config_sig(
+                "AddInventoryItemAdv",
+                Some((
+                    "meshColors",
+                    Type::Any,
+                    ParamKind::ConfigComposite("MeshColors"),
+                )),
+                None,
+            ),
+            vec![named("meshColors", "live")],
+            vec![Has("WS028", &["'meshColors'"])],
+        ),
+        // A named arg matching no declared param and no data-driven config field
+        // does nothing at lower time, so it is flagged WS041 naming the call and
+        // the parameter: the `p.DisplayText(t, positionX = 0.0)` typo.
+        row(
+            "unknown named arg",
+            a(),
+            wire_sig("DisplayText", &[("position", Type::Vector, true)]),
+            vec![named("positionX", "a")],
+            vec![Has("WS041", &["positionX", "DisplayText"])],
+        ),
+        // `exec = ...` is the universal exec-override for a pure-context call.
+        row(
+            "the exec= override",
+            vec![("go", Type::Any)],
+            wire_sig("Get", &[("k", int(), true)]),
+            vec![named("exec", "go")],
+            vec![Lacks("WS041")],
+        ),
+        // A REQUIRED param supplied by name satisfies arity
+        // (`Sweep(origin, dir, distance = 100.0)` is complete).
+        row(
+            "a required param given by name",
+            vec![("d", Type::Float)],
+            wire_sig(
+                "Sweep",
+                &[
+                    ("origin", Type::Float, false),
+                    ("distance", Type::Float, false),
+                ],
+            ),
+            vec![pos("d"), named("distance", "d")],
+            vec![Lacks("WS011")],
+        ),
+        // Matching is case-sensitive, so a mis-cased name points at the real one.
+        row(
+            "a mis-cased named arg",
+            vec![("r", Type::Float)],
+            wire_sig("Sweep", &[("radius", Type::Float, true)]),
+            vec![named("Radius", "r")],
+            vec![Has("WS041", &["did you mean 'radius'"])],
+        ),
+        // A variadic call that opts out of arity checking
+        // (`arr.sortMultiple(other, descending = true)`) can't enumerate its legal
+        // named args, so no WS041 fires there.
+        Row {
+            check_arity: false,
+            check_named: false,
+            ..row(
+                "a variadic call's named arg",
+                vec![("d", Type::Bool)],
+                wire_sig("sortMultiple", &[]),
+                vec![named("descending", "d")],
+                vec![Lacks("WS041")],
+            )
+        },
+        // A user mod/chip call checks its count as WS022 upstream, but its full
+        // param list IS known, so `g(1, bogus = 5)` is still WS041.
+        Row {
+            check_arity: false,
+            ..row(
+                "a user call's unknown named arg",
+                vec![("v", int())],
+                wire_sig("g", &[("a", int(), false)]),
+                vec![named("bogus", "v")],
+                vec![Has("WS041", &[])],
+            )
         },
     ];
-    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
-    assert!(
-        !ctx.diagnostics.iter().any(|d| d.code == "WS011"),
-        "a required param passed by name must not trip the arity check, got {:?}",
-        ctx.diagnostics
-    );
-}
 
-// A named arg that differs from a real param only by case gets a pointer to
-// the right spelling — matching is case-sensitive, so the bare "no parameter"
-// message was misleading for a parameter that plainly exists.
-#[test]
-fn miscased_named_arg_suggests_the_real_param() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    declare_var(&mut ctx, "r", Type::Float);
-    let range = SourceRange::default();
-    let sig = wire_sig("Sweep", &[("radius", Type::Float, true)]);
-    let args = vec![CallArg::Named {
-        name_range: SourceRange::default(),
-        name: "Radius".into(),
-        value: ident("r"),
-    }];
-    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
-    let d = ctx
-        .diagnostics
-        .iter()
-        .find(|d| d.code == "WS041")
-        .expect("WS041 for the mis-cased name");
-    assert!(
-        d.message.contains("did you mean 'radius'"),
-        "the message should point at the correct casing, got {:?}",
-        d.message
-    );
-}
-
-// A user mod/chip call passes `check_arity = false` (its count is checked as
-// WS022 upstream) but `check_named = true` — its full param list IS known, so an
-// unknown named arg (`g(1, bogus = 5)`) must still be flagged WS041.
-#[test]
-fn unknown_named_arg_flagged_when_arity_off_but_named_on() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    declare_var(&mut ctx, "v", Type::Int);
-    let range = SourceRange::default();
-    let sig = wire_sig("g", &[("a", Type::Int, false)]);
-    let args = vec![CallArg::Named {
-        name_range: SourceRange::default(),
-        name: "bogus".into(),
-        value: ident("v"),
-    }];
-    check_args(&mut ctx, &sig, &args, 0, /*check_arity=*/ false, /*check_named=*/ true, &range);
-    assert!(
-        ctx.diagnostics.iter().any(|d| d.code == "WS041"),
-        "a user call's unknown named arg must be WS041 even with arity off, got {:?}",
-        ctx.diagnostics
-    );
-}
-
-// A real settings-menu config field routed through `config_gate` is a known
-// name — it is validated (WS028 here, for a non-constant value) but never WS041.
-#[test]
-fn known_config_named_arg_is_not_ws041() {
-    let ce_slots = crate::typecheck::CeSlotMap::default();
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
-    declare_var(&mut ctx, "live", Type::Bool);
-    let range = SourceRange::default();
-    let sig = CallSignature {
-        name: "SweepSimple".into(),
-        params: vec![],
-        config_gate: Some(SWEEP_GATE),
-    };
-    let args = vec![CallArg::Named {
-        name_range: SourceRange::default(),
-        name: "bOnlyHitPlayerBodyParts".into(),
-        value: ident("live"),
-    }];
-    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
-    assert!(
-        !ctx.diagnostics.iter().any(|d| d.code == "WS041"),
-        "a known config field must not be flagged unknown, got {:?}",
-        ctx.diagnostics
-    );
+    let mut failures = Vec::new();
+    for r in &rows {
+        let ce_slots = crate::typecheck::CeSlotMap::default();
+        let mut ctx = TypeCheckCtx::new("t", &ce_slots);
+        for (name, ty) in &r.vars {
+            declare_var(&mut ctx, name, ty.clone());
+        }
+        check_args(
+            &mut ctx,
+            &r.sig,
+            &r.args,
+            0,
+            r.check_arity,
+            r.check_named,
+            &SourceRange::default(),
+        );
+        let d = &ctx.diagnostics;
+        let unmet: Vec<&Want> = r
+            .wants
+            .iter()
+            .filter(|w| match w {
+                Clean => !d.is_empty(),
+                Has(code, frags) => !d
+                    .iter()
+                    .any(|x| x.code == *code && frags.iter().all(|f| x.message.contains(f))),
+                Lacks(code) => d.iter().any(|x| x.code == *code),
+            })
+            .collect();
+        if !unmet.is_empty() {
+            let got: Vec<String> = d
+                .iter()
+                .map(|x| format!("[{}] {}", x.code, x.message))
+                .collect();
+            failures.push(format!("{}: unmet {unmet:?}; got {got:#?}", r.label));
+        }
+    }
+    report_failures(&failures, rows.len());
 }

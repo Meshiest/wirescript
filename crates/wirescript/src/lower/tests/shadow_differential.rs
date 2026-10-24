@@ -16,7 +16,7 @@ use crate::ir::Module;
 /// Everything a compile is compared by: the diagnostic codes, the IR shape
 /// (every gate with its ports and properties, every wire; labels left out,
 /// as they carry names), and every component the save holds.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct Outcome {
     pub(super) compiled: bool,
     pub(super) codes: Vec<String>,
@@ -38,7 +38,9 @@ fn ir_shape(m: &Module, out: &mut Vec<String>) {
     let mut fed: crate::collections::HashMap<crate::ir::NodeId, Vec<String>> = Default::default();
     for w in &m.wires {
         if let Some(v) = literal(&w.source.node_id) {
-            fed.entry(w.target.node_id).or_default().push(format!("{:?}={v:?}", w.target.port));
+            fed.entry(w.target.node_id)
+                .or_default()
+                .push(format!("{:?}={v:?}", w.target.port));
         }
     }
     for n in m.nodes.values() {
@@ -62,9 +64,18 @@ fn ir_shape(m: &Module, out: &mut Vec<String>) {
             .chain(fed.get(&n.id).into_iter().flatten().cloned())
             .collect();
         props.sort();
-        out.push(format!("{} {} {}", n.gate_class, ports.join(" "), props.join(" ")));
+        out.push(format!(
+            "{} {} {}",
+            n.gate_class,
+            ports.join(" "),
+            props.join(" ")
+        ));
     }
-    for w in m.wires.iter().filter(|w| literal(&w.source.node_id).is_none()) {
+    for w in m
+        .wires
+        .iter()
+        .filter(|w| literal(&w.source.node_id).is_none())
+    {
         out.push(format!(
             "{}.{:?} -> {}.{:?}",
             class(&w.source.node_id),
@@ -78,31 +89,109 @@ fn ir_shape(m: &Module, out: &mut Vec<String>) {
     }
 }
 
-/// Compile `src` (importing `deps`) in one fold mode.
-pub(super) fn outcome(src: &str, deps: &[(&str, &str)], fold: bool) -> Outcome {
-    use crate::resolve::MemLoader;
-    let fold_mode = if fold { crate::FoldMode::ForceOn } else { crate::FoldMode::ForceOff };
-    let loader = MemLoader { files: deps.iter().map(|(k, v)| (format!("{k}.ws"), v.to_string())).collect() };
-    let lowered = crate::compile::front_end(src, "main", None, fold_mode, &loader).lowered;
-    let mut shape = Vec::new();
-    ir_shape(&lowered.module, &mut shape);
-    shape.sort();
-    let input = crate::CompileInput { source: src, file: "main", module_name: None, fold_mode };
-    let (compiled, mut codes, comps) = match crate::compile_with_loader(input, Default::default(), &loader) {
-        Ok(out) => (true, out.diagnostics.iter().map(|d| d.code.to_string()).collect(), save_components(&out.brz)),
-        Err(crate::CompileError::HasErrors(errors)) => {
-            (false, errors.iter().map(|d| d.code.to_string()).collect::<Vec<_>>(), Vec::new())
+type OutcomeKey = (String, Vec<(String, String)>, bool);
+
+thread_local! {
+    /// The outcomes [`memoized`] keeps while it runs, by source, deps and fold.
+    static MEMO: std::cell::RefCell<Option<crate::collections::HashMap<OutcomeKey, Outcome>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f`, compiling each `(src, deps, fold)` it asks [`outcome`] for once.
+pub(super) fn memoized<T>(f: impl FnOnce() -> T) -> T {
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            MEMO.with(|m| *m.borrow_mut() = None);
         }
+    }
+    MEMO.with(|m| *m.borrow_mut() = Some(Default::default()));
+    let _clear = Clear;
+    f()
+}
+
+/// Compile `src` (importing `deps`) in one fold mode. Inside [`memoized`], a
+/// repeated request gives the first one's outcome.
+pub(super) fn outcome(src: &str, deps: &[(&str, &str)], fold: bool) -> Outcome {
+    let key: OutcomeKey = (
+        src.to_string(),
+        deps.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        fold,
+    );
+    if let Some(hit) = MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.get(&key).cloned())) {
+        return hit;
+    }
+    let o = compile_outcome(src, deps, fold);
+    MEMO.with(|m| {
+        if let Some(m) = m.borrow_mut().as_mut() {
+            m.insert(key, o.clone());
+        }
+    });
+    o
+}
+
+/// [`outcome`], from one run of the compile: the shape is the module that run lowered.
+fn compile_outcome(src: &str, deps: &[(&str, &str)], fold: bool) -> Outcome {
+    use crate::resolve::MemLoader;
+    let fold_mode = if fold {
+        crate::FoldMode::ForceOn
+    } else {
+        crate::FoldMode::ForceOff
+    };
+    let loader = MemLoader {
+        files: deps
+            .iter()
+            .map(|(k, v)| (format!("{k}.ws"), v.to_string()))
+            .collect(),
+    };
+    let input = crate::CompileInput {
+        source: src,
+        file: "main",
+        module_name: None,
+        fold_mode,
+    };
+    let (lowered, result) =
+        crate::compile::compile_keeping_lowered(input, Default::default(), &loader);
+    let (compiled, mut codes, comps) = match result {
+        Ok(out) => (
+            true,
+            out.diagnostics.iter().map(|d| d.code.to_string()).collect(),
+            save_components(&out.brz),
+        ),
+        Err(crate::CompileError::HasErrors(errors)) => (
+            false,
+            errors
+                .iter()
+                .map(|d| d.code.to_string())
+                .collect::<Vec<_>>(),
+            Vec::new(),
+        ),
         Err(e) => panic!("{e:?}\n{src}"),
     };
     codes.sort();
-    Outcome { compiled, codes, shape, comps }
+    let mut shape = Vec::new();
+    ir_shape(
+        &lowered.expect("a compile that did not fail in emit keeps its module"),
+        &mut shape,
+    );
+    shape.sort();
+    Outcome {
+        compiled,
+        codes,
+        shape,
+        comps,
+    }
 }
 
 /// Every component of every grid of a save, each as text, sorted.
 pub(super) fn save_components(brz: &[u8]) -> Vec<String> {
-    let mut out: Vec<String> =
-        wirescript_ir::readback::Save::read(brz).components().iter().map(|c| c.to_string()).collect();
+    let mut out: Vec<String> = wirescript_ir::readback::Save::read(brz)
+        .components()
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
     out.sort();
     out
 }
@@ -120,12 +209,21 @@ fn spell(template: &str, name: &str) -> String {
 /// The renamed program's outcome, read as the shadowing one's would be: its
 /// `Zq` spelled `name` wherever a name reaches the output.
 fn as_shadow(o: Outcome, name: &str) -> Outcome {
-    let k = |v: Vec<String>| v.into_iter().map(|s| s.replace("Zq", name)).collect::<Vec<_>>();
+    let k = |v: Vec<String>| {
+        v.into_iter()
+            .map(|s| s.replace("Zq", name))
+            .collect::<Vec<_>>()
+    };
     let mut shape = k(o.shape);
     shape.sort();
     let mut comps = k(o.comps);
     comps.sort();
-    Outcome { compiled: o.compiled, codes: o.codes, shape, comps }
+    Outcome {
+        compiled: o.compiled,
+        codes: o.codes,
+        shape,
+        comps,
+    }
 }
 
 /// Assert `template` compiles alike with `@` spelled `K` and `Zq`, in both
@@ -146,12 +244,27 @@ enum Twins {
 /// `Zq`, `%` spelled `name` in both, in both fold modes. Twins rejected in
 /// one mode are rejected in both.
 fn twins(what: &str, template: &str, deps: &[(&str, &str)], name: &str) -> Twins {
-    let spelled = |n: &str| deps.iter().map(|(d, s)| (d.to_string(), spell_as(s, n, name))).collect::<Vec<_>>();
+    twins_in(what, template, deps, name, &[false, true])
+}
+
+/// [`twins`], in the fold modes `folds`.
+fn twins_in(
+    what: &str,
+    template: &str,
+    deps: &[(&str, &str)],
+    name: &str,
+    folds: &[bool],
+) -> Twins {
+    let spelled = |n: &str| {
+        deps.iter()
+            .map(|(d, s)| (d.to_string(), spell_as(s, n, name)))
+            .collect::<Vec<_>>()
+    };
     let (sd, rd) = (spelled(name), spelled("Zq"));
     let sd: Vec<(&str, &str)> = sd.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     let rd: Vec<(&str, &str)> = rd.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     let mut result = Twins::Compiled;
-    for fold in [false, true] {
+    for &fold in folds {
         let shadow = outcome(&spell_as(template, name, name), &sd, fold);
         let renamed = as_shadow(outcome(&spell_as(template, "Zq", name), &rd, fold), name);
         if !renamed.compiled {
@@ -161,7 +274,12 @@ fn twins(what: &str, template: &str, deps: &[(&str, &str)], name: &str) -> Twins
         // with the same diagnostics agree, and the caller lists each such pair.
         let both_rejected = !shadow.compiled && !renamed.compiled && shadow.codes == renamed.codes;
         if shadow != renamed && !both_rejected {
-            let only = |a: &[String], b: &[String]| a.iter().filter(|s| !b.contains(s)).cloned().collect::<Vec<_>>();
+            let only = |a: &[String], b: &[String]| {
+                a.iter()
+                    .filter(|s| !b.contains(s))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
             panic!(
                 "{what}, fold {fold}: a name shadowing the constant `K` reads differently from its renamed twin\n\
                  codes: {:?} vs {:?}\nIR only shadowing: {:#?}\nIR only renamed: {:#?}\n\
@@ -179,9 +297,10 @@ fn twins(what: &str, template: &str, deps: &[(&str, &str)], name: &str) -> Twins
     result
 }
 
-/// Every pair of `bindings` x `uses`, each use's `@` read through `read`,
-/// compared as twins under the shadowing spelling `name`: how many pairs
-/// there were, and the ones both twins reject, with their codes.
+/// Every pair of `bindings` x `uses` (each `@` read through `read`) compared
+/// as twins under the shadowing spelling `name`: the pair count, and the pairs
+/// both twins reject with their codes. Both folds when `full`, else one,
+/// alternating so every binding and use meets both.
 fn matrix(
     head: &str,
     bindings: &[(&str, &str)],
@@ -189,15 +308,26 @@ fn matrix(
     read: &str,
     deps: &[(&str, &str)],
     name: &str,
+    full: bool,
 ) -> (usize, Vec<(String, Vec<String>)>) {
     let mut pairs = 0;
     let mut rejected = Vec::new();
-    for (bwhat, binding) in bindings {
-        for (uwhat, body) in uses {
+    for (bi, (bwhat, binding)) in bindings.iter().enumerate() {
+        for (ui, (uwhat, body)) in uses.iter().enumerate() {
             pairs += 1;
             let what = format!("{name}: {bwhat} read by {uwhat}");
-            let template = format!("{head}{}", binding.replace("{BODY}", &body.replace('@', read)));
-            if let Twins::Rejected(codes) = twins(&what, &template, deps, name) {
+            let template = format!(
+                "{head}{}",
+                binding.replace("{BODY}", &body.replace('@', read))
+            );
+            let folds: &[bool] = if full {
+                &[false, true]
+            } else if (bi + ui) % 2 == 0 {
+                &[false]
+            } else {
+                &[true]
+            };
+            if let Twins::Rejected(codes) = twins_in(&what, &template, deps, name, folds) {
                 rejected.push((format!("{bwhat} read by {uwhat}"), codes));
             }
         }
@@ -210,7 +340,12 @@ fn matrix(
 fn assert_rejected(got: &[(String, Vec<String>)], expected: &[(&str, &[&str], &str)]) {
     let want: Vec<(String, Vec<String>)> = expected
         .iter()
-        .map(|(pair, codes, _why)| (pair.to_string(), codes.iter().map(|c| c.to_string()).collect()))
+        .map(|(pair, codes, _why)| {
+            (
+                pair.to_string(),
+                codes.iter().map(|c| c.to_string()).collect(),
+            )
+        })
         .collect();
     assert_eq!(got, want.as_slice(), "the pairs both twins reject");
 }
@@ -224,25 +359,67 @@ const HEAD: &str = "in go: exec\nin a: int\nin fa: float\nin c: bool\n\
 /// Each way a scope binds `@` to a value that is not the module's `K`, with
 /// `{BODY}` where the binding is in scope (in an exec context).
 const BINDINGS: &[(&str, &str)] = &[
-    ("mod int parameter", "mod g(@: int) {\n{BODY}\n}\non go { g(a) }"),
-    ("mod float parameter", "mod g(@: float) {\n{BODY}\n}\non go { g(fa) }"),
-    ("generic mod parameter", "mod g<T: int | float>(@: T) {\n{BODY}\n}\non go { g(a)\ng(fa) }"),
-    ("chip parameter", "chip C(t: exec, @: int) {\non t {\n{BODY}\n}\n}\nlet q = C(go, a)"),
-    ("const parameter", "mod g(@: const int) {\n{BODY}\n}\non go { g(7) }"),
-    ("ref parameter", "mod g(@: *int) {\n{BODY}\n}\non go { g(w) }"),
+    (
+        "mod int parameter",
+        "mod g(@: int) {\n{BODY}\n}\non go { g(a) }",
+    ),
+    (
+        "mod float parameter",
+        "mod g(@: float) {\n{BODY}\n}\non go { g(fa) }",
+    ),
+    (
+        "generic mod parameter",
+        "mod g<T: int | float>(@: T) {\n{BODY}\n}\non go { g(a)\ng(fa) }",
+    ),
+    (
+        "chip parameter",
+        "chip C(t: exec, @: int) {\non t {\n{BODY}\n}\n}\nlet q = C(go, a)",
+    ),
+    (
+        "const parameter",
+        "mod g(@: const int) {\n{BODY}\n}\non go { g(7) }",
+    ),
+    (
+        "ref parameter",
+        "mod g(@: *int) {\n{BODY}\n}\non go { g(w) }",
+    ),
     ("handler let", "on go { let @ = a\n{BODY}\n}"),
     ("handler var", "on go { var @: int = a\n{BODY}\n}"),
-    ("handler static var", "on go { static var @: int = 0\n@ = a\n{BODY}\n}"),
+    (
+        "handler static var",
+        "on go { static var @: int = 0\n@ = a\n{BODY}\n}",
+    ),
     ("handler const", "on go { const @ = 9\n{BODY}\n}"),
     ("for variable", "on go { for @ in 0..a {\n{BODY}\n} }"),
-    ("match binding", "on go { match e { A(@) => {\n{BODY}\n}, B => {} } }"),
+    (
+        "match binding",
+        "on go { match e { A(@) => {\n{BODY}\n}, B => {} } }",
+    ),
     ("if-let binding", "on go { if let A(@) = e {\n{BODY}\n} }"),
-    ("let-else binding", "on go { let A(@) = e else { return }\n{BODY}\n}"),
-    ("record destructure", "on go { let p: P = { @: a, y: 1 }\nlet { @, y } = p\n{BODY}\n}"),
-    ("tuple destructure", "on go { let (@, z) = (a, 1)\n{BODY}\n}"),
-    ("destructured record parameter", "mod g({ @, y }: P) {\n{BODY}\n}\non go { g({ @: a, y: 1 }) }"),
-    ("self mod parameter", "mod g(self: int, @: int) {\n{BODY}\n}\non go { a.g(a) }"),
-    ("var initialized from the outer name", "on go { var @: int = % + a\n{BODY}\n}"),
+    (
+        "let-else binding",
+        "on go { let A(@) = e else { return }\n{BODY}\n}",
+    ),
+    (
+        "record destructure",
+        "on go { let p: P = { @: a, y: 1 }\nlet { @, y } = p\n{BODY}\n}",
+    ),
+    (
+        "tuple destructure",
+        "on go { let (@, z) = (a, 1)\n{BODY}\n}",
+    ),
+    (
+        "destructured record parameter",
+        "mod g({ @, y }: P) {\n{BODY}\n}\non go { g({ @: a, y: 1 }) }",
+    ),
+    (
+        "self mod parameter",
+        "mod g(self: int, @: int) {\n{BODY}\n}\non go { a.g(a) }",
+    ),
+    (
+        "var initialized from the outer name",
+        "on go { var @: int = % + a\n{BODY}\n}",
+    ),
     ("let of the outer name", "on go { let @ = %\n{BODY}\n}"),
 ];
 
@@ -265,7 +442,10 @@ const USES: &[(&str, &str)] = &[
     ("interpolation", "s = \"v${@}\""),
     ("comparison", "let b = @ == 4\nif b { n = 1 }"),
     ("condition", "if @ == 4 { n = 1 } else { n = 2 }"),
-    ("if expression through an alias", "let q = @\nf = if c then q else 0.5"),
+    (
+        "if expression through an alias",
+        "let q = @\nf = if c then q else 0.5",
+    ),
     ("return", "mod rr() -> int { return @ }\nn = rr()"),
     ("emit", "emit oe = @"),
     ("loop bound", "for i in 0..@ { n = n + 1 }"),
@@ -275,69 +455,219 @@ const USES: &[(&str, &str)] = &[
 /// names it copies the binding's elements, never the constant's.
 #[test]
 fn a_container_binding_hides_an_outer_constant_container() {
+    a_container_binding_hides_an_outer_constant_container_matrix(false)
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn a_container_binding_hides_an_outer_constant_container_exhaustive() {
+    a_container_binding_hides_an_outer_constant_container_matrix(true)
+}
+
+/// Every kind x binding x initializer when `full`; otherwise every kind x
+/// binding with one initializer, rotating so each kind and each binding
+/// meets every initializer.
+fn a_container_binding_hides_an_outer_constant_container_matrix(full: bool) {
     let head = "in go: exec\nvar n: int = 0\nout on1: int = n\nenum Hue { Red, Green, Blue }\n\
                 type R = { h: Hue, k: int }\n";
     // Per kind: the constant, a value of the kind to bind, its type and a read.
     let kinds = [
-        ("int array", "[1, 2]", "[7, 8, 9]", "int[]", "n = cs.length() + cs[0]"),
-        ("map", "{ \"a\": 1 }", "{ \"b\": 5, \"c\": 6 }", "Map<string, int>", "n = cs.length()"),
-        ("record array", "[{ h: Hue.Red, k: 1 }]", "[{ h: Hue.Blue, k: 5 }, { h: Hue.Green, k: 6 }]", "R[]", "n = cs.length() + cs[0].k"),
-        ("enum array", "[Hue.Blue, Hue.Red]", "[Hue.Green]", "Hue[]", "n = cs.length() + cs[0].ToInt()"),
+        (
+            "int array",
+            "[1, 2]",
+            "[7, 8, 9]",
+            "int[]",
+            "n = cs.length() + cs[0]",
+        ),
+        (
+            "map",
+            "{ \"a\": 1 }",
+            "{ \"b\": 5, \"c\": 6 }",
+            "Map<string, int>",
+            "n = cs.length()",
+        ),
+        (
+            "record array",
+            "[{ h: Hue.Red, k: 1 }]",
+            "[{ h: Hue.Blue, k: 5 }, { h: Hue.Green, k: 6 }]",
+            "R[]",
+            "n = cs.length() + cs[0].k",
+        ),
+        (
+            "enum array",
+            "[Hue.Blue, Hue.Red]",
+            "[Hue.Green]",
+            "Hue[]",
+            "n = cs.length() + cs[0].ToInt()",
+        ),
     ];
-    for (kwhat, constant, value, ty, read) in kinds {
+    for (ki, (kwhat, constant, value, ty, read)) in kinds.into_iter().enumerate() {
         let bindings = [
-            ("mod parameter", format!("var src: {ty} = {value}\nmod g(@: {ty}) {{\n{{BODY}}\n}}\non go {{ g(src) }}")),
-            ("generic parameter", format!("var src: {ty} = {value}\nmod g<T>(@: T) {{\n{{BODY}}\n}}\non go {{ g(src) }}")),
-            ("chip parameter", format!("var src: {ty} = {value}\nchip C(t: exec, @: {ty}) {{\non t {{\n{{BODY}}\n}}\n}}\nlet q = C(go, src)")),
-            ("const parameter", format!("mod g(@: const {ty}) {{\n{{BODY}}\n}}\non go {{ g({value}) }}")),
-            ("handler var", format!("on go {{ var @: {ty} = {value}\n{{BODY}}\n}}")),
-            ("let alias", format!("var src: {ty} = {value}\non go {{ let @ = src\n{{BODY}}\n}}")),
+            (
+                "mod parameter",
+                format!(
+                    "var src: {ty} = {value}\nmod g(@: {ty}) {{\n{{BODY}}\n}}\non go {{ g(src) }}"
+                ),
+            ),
+            (
+                "generic parameter",
+                format!(
+                    "var src: {ty} = {value}\nmod g<T>(@: T) {{\n{{BODY}}\n}}\non go {{ g(src) }}"
+                ),
+            ),
+            (
+                "chip parameter",
+                format!(
+                    "var src: {ty} = {value}\nchip C(t: exec, @: {ty}) {{\non t {{\n{{BODY}}\n}}\n}}\nlet q = C(go, src)"
+                ),
+            ),
+            (
+                "const parameter",
+                format!("mod g(@: const {ty}) {{\n{{BODY}}\n}}\non go {{ g({value}) }}"),
+            ),
+            (
+                "handler var",
+                format!("on go {{ var @: {ty} = {value}\n{{BODY}}\n}}"),
+            ),
+            (
+                "let alias",
+                format!("var src: {ty} = {value}\non go {{ let @ = src\n{{BODY}}\n}}"),
+            ),
         ];
-        for (bwhat, binding) in &bindings {
+        for (bi, (bwhat, binding)) in bindings.iter().enumerate() {
             let field_read = read.replace("cs", "w.cs");
-            for (swhat, body) in [
+            let slots = [
                 ("handler-local", format!("var cs: {ty} = @\n{read}")),
                 ("static", format!("static var cs: {ty} = @\n{read}")),
-                ("handler-local record field", format!("var w: W = {{ cs: @, z: 1 }}\n{field_read}")),
-                ("static record field", format!("static var w: W = {{ cs: @, z: 1 }}\n{field_read}")),
-            ] {
+                (
+                    "handler-local record field",
+                    format!("var w: W = {{ cs: @, z: 1 }}\n{field_read}"),
+                ),
+                (
+                    "static record field",
+                    format!("static var w: W = {{ cs: @, z: 1 }}\n{field_read}"),
+                ),
+            ];
+            let n = slots.len();
+            for (si, (swhat, body)) in slots.into_iter().enumerate() {
+                if !full && si != (ki + bi) % n {
+                    continue;
+                }
                 let template = format!(
                     "{head}type W = {{ cs: {ty}, z: int }}\nconst K: {ty} = {constant}\n{}",
                     binding.replace("{BODY}", &body)
                 );
-                assert_twins(&format!("{kwhat} {bwhat}, {swhat} initializer"), &template, &[]);
+                assert_twins(
+                    &format!("{kwhat} {bwhat}, {swhat} initializer"),
+                    &template,
+                    &[],
+                );
             }
         }
     }
 }
 
+/// The bindings each part of the `K` matrix runs, as ranges of [`BINDINGS`]:
+/// together every binding once.
+const K_PARTS: [std::ops::Range<usize>; 4] = [0..5, 5..10, 10..15, 15..20];
+
+/// The bindings in `part` with every reader, both folds.
+fn k_matrix_part(part: usize) {
+    let mut covered: Vec<usize> = K_PARTS.iter().flat_map(|r| r.clone()).collect();
+    covered.sort();
+    assert_eq!(
+        covered,
+        (0..BINDINGS.len()).collect::<Vec<_>>(),
+        "each binding in one part"
+    );
+    let bindings = &BINDINGS[K_PARTS[part].clone()];
+    let (pairs, rejected) = matrix(HEAD, bindings, USES, "@", &[], "K", true);
+    assert_eq!(
+        pairs,
+        bindings.len() * USES.len(),
+        "every binding with every reader"
+    );
+    let expected: &[(&str, &[&str], &str)] = &[
+        (
+            "chip parameter read by emit",
+            &["WS057"],
+            "a chip body cannot drive the module's output",
+        ),
+        (
+            "for variable read by return",
+            &["WS078"],
+            "a loop body cannot declare a mod that returns",
+        ),
+    ];
+    let expected: Vec<_> = expected
+        .iter()
+        .copied()
+        .filter(|(pair, _, _)| {
+            bindings
+                .iter()
+                .any(|(b, _)| pair.starts_with(&format!("{b} read by ")))
+        })
+        .collect();
+    assert_rejected(&rejected, &expected);
+}
+
 #[test]
 fn a_binding_hides_an_outer_constant_from_every_reader() {
-    let (pairs, rejected) = matrix(HEAD, BINDINGS, USES, "@", &[], "K");
-    assert_eq!(pairs, 20 * 21, "every binding with every reader");
-    assert_rejected(
-        &rejected,
-        &[
-            ("chip parameter read by emit", &["WS057"], "a chip body cannot drive the module's output"),
-            ("for variable read by return", &["WS078"], "a loop body cannot declare a mod that returns"),
-        ],
-    );
+    k_matrix_part(0)
+}
+
+#[test]
+fn a_binding_hides_an_outer_constant_from_every_reader_part2() {
+    k_matrix_part(1)
+}
+
+#[test]
+fn a_binding_hides_an_outer_constant_from_every_reader_part3() {
+    k_matrix_part(2)
+}
+
+#[test]
+fn a_binding_hides_an_outer_constant_from_every_reader_part4() {
+    k_matrix_part(3)
 }
 
 /// A binding named like a bare enum variant (an `int` here) is that binding
 /// for every reader: none takes it for the variant `Blue`.
 #[test]
 fn a_binding_named_like_a_variant_hides_it_from_every_reader() {
+    a_binding_named_like_a_variant_hides_it_from_every_reader_matrix(false)
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn a_binding_named_like_a_variant_hides_it_from_every_reader_exhaustive() {
+    a_binding_named_like_a_variant_hides_it_from_every_reader_matrix(true)
+}
+
+/// Every pair in both fold modes when `full`, else each pair in one (the
+/// binding hides the variant before folding runs).
+fn a_binding_named_like_a_variant_hides_it_from_every_reader_matrix(full: bool) {
     let head = format!("{HEAD}enum Hue {{ Red, Green, Blue }}\n");
-    let bindings: Vec<(&str, &str)> =
-        BINDINGS.iter().copied().filter(|(what, _)| !what.contains("outer name")).collect();
-    let (pairs, rejected) = matrix(&head, &bindings, USES, "@", &[], "Blue");
+    let bindings: Vec<(&str, &str)> = BINDINGS
+        .iter()
+        .copied()
+        .filter(|(what, _)| !what.contains("outer name"))
+        .collect();
+    let (pairs, rejected) = matrix(&head, &bindings, USES, "@", &[], "Blue", full);
     assert_eq!(pairs, 18 * 21, "every binding with every reader");
     assert_rejected(
         &rejected,
         &[
-            ("chip parameter read by emit", &["WS057"], "a chip body cannot drive the module's output"),
-            ("for variable read by return", &["WS078"], "a loop body cannot declare a mod that returns"),
+            (
+                "chip parameter read by emit",
+                &["WS057"],
+                "a chip body cannot drive the module's output",
+            ),
+            (
+                "for variable read by return",
+                &["WS078"],
+                "a loop body cannot declare a mod that returns",
+            ),
         ],
     );
 }
@@ -349,22 +679,67 @@ const ALIAS_LIB: &str = "pub const K = 4\npub type R = { K: int, y: int }\n";
 /// for every reader, never the namespace's constant `K`.
 #[test]
 fn a_binding_named_like_a_namespace_alias_hides_its_members() {
+    a_binding_named_like_a_namespace_alias_hides_its_members_matrix(false)
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn a_binding_named_like_a_namespace_alias_hides_its_members_exhaustive() {
+    a_binding_named_like_a_namespace_alias_hides_its_members_matrix(true)
+}
+
+/// Every pair in both fold modes when `full`, else each pair in one (the
+/// binding hides the alias before folding runs).
+fn a_binding_named_like_a_namespace_alias_hides_its_members_matrix(full: bool) {
     let head = format!("import * as u from \"lib\"\n{HEAD}");
     let bindings: &[(&str, &str)] = &[
-        ("mod parameter", "mod g(@: u.R) {\n{BODY}\n}\non go { g({ K: a, y: 1 }) }"),
-        ("mod parameter from a var", "var src: u.R = { K: 6, y: 1 }\nmod g(@: u.R) {\n{BODY}\n}\non go { g(src) }"),
-        ("chip parameter", "chip C(t: exec, @: u.R) {\non t {\n{BODY}\n}\n}\nlet q = C(go, { K: a, y: 1 })"),
-        ("self mod parameter", "mod g(self: int, @: u.R) {\n{BODY}\n}\non go { a.g({ K: a, y: 1 }) }"),
+        (
+            "mod parameter",
+            "mod g(@: u.R) {\n{BODY}\n}\non go { g({ K: a, y: 1 }) }",
+        ),
+        (
+            "mod parameter from a var",
+            "var src: u.R = { K: 6, y: 1 }\nmod g(@: u.R) {\n{BODY}\n}\non go { g(src) }",
+        ),
+        (
+            "chip parameter",
+            "chip C(t: exec, @: u.R) {\non t {\n{BODY}\n}\n}\nlet q = C(go, { K: a, y: 1 })",
+        ),
+        (
+            "self mod parameter",
+            "mod g(self: int, @: u.R) {\n{BODY}\n}\non go { a.g({ K: a, y: 1 }) }",
+        ),
         ("handler let", "on go { let @ = { K: a, y: 2 }\n{BODY}\n}"),
-        ("handler var", "on go { var @: u.R = { K: a, y: 2 }\n{BODY}\n}"),
-        ("var initialized from the outer name", "on go { var @: u.R = { K: %.K + a, y: 2 }\n{BODY}\n}"),
-        ("let of the outer name", "on go { let @ = { K: %.K, y: 2 }\n{BODY}\n}"),
+        (
+            "handler var",
+            "on go { var @: u.R = { K: a, y: 2 }\n{BODY}\n}",
+        ),
+        (
+            "var initialized from the outer name",
+            "on go { var @: u.R = { K: %.K + a, y: 2 }\n{BODY}\n}",
+        ),
+        (
+            "let of the outer name",
+            "on go { let @ = { K: %.K, y: 2 }\n{BODY}\n}",
+        ),
     ];
-    let (pairs, rejected) = matrix(&head, bindings, USES, "@.K", &[("lib", ALIAS_LIB)], "u");
+    let (pairs, rejected) = matrix(
+        &head,
+        bindings,
+        USES,
+        "@.K",
+        &[("lib", ALIAS_LIB)],
+        "u",
+        full,
+    );
     assert_eq!(pairs, 8 * 21, "every binding with every reader");
     assert_rejected(
         &rejected,
-        &[("chip parameter read by emit", &["WS057"], "a chip body cannot drive the module's output")],
+        &[(
+            "chip parameter read by emit",
+            &["WS057"],
+            "a chip body cannot drive the module's output",
+        )],
     );
 }
 
@@ -376,29 +751,50 @@ fn an_enum_binding_named_like_a_variant_reads_its_value() {
                 var f: float = 0.0\nout of1: float = f\nenum Hue { Red, Green, Blue }\n\
                 var h: Hue = Hue.Green\nvar hs: Hue[]\n";
     let bindings: &[(&str, &str)] = &[
-        ("mod parameter", "mod g(@: Hue) {\n{BODY}\n}\non go { g(h) }"),
-        ("self mod parameter", "mod g(self: int, @: Hue) {\n{BODY}\n}\non go { a.g(h) }"),
-        ("const parameter", "mod g(@: const Hue) {\n{BODY}\n}\non go { g(Hue.Green) }"),
-        ("top-level var", "var @: Hue = Hue.Green\non go {\n{BODY}\n}"),
+        (
+            "mod parameter",
+            "mod g(@: Hue) {\n{BODY}\n}\non go { g(h) }",
+        ),
+        (
+            "self mod parameter",
+            "mod g(self: int, @: Hue) {\n{BODY}\n}\non go { a.g(h) }",
+        ),
+        (
+            "const parameter",
+            "mod g(@: const Hue) {\n{BODY}\n}\non go { g(Hue.Green) }",
+        ),
+        (
+            "top-level var",
+            "var @: Hue = Hue.Green\non go {\n{BODY}\n}",
+        ),
         ("handler let", "on go { let @ = h\n{BODY}\n}"),
         ("handler var", "on go { var @: Hue = h\n{BODY}\n}"),
         ("let of the outer name", "on go { let @ = %\n{BODY}\n}"),
-        ("var initialized from the outer name", "on go { var @: Hue = %\n{BODY}\n}"),
+        (
+            "var initialized from the outer name",
+            "on go { var @: Hue = %\n{BODY}\n}",
+        ),
     ];
     let uses: &[(&str, &str)] = &[
         ("tag", "n = @.ToInt()"),
         ("EnumToInt", "n = EnumToInt(@)"),
         ("Discriminant", "n = @.Discriminant"),
-        ("match", "match @ { Red => { n = 1 }, Green => { n = 2 }, Blue => { n = 3 } }"),
+        (
+            "match",
+            "match @ { Red => { n = 1 }, Green => { n = 2 }, Blue => { n = 3 } }",
+        ),
         ("variant test", "if @ is Hue.Blue { n = 1 } else { n = 2 }"),
         ("if expression", "n = if @ is Hue.Red then 1 else 2"),
-        ("array initializer", "var ys: Hue[] = [@, Hue.Red]\nn = ys[0].ToInt()"),
+        (
+            "array initializer",
+            "var ys: Hue[] = [@, Hue.Red]\nn = ys[0].ToInt()",
+        ),
         ("push", "hs.push(@)\nn = hs[0].ToInt()"),
         ("let alias", "let q = @\nn = q.ToInt()"),
         ("Select", "n = Select(c, @.ToInt(), 1)"),
         ("float slot", "f = @.ToInt()"),
     ];
-    let (pairs, rejected) = matrix(head, bindings, uses, "@", &[], "Blue");
+    let (pairs, rejected) = matrix(head, bindings, uses, "@", &[], "Blue", true);
     assert_eq!(pairs, 8 * 11, "every binding with every reader");
     assert_rejected(&rejected, &[]);
 }
@@ -418,14 +814,26 @@ fn a_namespaced_body_reads_its_own_modules_containers() {
     let head = "import * as u from \"lib\"\nin go: exec\nin a: int\nvar n: int = 0\nout on1: int = n\n\
                 var m: int = 0\nout om: int = m\nconst @ = [7, 7, 7]\n";
     let uses: &[(&str, &str)] = &[
-        ("constant index and length", "on go { n = u.rt2() + u.rlen() }"),
+        (
+            "constant index and length",
+            "on go { n = u.rt2() + u.rlen() }",
+        ),
         ("runtime index", "on go { n = u.rt(a) }"),
-        ("runtime index after the importer's own", "on go { m = @[a]\nn = u.rt(a) }"),
+        (
+            "runtime index after the importer's own",
+            "on go { m = @[a]\nn = u.rt(a) }",
+        ),
         ("scalar", "on go { n = u.rk() }"),
         ("const mod", "on go { n = u.tab(0) + u.tab(1) }"),
         ("chip", "on go { n = u.ct(a) }"),
-        ("bare const mod call in the library", "on go { n = u.viatab() }"),
-        ("const of a const mod call in the library", "on go { n = u.viaconst() }"),
+        (
+            "bare const mod call in the library",
+            "on go { n = u.viatab() }",
+        ),
+        (
+            "const of a const mod call in the library",
+            "on go { n = u.viaconst() }",
+        ),
         (
             "beside the importer's own gate at the top level",
             "chip C(xs: int[]) -> (r: int) { out r = xs.length() }\nlet q = C(@, exec = go)\nout oq: int = q.r\non go { n = u.rt(a) }",
@@ -433,15 +841,26 @@ fn a_namespaced_body_reads_its_own_modules_containers() {
     ];
     for (what, body) in uses {
         let template = format!("{head}{body}");
-        let got = twins(&format!("namespaced body, {what}"), &template, &[("lib", lib)], "T");
+        let got = twins(
+            &format!("namespaced body, {what}"),
+            &template,
+            &[("lib", lib)],
+            "T",
+        );
         assert_eq!(got, Twins::Compiled, "{what}");
     }
     // The library's values, not the importer's: 5 + 2 folded.
-    let r = compile_multi(&format!("{}{}", spell(head, "T"), uses[0].1), &[("lib", lib)]);
+    let r = compile_multi(
+        &format!("{}{}", spell(head, "T"), uses[0].1),
+        &[("lib", lib)],
+    );
     assert_no_errors(&r);
     let mut shape = Vec::new();
     ir_shape(&r.module, &mut shape);
-    assert!(shape.iter().any(|s| s.contains("Int(7)")), "u.rt2() + u.rlen() is 5 + 2: {shape:#?}");
+    assert!(
+        shape.iter().any(|s| s.contains("Int(7)")),
+        "u.rt2() + u.rlen() is 5 + 2: {shape:#?}"
+    );
 }
 
 /// The positive control: unshadowed, each reader takes the constant `K` as
@@ -459,13 +878,18 @@ fn an_unshadowed_constant_is_its_literal_for_every_reader() {
             // the constant, where its literal twin folds to a vector value.
             if *uwhat == "Vec" {
                 assert!(
-                    a.shape.iter().any(|s| s.contains("MakeVector") && s.contains("X=Int(4)")),
+                    a.shape
+                        .iter()
+                        .any(|s| s.contains("MakeVector") && s.contains("X=Int(4)")),
                     "Vec, fold {fold}: {:#?}",
                     a.shape
                 );
                 continue;
             }
-            assert_eq!(a, b, "{uwhat}, fold {fold}: the constant `K` did not read as the literal 4\n{named}");
+            assert_eq!(
+                a, b,
+                "{uwhat}, fold {fold}: the constant `K` did not read as the literal 4\n{named}"
+            );
         }
     }
 }
@@ -477,11 +901,20 @@ fn a_constant_comes_back_after_the_scope_that_hid_it() {
         ("block", "on go { if c { let @ = a\nn = @ }\nf = K }"),
         ("mod body", "mod g(@: int) { n = @ }\non go { g(a)\nf = K }"),
         ("loop", "on go { for @ in 0..a { n = n + @ }\nf = K + 1 }"),
-        ("match arm", "on go { match e { A(@) => { n = @ }, B => {} }\nf = abs(K) }"),
-        ("chip", "chip C(t: exec, @: int) { on t { n = @ } }\nlet q = C(go, a)\non go { f = K }"),
+        (
+            "match arm",
+            "on go { match e { A(@) => { n = @ }, B => {} }\nf = abs(K) }",
+        ),
+        (
+            "chip",
+            "chip C(t: exec, @: int) { on t { n = @ } }\nlet q = C(go, a)\non go { f = K }",
+        ),
     ];
     for (what, body) in after {
-        assert!(assert_twins(what, &format!("{HEAD}{body}"), &[]), "{what}: did not compile");
+        assert!(
+            assert_twins(what, &format!("{HEAD}{body}"), &[]),
+            "{what}: did not compile"
+        );
     }
 }
 
@@ -492,7 +925,10 @@ fn a_binding_hides_an_outer_enum_constant() {
     let head = "in go: exec\nin hi: int\nvar n: int = 0\nout on1: int = n\nenum Hue { Red, Green, Blue }\n\
                 var h: Hue = Hue.Red\nconst K = Hue.Blue\n";
     let bindings = [
-        ("mod parameter", "mod g(@: Hue) {\n{BODY}\n}\non go { g(h) }"),
+        (
+            "mod parameter",
+            "mod g(@: Hue) {\n{BODY}\n}\non go { g(h) }",
+        ),
         ("handler let", "on go { let @ = h\n{BODY}\n}"),
         ("handler var", "on go { var @: Hue = h\n{BODY}\n}"),
     ];
@@ -504,7 +940,10 @@ fn a_binding_hides_an_outer_enum_constant() {
     for (bwhat, binding) in bindings {
         for (uwhat, body) in uses {
             let template = format!("{head}{}", binding.replace("{BODY}", body));
-            assert!(assert_twins(&format!("enum {bwhat} read by {uwhat}"), &template, &[]), "{bwhat} {uwhat}");
+            assert!(
+                assert_twins(&format!("enum {bwhat} read by {uwhat}"), &template, &[]),
+                "{bwhat} {uwhat}"
+            );
         }
     }
 }
@@ -525,7 +964,11 @@ fn an_imported_parameter_hides_its_own_modules_constant() {
     assert!(assert_twins("imported parameter", main, &[("lib", lib)]));
     let beside = "import * as u from \"lib\"\nin go: exec\nin a: int\nvar n: int = 0\nout on1: int = n\n\
                   on go { let @ = a\nn = u.K + @ }";
-    assert!(assert_twins("namespaced constant beside a local", beside, &[("lib", "pub const K = 4\n")]));
+    assert!(assert_twins(
+        "namespaced constant beside a local",
+        beside,
+        &[("lib", "pub const K = 4\n")]
+    ));
 }
 
 /// `const q = K`, `K` a binding that hides the constant `K`, is `WS046`: the
@@ -541,7 +984,10 @@ fn a_const_of_a_binding_hiding_a_constant_is_ws046() {
         let codes = errs(&format!("{head}{body}"));
         assert!(codes.iter().any(|c| c == "WS046"), "{body}: {codes:?}");
     }
-    assert!(errs(&format!("{head}on go {{ const q = K\nn = q }}")).is_empty(), "control");
+    assert!(
+        errs(&format!("{head}on go {{ const q = K\nn = q }}")).is_empty(),
+        "control"
+    );
 }
 
 /// A mod of an `import * as` module reads its module's constants as
@@ -556,13 +1002,21 @@ fn a_namespaced_mod_reads_its_modules_constants() {
     for fold in [false, true] {
         let o = outcome(main, &[("lib", lib)], fold);
         assert!(o.compiled, "fold {fold}: {:?}", o.codes);
-        assert!(o.comps.iter().any(|c| c.contains("SendCustomEvent") && c.contains("\"chx\"")), "fold {fold}");
+        assert!(
+            o.comps
+                .iter()
+                .any(|c| c.contains("SendCustomEvent") && c.contains("\"chx\"")),
+            "fold {fold}"
+        );
     }
     let r = compile_multi(main, &[("lib", lib)]);
     assert_no_errors(&r);
     let mut lits = Vec::new();
     ir_shape(&r.module, &mut lits);
-    assert!(lits.iter().any(|s| s.contains("Float(4.0)")), "the constant in the float place: {lits:#?}");
+    assert!(
+        lits.iter().any(|s| s.contains("Float(4.0)")),
+        "the constant in the float place: {lits:#?}"
+    );
 }
 
 /// A name bound again in the same frame reads its new binding, not the
@@ -573,13 +1027,25 @@ fn a_name_bound_again_in_its_frame_reads_the_new_binding() {
     let head = "in go: exec\nin a: int\nvar n: int = 0\nout on1: int = n\nvar f: float = 0.0\nout of1: float = f\n";
     for (what, body) in [
         ("let", "on go { let q = 9\nlet q = a\nn = abs(q)\nf = q }"),
-        ("let-else", "enum E { A(int), B }\nvar e: E = E.A(7)\non go { let q = 9\nlet A(q) = e else { return }\nn = abs(q)\nf = q }"),
-        ("destructure", "on go { let q = 9\nlet (q, z) = (a, 1)\nn = abs(q)\nf = q }"),
+        (
+            "let-else",
+            "enum E { A(int), B }\nvar e: E = E.A(7)\non go { let q = 9\nlet A(q) = e else { return }\nn = abs(q)\nf = q }",
+        ),
+        (
+            "destructure",
+            "on go { let q = 9\nlet (q, z) = (a, 1)\nn = abs(q)\nf = q }",
+        ),
     ] {
         for fold in [false, true] {
             let o = outcome(&format!("{head}{body}"), &[], fold);
             assert!(o.compiled, "{what}: {:?}", o.codes);
-            assert!(!o.shape.iter().any(|s| s.contains("Int(9)") || s.contains("Float(9.0)")), "{what} fold {fold}: {:#?}", o.shape);
+            assert!(
+                !o.shape
+                    .iter()
+                    .any(|s| s.contains("Int(9)") || s.contains("Float(9.0)")),
+                "{what} fold {fold}: {:#?}",
+                o.shape
+            );
         }
     }
 }
@@ -598,32 +1064,82 @@ fn a_body_var_named_like_a_variant_or_enum_is_not_there_before_it() {
     let head = "in go: exec\nin a: int\nin c: bool\nvar n: int = 0\nout on1: int = n\n\
                 var f: float = 0.0\nout of1: float = f\nenum Hue { Red, Green, Blue }\nvar hs: Hue[]\n";
     let variant = [
-        ("mod: EnumToInt above", "mod m(p: int) -> int { let q = EnumToInt(%)\nvar @: int = p\nreturn q * 100 + @ }\non go { n = m(a) }"),
-        ("mod: annotated let above", "mod m(p: int) -> int { let q: Hue = %\nvar @: int = p\nreturn q.ToInt() * 100 + @ }\non go { n = m(a) }"),
-        ("mod: push above", "mod m(p: int) -> int { hs.push(%)\nvar @: int = p\nreturn hs[0].ToInt() * 100 + @ }\non go { n = m(a) }"),
-        ("mod: initializer", "mod m(p: int) -> int { var @: int = EnumToInt(%) + p\nreturn @ }\non go { n = m(a) }"),
+        (
+            "mod: EnumToInt above",
+            "mod m(p: int) -> int { let q = EnumToInt(%)\nvar @: int = p\nreturn q * 100 + @ }\non go { n = m(a) }",
+        ),
+        (
+            "mod: annotated let above",
+            "mod m(p: int) -> int { let q: Hue = %\nvar @: int = p\nreturn q.ToInt() * 100 + @ }\non go { n = m(a) }",
+        ),
+        (
+            "mod: push above",
+            "mod m(p: int) -> int { hs.push(%)\nvar @: int = p\nreturn hs[0].ToInt() * 100 + @ }\non go { n = m(a) }",
+        ),
+        (
+            "mod: initializer",
+            "mod m(p: int) -> int { var @: int = EnumToInt(%) + p\nreturn @ }\non go { n = m(a) }",
+        ),
         (
             "mod: enum initializer reset each call",
             "mod m(p: int) -> int { var @: Hue = %\nif p > 0 { @ = Hue.Red }\nreturn @.ToInt() }\non go { n = m(a)\nf = m(0 - a) }",
         ),
-        ("mod: nested block", "mod m(p: int) -> int { if c { n = EnumToInt(%) }\nvar @: int = p\nreturn @ }\non go { f = m(a) }"),
-        ("chip: handler above", "chip C(g3: exec, p: int) { on g3 { n = EnumToInt(%) }\nvar @: int = p\non g3 { f = @ } }\nlet q = C(go, a)"),
-        ("chip: initializer", "chip C(g3: exec, p: int) { var @: int = EnumToInt(%) + p\non g3 { n = @ } }\nlet q = C(go, a)"),
-        ("handler: read above", "on go { let q = EnumToInt(%)\nvar @: int = a\nn = q * 100 + @ }"),
-        ("handler block: read above", "on go { if c { let q = EnumToInt(%)\nvar @: int = a\nn = q * 100 + @ } }"),
+        (
+            "mod: nested block",
+            "mod m(p: int) -> int { if c { n = EnumToInt(%) }\nvar @: int = p\nreturn @ }\non go { f = m(a) }",
+        ),
+        (
+            "chip: handler above",
+            "chip C(g3: exec, p: int) { on g3 { n = EnumToInt(%) }\nvar @: int = p\non g3 { f = @ } }\nlet q = C(go, a)",
+        ),
+        (
+            "chip: initializer",
+            "chip C(g3: exec, p: int) { var @: int = EnumToInt(%) + p\non g3 { n = @ } }\nlet q = C(go, a)",
+        ),
+        (
+            "handler: read above",
+            "on go { let q = EnumToInt(%)\nvar @: int = a\nn = q * 100 + @ }",
+        ),
+        (
+            "handler block: read above",
+            "on go { if c { let q = EnumToInt(%)\nvar @: int = a\nn = q * 100 + @ } }",
+        ),
     ];
     for (what, body) in variant {
-        assert_eq!(twins(what, &format!("{head}{body}"), &[], "Blue"), Twins::Compiled, "{what}");
+        assert_eq!(
+            twins(what, &format!("{head}{body}"), &[], "Blue"),
+            Twins::Compiled,
+            "{what}"
+        );
     }
     let enumeration = [
-        ("mod: read above", "mod m(p: int) -> int { let q = EnumToInt(%.Blue)\nvar @: int = p\nreturn q * 100 + @ }\non go { n = m(a) }"),
-        ("mod: method above", "mod m(p: int) -> int { let q = %.Green.ToInt()\nvar @: int = p\nreturn q * 100 + @ }\non go { n = m(a) }"),
-        ("mod: initializer", "mod m(p: int) -> int { var @: int = EnumToInt(%.Blue) + p\nreturn @ }\non go { n = m(a) }"),
-        ("chip: handler above", "chip C(g3: exec, p: int) { on g3 { n = EnumToInt(%.Blue) }\nvar @: int = p\non g3 { f = @ } }\nlet q = C(go, a)"),
-        ("handler: read above", "on go { let q = EnumToInt(%.Blue)\nvar @: int = a\nn = q * 100 + @ }"),
+        (
+            "mod: read above",
+            "mod m(p: int) -> int { let q = EnumToInt(%.Blue)\nvar @: int = p\nreturn q * 100 + @ }\non go { n = m(a) }",
+        ),
+        (
+            "mod: method above",
+            "mod m(p: int) -> int { let q = %.Green.ToInt()\nvar @: int = p\nreturn q * 100 + @ }\non go { n = m(a) }",
+        ),
+        (
+            "mod: initializer",
+            "mod m(p: int) -> int { var @: int = EnumToInt(%.Blue) + p\nreturn @ }\non go { n = m(a) }",
+        ),
+        (
+            "chip: handler above",
+            "chip C(g3: exec, p: int) { on g3 { n = EnumToInt(%.Blue) }\nvar @: int = p\non g3 { f = @ } }\nlet q = C(go, a)",
+        ),
+        (
+            "handler: read above",
+            "on go { let q = EnumToInt(%.Blue)\nvar @: int = a\nn = q * 100 + @ }",
+        ),
     ];
     for (what, body) in enumeration {
-        assert_eq!(twins(what, &format!("{head}{body}"), &[], "Hue"), Twins::Compiled, "{what}");
+        assert_eq!(
+            twins(what, &format!("{head}{body}"), &[], "Hue"),
+            Twins::Compiled,
+            "{what}"
+        );
     }
 }
 
@@ -632,19 +1148,44 @@ fn a_var_initializer_reads_the_name_around_it() {
     let head = "in go: exec\nin a: int\nin c: bool\nvar n: int = 0\nout on1: int = n\n\
                 var f: float = 0.0\nout of1: float = f\nconst K = 4\ntype P = { x: int, y: int }\n";
     for (what, body) in [
-        ("handler var from a constant", "on go { var @: int = % + 1\nn = abs(@)\nf = @ }"),
-        ("handler var from a constant and an input", "on go { var @: int = % + a\nn = abs(@)\nf = @ }"),
-        ("static var from a constant", "on go { static var @: int = % + 1\nn = @ }"),
-        ("mod var from its parameter", "mod md(%: int) -> int { var @: int = % * 2\nreturn @ }\non go { n = md(a) }"),
-        ("block var from an outer var", "on go { var %: int = a\nif c { var @: int = % + 1\nn = @ } }"),
+        (
+            "handler var from a constant",
+            "on go { var @: int = % + 1\nn = abs(@)\nf = @ }",
+        ),
+        (
+            "handler var from a constant and an input",
+            "on go { var @: int = % + a\nn = abs(@)\nf = @ }",
+        ),
+        (
+            "static var from a constant",
+            "on go { static var @: int = % + 1\nn = @ }",
+        ),
+        (
+            "mod var from its parameter",
+            "mod md(%: int) -> int { var @: int = % * 2\nreturn @ }\non go { n = md(a) }",
+        ),
+        (
+            "block var from an outer var",
+            "on go { var %: int = a\nif c { var @: int = % + 1\nn = @ } }",
+        ),
         (
             "record var from a parameter",
             "mod md(%: P) -> int { var @: P = { x: %.x + 1, y: %.y }\nreturn @.x }\non go { n = md({ x: a, y: 2 }) }",
         ),
-        ("read above a mod body's var", "mod md(z: int) -> int { let q = % + z\nvar @: int = 9 + z\nreturn q * @ }\non go { n = md(a) }"),
-        ("read above a chip body's var", "chip C(t: exec, z: int) { on t { n = % + z\nvar @: int = 9 + z\nf = @ } }\nlet q = C(go, a)"),
+        (
+            "read above a mod body's var",
+            "mod md(z: int) -> int { let q = % + z\nvar @: int = 9 + z\nreturn q * @ }\non go { n = md(a) }",
+        ),
+        (
+            "read above a chip body's var",
+            "chip C(t: exec, z: int) { on t { n = % + z\nvar @: int = 9 + z\nf = @ } }\nlet q = C(go, a)",
+        ),
     ] {
-        assert_eq!(twins(what, &format!("{head}{body}"), &[], "K"), Twins::Compiled, "{what}");
+        assert_eq!(
+            twins(what, &format!("{head}{body}"), &[], "K"),
+            Twins::Compiled,
+            "{what}"
+        );
     }
     // With no outer name of its own, the initializer reads nothing, and the
     // message says why.
@@ -657,7 +1198,8 @@ fn a_var_initializer_reads_the_name_around_it() {
         assert!(
             r.diagnostics.iter().any(|d| d.code == "WS002"
                 && d.message.contains("`y` is not declared before this `var`")
-                && d.message.contains("a `var`'s initializer cannot read the variable it declares")),
+                && d.message
+                    .contains("a `var`'s initializer cannot read the variable it declares")),
             "{src}: {:?}",
             r.diagnostics
         );
@@ -665,14 +1207,28 @@ fn a_var_initializer_reads_the_name_around_it() {
     // The declaration it suggests spells the type as written, and names none
     // for a `var` written with none and an initializer of no known type.
     let hint = |src: &str| {
-        compile(&format!("{head}{src}")).diagnostics.into_iter().find(|d| d.code == "WS002").map(|d| d.message)
+        compile(&format!("{head}{src}"))
+            .diagnostics
+            .into_iter()
+            .find(|d| d.code == "WS002")
+            .map(|d| d.message)
     };
-    assert!(hint("on go { var y: int = y + 1\nn = y }").is_some_and(|m| m.contains("(`var y: int`)")));
-    assert!(hint("on go { static var y: int = y + 1\nn = y }").is_some_and(|m| m.contains("(`static var y: int`)")));
+    assert!(
+        hint("on go { var y: int = y + 1\nn = y }").is_some_and(|m| m.contains("(`var y: int`)"))
+    );
+    assert!(
+        hint("on go { static var y: int = y + 1\nn = y }")
+            .is_some_and(|m| m.contains("(`static var y: int`)"))
+    );
     let untyped = hint("on go { var y = y + 1\nn = y }").unwrap_or_default();
-    assert!(untyped.contains("Declare it without one, or") && !untyped.contains(": T`"), "{untyped}");
+    assert!(
+        untyped.contains("Declare it without one, or") && !untyped.contains(": T`"),
+        "{untyped}"
+    );
     // Checked against the parameter it reads, not the `var` it declares.
-    let codes = errs(&format!("{head}in s: string\nmod md(x: string) -> int {{ var x: int = x + 1\nreturn x }}\non go {{ n = md(s) }}"));
+    let codes = errs(&format!(
+        "{head}in s: string\nmod md(x: string) -> int {{ var x: int = x + 1\nreturn x }}\non go {{ n = md(s) }}"
+    ));
     assert!(codes.iter().any(|c| c == "WS004"), "{codes:?}");
     assert!(
         errs(&format!("{head}in s: string\nmod md(x: string) -> int {{ var x: int = x.Length()\nreturn x }}\non go {{ n = md(s) }}")).is_empty(),

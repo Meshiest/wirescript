@@ -1,91 +1,244 @@
 //! Tests for game-exposed gate config properties: enum config validation
-//! (WS028) and enum config landing as gate data.
+//! (WS028), enum config landing as gate data, and a constant gate setting
+//! stored exactly or reported (WS106).
 
 use super::*;
-use crate::ir::Literal;
+use crate::ir::{Literal, Type};
 
-/// Error diagnostic codes from typechecking `src`.
-fn errors(src: &str) -> Vec<String> {
-    let parsed = crate::parser::parse(src, "test");
-    crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default())
-        .diagnostics
-        .into_iter()
-        .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-        .map(|d| d.code.to_string())
-        .collect()
+/// Each `(label, source, code)` row typechecks to no error when `code` is
+/// `None`, or reports the error `code`; `absent` codes never appear.
+#[track_caller]
+fn check_typecheck_rows(rows: &[(&str, &str, Option<&str>, &[&str])]) {
+    let mut failures = Vec::new();
+    for (label, src, code, absent) in rows {
+        let got = errs(src);
+        match code {
+            None if !got.is_empty() => failures.push(format!("{label}: errors {got:?}\n{src}")),
+            Some(c) if !got.iter().any(|g| g == c) => {
+                failures.push(format!("{label}: want {c}, got {got:?}\n{src}"))
+            }
+            _ => {}
+        }
+        for a in *absent {
+            if got.iter().any(|g| g == a) {
+                failures.push(format!("{label}: unexpected {a} in {got:?}\n{src}"));
+            }
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 #[test]
-fn enum_config_accepts_bare_member_name() {
-    // `function`/`direction` on Easing are data-only EBREasingFunction /
-    // EBREasingDirection config fields — bare member names are valid.
-    let src = "in t: float\nlet e = Easing(0.0, 1.0, t, function = Bounce, direction = InOut)\n";
-    assert!(
-        errors(src).is_empty(),
-        "bare enum member names should typecheck: {:?}",
-        errors(src)
+fn a_config_argument_typechecks_or_says_why() {
+    let adv = "in go: exec\nin c: character\nin weapon: entity\n";
+    let ammo = |a: &str| {
+        format!("{adv}on go {{\n  c.AddInventoryItemAdv(weapon, ammoOverride = {a})\n}}\n")
+    };
+    let missing_reserve = ammo("{ overrideStartingAmmo: true, resources: [{ loaded: 30 }] }");
+    let missing_resources = ammo("{ overrideStartingAmmo: true }");
+    let empty_resources = ammo("{ overrideStartingAmmo: false, resources: [] }");
+    let runtime_ammo = format!(
+        "{adv}in n: int\non go {{\n  c.AddInventoryItemAdv(weapon, ammoOverride = {{ overrideStartingAmmo: true, resources: [{{ loaded: n, reserve: 90 }}] }})\n}}\n"
     );
+    let runtime_colors = format!(
+        "{adv}in live: color\non go {{\n  c.AddInventoryItemAdv(weapon, meshColors = [live])\n}}\n"
+    );
+    let clock = |cfg: &str| {
+        format!("static var n: int = 0\non Clock(interval = 2.0, {cfg}) {{\n  n = n + 1\n}}\n")
+    };
+    let (pulse_on, on_time, off_time) = (
+        clock("pulseOn = false"),
+        clock("onTime = 0.5"),
+        clock("offTime = 0.5"),
+    );
+    check_typecheck_rows(&[
+        (
+            "`function`/`direction` on Easing are data-only enum config fields: bare member names are valid",
+            "in t: float\nlet e = Easing(0.0, 1.0, t, function = Bounce, direction = InOut)\n",
+            None,
+            &[],
+        ),
+        (
+            "a raw int in range",
+            "in t: float\nlet e = Easing(0.0, 1.0, t, function = 3)\n",
+            None,
+            &[],
+        ),
+        (
+            "an out-of-range raw int",
+            "in t: float\nlet e = Easing(0.0, 1.0, t, function = 99)\n",
+            Some("WS028"),
+            &[],
+        ),
+        (
+            "the quoted-name form is accepted and validated",
+            "in t: float\nlet e = Easing(0.0, 1.0, t, function = \"Bounce\")\n",
+            None,
+            &[],
+        ),
+        (
+            "`bPulseOn` is in the Clock's data struct but the gate never reads it: WS041, not a silently baked property",
+            &pulse_on,
+            Some("WS041"),
+            &[],
+        ),
+        ("the inert `OnTimeSeconds`", &on_time, Some("WS041"), &[]),
+        ("the inert `OffTimeSeconds`", &off_time, Some("WS041"), &[]),
+        (
+            "a non-constant meshColors element can't fold into gate data: a clean WS028, never a broken wire",
+            &runtime_colors,
+            Some("WS028"),
+            &[],
+        ),
+        (
+            "a non-constant ammoOverride",
+            &runtime_ammo,
+            Some("WS028"),
+            &[],
+        ),
+        (
+            "a non-constant asset-ref config param",
+            "in go: exec\nin p: controller\nin f: entity\non go {\n  p.DisplayText(\"hi\", font = f)\n}\n",
+            Some("WS028"),
+            &[],
+        ),
+        (
+            "`isObject` is constant-only CustomEvent config; a variable would be dropped at lowering",
+            "in flag: bool\nstatic var n: int = 0\non CustomEvent(\"dmg\", isObject = flag) -> (amount: int) {\n  n = amount\n}\n",
+            Some("WS028"),
+            &[],
+        ),
+        (
+            "`interval` wires into the Clock's IntervalSeconds input port, so a variable there is legitimate",
+            "in secs: float\nstatic var n: int = 0\non Clock(interval = secs, enabled = true) {\n  n = n + 1\n}\n",
+            None,
+            &[],
+        ),
+        (
+            "`enabled` is a wire input too",
+            "in flag: bool\nstatic var n: int = 0\non Clock(interval = 2.0, enabled = flag) {\n  n = n + 1\n}\n",
+            None,
+            &[],
+        ),
+        (
+            "a resource record missing `reserve` is not silently baked as 0",
+            &missing_reserve,
+            Some("WS028"),
+            &[],
+        ),
+        (
+            "the ammoOverride record missing `resources`",
+            &missing_resources,
+            Some("WS028"),
+            &[],
+        ),
+        (
+            "an explicit `resources: []` is a deliberate no-op, not a silent default",
+            &empty_resources,
+            None,
+            &[],
+        ),
+        (
+            "the send's object-event Target is entity-typed: a non-entity is a clear WS003",
+            "in go: exec\non go {\n  SendCustomEvent(\"dmg\", 7, target = 5)\n}\n",
+            Some("WS003"),
+            &[],
+        ),
+        (
+            "any object-family reference (entity/character/controller) connects as Target",
+            "on CharacterSpawned() -> { character: ch } {\n  SendCustomEvent(\"dmg\", 7, target = ch)\n}\n",
+            None,
+            &[],
+        ),
+        (
+            "a general call trigger's `-> (a, b)` capture takes its types from the call's output record, \
+             not `Any` (`la = a + b` was WS004)",
+            "chip pair(x: int) -> (a: int, b: int) {\n  out a = x\n  out b = x + 1\n}\nin go: exec\nvar la: int = 0\n\
+             on pair(5, exec = go) -> (a, b) {\n  la = a + b\n}\n",
+            None,
+            &[],
+        ),
+        (
+            "a baked map entry has no gate to coerce through: a non-string key is not silently \"\"",
+            "var m: Map<string, int> = { 1 => 10 }\n",
+            Some("WS003"),
+            &[],
+        ),
+        (
+            "an atom key in a string map",
+            "var m: Map<string, int> = { :alice => 1, :bob => 2 }\n",
+            Some("WS003"),
+            &[],
+        ),
+        (
+            "a non-string baked value",
+            "var v: Map<int, string> = { 1 => 5 }\n",
+            Some("WS003"),
+            &[],
+        ),
+        (
+            "a correctly-typed string-keyed map",
+            "var m: Map<string, int> = { \"a\" => 1, \"b\" => 2 }\n",
+            None,
+            &[],
+        ),
+    ]);
 }
 
+/// `zone` and `teleport` are reference types: they wire into their own inputs
+/// only, and like a var ref cannot flow through a Select or back a variable.
 #[test]
-fn enum_config_rejects_unknown_member() {
-    let src = "in t: float\nlet e = Easing(0.0, 1.0, t, function = Wobble)\n";
-    let e = errors(src);
-    assert!(
-        e.contains(&"WS028".to_string()),
-        "unknown enum member should be WS028, got {e:?}"
-    );
-    // The bare identifier must NOT read as an unknown variable (WS002).
-    assert!(
-        !e.contains(&"WS002".to_string()),
-        "enum member should not be treated as a variable: {e:?}"
-    );
-}
-
-#[test]
-fn enum_config_accepts_raw_int_in_range() {
-    let src = "in t: float\nlet e = Easing(0.0, 1.0, t, function = 3)\n";
-    assert!(
-        errors(src).is_empty(),
-        "raw int should be accepted: {:?}",
-        errors(src)
-    );
-}
-
-#[test]
-fn enum_config_rejects_out_of_range_int() {
-    let src = "in t: float\nlet e = Easing(0.0, 1.0, t, function = 99)\n";
-    assert!(
-        errors(src).contains(&"WS028".to_string()),
-        "out-of-range int should be WS028: {:?}",
-        errors(src)
-    );
-}
-
-#[test]
-fn enum_config_accepts_quoted_name() {
-    // The quoted-name form is also accepted and validated.
-    let src = "in t: float\nlet e = Easing(0.0, 1.0, t, function = \"Bounce\")\n";
-    assert!(
-        errors(src).is_empty(),
-        "quoted member name: {:?}",
-        errors(src)
-    );
-}
-
-#[test]
-fn enum_config_lowers_to_data_int() {
-    // The resolved member value lands on the gate's data field, not as a wire.
-    let src = "in t: float\nlet e = Easing(0.0, 1.0, t, function = Bounce)\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let node = find_gate(&r, crate::ir::gate_class::MATH_EASING);
-    let props = &r.module.nodes[&node].properties;
-    let func = props
-        .get(&crate::intern::intern("Function"))
-        .expect("Function data field set from `function = Bounce`");
-    // EBREasingFunction::Bounce == 10.
-    assert!(matches!(func, Literal::Int(10)), "got {func:?}");
+fn a_zone_or_teleport_reference_typechecks_or_says_why() {
+    check_typecheck_rows(&[
+        (
+            "a zone value wires into ZoneEntered's `zone` input",
+            "in z: zone\non ZoneEntered(zone = z) -> (character) {}\n",
+            None,
+            &[],
+        ),
+        (
+            "an entity into a zone input",
+            "in z: entity\non ZoneEntered(zone = z) -> (character) {}\n",
+            Some("WS003"),
+            &[],
+        ),
+        (
+            "a teleport point teleports",
+            "in e: entity\nin p: teleport\nin go: exec\non go {\n  e.Teleport(p)\n}\n",
+            None,
+            &[],
+        ),
+        (
+            "a raw position does not teleport (that's SetLocation's job)",
+            "in e: entity\nin go: exec\non go {\n  e.Teleport(Vec(0.0, 0.0, 100.0))\n}\n",
+            Some("WS003"),
+            &[],
+        ),
+        (
+            "neither does an entity",
+            "in e: entity\nin d: entity\nin go: exec\non go {\n  e.Teleport(d)\n}\n",
+            Some("WS003"),
+            &[],
+        ),
+        (
+            "teleport points can't be selected by an if-expr",
+            "in c: bool\nin a: teleport\nin b: teleport\nlet p = if c then a else b\n",
+            Some("WS031"),
+            &[],
+        ),
+        (
+            "a zone can't back a variable gate",
+            "var z: zone\n",
+            Some("WS025"),
+            &[],
+        ),
+        (
+            "a teleport point can't back a variable gate",
+            "var p: teleport\n",
+            Some("WS025"),
+            &[],
+        ),
+    ]);
 }
 
 fn prop<'a>(r: &'a LowerResult, class: &str, field: &str) -> Option<&'a Literal> {
@@ -95,36 +248,308 @@ fn prop<'a>(r: &'a LowerResult, class: &str, field: &str) -> Option<&'a Literal>
         .get(&crate::intern::intern(field))
 }
 
+/// A constant config argument lands on its gate's data field, not a wire: by
+/// the hand-coded friendly name or by its raw struct field name (any field in
+/// the inventory `config` array is settable that way); enum members are bare
+/// names, other scalars constants.
 #[test]
-fn sweep_simple_bool_and_enum_config_land_as_data() {
-    let src = "in go: exec\non go {\n  SweepSimple(100.0, direction = Y_Positive, detectBricks = false, bodyPartsOnly = true)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let c = crate::ir::gate_class::SWEEP_SIMPLE;
-    // EBrickDirection::Y_Positive == 2.
-    assert!(matches!(prop(&r, c, "Direction"), Some(Literal::Int(2))));
-    assert!(matches!(
-        prop(&r, c, "bDetectBricks"),
-        Some(Literal::Bool(false))
-    ));
-    assert!(matches!(
-        prop(&r, c, "bOnlyHitPlayerBodyParts"),
-        Some(Literal::Bool(true))
-    ));
+fn a_constant_config_argument_lands_as_gate_data() {
+    let s = |v: &str| Literal::String(v.to_string());
+    let rows: Vec<(&str, &str, &str, Vec<(&str, Literal)>)> = vec![
+        (
+            "a bare enum member (EBREasingFunction::Bounce == 10)",
+            "in t: float\nlet e = Easing(0.0, 1.0, t, function = Bounce)\n",
+            crate::ir::gate_class::MATH_EASING,
+            vec![("Function", Literal::Int(10))],
+        ),
+        (
+            "SweepSimple's bool and enum config (EBrickDirection::Y_Positive == 2)",
+            "in go: exec\non go {\n  SweepSimple(100.0, direction = Y_Positive, detectBricks = false, bodyPartsOnly = true)\n}\n",
+            crate::ir::gate_class::SWEEP_SIMPLE,
+            vec![
+                ("Direction", Literal::Int(2)),
+                ("bDetectBricks", Literal::Bool(false)),
+                ("bOnlyHitPlayerBodyParts", Literal::Bool(true)),
+            ],
+        ),
+        (
+            "ColorBlend's enum and bool config (EBRColorSpace::Oklab == 2)",
+            "in a: color\nin b: color\nin t: float\nlet c = ColorBlend(a, b, t, blendSpace = Oklab, clampAlpha = false)\n",
+            crate::ir::gate_class::COLOR_BLEND,
+            vec![
+                ("BlendSpace", Literal::Int(2)),
+                ("bClampAlpha", Literal::Bool(false)),
+            ],
+        ),
+        (
+            "DisplayText's typeface and justify (Bold == 1, Center == 1)",
+            "in go: exec\nin p: controller\non go {\n  p.DisplayText(\"hi\", typeface = Bold, justify = Center)\n}\n",
+            crate::ir::gate_class::PLAYERSTATE_DISPLAY_TEXT,
+            vec![
+                ("Typeface", Literal::Int(1)),
+                ("Justification", Literal::Int(1)),
+            ],
+        ),
+        (
+            "raw bool field names",
+            "in go: exec\non go {\n  SweepSimple(500.0, bOnlyHitPlayerBodyParts = true, bDetectBricks = true)\n}\n",
+            crate::ir::gate_class::SWEEP_SIMPLE,
+            vec![
+                ("bOnlyHitPlayerBodyParts", Literal::Bool(true)),
+                ("bDetectBricks", Literal::Bool(true)),
+            ],
+        ),
+        (
+            "the raw `Direction` resolves a bare member as the friendly `direction` does",
+            "in go: exec\non go {\n  SweepSimple(500.0, Direction = Y_Positive)\n}\n",
+            crate::ir::gate_class::SWEEP_SIMPLE,
+            vec![("Direction", Literal::Int(2))],
+        ),
+        (
+            "`Value` is a settings-only int on Cycle that no declared param covers",
+            "in go: exec\non go {\n  let n = Cycle(4, Value = 2)\n  PrintToConsole(n)\n}\n",
+            crate::ir::gate_class::EXEC_CYCLE,
+            vec![("Value", Literal::Int(2))],
+        ),
+        (
+            "the hand-coded `bodyPartsOnly` alias keeps setting the same field",
+            "in go: exec\non go {\n  SweepSimple(500.0, bodyPartsOnly = true)\n}\n",
+            crate::ir::gate_class::SWEEP_SIMPLE,
+            vec![("bOnlyHitPlayerBodyParts", Literal::Bool(true))],
+        ),
+        (
+            "constant event data inlines as typed data and the name bakes into EventName",
+            "in go: exec\non go {\n  SendCustomEvent(\"spawn\", 42, 99)\n}\n",
+            crate::ir::gate_class::SEND_CUSTOM_EVENT,
+            vec![
+                ("DataIn1", Literal::Int(42)),
+                ("DataIn2", Literal::Int(99)),
+                ("EventName", s("spawn")),
+            ],
+        ),
+        (
+            "the catalog's `isObject` matches case-insensitively: `isobject = true` bakes bIsObjectEvent",
+            "static var last: int = 0\non CustomEvent(\"dmg\", isobject = true) -> (amount: int) {\n  last = amount\n}\n",
+            crate::ir::gate_class::CUSTOM_EVENT,
+            vec![("bIsObjectEvent", Literal::Bool(true))],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, class, fields) in &rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        if !errors.is_empty() {
+            failures.push(format!("{label}: errors {errors:?}"));
+            continue;
+        }
+        let nodes = nodes_of(&r.module, class);
+        if nodes.len() != 1 {
+            failures.push(format!("{label}: {} x {class}, want one", nodes.len()));
+            continue;
+        }
+        for (field, want) in fields {
+            let got = nodes[0].properties.get(&crate::intern::intern(field));
+            if got != Some(want) {
+                failures.push(format!("{label}: {field} = {got:?}, want {want:?}"));
+            }
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
+/// An event called as an expression emits its gate and composes like any exec
+/// or value source: in a `Union`, in pure context (an event fires itself, so
+/// no WS007), and with its input arguments wired in.
 #[test]
-fn color_blend_enum_config_lands_as_data() {
-    let src = "in a: color\nin b: color\nin t: float\nlet c = ColorBlend(a, b, t, blendSpace = Oklab, clampAlpha = false)\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let c = crate::ir::gate_class::COLOR_BLEND;
-    // EBRColorSpace::Oklab == 2.
-    assert!(matches!(prop(&r, c, "BlendSpace"), Some(Literal::Int(2))));
-    assert!(matches!(
-        prop(&r, c, "bClampAlpha"),
-        Some(Literal::Bool(false))
-    ));
+fn an_event_called_as_an_expression_emits_its_gate() {
+    let rows: &[(&str, &str, &str, Option<WirePort>, WirePort)] = &[
+        (
+            "`RoundStart()` composes through Union",
+            "in x: exec\nlet t = Union(RoundStart(), x)\non t {\n  BroadcastChatMessage(\"hi\")\n}",
+            "BrickComponentType_Event_Gamemode_RoundStart",
+            None,
+            WirePort::ExecOut,
+        ),
+        (
+            "a top-level `let` of an event, with no enclosing exec chain",
+            "let e = RoundStart()\non e {\n  BroadcastChatMessage(\"hi\")\n}",
+            "BrickComponentType_Event_Gamemode_RoundStart",
+            None,
+            WirePort::ExecOut,
+        ),
+        (
+            "`Clock(interval = iv)` wires its `interval` into the gate",
+            "in iv: float\nlet c = Clock(interval = iv)\non c {\n  BroadcastChatMessage(\"tick\")\n}",
+            "BrickComponentType_Clock",
+            Some(WirePort::from_name("IntervalSeconds")),
+            WirePort::from_name("Pulse"),
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, class, input, output) in rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        if !errors.is_empty() {
+            failures.push(format!("{label}: errors {errors:?}"));
+            continue;
+        }
+        let gates = nodes_of(&r.module, class);
+        if gates.len() != 1 {
+            failures.push(format!("{label}: {} x {class}, want one", gates.len()));
+            continue;
+        }
+        let id = gates[0].id;
+        if !r
+            .module
+            .wires
+            .iter()
+            .any(|w| w.source.node_id == id && w.source.port == *output)
+        {
+            failures.push(format!("{label}: nothing reads the event's {output:?}"));
+        }
+        if let Some(port) = input
+            && !r
+                .module
+                .wires
+                .iter()
+                .any(|w| w.target.node_id == id && w.target.port == *port)
+        {
+            failures.push(format!("{label}: {port:?} is unwired"));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
+}
+
+/// An event's data outputs take the types its handler declares, infers from
+/// an in-unit sender, or (for a built-in event) its catalog gives; unused
+/// custom-event slots default to float, never `any`, and the channel name
+/// bakes into EventName.
+#[test]
+fn an_event_data_output_takes_its_declared_or_inferred_type() {
+    let custom = crate::ir::gate_class::CUSTOM_EVENT;
+    let rows: &[(&str, &str, &str, &[(&str, Type)], Option<&str>)] = &[
+        (
+            "the leading positional bakes EventName, config stays in the parens, and the typed `->` \
+             params type DataOut",
+            "static var last: int = 0\non CustomEvent(\"dmg\", isObject = true) -> (amount: int, source: character) {\n  last = amount\n}\n",
+            custom,
+            &[
+                ("DataOut1", Type::Int),
+                ("DataOut2", Type::Character),
+                ("DataOut3", Type::Float),
+                ("DataOut8", Type::Float),
+            ],
+            Some("dmg"),
+        ),
+        (
+            "the same `-> (amount: int, source: character)` capture with no config",
+            "static var last: int = 0\non CustomEvent(\"dmg\") -> (amount: int, source: character) {\n  last = amount\n}\n",
+            custom,
+            &[("DataOut1", Type::Int), ("DataOut2", Type::Character)],
+            Some("dmg"),
+        ),
+        (
+            "no annotations: the sender carries int + character",
+            "static var last: int = 0\nin go: exec\non CustomEvent(\"dmg\") -> (amount, source) {\n  last = last + 1\n}\n\
+             on CharacterSpawned() -> { character: ch } {\n  SendCustomEvent(\"dmg\", 42, ch)\n}\n",
+            custom,
+            &[
+                ("DataOut1", Type::Int),
+                ("DataOut2", Type::Character),
+                ("DataOut3", Type::Float),
+            ],
+            None,
+        ),
+        (
+            "an omitted tuple slot type is inferred through the `->` surface",
+            "static var last: int = 0\nin go: exec\non CustomEvent(\"dmg\") -> (amount) {\n  last = last + 1\n}\non go {\n  SendCustomEvent(\"dmg\", 7)\n}\n",
+            custom,
+            &[("DataOut1", Type::Int)],
+            None,
+        ),
+        (
+            "an unannotated param on a NON-custom event keeps its catalog type; the custom-event float \
+             fallback never leaks to a built-in event",
+            "static var n: int = 0\non CharacterSpawned() -> { character: ch } {\n  n = n + 1\n}\n",
+            "BrickComponentType_Event_Gamemode_CharacterSpawned",
+            &[("Character", Type::Character)],
+            None,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, class, ports, name) in rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        if !errors.is_empty() {
+            failures.push(format!("{label}: errors {errors:?}"));
+            continue;
+        }
+        let node = &r.module.nodes[&find_gate(&r, class)];
+        for (port, want) in *ports {
+            let got = node
+                .ports
+                .outputs
+                .iter()
+                .find(|p| p.name == crate::intern::intern(port))
+                .map(|p| &p.ty);
+            if got != Some(want) {
+                failures.push(format!("{label}: {port} is {got:?}, want {want:?}"));
+            }
+        }
+        if let Some(name) = name
+            && node.properties.get(&crate::intern::intern("EventName"))
+                != Some(&Literal::String(name.to_string()))
+        {
+            failures.push(format!("{label}: EventName is not {name:?}"));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
+}
+
+/// An inline `mod` exposes no completion exec, so `on <mod call>(exec = ...)`
+/// has nothing to trigger on: a clean WS043 error, with the handler body NOT
+/// lowered. Each body's arithmetic differs from its mod's, so its gate class
+/// is absent only if the body was dropped.
+#[test]
+fn an_on_trigger_on_an_inline_mod_call_is_ws043() {
+    let rows: &[(&str, &str, &[&str])] = &[
+        (
+            "a single-output mod with `-> (r)`: the desugared `_on_expr_N` is a `Binding::Local`, which \
+             fell through to the value-changed-local branch, miswiring the value as an exec trigger \
+             and orphaning `exec =`",
+            "in s: exec\nmod doWork(x: int) -> (r: int) {\n  return x * 2\n}\nvar last: int = 0\nvar hits: int = 0\n\
+             on doWork(5, exec = s) -> (r) {\n  hits = hits + 1\n  last = r\n}\n",
+            &["BrickComponentType_Expr_MathAdd"],
+        ),
+        (
+            "a multi-output mod: `_on_expr_N` is a `Binding::Record` with no `exec` field, and the whole \
+             handler was dropped from the IR",
+            "in s: exec\nvar log: string[]\nmod doWork(x: int) -> (a: int, b: int) {\n  log.push(\"ran\")\n  emit a = x\n  \
+             emit b = x + 1\n}\nvar last: int = 0\nvar hits: int = 0\non doWork(5, exec = s) -> (a, b) {\n  hits = hits * 3\n  last = a\n}\n",
+            &["BrickComponentType_Expr_MathMultiply"],
+        ),
+        (
+            "`exec =` with no `-> pattern`: no handler exec chain at all, so no Var_Set from the dropped body",
+            "in s: exec\nmod doWork(x: int) -> (r: int) {\n  return x * 2\n}\nvar hits: int = 0\non doWork(5, exec = s) {\n  hits = hits + 1\n}\n",
+            &[
+                "BrickComponentType_Expr_MathAdd",
+                crate::ir::gate_class::VAR_SET,
+            ],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, absent) in rows {
+        let r = compile(src);
+        if !has_error(&r, "WS043") {
+            failures.push(format!("{label}: no WS043 error in {:?}", r.diagnostics));
+        }
+        for class in *absent {
+            if count_class(&r.module, class) != 0 {
+                failures.push(format!("{label}: the handler body was lowered ({class})"));
+            }
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 #[test]
@@ -132,8 +557,7 @@ fn display_text_font_ref_lands_as_data() {
     // `font` is a font asset ref (`$BrickFontDescriptor/…`) inlined into the
     // gate's `Font` (object) data field, reusing the asset-ref path.
     let src = "in go: exec\nin p: controller\non go {\n  p.DisplayText(\"hi\", font = $BrickFontDescriptor/Roboto)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let c = crate::ir::gate_class::PLAYERSTATE_DISPLAY_TEXT;
     assert!(
         matches!(prop(&r, c, "Font"), Some(Literal::Asset { .. })),
@@ -148,8 +572,7 @@ fn clock_event_config_lands_as_data() {
     // the gate's scalar data default, with no carrier gate. A variable value would
     // wire.
     let src = "static var n: int = 0\non Clock(interval = 2.0, enabled = true) {\n  n = n + 1\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let c = "BrickComponentType_Clock";
     assert!(has_gate(&r, c), "Clock gate placed");
     // Constant interval/enabled bake into their scalar wire-input data (no carrier).
@@ -164,30 +587,11 @@ fn clock_event_config_lands_as_data() {
 }
 
 #[test]
-fn clock_inert_struct_fields_are_not_config() {
-    // `bPulseOn`/`OnTimeSeconds`/`OffTimeSeconds` live in the Clock's data
-    // struct but the gate never reads them, so the event takes no config: an
-    // arg naming one is WS041, not a silently baked property.
-    for src in [
-        "static var n: int = 0\non Clock(interval = 2.0, pulseOn = false) {\n  n = n + 1\n}\n",
-        "static var n: int = 0\non Clock(interval = 2.0, onTime = 0.5) {\n  n = n + 1\n}\n",
-        "static var n: int = 0\non Clock(interval = 2.0, offTime = 0.5) {\n  n = n + 1\n}\n",
-    ] {
-        assert!(
-            errors(src).contains(&"WS041".to_string()),
-            "inert Clock struct field should be WS041: {:?}",
-            errors(src)
-        );
-    }
-}
-
-#[test]
 fn dynamic_clock_interval_stays_wired() {
     // Only a CONSTANT setting bakes; a variable `interval` must still wire into
     // IntervalSeconds so the clock rate can change at runtime.
     let src = "static var rate: float = 0.5\non Clock(interval = rate) {\n  rate = rate\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let c = "BrickComponentType_Clock";
     // No baked interval, and a real wire feeds IntervalSeconds.
     assert!(prop(&r, c, "IntervalSeconds").is_none());
@@ -207,20 +611,6 @@ fn dynamic_clock_interval_stays_wired() {
     );
 }
 
-#[test]
-fn display_text_typeface_and_justify_enums_land() {
-    let src = "in go: exec\nin p: controller\non go {\n  p.DisplayText(\"hi\", typeface = Bold, justify = Center)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let c = crate::ir::gate_class::PLAYERSTATE_DISPLAY_TEXT;
-    // EBRTextTypeface::Bold == 1, EBRDisplayTextJustification::Center == 1.
-    assert!(matches!(prop(&r, c, "Typeface"), Some(Literal::Int(1))));
-    assert!(matches!(
-        prop(&r, c, "Justification"),
-        Some(Literal::Int(1))
-    ));
-}
-
 // ---- Advanced inventory: composite (array/struct) gate config -----------
 
 /// `weapon` is wired into `ItemType`, so the round-trip test never bakes an
@@ -236,8 +626,7 @@ const ADV_INVENTORY_SRC: &str = concat!(
 
 #[test]
 fn adv_inventory_composite_config_lands_as_data() {
-    let r = compile(ADV_INVENTORY_SRC);
-    assert_no_errors(&r);
+    let r = compile_ok(ADV_INVENTORY_SRC);
     let c = crate::ir::gate_class::CHARACTER_ADD_INVENTORY_ITEM_ADV;
     // The plain bool config field still lands.
     assert!(matches!(
@@ -298,8 +687,7 @@ fn adv_inventory_composite_config_roundtrips_to_bytes() {
         "      resources: [{ loaded: 7, reserve: 13 }, { loaded: 1, reserve: 2 }] })\n",
         "}\n",
     );
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let c = crate::ir::gate_class::CHARACTER_ADD_INVENTORY_ITEM_ADV;
     let node = find_gate(&r, c);
     let val = crate::emit::roundtrip_adv_inventory_component(&r.module.nodes[&node]);
@@ -391,8 +779,7 @@ fn adv_inventory_omitted_ammo_override_still_fills_fixed_resources() {
         "  c.AddInventoryItemAdv(weapon, meshColors = [ColorSRGB(1, 2, 3, 4)])\n",
         "}\n",
     );
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let c = crate::ir::gate_class::CHARACTER_ADD_INVENTORY_ITEM_ADV;
     let node = find_gate(&r, c);
     let val = crate::emit::roundtrip_adv_inventory_component(&r.module.nodes[&node]);
@@ -426,8 +813,7 @@ fn set_inventory_item_adv_mesh_colors_roundtrips() {
         "  c.SetInventoryItemAdv(weapon, 2, meshColors = [ColorSRGB(1, 2, 3, 4)])\n",
         "}\n",
     );
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let c = crate::ir::gate_class::CHARACTER_SET_INVENTORY_ITEM_ADV;
     let node = find_gate(&r, c);
     let val = crate::emit::roundtrip_adv_inventory_component(&r.module.nodes[&node]);
@@ -454,36 +840,14 @@ fn set_inventory_item_adv_mesh_colors_roundtrips() {
 }
 
 #[test]
-fn mesh_colors_rejects_non_constant() {
-    // A non-constant element can't fold into gate data — clean WS028, never a
-    // silent broken wire into the non-input MeshColors port.
-    let src = "in go: exec\nin c: character\nin weapon: entity\nin live: color\non go {\n  c.AddInventoryItemAdv(weapon, meshColors = [live])\n}\n";
-    assert!(
-        errors(src).contains(&"WS028".to_string()),
-        "non-constant meshColors should be WS028, got {:?}",
-        errors(src)
-    );
-}
-
-#[test]
-fn ammo_override_rejects_non_constant() {
-    let src = "in go: exec\nin c: character\nin weapon: entity\nin n: int\non go {\n  c.AddInventoryItemAdv(weapon, ammoOverride = { overrideStartingAmmo: true, resources: [{ loaded: n, reserve: 90 }] })\n}\n";
-    assert!(
-        errors(src).contains(&"WS028".to_string()),
-        "non-constant ammoOverride should be WS028, got {:?}",
-        errors(src)
-    );
-}
-
-#[test]
 fn non_constant_bool_config_is_rejected() {
     // A variable passed to a non-wire (settings-menu) bool config port is a
     // WS028 typecheck error, not a silent wire into a nonexistent pin.
     let src = "in a: quat\nin b: quat\nin t: float\nin useShortest: bool\nlet q = Slerp(a, b, t, shortestPath = useShortest)\n";
     assert!(
-        errors(src).contains(&"WS028".to_string()),
+        errs(src).contains(&"WS028".to_string()),
         "non-constant bool config should be WS028: {:?}",
-        errors(src)
+        errs(src)
     );
     // The lowering safety net drops it — no bogus property, and (since it never
     // reaches the wire path) no wire into the nonexistent config pin. The Slerp
@@ -503,140 +867,22 @@ fn non_constant_bool_config_is_rejected() {
 }
 
 #[test]
-fn non_constant_font_config_is_rejected() {
-    // Same guard for the asset-ref config param.
-    let src = "in go: exec\nin p: controller\nin f: entity\non go {\n  p.DisplayText(\"hi\", font = f)\n}\n";
-    assert!(
-        errors(src).contains(&"WS028".to_string()),
-        "non-constant font config should be WS028: {:?}",
-        errors(src)
-    );
-}
-
-// ---- Event-handler config validation ------------------------------------
-
-#[test]
-fn non_constant_event_config_is_rejected() {
-    // `isObject` is constant-only CustomEvent config; a variable would be
-    // silently dropped at lowering, so it must be a WS028 typecheck error.
-    // (Clock's `enabled` is a wire input, so it accepts a variable; that case is
-    // covered separately.)
-    let src = "in flag: bool\nstatic var n: int = 0\non CustomEvent(\"dmg\", isObject = flag) -> (amount: int) {\n  n = amount\n}\n";
-    assert!(
-        errors(src).contains(&"WS028".to_string()),
-        "non-constant event config should be WS028: {:?}",
-        errors(src)
-    );
-}
-
-#[test]
-fn wired_event_input_stays_dynamic() {
-    // `interval` wires into the Clock's IntervalSeconds input port, so a
-    // variable there is legitimate and must NOT be rejected.
-    let src = "in secs: float\nstatic var n: int = 0\non Clock(interval = secs, enabled = true) {\n  n = n + 1\n}\n";
-    assert!(
-        errors(src).is_empty(),
-        "a variable wired into an event input port should typecheck: {:?}",
-        errors(src)
-    );
-}
-
-// ---- Composite config: missing record fields ----------------------------
-
-#[test]
-fn ammo_override_missing_resource_field_is_rejected() {
-    // A resource record missing `reserve` must be a WS028 error, not silently
-    // baked as reserve = 0.
-    let src = "in go: exec\nin c: character\nin weapon: entity\non go {\n  c.AddInventoryItemAdv(weapon, ammoOverride = { overrideStartingAmmo: true, resources: [{ loaded: 30 }] })\n}\n";
-    assert!(
-        errors(src).contains(&"WS028".to_string()),
-        "missing resource field should be WS028: {:?}",
-        errors(src)
-    );
-}
-
-#[test]
-fn ammo_override_missing_top_field_is_rejected() {
-    // The ammoOverride record missing `resources` is likewise an error.
-    let src = "in go: exec\nin c: character\nin weapon: entity\non go {\n  c.AddInventoryItemAdv(weapon, ammoOverride = { overrideStartingAmmo: true })\n}\n";
-    assert!(
-        errors(src).contains(&"WS028".to_string()),
-        "missing ammoOverride field should be WS028: {:?}",
-        errors(src)
-    );
-}
-
-#[test]
-fn ammo_override_explicit_empty_resources_is_ok() {
-    // An explicit (present) `resources: []` is a deliberate no-op, not a
-    // silent default — it stays valid.
-    let src = "in go: exec\nin c: character\nin weapon: entity\non go {\n  c.AddInventoryItemAdv(weapon, ammoOverride = { overrideStartingAmmo: false, resources: [] })\n}\n";
-    assert!(
-        errors(src).is_empty(),
-        "explicit empty resources should typecheck: {:?}",
-        errors(src)
-    );
-}
-
-// ---- Data-driven config attributes (raw struct field names) --------------
-// Any gate config field in the inventory `config` array is settable by its raw
-// name (`bOnlyHitPlayerBodyParts = true`), in addition to any hand-coded
-// friendly alias. Enum members are bare names; other scalars are constants.
-
-#[test]
-fn data_driven_bool_config_lands_by_raw_name() {
-    let src = "in go: exec\non go {\n  SweepSimple(500.0, bOnlyHitPlayerBodyParts = true, bDetectBricks = true)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let c = crate::ir::gate_class::SWEEP_SIMPLE;
-    assert!(matches!(
-        prop(&r, c, "bOnlyHitPlayerBodyParts"),
-        Some(Literal::Bool(true))
-    ));
-    assert!(matches!(
-        prop(&r, c, "bDetectBricks"),
-        Some(Literal::Bool(true))
-    ));
-}
-
-#[test]
-fn data_driven_enum_config_lands_by_raw_name() {
-    // `Direction` (raw) resolves the bare member to its int, same as the friendly
-    // `direction` alias.
-    let src = "in go: exec\non go {\n  SweepSimple(500.0, Direction = Y_Positive)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    // EBrickDirection::Y_Positive == 2.
-    assert!(matches!(
-        prop(&r, crate::ir::gate_class::SWEEP_SIMPLE, "Direction"),
-        Some(Literal::Int(2))
-    ));
-}
-
-#[test]
-fn data_driven_int_config_lands_by_raw_name() {
-    // `Value` is a settings-only int on Cycle that no declared param covers.
-    let src = "in go: exec\non go {\n  let n = Cycle(4, Value = 2)\n  PrintToConsole(n)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(matches!(
-        prop(&r, crate::ir::gate_class::EXEC_CYCLE, "Value"),
-        Some(Literal::Int(2))
-    ));
-}
-
-#[test]
 fn display_text_wireable_enum_bakes_constants_and_wires_runtime_values() {
     // `justify`/`easing` are wire inputs whose data field is a schema enum: a
     // member name still bakes into the field, and a runtime int wires in.
     let src = "in go: exec\nin p: controller\nin j: int\non go {\n  \
                p.DisplayText(\"hi\", justify = Right, easing = j)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let c = crate::ir::gate_class::PLAYERSTATE_DISPLAY_TEXT;
     // EBRDisplayTextJustification::Right == 2.
-    assert!(matches!(prop(&r, c, "Justification"), Some(Literal::Int(2))));
-    assert!(prop(&r, c, "Easing").is_none(), "a runtime easing must wire, not bake");
+    assert!(matches!(
+        prop(&r, c, "Justification"),
+        Some(Literal::Int(2))
+    ));
+    assert!(
+        prop(&r, c, "Easing").is_none(),
+        "a runtime easing must wire, not bake"
+    );
     let gate = find_gate(&r, c);
     assert!(
         r.module
@@ -648,58 +894,11 @@ fn display_text_wireable_enum_bakes_constants_and_wires_runtime_values() {
 }
 
 #[test]
-fn event_called_as_expression_emits_event_gate() {
-    // `RoundStart()` in expression position emits the RoundStart event gate and
-    // yields its exec, so an event composes in expressions (here via `Union`).
-    let src =
-        "in x: exec\nlet t = Union(RoundStart(), x)\non t {\n  BroadcastChatMessage(\"hi\")\n}";
-    let r = compile(src);
-    assert_no_errors(&r);
-    // `find_gate` asserts exactly one node of this class exists.
-    let _ = find_gate(
-        &r,
-        "BrickComponentType_Event_Gamemode_RoundStart",
-    );
-}
-
-#[test]
-fn event_expression_callable_in_pure_context() {
-    // An event is a self-triggering exec source, so calling it in a PURE context
-    // (a top-level `let`, no enclosing exec chain) is fine — no WS007.
-    let src = "let e = RoundStart()\non e {\n  BroadcastChatMessage(\"hi\")\n}";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let _ = find_gate(
-        &r,
-        "BrickComponentType_Event_Gamemode_RoundStart",
-    );
-}
-
-#[test]
-fn event_expression_wires_input_args() {
-    // `Clock(interval = 2.0)` as an expression wires its `interval` into the gate.
-    let src =
-        "in iv: float\nlet c = Clock(interval = iv)\non c {\n  BroadcastChatMessage(\"tick\")\n}";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let node = find_gate(&r, "BrickComponentType_Clock");
-    assert!(
-        r.module.wires.iter().any(|w| w.target.node_id == node),
-        "an input arg should wire into the Clock event gate; wires: {:?}",
-        r.module.wires
-    );
-}
-
-#[test]
 fn event_expression_exposes_data_output() {
     // `CharacterSpawned().character` resolves the event's data output.
     let src = "in go: exec\nvar last: character\non go {\n  last = CharacterSpawned().character\n}";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let _ = find_gate(
-        &r,
-        "BrickComponentType_Event_Gamemode_CharacterSpawned",
-    );
+    let r = compile_ok(src);
+    let _ = find_gate(&r, "BrickComponentType_Event_Gamemode_CharacterSpawned");
 }
 
 #[test]
@@ -707,8 +906,7 @@ fn display_text_constant_axes_bake_vector2d() {
     // Constant per-axis layout bakes the parent Vector2D data field; an axis the
     // caller omits fills from STRUCT_DEFAULTS (Anchor.X default 0.5). No wire.
     let src = "in go: exec\nin p: controller\non go {\n  p.DisplayText(\"hi\", positionX = 0.0, positionY = -30.0, anchorY = 0.25)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let c = crate::ir::gate_class::PLAYERSTATE_DISPLAY_TEXT;
     match prop(&r, c, "Position") {
         Some(Literal::Vector { x, y, .. }) => {
@@ -731,8 +929,7 @@ fn display_text_runtime_axis_wires_subport() {
     // A runtime float wires the Position.X sub-port (a valid wire input), and is
     // NOT baked into the Position data field.
     let src = "in go: exec\nin p: controller\nin px: float\non go {\n  p.DisplayText(\"hi\", positionX = px)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     assert!(
         r.module
             .wires
@@ -752,87 +949,7 @@ fn display_text_runtime_axis_wires_subport() {
     );
 }
 
-#[test]
-fn friendly_alias_still_works_alongside_raw() {
-    // The hand-coded `bodyPartsOnly` alias keeps setting the same field.
-    let src = "in go: exec\non go {\n  SweepSimple(500.0, bodyPartsOnly = true)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(matches!(
-        prop(
-            &r,
-            crate::ir::gate_class::SWEEP_SIMPLE,
-            "bOnlyHitPlayerBodyParts"
-        ),
-        Some(Literal::Bool(true))
-    ));
-}
-
-#[test]
-fn data_driven_enum_rejects_unknown_member() {
-    let src = "in go: exec\non go {\n  SweepSimple(500.0, Direction = Nope)\n}\n";
-    let e = errors(src);
-    assert!(
-        e.contains(&"WS028".to_string()),
-        "unknown member -> WS028: {e:?}"
-    );
-    assert!(
-        !e.contains(&"WS002".to_string()),
-        "bare member must not read as a variable: {e:?}"
-    );
-}
-
-#[test]
-fn data_driven_non_constant_config_is_rejected() {
-    let src = "in go: exec\nin live: bool\non go {\n  SweepSimple(500.0, bOnlyHitPlayerBodyParts = live)\n}\n";
-    assert!(
-        errors(src).contains(&"WS028".to_string()),
-        "non-constant data-driven config -> WS028: {:?}",
-        errors(src)
-    );
-}
-
 // ---- Custom events + Clock enabled-as-wire -------------------------------
-
-#[test]
-fn send_custom_event_inlines_name_and_data() {
-    let src = "in go: exec\non go {\n  SendCustomEvent(\"spawn\", 42, 99)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let c = crate::ir::gate_class::SEND_CUSTOM_EVENT;
-    assert!(has_gate(&r, c));
-    // Constant data args inline as typed data (a `WireValue` at emit); the
-    // name bakes into the EventName str field.
-    assert!(matches!(prop(&r, c, "DataIn1"), Some(Literal::Int(42))));
-    assert!(matches!(prop(&r, c, "DataIn2"), Some(Literal::Int(99))));
-    assert!(matches!(prop(&r, c, "EventName"), Some(Literal::String(s)) if s == "spawn"));
-}
-
-#[test]
-fn custom_event_typed_params_type_the_data_ports() {
-    // `on CustomEvent("name", config…) -> (a: int, b: character, …)` — the
-    // leading positional bakes into EventName, config like `isObject` stays
-    // in the parens, and the typed `->` params type the DataOut ports;
-    // unused slots default to float.
-    let src = "static var last: int = 0\non CustomEvent(\"dmg\", isObject = true) -> (amount: int, source: character) {\n  last = amount\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let c = crate::ir::gate_class::CUSTOM_EVENT;
-    let node = find_gate(&r, c);
-    let outs = &r.module.nodes[&node].ports.outputs;
-    let port_ty = |name: &str| {
-        outs.iter()
-            .find(|p| p.name == crate::intern::intern(name))
-            .map(|p| p.ty.clone())
-    };
-    assert_eq!(port_ty("DataOut1"), Some(crate::ir::Type::Int));
-    assert_eq!(port_ty("DataOut2"), Some(crate::ir::Type::Character));
-    // Unused data slots default to float (0.0), never `any`.
-    assert_eq!(port_ty("DataOut3"), Some(crate::ir::Type::Float));
-    assert_eq!(port_ty("DataOut8"), Some(crate::ir::Type::Float));
-    // The channel name bakes into the EventName str field.
-    assert!(matches!(prop(&r, c, "EventName"), Some(Literal::String(s)) if s == "dmg"));
-}
 
 #[test]
 fn send_ports_carrying_refs_keep_the_ref_type() {
@@ -842,8 +959,7 @@ fn send_ports_carrying_refs_keep_the_ref_type() {
     let src = "var a: int = 0\nvar h: *int\nvar xs: int[]\nin go: exec\n\
                mod val(p: *int) { SendCustomEvent(\"v\", p) }\n\
                on go {\n  h = &a\n  SendCustomEvent(\"r\", &a, h, xs)\n  val(a)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let sends = super::refs::gates(&r, crate::ir::gate_class::SEND_CUSTOM_EVENT);
     let port_ty = |name: &str, event: &str| {
         let node = sends
@@ -861,11 +977,26 @@ fn send_ports_carrying_refs_keep_the_ref_type() {
             .find(|p| p.name == crate::intern::intern(name))
             .map(|p| p.ty.clone())
     };
-    use crate::ir::Type;
-    assert_eq!(port_ty("DataIn1", "r"), Some(Type::Ref(Box::new(Type::Int))), "&a");
-    assert_eq!(port_ty("DataIn2", "r"), Some(Type::Ref(Box::new(Type::Int))), "a var holding a ref");
-    assert_eq!(port_ty("DataIn3", "r"), Some(Type::Array(Box::new(Type::Int))), "an array");
-    assert_eq!(port_ty("DataIn1", "v"), Some(Type::Int), "a *T place sends its value");
+    assert_eq!(
+        port_ty("DataIn1", "r"),
+        Some(Type::Ref(Box::new(Type::Int))),
+        "&a"
+    );
+    assert_eq!(
+        port_ty("DataIn2", "r"),
+        Some(Type::Ref(Box::new(Type::Int))),
+        "a var holding a ref"
+    );
+    assert_eq!(
+        port_ty("DataIn3", "r"),
+        Some(Type::Array(Box::new(Type::Int))),
+        "an array"
+    );
+    assert_eq!(
+        port_ty("DataIn1", "v"),
+        Some(Type::Int),
+        "a *T place sends its value"
+    );
 }
 
 #[test]
@@ -876,8 +1007,7 @@ fn set_custom_property_value_port_takes_the_wired_type() {
                  controller.SetCustomProperty(\"s\", s)\n\
                  controller.SetCustomProperty(\"m\", m)\n\
                  controller.SetCustomProperty(\"r\", &a)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let sets = super::refs::gates(&r, crate::ir::gate_class::ENTITY_SET_CUSTOM_PROPERTY);
     let value_ty = |key: &str| {
         let node = sets
@@ -895,56 +1025,13 @@ fn set_custom_property_value_port_takes_the_wired_type() {
             .find(|p| p.name == crate::intern::intern("Value"))
             .map(|p| p.ty.clone())
     };
-    use crate::ir::Type;
     assert_eq!(value_ty("i"), Some(Type::Int));
     assert_eq!(value_ty("s"), Some(Type::String));
-    assert_eq!(value_ty("m"), Some(Type::Map(Box::new(Type::String), Box::new(Type::Int))));
-    assert_eq!(value_ty("r"), Some(Type::Ref(Box::new(Type::Int))));
-}
-
-#[test]
-fn inferred_custom_event_ports_take_sender_types() {
-    // No annotations on the receiver; the sender carries int + character.
-    let src = "static var last: int = 0\n\
-               in go: exec\n\
-               on CustomEvent(\"dmg\") -> (amount, source) {\n  last = last + 1\n}\n\
-               on CharacterSpawned() -> { character: ch } {\n  SendCustomEvent(\"dmg\", 42, ch)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let c = crate::ir::gate_class::CUSTOM_EVENT;
-    let node = find_gate(&r, c);
-    let outs = &r.module.nodes[&node].ports.outputs;
-    let port_ty = |name: &str| {
-        outs.iter()
-            .find(|p| p.name == crate::intern::intern(name))
-            .map(|p| p.ty.clone())
-    };
-    assert_eq!(port_ty("DataOut1"), Some(crate::ir::Type::Int));
-    assert_eq!(port_ty("DataOut2"), Some(crate::ir::Type::Character));
-    // Untouched trailing slots still default to float.
-    assert_eq!(port_ty("DataOut3"), Some(crate::ir::Type::Float));
-}
-
-#[test]
-fn non_custom_event_unannotated_param_keeps_catalog_type() {
-    // Regression: an unannotated positional param on a NON-custom event must
-    // keep its fixed catalog type — the custom-event inference float fallback
-    // must NEVER leak to a built-in event. `on CharacterSpawned() -> (ch)`'s
-    // data output must stay `Character`, not become `Float`.
-    let src = "static var n: int = 0\non CharacterSpawned() -> { character: ch } {\n  n = n + 1\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let node = find_gate(
-        &r,
-        "BrickComponentType_Event_Gamemode_CharacterSpawned",
+    assert_eq!(
+        value_ty("m"),
+        Some(Type::Map(Box::new(Type::String), Box::new(Type::Int)))
     );
-    let outs = &r.module.nodes[&node].ports.outputs;
-    let port_ty = |name: &str| {
-        outs.iter()
-            .find(|p| p.name == crate::intern::intern(name))
-            .map(|p| p.ty.clone())
-    };
-    assert_eq!(port_ty("Character"), Some(crate::ir::Type::Character));
+    assert_eq!(value_ty("r"), Some(Type::Ref(Box::new(Type::Int))));
 }
 
 #[test]
@@ -957,8 +1044,7 @@ fn custom_event_object_config_and_send_target() {
                static var last: int = 0\n\
                on CustomEvent(\"dmg\", isObject = true) -> (amount: int) {\n  last = amount\n}\n\
                on go {\n  SendCustomEvent(\"dmg\", 7, target = obj)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let recv = crate::ir::gate_class::CUSTOM_EVENT;
     let send = crate::ir::gate_class::SEND_CUSTOM_EVENT;
     assert!(
@@ -972,25 +1058,6 @@ fn custom_event_object_config_and_send_target() {
         r.module.wires.iter().any(|w| w.target.node_id == send_node
             && w.target.port == crate::ir::port_registry::WirePort::Target),
         "target = obj should produce a wire into the send gate's Target port"
-    );
-}
-
-#[test]
-fn custom_event_isobject_config_is_case_insensitive() {
-    // The catalog stores the config arg as the display-cased `isObject`, but
-    // matching is case-insensitive on both sides: a lowercase `isobject` still
-    // bakes bIsObjectEvent.
-    let src = "static var last: int = 0\n\
-               on CustomEvent(\"dmg\", isobject = true) -> (amount: int) {\n  last = amount\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(
-        matches!(
-            prop(&r, crate::ir::gate_class::CUSTOM_EVENT, "bIsObjectEvent"),
-            Some(Literal::Bool(true))
-        ),
-        "lowercase `isobject = true` should still bake bIsObjectEvent, got {:?}",
-        prop(&r, crate::ir::gate_class::CUSTOM_EVENT, "bIsObjectEvent")
     );
 }
 
@@ -1011,13 +1078,9 @@ fn map_containers_lower_without_unsupported() {
                mod useMap(x: Map<int, int>) { x.set(1, 2) }\n\
                mod useBag(b: Bag) { b.counts.set(3, 4) }\n\
                on tick {\n  useMap(m)\n  useBag(bag)\n  m2.copyFrom(inMap)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     assert!(
-        !r.module
-            .nodes
-            .values()
-            .any(|n| n.gate_class == crate::ir::gate_class::UNSUPPORTED),
+        !has_unsupported(&r.module),
         "no _Unsupported gate for map param / record field / in-out port / copyFrom source"
     );
     assert!(
@@ -1038,8 +1101,7 @@ fn map_param_double_call_shares_one_map_gate() {
                in go: exec\n\
                mod bump(mm: Map<int, int>, k: int) { mm.set(k, 5) }\n\
                on go {\n  bump(m, 1)\n  bump(m, 2)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let map_gates: Vec<_> = r
         .module
         .nodes
@@ -1075,81 +1137,31 @@ fn exec_after_mod_ending_in_emit_signal_lowers() {
                in go: exec\n\
                mod ping() { BroadcastChatMessage(\"x\") emit sig }\n\
                on go {\n  let t = cube.GetTag()\n  ping()\n  cube.SetTag(\"y\")\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     assert!(
-        !r.module
-            .nodes
-            .values()
-            .any(|n| n.gate_class == crate::ir::gate_class::UNSUPPORTED),
+        !has_unsupported(&r.module),
         "no `_Unsupported` placeholder should be emitted for an exec statement \
          after a mod that ends in an emit fork"
-    );
-}
-
-#[test]
-fn send_custom_event_target_is_entity_typed() {
-    // The Target input (the grid that receives object events) is entity-typed:
-    // a non-entity value is a clear WS003, not a silently-wired type violation.
-    let bad = "in go: exec\non go {\n  SendCustomEvent(\"dmg\", 7, target = 5)\n}\n";
-    assert!(
-        errors(bad).contains(&"WS003".to_string()),
-        "non-entity target should be WS003, got {:?}",
-        errors(bad)
-    );
-    // Any object-family reference (entity/character/controller) connects cleanly.
-    let ok = "on CharacterSpawned() -> { character: ch } {\n  SendCustomEvent(\"dmg\", 7, target = ch)\n}\n";
-    assert!(
-        errors(ok).is_empty(),
-        "character target should typecheck: {:?}",
-        errors(ok)
     );
 }
 
 // ---- `on <Event> -> <pattern>` output capture ----------------------------
 
 #[test]
-fn on_arrow_tuple_custom_event_matches_inline() {
-    // `-> (amount: int, source: character)` types the DataOut ports and bakes
-    // EventName the same way as custom_event_typed_params_type_the_data_ports
-    // (which additionally carries an `isObject` config arg in the parens).
-    let arrow = "static var last: int = 0\non CustomEvent(\"dmg\") -> (amount: int, source: character) {\n  last = amount\n}\n";
-    let r = compile(arrow);
-    assert_no_errors(&r);
-    let c = crate::ir::gate_class::CUSTOM_EVENT;
-    let node = find_gate(&r, c);
-    let outs = &r.module.nodes[&node].ports.outputs;
-    let port_ty =
-        |n: &str| outs.iter().find(|p| p.name == crate::intern::intern(n)).map(|p| p.ty.clone());
-    assert_eq!(port_ty("DataOut1"), Some(crate::ir::Type::Int));
-    assert_eq!(port_ty("DataOut2"), Some(crate::ir::Type::Character));
-    assert!(matches!(prop(&r, c, "EventName"), Some(Literal::String(s)) if s == "dmg"));
-}
-
-#[test]
 fn on_arrow_record_named_event_binds_outputs() {
     // Subset capture: only `killer` is bound (the `character` slot is filled
-    // with a synthesized unused name so the killer stays at its event slot).
+    // with a synthesized unused name so the killer stays at its event slot),
+    // and `on !killer` reads the event's Killer output.
     let src = "static var n: int = 0\non CharacterDied() -> { killer } {\n  on !killer {\n    n = n + 1\n  }\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-}
-
-#[test]
-fn on_arrow_tuple_infers_from_sender() {
-    // The omitted tuple slot type is inferred from the in-unit sender —
-    // proving inference works through the `->` surface.
-    let src = "static var last: int = 0\nin go: exec\non CustomEvent(\"dmg\") -> (amount) {\n  last = last + 1\n}\non go {\n  SendCustomEvent(\"dmg\", 7)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let c = crate::ir::gate_class::CUSTOM_EVENT;
-    let node = find_gate(&r, c);
-    let outs = &r.module.nodes[&node].ports.outputs;
-    assert_eq!(
-        outs.iter()
-            .find(|p| p.name == crate::intern::intern("DataOut1"))
-            .map(|p| p.ty.clone()),
-        Some(crate::ir::Type::Int)
+    let r = compile_ok(src);
+    let died = find_gate(&r, "BrickComponentType_Event_Gamemode_CharacterDied");
+    let not = find_gate(&r, crate::ir::gate_class::LOGICAL_NOT);
+    assert!(
+        r.module.wires.iter().any(|w| w.source.node_id == died
+            && w.source.port == WirePort::from_name("Killer")
+            && w.target.node_id == not),
+        "`on !killer` must negate the event's Killer output: {:?}",
+        r.module.wires
     );
 }
 
@@ -1164,8 +1176,7 @@ fn on_arrow_general_chip_call_exec_auto_extracted() {
     // `exec_arg_call_exposes_exec_field`) — reached here through the new
     // `on <call>(...) -> (...)` sugar instead of a manual `let` + `.exec`.
     let src = "var names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nvar hit: int = 0\nvar last: int = 0\non Init(TB, exec = s) -> (code) {\n  hit = hit + 1\n  last = code\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let child = only_chip(&r, "chip instance should produce a child module");
     // The handler body must be driven from the chip's `_exec_out` boundary
     // (the call's auto-extracted exec field), exactly like the manual
@@ -1190,110 +1201,6 @@ fn on_arrow_general_chip_call_exec_auto_extracted() {
 }
 
 #[test]
-fn on_arrow_general_inline_mod_single_out_exec_is_ws043() {
-    // A SINGLE-output INLINE `mod` driven by
-    // `exec =` exposes no bindable exec output (its completion exec isn't
-    // surfaced as a record field — a separate lowering gap). The desugared
-    // `_on_expr_N` binding is a `Binding::Local`, so the general-expr trigger
-    // path must NOT silently fall through to the value-changed-local branch
-    // (which miswired the mod's value output as an exec trigger and orphaned
-    // the real `exec =`). It must be a clean WS043 error, body NOT lowered.
-    let src = "in s: exec\nmod doWork(x: int) -> (r: int) {\n  return x * 2\n}\nvar last: int = 0\nvar hits: int = 0\non doWork(5, exec = s) -> (r) {\n  hits = hits + 1\n  last = r\n}\n";
-    let r = compile(src);
-    let ws043 = r.diagnostics.iter().any(|d| {
-        d.code == "WS043" && d.severity == crate::diagnostic::Severity::Error
-    });
-    assert!(ws043, "expected WS043 error, got {:?}", r.diagnostics);
-    // Body NOT lowered: `hits + 1` is the only MathAdd (the mod body uses `* 2`);
-    // its absence proves the handler body wasn't silently emitted.
-    assert!(
-        !r.module
-            .nodes
-            .values()
-            .any(|n| n.gate_class.contains("MathAdd")),
-        "handler body must not be lowered after WS043 (found a MathAdd from `hits + 1`)"
-    );
-}
-
-#[test]
-fn on_arrow_general_inline_mod_multi_out_exec_is_ws043() {
-    // A MULTI-output INLINE `mod` driven by
-    // `exec =` binds `_on_expr_N` to a `Binding::Record`, but that record has
-    // no `exec` field (inline mods don't surface completion exec), so the exec
-    // can't be materialized. Previously the whole handler was silently dropped
-    // from the IR. It must be a clean WS043 error, body NOT lowered.
-    let src = "in s: exec\nvar log: string[]\nmod doWork(x: int) -> (a: int, b: int) {\n  log.push(\"ran\")\n  emit a = x\n  emit b = x + 1\n}\nvar last: int = 0\nvar hits: int = 0\non doWork(5, exec = s) -> (a, b) {\n  hits = hits * 3\n  last = a\n}\n";
-    let r = compile(src);
-    let ws043 = r.diagnostics.iter().any(|d| {
-        d.code == "WS043" && d.severity == crate::diagnostic::Severity::Error
-    });
-    assert!(ws043, "expected WS043 error, got {:?}", r.diagnostics);
-    // Body NOT lowered: `hits * 3` is the only MathMultiply (the mod body uses
-    // `+`); its absence proves the handler body wasn't silently emitted.
-    assert!(
-        !r.module
-            .nodes
-            .values()
-            .any(|n| n.gate_class.contains("MathMultiply")),
-        "handler body must not be lowered after WS043 (found a MathMultiply from `hits * 3`)"
-    );
-}
-
-#[test]
-fn on_arrow_general_call_capture_is_typed_from_output_record() {
-    // A general (mod/chip) call trigger's `-> (a, b)` capture must
-    // take a/b's types from the call's OUTPUT RECORD, not `Any` — else
-    // arithmetic on the captured names fails WS004 ("no overload for '+' on
-    // Any, Any"). `la = a` alone worked (Any coerces to int); `la = a + b` did
-    // not until the capture params were typed from the record.
-    let src = "chip pair(x: int) -> (a: int, b: int) {\n  out a = x\n  out b = x + 1\n}\nin go: exec\nvar la: int = 0\non pair(5, exec = go) -> (a, b) {\n  la = a + b\n}\n";
-    let e = errors(src);
-    assert!(
-        !e.contains(&"WS004".to_string()),
-        "captured a/b must be typed int (from pair's output record), not Any: {e:?}"
-    );
-    assert!(e.is_empty(), "the repro should compile clean: {e:?}");
-}
-
-#[test]
-fn on_general_inline_mod_exec_no_arrow_is_ws043() {
-    // A SINGLE-output value `mod` driven by `exec =` but with NO
-    // `-> <pattern>` — `on doWork(5, exec = s) { ... }`. The `exec =` is explicit
-    // "drive this as exec" intent, but an inline mod exposes no completion exec
-    // for the handler to trigger on, so the `exec =` has nothing to attach to.
-    // Previously this bound `_on_expr_N` to a `Binding::Local` with empty params,
-    // silently fell through to the value-changed-local branch (a value->exec
-    // miswire), and left `exec = s` orphaned/unwired. It must be a clean WS043,
-    // body NOT lowered.
-    let src = "in s: exec\nmod doWork(x: int) -> (r: int) {\n  return x * 2\n}\nvar hits: int = 0\non doWork(5, exec = s) {\n  hits = hits + 1\n}\n";
-    let r = compile(src);
-    let ws043 = r.diagnostics.iter().any(|d| {
-        d.code == "WS043" && d.severity == crate::diagnostic::Severity::Error
-    });
-    assert!(ws043, "expected WS043 error, got {:?}", r.diagnostics);
-    // Body NOT lowered: `hits + 1` is the only MathAdd (mod body uses `* 2`).
-    assert!(
-        !r.module
-            .nodes
-            .values()
-            .any(|n| n.gate_class.contains("MathAdd")),
-        "handler body must not be lowered after WS043 (found a MathAdd from `hits + 1`)"
-    );
-    // No value->exec miswire: nothing in the module should be an exec wire whose
-    // SOURCE is a value output. Specifically, `s` (the in-exec) must not be left
-    // orphaned into a bogus trigger — assert the handler produced NO exec chain
-    // by confirming no Exec_Var_Set gate exists (the miswired `hits = hits + 1`
-    // would have emitted one).
-    assert!(
-        !r.module
-            .nodes
-            .values()
-            .any(|n| n.gate_class == "BrickComponentType_Exec_Var_Set"),
-        "no handler exec chain should be produced (found an Exec_Var_Set from the dropped body)"
-    );
-}
-
-#[test]
 fn send_custom_event_receiver_form_binds_target() {
     // `entity.SendCustomEvent("x", …)` is the receiver form: the object binds to
     // the send gate's `target` (the object-event recipient's grid), NOT to the
@@ -1302,8 +1209,7 @@ fn send_custom_event_receiver_form_binds_target() {
     let src = "in go: exec\n\
                in obj: entity\n\
                on go {\n  obj.SendCustomEvent(\"dmg\", 7)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let send = crate::ir::gate_class::SEND_CUSTOM_EVENT;
     let send_node = find_gate(&r, send);
     assert!(
@@ -1322,8 +1228,7 @@ fn send_custom_event_receiver_form_binds_target() {
     let gsrc = "in go: exec\n\
                 in obj: entity\n\
                 on go {\n  obj.SendGlobalCustomEvent(\"dmg\", 7)\n}\n";
-    let gr = compile(gsrc);
-    assert_no_errors(&gr);
+    let gr = compile_ok(gsrc);
     let gsend = crate::ir::gate_class::SEND_CUSTOM_EVENT_GLOBAL;
     let gsend_node = find_gate(&gr, gsend);
     assert!(
@@ -1392,11 +1297,9 @@ fn nested_on_negated_event_param_lowers_not_omitted() {
 fn var_as_trigger_typechecks_and_lowers() {
     // `on x` where x is a var fires on the var's value change; `on !x` negates.
     let ok = "static var x: bool = false\non x {\n  BroadcastChatMessage(\"changed\")\n}\n";
-    let r = compile(ok);
-    assert_no_errors(&r);
+    let _ = compile_ok(ok);
     let neg = "static var x: bool = false\non !x {\n  BroadcastChatMessage(\"off\")\n}\n";
-    let rn = compile(neg);
-    assert_no_errors(&rn);
+    let rn = compile_ok(neg);
     assert!(
         rn.module
             .nodes
@@ -1412,8 +1315,7 @@ fn spawn_explosion_at_wires_world_position() {
     // (vector) wires into the WorldPosition input on the SpawnExplosionAt gate.
     let src = "in go: exec\nin pos: vector\nin who: entity\n\
                on go {\n  SpawnExplosionAt(pos, who, instigator = who)\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let gate = crate::ir::gate_class::EXEC_SPAWN_EXPLOSION_AT;
     let node = find_gate(&r, gate);
     assert!(
@@ -1426,11 +1328,15 @@ fn spawn_explosion_at_wires_world_position() {
 #[test]
 fn global_custom_event_warns_and_keeps_separate_namespace() {
     let ws030 = |src: &str| {
-        crate::typecheck::typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default())
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.code == "WS030")
-            .count()
+        crate::typecheck::typecheck(
+            &parse(src, "test").ast,
+            "test",
+            &crate::typecheck::CeSlotMap::default(),
+        )
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.code == "WS030")
+        .count()
     };
     // A Global send whose data type disagrees with the `on GlobalCustomEvent`
     // receiver warns (WS030), exactly like the personal pair.
@@ -1461,8 +1367,7 @@ fn team_predicates_are_pure_bool() {
     // yielding bool. Receiver form works too (`team.IsUnaffiliatedTeam()`).
     let src = "in t: entity\nlet a = IsBuilderTeam(t)\nlet b = t.IsUnaffiliatedTeam()\n\
                out x: bool = a\nout y: bool = b\n";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     assert!(
         has_gate(&r, crate::ir::gate_class::GAMEMODE_IS_BUILDER_TEAM),
         "IsBuilderTeam gate"
@@ -1475,12 +1380,11 @@ fn team_predicates_are_pure_bool() {
     // proving the return type is a real bool rather than `any`.
     let bad = crate::typecheck::typecheck(
         &parse("in t: entity\nout v: vector = IsBuilderTeam(t)\n", "test").ast,
-        "test", &crate::typecheck::CeSlotMap::default(),
+        "test",
+        &crate::typecheck::CeSlotMap::default(),
     );
-    assert!(
-        bad.diagnostics.iter().any(|d| d.code == "WS003"),
-        "IsBuilderTeam returns bool, which has no vector coercion"
-    );
+    // IsBuilderTeam returns bool, which has no vector coercion.
+    crate::test_support::assert_code(&bad.diagnostics, "WS003");
 }
 
 #[test]
@@ -1490,16 +1394,24 @@ fn team_join_leave_events_expose_team_and_playerstate() {
     let src = "static var n: int = 0\n\
                on ControllerJoinedTeam() -> { controller: controller, team: team, userId: userId, userName: userName } {\n  n = n + 1\n}\n\
                on ControllerLeftTeam() -> { controller: controller, team: team, userId: userId, userName: userName } {\n  n = n - 1\n}\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(has_gate(
-        &r,
-        "BrickComponentType_Event_Gamemode_ControllerJoinedTeam"
-    ));
-    assert!(has_gate(
-        &r,
-        "BrickComponentType_Event_Gamemode_ControllerLeftTeam"
-    ));
+    let r = compile_ok(src);
+    for event in [
+        "BrickComponentType_Event_Gamemode_ControllerJoinedTeam",
+        "BrickComponentType_Event_Gamemode_ControllerLeftTeam",
+    ] {
+        let gate = find_gate(&r, event);
+        let body = r
+            .module
+            .wires
+            .iter()
+            .find(|w| w.source.node_id == gate && w.source.port == WirePort::ExecOut)
+            .map(|w| r.module.nodes[&w.target.node_id].gate_class);
+        assert_eq!(
+            body,
+            Some(crate::ir::gate_class::VAR_INCREMENT),
+            "{event} drives its handler's write"
+        );
+    }
 }
 
 #[test]
@@ -1508,7 +1420,8 @@ fn untyped_custom_event_param_infers_or_warns_ws042() {
     // an in-unit sender (no warning); with no sender to infer from, it warns
     // WS042 and defaults to float. WS029 (the old "always annotate" lint) is
     // gone — replaced by inference.
-    let no_sender = "static var n: int = 0\non CustomEvent(\"dmg\") -> (amount) {\n  n = n + 1\n}\n";
+    let no_sender =
+        "static var n: int = 0\non CustomEvent(\"dmg\") -> (amount) {\n  n = n + 1\n}\n";
     let parsed = crate::parser::parse(no_sender, "test");
     let (r, _map) = crate::typecheck::typecheck_with_inference(&parsed.ast, "test");
     assert!(
@@ -1516,7 +1429,10 @@ fn untyped_custom_event_param_infers_or_warns_ws042() {
             .iter()
             .any(|d| d.code == "WS042" && d.severity == crate::diagnostic::Severity::Warning),
         "untyped custom event param with no in-unit sender should warn WS042: {:?}",
-        r.diagnostics.iter().map(|d| d.code.to_string()).collect::<Vec<_>>()
+        r.diagnostics
+            .iter()
+            .map(|d| d.code.to_string())
+            .collect::<Vec<_>>()
     );
     assert!(
         !r.diagnostics.iter().any(|d| d.code == "WS029"),
@@ -1529,9 +1445,14 @@ fn untyped_custom_event_param_infers_or_warns_ws042() {
     let p = crate::parser::parse(with_sender, "test");
     let (ri, _map) = crate::typecheck::typecheck_with_inference(&p.ast, "test");
     assert!(
-        !ri.diagnostics.iter().any(|x| x.code == "WS029" || x.code == "WS042"),
+        !ri.diagnostics
+            .iter()
+            .any(|x| x.code == "WS029" || x.code == "WS042"),
         "inferred custom event param should not warn: {:?}",
-        ri.diagnostics.iter().map(|d| d.code.to_string()).collect::<Vec<_>>()
+        ri.diagnostics
+            .iter()
+            .map(|d| d.code.to_string())
+            .collect::<Vec<_>>()
     );
 
     // The typed form does NOT warn, and neither do ordinary fixed-type events.
@@ -1542,7 +1463,9 @@ fn untyped_custom_event_param_infers_or_warns_ws042() {
         let p = crate::parser::parse(ok, "test");
         let (d, _m) = crate::typecheck::typecheck_with_inference(&p.ast, "test");
         assert!(
-            !d.diagnostics.iter().any(|x| x.code == "WS029" || x.code == "WS042"),
+            !d.diagnostics
+                .iter()
+                .any(|x| x.code == "WS029" || x.code == "WS042"),
             "should not warn: {ok}"
         );
     }
@@ -1554,7 +1477,9 @@ fn send_custom_event_type_mismatch_lints_ws030() {
     // `on CustomEvent` receiver's declared param type warns (WS030).
     let src = "in go: exec\nvar last: int = 0\non CustomEvent(\"dmg\") -> (amount: int) {\n  last = amount\n}\non go {\n  SendCustomEvent(\"dmg\", 1.5)\n}\n";
     let parsed = crate::parser::parse(src, "test");
-    let diags = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default()).diagnostics;
+    let diags =
+        crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default())
+            .diagnostics;
     assert!(
         diags
             .iter()
@@ -1577,7 +1502,9 @@ fn send_custom_event_type_mismatch_lints_ws030() {
         "in go: exec\non go {\n  SendCustomEvent(\"orphan\", 1.5)\n}\n",
     ] {
         let p = crate::parser::parse(ok, "test");
-        let d = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default()).diagnostics;
+        let d =
+            crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+                .diagnostics;
         assert!(
             !d.iter().any(|x| x.code == "WS030"),
             "should not warn WS030: {ok}\n{:?}",
@@ -1589,121 +1516,17 @@ fn send_custom_event_type_mismatch_lints_ws030() {
 }
 
 #[test]
-fn clock_enabled_accepts_variable_wire() {
-    // `enabled` is a wire input, so a variable is valid (no WS028).
-    let src = "in flag: bool\nstatic var n: int = 0\non Clock(interval = 2.0, enabled = flag) {\n  n = n + 1\n}\n";
-    assert!(
-        errors(src).is_empty(),
-        "enabled wire should accept a variable: {:?}",
-        errors(src)
-    );
-}
-
-// ---- zone / teleport reference types -------------------------------------
-
-#[test]
-fn zone_input_accepts_zone_and_rejects_other() {
-    // A `zone`-typed value wires into `ZoneEntered`'s `zone` input cleanly.
-    let ok = "in z: zone\non ZoneEntered(zone = z) -> (character) {}\n";
-    assert!(
-        errors(ok).is_empty(),
-        "a zone value should wire into the zone input: {:?}",
-        errors(ok)
-    );
-    // A non-zone (entity) wired into the `zone` input is a type mismatch.
-    let bad = "in z: entity\non ZoneEntered(zone = z) -> (character) {}\n";
-    assert!(
-        errors(bad).contains(&"WS003".to_string()),
-        "entity into a zone input should be WS003, got {:?}",
-        errors(bad)
-    );
-}
-
-#[test]
-fn teleport_gate_requires_a_teleport_point() {
-    // Teleport takes a teleport point — a `teleport` reference wires cleanly.
-    let ok = "in e: entity\nin p: teleport\nin go: exec\non go {\n  e.Teleport(p)\n}\n";
-    assert!(
-        errors(ok).is_empty(),
-        "a teleport point should teleport cleanly: {:?}",
-        errors(ok)
-    );
-    // A raw position (vector) doesn't teleport — that's SetLocation's job.
-    let vec_dest = "in e: entity\nin go: exec\non go {\n  e.Teleport(Vec(0.0, 0.0, 100.0))\n}\n";
-    assert!(
-        errors(vec_dest).contains(&"WS003".to_string()),
-        "a vector destination should be rejected, got {:?}",
-        errors(vec_dest)
-    );
-    // Neither does an entity.
-    let ent_dest = "in e: entity\nin d: entity\nin go: exec\non go {\n  e.Teleport(d)\n}\n";
-    assert!(
-        errors(ent_dest).contains(&"WS003".to_string()),
-        "an entity destination should be rejected, got {:?}",
-        errors(ent_dest)
-    );
-}
-
-#[test]
-fn reference_types_cannot_be_selected() {
-    // A `zone`/`teleport` reference can't flow through an if-expr's Select gate.
-    let zone = "in c: bool\nin a: zone\nin b: zone\nlet z = if c then a else b\n";
-    assert!(
-        errors(zone).contains(&"WS031".to_string()),
-        "selecting between zones should be WS031, got {:?}",
-        errors(zone)
-    );
-    let tp = "in c: bool\nin a: teleport\nin b: teleport\nlet p = if c then a else b\n";
-    assert!(
-        errors(tp).contains(&"WS031".to_string()),
-        "selecting between teleport points should be WS031, got {:?}",
-        errors(tp)
-    );
-}
-
-#[test]
-fn reference_types_cannot_be_stored() {
-    // Like a var ref, `zone`/`teleport` can't back a variable gate.
-    for src in ["var z: zone\n", "var p: teleport\n"] {
-        assert!(
-            errors(src).contains(&"WS025".to_string()),
-            "storing a reference type should be WS025: {src} -> {:?}",
-            errors(src)
-        );
-    }
-}
-
-#[test]
-fn baked_map_literal_rejects_non_string_key_for_string_map() {
-    // A baked map entry has no gate to run a string-format coercion through,
-    // so a non-string constant key/value must be rejected, not silently "".
-    for src in [
-        "var m: Map<string, int> = { 1 => 10 }\n",
-        "var m: Map<string, int> = { :alice => 1, :bob => 2 }\n",
-        "var v: Map<int, string> = { 1 => 5 }\n",
-    ] {
-        assert!(
-            errors(src).contains(&"WS003".to_string()),
-            "non-string baked key/value should be WS003: {src} -> {:?}",
-            errors(src)
-        );
-    }
-    // A correctly-typed string-keyed map still compiles clean.
-    let ok = "var m: Map<string, int> = { \"a\" => 1, \"b\" => 2 }\n";
-    assert!(
-        errors(ok).is_empty(),
-        "valid string map should compile: {:?}",
-        errors(ok)
-    );
-}
-
-#[test]
 fn ws030_sees_send_inside_captured_event() {
     // A SendCustomEvent inside a captured event body (`let h = on go { … }`)
     // must be seen by the WS030 sender/receiver type check.
     let src = "on CustomEvent(\"hp\") -> (amount: float) { let x = amount }\n\
                let h = on go { SendCustomEvent(\"hp\", 5) }\n";
-    let d = crate::typecheck::typecheck(&crate::parser::parse(src, "t").ast, "t", &crate::typecheck::CeSlotMap::default()).diagnostics;
+    let d = crate::typecheck::typecheck(
+        &crate::parser::parse(src, "t").ast,
+        "t",
+        &crate::typecheck::CeSlotMap::default(),
+    )
+    .diagnostics;
     assert!(
         d.iter().any(|x| x.code == "WS030"),
         "WS030 must see a send inside a captured event body: {:?}",
@@ -1713,8 +1536,14 @@ fn ws030_sees_send_inside_captured_event() {
 
 #[test]
 fn any_annotation_warns_but_storage_and_probe_do_not() {
-    let diags =
-        |s: &str| crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default()).diagnostics;
+    let diags = |s: &str| {
+        crate::typecheck::typecheck(
+            &crate::parser::parse(s, "t").ast,
+            "t",
+            &crate::typecheck::CeSlotMap::default(),
+        )
+        .diagnostics
+    };
     let has = |s: &str, code: &str, sev: crate::diagnostic::Severity| {
         diags(s).iter().any(|x| x.code == code && x.severity == sev)
     };
@@ -1742,15 +1571,23 @@ fn any_annotation_warns_but_storage_and_probe_do_not() {
     );
     // storage `any` holds a WireValue: neither an error nor a warning
     assert!(
-        !diags("var v: any = 0\n").iter().any(|z| z.code == "WS025" || z.code == "WS032"),
+        !diags("var v: any = 0\n")
+            .iter()
+            .any(|z| z.code == "WS025" || z.code == "WS032"),
         "storage any is allowed and does not warn"
     );
 }
 
 #[test]
 fn any_annotation_warns_on_compound_and_stmt_out() {
-    let diags =
-        |s: &str| crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default()).diagnostics;
+    let diags = |s: &str| {
+        crate::typecheck::typecheck(
+            &crate::parser::parse(s, "t").ast,
+            "t",
+            &crate::typecheck::CeSlotMap::default(),
+        )
+        .diagnostics
+    };
     let has = |s: &str, code: &str, sev: crate::diagnostic::Severity| {
         diags(s).iter().any(|x| x.code == code && x.severity == sev)
     };
@@ -1790,436 +1627,364 @@ fn any_annotation_warns_on_compound_and_stmt_out() {
     );
 }
 
-#[test]
-fn generic_mod_type_params_resolve_not_ws002() {
-    // T is a recognized type param -> NO WS002 for T (sig + body annotation)
-    let e = errs("mod pick<T>(a: T, b: T) -> T {\n  let x: T = a\n  return x\n}\n");
-    assert!(
-        !e.contains(&"WS002".to_string()),
-        "T should resolve, not WS002: {e:?}"
-    );
-    // a bound param resolves too
-    let e2 = errs("mod clamp<T: Numeric>(v: T) -> T { return v }\n");
-    assert!(
-        !e2.contains(&"WS002".to_string()),
-        "bounded T should resolve: {e2:?}"
-    );
-    // an actually-unknown type still errors WS002
-    let e3 = errs("mod bad<T>(a: T) -> T {\n  let y: Q = a\n  return a\n}\n");
-    assert!(
-        e3.contains(&"WS002".to_string()),
-        "unknown Q should be WS002: {e3:?}"
-    );
-    // type params do NOT leak out: a non-generic mod using `T` still errors
-    let e4 = errs("mod plain(a: T) -> int { return 0 }\n");
-    assert!(
-        e4.contains(&"WS002".to_string()),
-        "T outside a generic mod should be WS002: {e4:?}"
-    );
+/// A constant given to a gate setting the gate keeps in its own data: what
+/// the program says about it, and the value the save holds.
+enum Setting {
+    /// Stored as written, with nothing to say.
+    Exact(Literal),
+    /// Stored as this other value, with a `WS106` naming the setting.
+    Inexact(Literal),
+    /// Not storable: `WS028`.
+    Invalid,
 }
 
+const SETTING_HEAD: &str = "in go: exec\nin c: controller\nin s: string\nvar n: int = 0\nvar b: bool = false\n\
+                            out on_: int = n\nout ob: bool = b\n";
+
+fn setting_rows() -> Vec<(&'static str, &'static str, &'static str, Setting)> {
+    use Literal::{Bool, Float, Int};
+    use Setting::{Exact, Inexact, Invalid};
+    vec![
+        (
+            "SleepTicks 2.0",
+            "on go { await SleepTicks(_, delay = 2.0)\n n = 1 }",
+            "TicksToWait",
+            Exact(Int(2)),
+        ),
+        (
+            "SleepTicks 2.7",
+            "on go { await SleepTicks(_, delay = 2.7)\n n = 1 }",
+            "TicksToWait",
+            Inexact(Int(2)),
+        ),
+        (
+            "SleepTicks 1.999",
+            "on go { await SleepTicks(_, delay = 1.999)\n n = 1 }",
+            "TicksToWait",
+            Inexact(Int(1)),
+        ),
+        (
+            "SleepTicks -1.5",
+            "on go { await SleepTicks(_, delay = -1.5)\n n = 1 }",
+            "TicksToWait",
+            Inexact(Int(-1)),
+        ),
+        (
+            "SleepTicks true",
+            "on go { await SleepTicks(_, delay = true)\n n = 1 }",
+            "TicksToWait",
+            Inexact(Int(1)),
+        ),
+        (
+            "SleepTicks 1e30",
+            "on go { await SleepTicks(_, delay = 1e30)\n n = 1 }",
+            "TicksToWait",
+            Invalid,
+        ),
+        (
+            "SleepTicks const 2.7",
+            "const D: float = 2.7\non go { await SleepTicks(_, delay = D)\n n = 1 }",
+            "TicksToWait",
+            Inexact(Int(2)),
+        ),
+        (
+            "Sleep 2",
+            "on go { await Sleep(_, delay = 2)\n n = 1 }",
+            "SecondsToWait",
+            Exact(Float(2.0)),
+        ),
+        (
+            "Sleep false",
+            "on go { await Sleep(_, delay = false)\n n = 1 }",
+            "SecondsToWait",
+            Inexact(Float(0.0)),
+        ),
+        (
+            "fontSize 40",
+            "on go { c.DisplayText(\"hi\", fontSize = 40) }",
+            "FontSize",
+            Exact(Int(40)),
+        ),
+        (
+            "fontSize 40.5",
+            "on go { c.DisplayText(\"hi\", fontSize = 40.5) }",
+            "FontSize",
+            Inexact(Int(40)),
+        ),
+        (
+            "fontSize 0.5",
+            "on go { c.DisplayText(\"hi\", fontSize = 0.5) }",
+            "FontSize",
+            Inexact(Int(0)),
+        ),
+        (
+            "fontSize true",
+            "on go { c.DisplayText(\"hi\", fontSize = true) }",
+            "FontSize",
+            Inexact(Int(1)),
+        ),
+        (
+            "fontSize 1e10",
+            "on go { c.DisplayText(\"hi\", fontSize = 1e10) }",
+            "FontSize",
+            Invalid,
+        ),
+        (
+            "fontSize 5000000000",
+            "on go { c.DisplayText(\"hi\", fontSize = 5000000000) }",
+            "FontSize",
+            Invalid,
+        ),
+        (
+            "outlineSize 3.5",
+            "on go { c.DisplayText(\"hi\", outlineSize = 3.5) }",
+            "OutlineSize",
+            Inexact(Int(3)),
+        ),
+        (
+            "angle true",
+            "on go { c.DisplayText(\"hi\", angle = true) }",
+            "Angle",
+            Inexact(Float(1.0)),
+        ),
+        (
+            "lifetime true",
+            "on go { c.DisplayText(\"hi\", lifetime = true) }",
+            "Lifetime",
+            Inexact(Float(1.0)),
+        ),
+        (
+            "justify 2.0",
+            "on go { c.DisplayText(\"hi\", justify = 2.0) }",
+            "Justification",
+            Exact(Int(2)),
+        ),
+        (
+            "justify 2.7",
+            "on go { c.DisplayText(\"hi\", justify = 2.7) }",
+            "Justification",
+            Inexact(Int(2)),
+        ),
+        (
+            "justify -0.5",
+            "on go { c.DisplayText(\"hi\", justify = -0.5) }",
+            "Justification",
+            Inexact(Int(0)),
+        ),
+        (
+            "justify false",
+            "on go { c.DisplayText(\"hi\", justify = false) }",
+            "Justification",
+            Inexact(Int(0)),
+        ),
+        (
+            "justify 3.0",
+            "on go { c.DisplayText(\"hi\", justify = 3.0) }",
+            "Justification",
+            Invalid,
+        ),
+        (
+            "justify 3.5",
+            "on go { c.DisplayText(\"hi\", justify = 3.5) }",
+            "Justification",
+            Invalid,
+        ),
+        (
+            "justify 7.0",
+            "on go { c.DisplayText(\"hi\", justify = 7.0) }",
+            "Justification",
+            Invalid,
+        ),
+        (
+            "justify 1e30",
+            "on go { c.DisplayText(\"hi\", justify = 1e30) }",
+            "Justification",
+            Invalid,
+        ),
+        (
+            "justify const 7.0",
+            "const J = 7.0\non go { c.DisplayText(\"hi\", justify = J) }",
+            "Justification",
+            Invalid,
+        ),
+        (
+            "caseSensitive 0",
+            "on go { b = s.Contains(\"b\", caseSensitive = 0) }",
+            "bCaseSensitive",
+            Exact(Bool(false)),
+        ),
+        (
+            "caseSensitive 0.0",
+            "on go { b = s.Contains(\"b\", caseSensitive = 0.0) }",
+            "bCaseSensitive",
+            Exact(Bool(false)),
+        ),
+        (
+            "miteredOutline 1",
+            "on go { c.DisplayText(\"hi\", miteredOutline = 1) }",
+            "bMiteredOutline",
+            Exact(Bool(true)),
+        ),
+        (
+            "miteredOutline 1.5",
+            "on go { c.DisplayText(\"hi\", miteredOutline = 1.5) }",
+            "bMiteredOutline",
+            Inexact(Bool(true)),
+        ),
+        (
+            "miteredOutline 0.2",
+            "on go { c.DisplayText(\"hi\", miteredOutline = 0.2) }",
+            "bMiteredOutline",
+            Inexact(Bool(true)),
+        ),
+        (
+            "miteredOutline 2",
+            "on go { c.DisplayText(\"hi\", miteredOutline = 2) }",
+            "bMiteredOutline",
+            Inexact(Bool(true)),
+        ),
+        (
+            "Edge true",
+            "out o: bool = Edge(true)",
+            "Input",
+            Exact(Float(1.0)),
+        ),
+        (
+            "Edge 2.5",
+            "out o: bool = Edge(2.5)",
+            "Input",
+            Exact(Float(2.5)),
+        ),
+    ]
+}
+
+/// What each setting field the rows read holds when its setting is not
+/// given, so a row whose value is that default could not tell a dropped
+/// setting from a stored one.
+const SETTING_DEFAULTS: &[(&str, Literal)] = &[
+    ("TicksToWait", Literal::Int(0)),
+    ("SecondsToWait", Literal::Float(1.0)),
+    ("FontSize", Literal::Int(16)),
+    ("OutlineSize", Literal::Int(2)),
+    ("Angle", Literal::Float(0.0)),
+    ("Lifetime", Literal::Float(5.0)),
+    ("Justification", Literal::Int(1)),
+    ("bCaseSensitive", Literal::Bool(true)),
+    ("bMiteredOutline", Literal::Bool(false)),
+    ("Input", Literal::Float(0.0)),
+];
+
 #[test]
-fn generic_mod_call_inference() {
-    // Error diagnostics as (code, message) pairs — used where the message text
-    // itself is load-bearing (proving the *concrete* substituted type).
-    let err_msgs = |s: &str| {
-        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default())
-            .diagnostics
+fn a_constant_gate_setting_is_stored_exactly_or_reported() {
+    let mut failures = Vec::new();
+    let rows = setting_rows();
+    for (row, body, field, want) in &rows {
+        let src = format!("{SETTING_HEAD}{body}\n");
+        if let Setting::Exact(stored) | Setting::Inexact(stored) = want {
+            let default = SETTING_DEFAULTS
+                .iter()
+                .find(|(f, _)| f == field)
+                .map(|(_, d)| d);
+            assert!(
+                default.is_some_and(|d| d != stored),
+                "{row}: {stored:?} is the field's default"
+            );
+        }
+        for fold in [true, false] {
+            match (want, super::declaring_scope::compiled(&src, &[], fold)) {
+                (Setting::Invalid, Err(codes)) if codes.contains(&"WS028".to_string()) => {}
+                (Setting::Invalid, other) => failures.push(format!(
+                    "{row} fold {fold}: not WS028: {:?}",
+                    other.map(|c| c.out.diagnostics.len())
+                )),
+                (Setting::Exact(_) | Setting::Inexact(_), Err(codes)) => {
+                    failures.push(format!("{row} fold {fold}: does not compile: {codes:?}"))
+                }
+                (Setting::Exact(stored) | Setting::Inexact(stored), Ok(c)) => {
+                    let ws106: Vec<&String> = c
+                        .out
+                        .diagnostics
+                        .iter()
+                        .filter(|d| d.code == "WS106")
+                        .map(|d| &d.message)
+                        .collect();
+                    match want {
+                        Setting::Exact(_) if !ws106.is_empty() => {
+                            failures.push(format!("{row} fold {fold}: exact, but {ws106:?}"))
+                        }
+                        Setting::Inexact(_) if ws106.len() != 1 => failures
+                            .push(format!("{row} fold {fold}: want one WS106, got {ws106:?}")),
+                        _ => {}
+                    }
+                    let held = super::declaring_scope::save_field(&src, &[], fold, field).unwrap();
+                    if held.is_empty() || held.iter().any(|v| v != stored) {
+                        failures.push(format!(
+                            "{row} fold {fold}: {field} holds {held:?}, not {stored:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
+}
+
+/// A setting fed by a wire is the wire's, and nothing is said about it.
+#[test]
+fn a_wired_gate_setting_is_not_reported() {
+    for body in [
+        "in kf: float\non go { await SleepTicks(_, delay = kf)\n n = 1 }",
+        "in kf: float\non go { c.DisplayText(\"hi\", fontSize = kf) }",
+        "in kf: float\non go { b = s.Contains(\"b\", caseSensitive = kf) }",
+    ] {
+        let src = format!("{SETTING_HEAD}{body}\n");
+        let w = super::declaring_scope::warnings(&src, &[]);
+        assert!(!w.iter().any(|(c, _)| c == "WS106"), "{w:?}\n{src}");
+    }
+}
+
+/// A setting's diagnostic quotes the value as it is usually written, names
+/// the setting on every path, and calls an operand of a pure expression an
+/// argument.
+#[test]
+fn a_setting_diagnostic_names_the_setting_and_the_value_as_written() {
+    let message = |body: &str, code: &str| {
+        let src = format!("{SETTING_HEAD}{body}\n");
+        let diagnostics = match crate::compile(crate::CompileInput {
+            source: &src,
+            file: "main",
+            module_name: None,
+            fold_mode: crate::FoldMode::Auto,
+        }) {
+            Ok(out) => out.diagnostics,
+            Err(crate::CompileError::HasErrors(errors)) => errors,
+            Err(e) => panic!("{e:?}"),
+        };
+        diagnostics
             .into_iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .map(|d| (d.code.to_string(), d.message))
-            .collect::<Vec<_>>()
+            .find(|d| d.code == code)
+            .map(|d| d.message)
+            .unwrap_or_else(|| panic!("no {code}: {body}"))
     };
-    let pick = "in flag: bool\nmod pick<T>(c: bool, a: T, b: T) -> T { return a }\n";
-    // inference succeeds: pick(flag, 1, 2) => T=int, no error
+    let m = message("on go { c.DisplayText(\"hi\", fontSize = 1e10) }", "WS028");
     assert!(
-        errs(&format!("{pick}let x = pick(flag, 1, 2)\n")).is_empty(),
-        "int inference should be clean: {:?}",
-        errs(&format!("{pick}let x = pick(flag, 1, 2)\n"))
+        m.contains("cannot be 1e10") && !m.contains("10000000000"),
+        "{m}"
     );
-    // result type is CONCRETELY float (not any, not a leaked `Param("T")`):
-    // int + float safe-widens T to float, and assigning the result to a
-    // vector-typed var errors, AND the error MESSAGE names `Float` as the
-    // actual type. (A `let` annotation mismatch is only a WS016 *warning*
-    // here — `var`'s initializer coercion is the hard WS003 error, so
-    // that's the construct that proves the result type.) Asserting the message
-    // (not just the WS003 code) is deliberate: `coerce(Param("T"), Vector)` is
-    // ALSO a Mismatch -> WS003, so a regression that stopped substituting and
-    // leaked a raw `Param` would still emit WS003 — only the "got Float" text
-    // proves substitution actually produced the concrete widened `float`.
-    let vecerr = err_msgs(&format!("{pick}var v: vector = pick(flag, 1, 2.0)\n"));
+    let m = message("on go { c.DisplayText(\"hi\", justify = 3) }", "WS028");
     assert!(
-        vecerr
-            .iter()
-            .any(|(c, m)| c == "WS003" && m.contains("float")),
-        "int+float widened result into vector var should WS003 whose message names Float \
-         (proves result is concrete float, not any / leaked Param): {vecerr:?}"
+        m.contains("`DisplayText` setting `justify` cannot be 3"),
+        "{m}"
     );
-    // widening: int + float have no strict-equality agreement but DO share a
-    // safe widening (int -> float) -> T=float, clean (NOT a WS033 conflict).
-    assert!(
-        errs(&format!("{pick}let x = pick(flag, 1, 2.0)\n")).is_empty(),
-        "int+float should widen to float, not conflict: {:?}",
-        errs(&format!("{pick}let x = pick(flag, 1, 2.0)\n"))
+    let m = message("on go { c.DisplayText(\"hi\", justify = 3.0) }", "WS028");
+    assert!(m.contains("`DisplayText` setting `justify`"), "{m}");
+    let m = message(
+        "var y: int = 0\nout oy: int = y\non go { y = 1e30 }",
+        "WS028",
     );
-    // incompatible: int vs vector share no common widening -> WS033
-    let e = errs(&format!(
-        "in vecArg: vector\n{pick}let x = pick(flag, 1, vecArg)\n"
-    ));
-    assert!(
-        e.iter().any(|c| c == "WS033"),
-        "int/vector incompatible should be WS033: {e:?}"
-    );
-    // out of mask: string is not Numeric. (Named `onlyNumeric`, not `clamp` —
-    // `clamp` collides with the builtin math function of the same name, which
-    // `find_call` resolves before user symbols and so never reaches this
-    // user-mod inference path at all.)
-    let only_numeric = "mod onlyNumeric<T: Numeric>(v: T) -> T { return v }\n";
-    let e2 = errs(&format!("{only_numeric}let x = onlyNumeric(\"hi\")\n"));
-    assert!(
-        e2.iter().any(|c| c == "WS033"),
-        "string out of Numeric mask should be WS033: {e2:?}"
-    );
-    // vector inference: pick(flag, va, vb) => T=vector, clean. (`pick` already
-    // declares `in flag: bool`; only `va`/`vb` are new here — redeclaring
-    // `flag` would itself be a duplicate-decl error unrelated to inference.)
-    let vecsrc = format!("in va: vector\nin vb: vector\n{pick}let r = pick(flag, va, vb)\n");
-    assert!(
-        errs(&vecsrc).is_empty(),
-        "vector inference should be clean: {:?}",
-        errs(&vecsrc)
-    );
-    // Ref-param inference: a `*T` param resolves to `Ref(Param(T))`, but a var
-    // arg auto-derefs to its inner type — the Ref layers must be aligned before
-    // collecting or `T` is never pinned. Ref params are core idiomatic
-    // Wirescript (`mod inc(v: *int)`), so this MUST infer cleanly (no WS033).
-    let e3 = errs("mod passRef<T>(v: *T) { }\nvar x: int = 0\npassRef(x)\n");
-    assert!(
-        !e3.iter().any(|c| c == "WS033"),
-        "ref-param generic call should infer cleanly (no WS033): {e3:?}"
-    );
-    // ...and a ref param that's actually written through (the `inc` shape) works too.
-    let e4 = errs("mod inc<T>(v: *T) { v = v }\nvar y: int = 0\ninc(y)\n");
-    assert!(
-        !e4.iter().any(|c| c == "WS033"),
-        "ref-param write-through generic call should infer cleanly (no WS033): {e4:?}"
-    );
-}
-
-#[test]
-fn generic_widening_inference() {
-    let pick = "in flag: bool\nmod pick<T>(c: bool, a: T, b: T) -> T { return a }\n";
-    // int + float widens to float -> clean
-    assert!(
-        errs(&format!("{pick}let x = pick(flag, 1, 2.0)\n")).is_empty(),
-        "int+float should widen to float: {:?}",
-        errs(&format!("{pick}let x = pick(flag, 1, 2.0)\n"))
-    );
-    // int + vector don't widen -> WS033
-    let e = errs(&format!("in v: vector\n{pick}let x = pick(flag, 1, v)\n"));
-    assert!(
-        e.iter().any(|c| c == "WS033"),
-        "int+vector incompatible should be WS033: {e:?}"
-    );
-    // character + entity widens to entity -> clean
-    let obj = "in flag: bool\nin ch: character\nin en: entity\nmod pick2<T>(c: bool, a: T, b: T) -> T { return a }\n";
-    assert!(
-        errs(&format!("{obj}let r = pick2(flag, ch, en)\n")).is_empty(),
-        "character+entity should widen to entity: {:?}",
-        errs(&format!("{obj}let r = pick2(flag, ch, en)\n"))
-    );
-}
-
-#[test]
-fn generic_body_checked_per_mask_member() {
-    // `a + 1` is valid for every Scalar member (int + 1 -> int, float + 1 -> float),
-    // so the generic body checks CLEAN once we check per concrete member.
-    let ok = "mod addOne<T: Scalar>(a: T) -> T { return a + 1 }\n";
-    assert!(
-        errs(ok).is_empty(),
-        "a + 1 valid for all Scalar members should be clean: {:?}",
-        errs(ok)
-    );
-    // `Dot()` takes two vectors — invalid for every Scalar member (int/float
-    // aren't vectors) — so the body fails per-member checking and surfaces
-    // an error at the DEFINITION. (`a.length()` is NOT a counterexample here
-    // — method-call resolution doesn't check the receiver type strictly, so
-    // it silently passes on int/float too; `Dot()`'s WS003 "expected Vector,
-    // got Int/Float" argument-type check is a genuine per-member failure.)
-    let bad = "mod wrong<T: Scalar>(a: T) -> float { return a.Dot(a) }\n";
-    assert!(
-        !errs(bad).is_empty(),
-        "member-invalid op should error at the generic definition: {:?}",
-        errs(bad)
-    );
-    // the error surfaces ONCE (not once per member) — dedup check:
-    assert!(
-        errs(bad).len() <= 2,
-        "member errors should be deduped, got {:?}",
-        errs(bad)
-    );
-    // a non-generic mod is unaffected
-    assert!(errs("mod plain(a: int) -> int { return a + 1 }\n").is_empty());
-}
-
-#[test]
-fn if_expr_and_builtins_widen() {
-    let errs = |s: &str| {
-        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default())
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .map(|d| (d.code.to_string(), d.message.clone()))
-            .collect::<Vec<_>>()
-    };
-    let codes = |s: &str| errs(s).into_iter().map(|(c, _)| c).collect::<Vec<_>>();
-
-    // if-expr: int/float branches widen to float -> clean.
-    assert!(
-        codes("in c: bool\nlet x = if c then 1 else 2.0\n").is_empty(),
-        "if int/float should widen to float: {:?}",
-        errs("in c: bool\nlet x = if c then 1 else 2.0\n")
-    );
-    // Same, branches swapped: widening resolves to `float` either way,
-    // proven by the assignment check below rather than by luck of which
-    // branch is which.
-    assert!(
-        codes("in c: bool\nlet y = if c then 2.0 else 1\n").is_empty(),
-        "if float/int (branches swapped) should also widen to float: {:?}",
-        errs("in c: bool\nlet y = if c then 2.0 else 1\n")
-    );
-    // result is float: assigning to a vector annotation errors "got Float".
-    // (`var`'s initializer coercion is the hard WS003 error -- a `let`
-    // annotation mismatch is only a WS016 warning here, per the `pick`
-    // tests above, so `var` is what proves the concrete result type.)
-    // Proves the *swapped* branch order also yields Float (old else-wins
-    // code would have produced Int here, whose WS003 message would say
-    // "Int", not "Float").
-    let swapped_vec_err = errs("in c: bool\nvar v: vector = if c then 2.0 else 1\n");
-    assert!(
-        swapped_vec_err
-            .iter()
-            .any(|(cd, m)| cd == "WS003" && m.contains("float")),
-        "if-expr result (else-wins branch order) should still be Float under widening: {:?}",
-        swapped_vec_err
-    );
-    let vec_err = errs("in c: bool\nvar v: vector = if c then 1 else 2.0\n");
-    assert!(
-        vec_err
-            .iter()
-            .any(|(cd, m)| cd == "WS003" && m.contains("float")),
-        "if-expr result should be Float: {:?}",
-        vec_err
-    );
-    // incompatible branches still error (WS003, no common widening).
-    assert!(
-        codes("in c: bool\nin v: vector\nlet x = if c then 1 else v\n")
-            .iter()
-            .any(|c| c == "WS003"),
-        "int/vector branches should still error"
-    );
-
-    // Builtin half: `union_output_type` is used by the math-variant gates
-    // whose declared output is `Type::Union` -- confirmed (via catalog/calls.rs)
-    // to be `Blend`, `lerp`, and `Easing` (all built from `blend_variant()` ==
-    // Union([Float, Int, Vector, Rotator, Quat, Color])). `Tween`'s output is a
-    // *Record* wrapping a union field, not a bare Union, so it doesn't go
-    // through this path. Use `lerp(a, b, t)` -- the plainest signature.
-    assert!(
-        codes("let x = lerp(1, 2.0, 0.5)\n").is_empty(),
-        "lerp(int, float, float) should widen to float, clean: {:?}",
-        errs("let x = lerp(1, 2.0, 0.5)\n")
-    );
-    // incompatible: int vs vector share no common widening -> WS033 (both
-    // ARE individually valid blend-variant members, so this only fails at
-    // the join step, not at argument-type checking).
-    let e = errs("in vecArg: vector\nlet x = lerp(1, vecArg, 0.5)\n");
-    assert!(
-        e.iter().any(|(c, _)| c == "WS033"),
-        "lerp(int, vector) incompatible should be WS033: {e:?}"
-    );
-    // Blend, receiver form: `a.Blend(b, alpha)` -- same widening, same gate.
-    assert!(
-        codes("in a: int\nlet x = a.Blend(2.0, 0.5)\n").is_empty(),
-        "a.Blend(2.0, ...) should widen to float, clean: {:?}",
-        errs("in a: int\nlet x = a.Blend(2.0, 0.5)\n")
-    );
-}
-
-#[test]
-fn generic_chip_type_checks_clean() {
-    // Generic *chips* (physical microchips) are monomorphized per distinct
-    // type instantiation at lowering time (one template per `(name, subst)`),
-    // so a generic chip decl type-checks clean — the old WS034 hard error is
-    // gone. (The per-type lowering + no-shared-grid proof lives in
-    // `lower::tests::generics::generic_chip_monomorphizes_per_instantiation`.)
-    let gchip = "chip Box<T>(v: T) -> (r: T) { out r = v }\n";
-    assert!(
-        errors(gchip).is_empty(),
-        "generic chip must type-check clean now: {:?}",
-        errors(gchip)
-    );
-    // a generic MOD is likewise clean -- mods inline+monomorphize per call.
-    let gmod = "mod pick<T>(a: T) -> T { return a }\n";
-    assert!(
-        errors(gmod).is_empty(),
-        "generic mod must be allowed: {:?}",
-        errors(gmod)
-    );
-    // a non-generic chip is allowed (same syntax, no `<T>`).
-    let plain = "chip Box(v: int) -> (r: int) { out r = v }\n";
-    assert!(
-        errors(plain).is_empty(),
-        "non-generic chip must be allowed: {:?}",
-        errors(plain)
-    );
-}
-
-#[test]
-fn generic_type_aliases_instantiate() {
-    // Pair<int> resolves to { a: int, b: int } — `.a` used where an `int` is
-    // expected is clean.
-    let ok = "type Pair<T> = { a: T, b: T }\nin p: Pair<int>\nout r: int = p.a\n";
-    assert!(
-        errors(ok).is_empty(),
-        "Pair<int>.a should be int, clean: {:?}",
-        errors(ok)
-    );
-    // Pair<string> resolves to { a: string, b: string } — `.a` no longer
-    // coerces to `int` (string doesn't coerce to a numeric), proving `T`
-    // actually substituted per instantiation rather than resolving to `any`
-    // (which would coerce to anything and stay clean).
-    let bad = "type Pair<T> = { a: T, b: T }\nin p: Pair<string>\nout r: int = p.a\n";
-    assert!(
-        !errors(bad).is_empty(),
-        "Pair<string>.a should be string, mismatched against an int out port (T=string): {:?}",
-        errors(bad)
-    );
-    // Not fully applied.
-    let bare = "type Pair<T> = { a: T, b: T }\nlet p: Pair = { a: 1, b: 2 }\n";
-    assert!(
-        !errors(bare).is_empty(),
-        "bare generic alias should error: {:?}",
-        errors(bare)
-    );
-    // Wrong arity.
-    let arity = "type Pair<T> = { a: T, b: T }\nlet p: Pair<int, float> = { a: 1, b: 2 }\n";
-    assert!(
-        !errors(arity).is_empty(),
-        "arity mismatch should error: {:?}",
-        errors(arity)
-    );
-    // Recursive alias errors (does not hang).
-    let recursive = "type L<T> = { head: T, tail: L<T> }\nin x: L<int>\n";
-    assert!(
-        !errors(recursive).is_empty(),
-        "recursive generic alias should error: {:?}",
-        errors(recursive)
-    );
-    // A DOUBLY self-referencing alias would re-expand each occurrence — a
-    // depth-only guard blows up exponentially; the in-progress cycle guard must
-    // cut it off so this terminates with a diagnostic rather than hanging.
-    let tree = "type Tree<T> = { l: Tree<T>, r: Tree<T> }\nin x: Tree<int>\n";
-    assert!(
-        !errors(tree).is_empty(),
-        "doubly-recursive generic alias should error, not hang: {:?}",
-        errors(tree)
-    );
-    // A non-generic alias still works.
-    let plain = "type P = { x: int }\nlet q: P = { x: 1 }\n";
-    assert!(
-        errors(plain).is_empty(),
-        "non-generic alias should still work: {:?}",
-        errors(plain)
-    );
-}
-
-/// Regression: a generic-alias record type used at a PORT or a chip param
-/// must dissolve into real per-field wire gates at LOWERING — not silently
-/// degrade to a single `any` port whose field accesses emit
-/// `_Unsupported`/`SplitColor` swizzle gates with zero diagnostics.
-/// typecheck alone can't catch this (it was green while the IR was broken), so
-/// this asserts on the emitted IR.
-#[test]
-fn generic_alias_record_port_lowers_to_real_gates() {
-    // Top-level record PORT: `Pair<int>` -> two int sub-ports feeding a MathAdd.
-    let r = compile("type Pair<T> = { a: T, b: T }\nin p: Pair<int>\nout r: int = p.a + p.b\n");
-    assert_no_errors(&r);
-    assert!(
-        !has_gate(&r, "_Unsupported"),
-        "generic-alias port field access must not lower to _Unsupported"
-    );
-    assert!(
-        !has_gate(&r, gc::SPLIT_COLOR),
-        "generic-alias port field access must not lower to a SplitColor swizzle"
-    );
-    assert!(
-        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
-        "p.a + p.b on a Pair<int> port must lower to a real MathAdd gate"
-    );
-    // The port must have dissolved into one sub-port per field (2), not stayed
-    // a single collapsed `any` port.
-    assert_eq!(
-        gate_count(&r, "BrickComponentType_Internal_MicrochipInput"),
-        2,
-        "Pair<int> port should expand into two int sub-ports"
-    );
-
-    // Chip param form (the `resolved_record` site). The generic case must
-    // produce IR identical in shape to the non-generic one.
-    let rg = compile(
-        "type Pt<T> = { foo: T, bar: T }\nchip Sum(p: Pt<int>) -> (r: int) { out r = p.foo + p.bar }\nin a: int\nout total: int = Sum({ foo: a, bar: 2 })\n",
-    );
-    assert_no_errors(&rg);
-    assert!(
-        !has_gate(&rg, "_Unsupported"),
-        "root of generic chip-param program must have no _Unsupported"
-    );
-    let child_has_add = rg.module.chips.values().any(|c| {
-        c.nodes
-            .values()
-            .any(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
-    });
-    let child_has_unsupported = rg
-        .module
-        .chips
-        .values()
-        .any(|c| c.nodes.values().any(|n| n.gate_class == "_Unsupported"));
-    assert!(
-        child_has_add,
-        "generic chip body must lower p.foo + p.bar to a MathAdd"
-    );
-    assert!(
-        !child_has_unsupported,
-        "generic chip body must have no _Unsupported field-access gates"
-    );
-}
-
-#[test]
-fn deeply_nested_generic_decls_terminate_quickly() {
-    // The per-mask-member body check is a whole-PATH budget, not per-decl, so
-    // nesting generic decls can't multiply the combo count (`13^d` -> a 17s+
-    // typecheck / LSP hang). Depth-6 nested generic mods must type-check clean
-    // and near-instantly (this test would time out conspicuously in the suite
-    // if the budget regressed).
-    let src = "mod l0<A>(a: A) -> A {\n\
-               mod l1<B>(b: B) -> B {\n\
-               mod l2<C>(c: C) -> C {\n\
-               mod l3<D>(d: D) -> D {\n\
-               mod l4<E>(e: E) -> E {\n\
-               mod l5<F>(f: F) -> F { return f }\n return e }\n return d }\n\
-               return c }\n return b }\n return a }\n\
-               in go: exec\nin n: int\non go { let z = l0(n) }\n";
-    let parsed = crate::parser::parse(src, "t");
-    let tc = crate::typecheck::typecheck(&parsed.ast, "t", &crate::typecheck::CeSlotMap::default());
-    let errs: Vec<String> = tc
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-        .map(|d| d.code.to_string())
-        .collect();
-    assert!(
-        errs.is_empty(),
-        "deep nested generics must check clean: {errs:?}"
-    );
+    assert!(m.starts_with("1e30 goes into an `int` here"), "{m}");
+    let m = message("on go { n = BitCount(2.5) }", "WS106");
+    assert!(m.contains("argument") && !m.contains("setting"), "{m}");
+    let m = message("on go { c.DisplayText(\"hi\", fontSize = 40.5) }", "WS106");
+    assert!(m.contains("`DisplayText` setting `fontSize`"), "{m}");
 }

@@ -1,25 +1,10 @@
 use crate::ir::port_registry::WirePort;
+use crate::test_support::{assert_no_code, codes, report_failures};
 
+use super::shape::{assert_no_fan_in, without_names};
 use super::*;
 
 // ── Recursion guard (WS020) ──
-
-/// Lower a main source plus in-memory imported modules (resolve -> typecheck ->
-/// lower) and return all diagnostics — for exercising cross-module scenarios
-/// the single-source `compile` helper can't reach.
-fn lower_with_imports(main_src: &str, files: &[(&str, &str)]) -> Vec<crate::diagnostic::Diagnostic> {
-    let files: crate::collections::HashMap<String, String> = files
-        .iter()
-        .map(|(n, s)| (n.to_string(), s.to_string()))
-        .collect();
-    let loader = crate::resolve::MemLoader { files };
-    let crate::compile::FrontEnd { resolved, typecheck: tc, lowered, .. } =
-        crate::compile::front_end(main_src, "main.ws", None, FoldMode::Auto, &loader);
-    let mut diags = resolved.diagnostics;
-    diags.extend(tc.diagnostics);
-    diags.extend(lowered.diagnostics);
-    diags
-}
 
 #[test]
 fn const_literal_reaches_into_anon_chip() {
@@ -32,8 +17,11 @@ fn const_literal_reaches_into_anon_chip() {
     // `inline_orphan_literals` (single-consumer only) leaves it a real Literal
     // gate — the case that dangles across the chip boundary.
     let src = "let K: int = 7\nout dummy = K\nin trigger: exec\nchip on trigger { var x: int = 0\n  if x == K { x = 1 } }";
-    let r = compile(src);
-    let child = only_chip(&r, "the `chip on` block should produce one anon chip module");
+    let r = compile_ok(src);
+    let child = only_chip(
+        &r,
+        "the `chip on` block should produce one anon chip module",
+    );
     // The 7 must reach the chip-side comparison — either as a cloned Literal
     // gate wired in, or (since scalar-to-dataless materialization made the EQ
     // the literal's single consumer) as an inlined InputB data default on the
@@ -41,30 +29,17 @@ fn const_literal_reaches_into_anon_chip() {
     // originally was the value arriving as NEITHER (dangling cross-boundary
     // wire reading 0).
     let lit7_gate = child.nodes.values().any(|n| {
-        n.gate_class == crate::ir::gate_class::LITERAL
+        n.gate_class == gc::LITERAL
             && n.properties.get(&*crate::intern::sym::VALUE) == Some(&crate::ir::Literal::Int(7))
     });
     let lit7_inlined = child.nodes.values().any(|n| {
-        n.gate_class.contains("CompareEqual")
+        n.gate_class == gc::COMPARE_EQUAL
             && n.properties.get(&crate::intern::intern("InputB"))
                 == Some(&crate::ir::Literal::Int(7))
     });
     assert!(
         lit7_gate || lit7_inlined,
         "const `K = 7` must reach the chip body (cloned literal or inlined EQ default)"
-    );
-}
-
-/// A mod that transitively calls itself must still be flagged WS020 — the guard
-/// now keys on the decl's source range (not just its name), so real recursion
-/// (same decl re-entered) is still caught.
-#[test]
-fn genuine_self_recursion_still_flagged() {
-    let r = compile("mod foo() -> int { return foo() }\nout result = foo()");
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS020"),
-        "self-recursion must still be WS020; got {:?}",
-        r.diagnostics
     );
 }
 
@@ -77,17 +52,61 @@ fn genuine_self_recursion_still_flagged() {
 fn a_nested_call_of_the_same_mod_is_not_recursion() {
     let head = "in go: exec\nvar k: int = 3\nvar n: int = 0\n";
     for (decls, body, recursive) in [
-        ("mod inc(x: int) -> int { return x + 1 }", "n = inc(inc(k))", false),
-        ("chip C(x: int) -> (r: int) { return x + 1 }", "n = C(C(k))", false),
-        ("mod inc(x: int) -> int { return inc(inc(x)) + 1 }", "n = inc(k)", true),
-        ("mod f(x: int) -> int { return x + 1 }\nmod h(x: int) -> int { return f(x) }", "n = f(h(k))", false),
-        ("mod f(x: int) -> int { return x + 1 }\nchip H(x: int) -> (r: int) { return f(x) }", "n = f(H(k))", false),
-        ("chip F(x: int) -> (r: int) { return x + 1 }\nmod h(x: int) -> int { return F(x) }", "n = F(h(k))", false),
-        ("mod f(x: int) -> int { return x + 1 }\nmod g(x: int) -> int { return f(x) }\nmod h(x: int) -> int { return g(x) }", "n = f(h(k))", false),
-        ("mod a1(x: int) -> int { return b1(x) + 1 }\nmod b1(x: int) -> int { return a1(x) }", "n = a1(k)", true),
-        ("mod g(x: int) -> int { return x * 2 }\nmod f(x: int) -> int { return g(f(x)) + 1 }", "n = f(k)", true),
-        ("chip C(x: int) -> (r: int) { return C(x) + 1 }", "n = C(k)", true),
-        ("mod f(x: int) -> int { if x > 0 { return f(x - 1) + 1 }\nreturn 1 }", "n = f(f(k))", true),
+        (
+            "mod inc(x: int) -> int { return x + 1 }",
+            "n = inc(inc(k))",
+            false,
+        ),
+        (
+            "chip C(x: int) -> (r: int) { return x + 1 }",
+            "n = C(C(k))",
+            false,
+        ),
+        (
+            "mod inc(x: int) -> int { return inc(inc(x)) + 1 }",
+            "n = inc(k)",
+            true,
+        ),
+        (
+            "mod f(x: int) -> int { return x + 1 }\nmod h(x: int) -> int { return f(x) }",
+            "n = f(h(k))",
+            false,
+        ),
+        (
+            "mod f(x: int) -> int { return x + 1 }\nchip H(x: int) -> (r: int) { return f(x) }",
+            "n = f(H(k))",
+            false,
+        ),
+        (
+            "chip F(x: int) -> (r: int) { return x + 1 }\nmod h(x: int) -> int { return F(x) }",
+            "n = F(h(k))",
+            false,
+        ),
+        (
+            "mod f(x: int) -> int { return x + 1 }\nmod g(x: int) -> int { return f(x) }\nmod h(x: int) -> int { return g(x) }",
+            "n = f(h(k))",
+            false,
+        ),
+        (
+            "mod a1(x: int) -> int { return b1(x) + 1 }\nmod b1(x: int) -> int { return a1(x) }",
+            "n = a1(k)",
+            true,
+        ),
+        (
+            "mod g(x: int) -> int { return x * 2 }\nmod f(x: int) -> int { return g(f(x)) + 1 }",
+            "n = f(k)",
+            true,
+        ),
+        (
+            "chip C(x: int) -> (r: int) { return C(x) + 1 }",
+            "n = C(k)",
+            true,
+        ),
+        (
+            "mod f(x: int) -> int { if x > 0 { return f(x - 1) + 1 }\nreturn 1 }",
+            "n = f(f(k))",
+            true,
+        ),
     ] {
         let src = format!("{head}{decls}\non go {{ {body} }}");
         let src = src.as_str();
@@ -96,8 +115,11 @@ fn a_nested_call_of_the_same_mod_is_not_recursion() {
         assert_eq!(ws020 > 0, recursive, "{src}\n{:?}", r.diagnostics);
         if !recursive {
             assert_no_errors(&r);
-            let adds = r.module.nodes.values().chain(r.module.chips.values().flat_map(|c| c.nodes.values()));
-            assert_eq!(adds.filter(|n| n.gate_class.contains("MathAdd")).count(), 2, "{src}");
+            assert_eq!(
+                count_class(&r.module, "BrickComponentType_Expr_MathAdd"),
+                2,
+                "{src}"
+            );
         }
     }
 }
@@ -112,19 +134,9 @@ fn same_name_mod_across_modules_is_not_recursion() {
     let main = "import * as card from \"display\"\n\
                 mod drawCard() -> int { return card.drawCard() }\n\
                 out result = drawCard()";
-    let diags = lower_with_imports(main, &[("display.ws", display)]);
-    assert!(
-        !diags.iter().any(|d| d.code == "WS020"),
-        "same-named mod across modules must not be flagged recursive; got {:?}",
-        diags
-    );
-    assert!(
-        !diags
-            .iter()
-            .any(|d| d.severity == crate::diagnostic::Severity::Error),
-        "should compile without errors; got {:?}",
-        diags
-    );
+    let r = compile_multi(main, &[("display", display)]);
+    assert_no_code(&r.diagnostics, "WS020");
+    assert_no_errors(&r);
 }
 
 #[test]
@@ -143,44 +155,79 @@ fn chip_decl_sets_child_root_scope_to_chip_body() {
     }
 }
 
+/// Each call of a chip is its own instance module, holding one output node per
+/// declared output (never duplicated); a `mod` inlines and makes none.
 #[test]
-fn chip_call_creates_instance_per_call() {
-    let src = "chip Add(a: int, b: int) -> (result: int) { out result = a + b }\nlet r1 = Add(1, 2)\nlet r2 = Add(3, 4)";
-    let r = compile(src);
-    assert_eq!(
-        r.module.chips.len(),
-        2,
-        "each call should create a separate chip instance"
-    );
-}
-
-#[test]
-fn chip_call_single_output_no_duplicate() {
-    let src = "chip Double(x: int) -> (result: int) { out result = x * 2 }\nlet r = Double(21)";
-    let r = compile(src);
-    let chip = r.module.chips.values().next().expect("one chip instance");
-    let output_count = chip
-        .nodes
-        .values()
-        .filter(|n| n.kind == NodeKind::Output)
-        .count();
-    assert_eq!(
-        output_count, 1,
-        "should have exactly 1 output node, not duplicated"
-    );
-}
-
-#[test]
-fn chip_call_multi_output() {
-    let src = "chip MinMax(a: int, b: int) -> (lo: int, hi: int) {\n  out lo = if a < b then a else b\n  out hi = if a > b then a else b\n}\nlet mm = MinMax(3, 7)";
-    let r = compile(src);
-    let chip = r.module.chips.values().next().expect("one chip instance");
-    let output_count = chip
-        .nodes
-        .values()
-        .filter(|n| n.kind == NodeKind::Output)
-        .count();
-    assert_eq!(output_count, 2, "should have exactly 2 output nodes");
+fn each_chip_call_is_one_instance_with_its_declared_outputs() {
+    // (program, instances, output nodes in each instance, a gate the tree holds)
+    let rows: [(&str, usize, usize, Option<&str>); 6] = [
+        (
+            "chip Add(a: int, b: int) -> (result: int) { out result = a + b }\nlet r1 = Add(1, 2)\nlet r2 = Add(3, 4)",
+            2,
+            1,
+            None,
+        ),
+        (
+            "chip Add(a: int, b: int) -> (result: int) { out result = a + b }\nlet r1 = Add(1, 2)\nlet r2 = Add(3, 4)\n\
+             let r3 = Add(5, 6)\nout sum = r1.result + r2.result + r3.result",
+            3,
+            1,
+            None,
+        ),
+        (
+            "chip Double(x: int) -> (result: int) { out result = x * 2 }\nlet r = Double(21)",
+            1,
+            1,
+            None,
+        ),
+        (
+            "chip MinMax(a: int, b: int) -> (lo: int, hi: int) {\n  out lo = if a < b then a else b\n  \
+             out hi = if a > b then a else b\n}\nlet mm = MinMax(3, 7)",
+            1,
+            2,
+            None,
+        ),
+        // Auto-unwrapped single-output results add in the caller.
+        (
+            "chip Sq(x: int) -> int { out _ = x * x }\nlet a = Sq(3)\nlet b = Sq(4)\nlet y = a + b\nout z = y",
+            2,
+            1,
+            Some("BrickComponentType_Expr_MathAdd"),
+        ),
+        (
+            "var x: int = 0\nmod inc(v: *int) { v = v + 1 }\non RoundStart() { inc(x) }",
+            0,
+            0,
+            None,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (src, instances, outputs, gate) in rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        let output_nodes: Vec<usize> = r
+            .module
+            .chips
+            .values()
+            .map(|c| {
+                c.nodes
+                    .values()
+                    .filter(|n| n.kind == NodeKind::Output)
+                    .count()
+            })
+            .collect();
+        if !errors.is_empty()
+            || r.module.chips.len() != instances
+            || output_nodes.iter().any(|n| *n != outputs)
+            || gate.is_some_and(|g| !has_gate(&r, g))
+        {
+            failures.push(format!(
+                "{src}\n  errors {errors:?}, {} instances (want {instances}), output nodes {output_nodes:?} (want {outputs})",
+                r.module.chips.len()
+            ));
+        }
+    }
+    report_failures(&failures, rows.len());
 }
 
 #[test]
@@ -191,8 +238,7 @@ fn inline_mod_multi_output_fields_wire_to_sources() {
     let src = "in a: float\n\
         mod M(v: float) -> (p: float, q: float) {\n  out p = v + 1.0\n  out q = v + 2.0\n}\n\
         let s = M(a)\nout x = s.p\nout y = s.q";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     // No wire may originate from the phantom node 0.
     let phantom = r.module.wires.iter().any(|w| w.source.node_id == NodeId(0));
     assert!(!phantom, "multi-output mod read produced a phantom n0 wire");
@@ -208,20 +254,21 @@ fn inline_mod_multi_output_fields_wire_to_sources() {
 #[test]
 fn chip_call_wires_args_to_inputs() {
     let src = "in x: int\nin y: int\nchip Add(a: int, b: int) -> (result: int) { out result = a + b }\nlet r = Add(x, y)";
-    let r = compile(src);
+    let r = compile_ok(src);
     // Parent module should have wires to child MicrochipInput nodes
     let child = r.module.chips.values().next().unwrap();
-    let child_input_ids: std::collections::HashSet<NodeId> = child.inputs.iter().cloned().collect();
+    let child_input_ids: crate::collections::HashSet<NodeId> =
+        child.inputs.iter().cloned().collect();
     let input_wires: Vec<_> = r
         .module
         .wires
         .iter()
         .filter(|w| child_input_ids.contains(&w.target.node_id))
         .collect();
-    assert!(
-        input_wires.len() >= 2,
-        "should wire args directly to child MicrochipInput nodes, got {}",
-        input_wires.len()
+    assert_eq!(
+        input_wires.len(),
+        2,
+        "should wire each arg directly to its child MicrochipInput node: {input_wires:?}"
     );
 }
 
@@ -234,10 +281,9 @@ fn chip_call_atom_arg_inlines_like_int_literal() {
     let atom_src = "chip Double(x: int) -> (result: int) { out result = x * 2 }\nlet r = Double(:red)\nout val = r.result";
     let int_src = "chip Double(x: int) -> (result: int) { out result = x * 2 }\nlet r = Double(21)\nout val = r.result";
     for src in [atom_src, int_src] {
-        let r = compile(src);
-        assert_no_errors(&r);
+        let r = compile_ok(src);
         let child = r.module.chips.values().next().unwrap();
-        let child_input_ids: std::collections::HashSet<NodeId> =
+        let child_input_ids: crate::collections::HashSet<NodeId> =
             child.inputs.iter().cloned().collect();
         let input_wires: Vec<_> = r
             .module
@@ -256,10 +302,10 @@ fn chip_call_atom_arg_inlines_like_int_literal() {
 #[test]
 fn chip_call_output_wire_in_parent() {
     let src = "chip Double(x: int) -> (result: int) { out result = x * 2 }\nlet r = Double(21)\nout val = r.result";
-    let r = compile(src);
+    let r = compile_ok(src);
     // Parent should have a wire from child MicrochipOutput to the out binding
     let child = r.module.chips.values().next().unwrap();
-    let child_output_ids: std::collections::HashSet<NodeId> =
+    let child_output_ids: crate::collections::HashSet<NodeId> =
         child.outputs.iter().cloned().collect();
     let out_wires: Vec<_> = r
         .module
@@ -267,60 +313,19 @@ fn chip_call_output_wire_in_parent() {
         .iter()
         .filter(|w| child_output_ids.contains(&w.source.node_id))
         .collect();
-    assert!(
-        out_wires.len() >= 1,
-        "should have at least 1 wire from child MicrochipOutput"
-    );
-}
-
-#[test]
-fn chip_call_compiles_to_brz() {
-    let src = "chip ALU(a: int, b: int) -> (result: int) { out result = a + b }\nlet r = ALU(1, 2)\nout sum = r.result";
-    let r = compile(src);
-    let lr = crate::layout::layout(&r.module);
-    assert_emits(&r.module, &lr);
-}
-
-#[test]
-fn mod_still_inlines() {
-    let src = "var x: int = 0\nmod inc(v: *int) { v = v + 1 }\non RoundStart() { inc(x) }";
-    let r = compile(src);
-    assert!(
-        r.module.chips.is_empty(),
-        "mod should inline, not create chip instances"
-    );
-}
-
-#[test]
-fn prune_dead_unions_removes_chains() {
-    let src = "var x: int = 0\non RoundStart() { x = 1 }\non Bumped { x = 2 }\non Bumped { x = 3 }";
-    let r = compile(src);
-    let union_count = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.gate_class.contains("Exec_Union"))
-        .count();
-    // Dead unions (those whose ExecOut feeds nothing) should be pruned.
-    // At least some handler merging happens, and dead-end unions get removed.
-    assert!(
-        union_count <= 2,
-        "dead unions should be pruned, got {union_count}"
+    assert_eq!(
+        out_wires.len(),
+        1,
+        "one wire from the child MicrochipOutput: {out_wires:?}"
     );
 }
 
 #[test]
 fn inline_literals_folded() {
-    let src = "var x: int = 0\non RoundStart() { x = x + 1 }";
-    let r = compile(src);
-    let literal_count = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.gate_class == "_Literal")
-        .count();
+    let r = compile_ok("var x: int = 0\non RoundStart() { x = x + 1 }");
     assert_eq!(
-        literal_count, 0,
+        count_class(&r.module, gc::LITERAL),
+        0,
         "_Literal nodes should be inlined into consumer properties"
     );
 }
@@ -331,29 +336,19 @@ fn chip_output_named_like_a_swizzle_is_not_split() {
     // vector/color component names. Reading it must wire the chip's OUTPUT
     // through, not lower to a SplitVector that splits the (int) value as if it
     // were a vector and silently reads a garbage component.
-    fn count_splits(m: &crate::ir::Module) -> usize {
-        m.nodes
-            .values()
-            .filter(|n| n.gate_class == crate::ir::gate_class::SPLIT_VECTOR)
-            .count()
-            + m.chips.values().map(count_splits).sum::<usize>()
-    }
-
-    let r = compile(
+    let r = compile_ok(
         "in a: int\nchip F(n: int) -> (y: int) { out y = n * 2 + 1 }\nlet c = F(a)\nout r = c.y",
     );
-    assert_no_errors(&r);
     assert_eq!(
-        count_splits(&r.module),
+        count_class(&r.module, gc::SPLIT_VECTOR),
         0,
         "a chip output named `y` must read the output, not lower to a SplitVector"
     );
 
     // ...but a genuine vector swizzle must still split.
-    let v = compile("in v: vector\nlet p = v\nout ox = p.x\nout oy = p.y");
-    assert_no_errors(&v);
+    let v = compile_ok("in v: vector\nlet p = v\nout ox = p.x\nout oy = p.y");
     assert!(
-        count_splits(&v.module) > 0,
+        count_class(&v.module, gc::SPLIT_VECTOR) == 1,
         "a real vector component access must still lower to a SplitVector"
     );
 }
@@ -378,39 +373,25 @@ chip on trig {
     doPick()
   }
 }";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
 
-    // gate class of every node in the whole tree (pins live in child modules)
-    fn collect_classes(
-        m: &crate::ir::Module,
-        out: &mut std::collections::HashMap<crate::ir::NodeId, &'static str>,
-    ) {
-        for (id, n) in &m.nodes {
-            out.insert(*id, n.gate_class);
-        }
-        for c in m.chips.values() {
-            collect_classes(c, out);
-        }
-    }
-    let mut classes = std::collections::HashMap::new();
-    collect_classes(&r.module, &mut classes);
+    // Pins live in child modules, so classes come from the whole tree.
+    let classes: crate::collections::HashMap<crate::ir::NodeId, &'static str> = r
+        .module
+        .nodes_deep()
+        .map(|n| (n.id, n.gate_class))
+        .collect();
     let is_pin = |id: &crate::ir::NodeId| {
         matches!(
             classes.get(id).copied(),
-            Some("BrickComponentType_Internal_MicrochipInput")
-                | Some("BrickComponentType_Internal_MicrochipOutput")
+            Some(gc::MICROCHIP_INPUT | gc::MICROCHIP_OUTPUT)
         )
     };
 
     // In each module, a wire touching a chip-boundary pin that isn't one of the
     // module's OWN pins must have that pin on a DIRECT child chip.
-    fn check(
-        m: &crate::ir::Module,
-        is_pin: &dyn Fn(&crate::ir::NodeId) -> bool,
-    ) {
-        let mut child_pins: std::collections::HashSet<crate::ir::NodeId> =
-            std::collections::HashSet::new();
+    fn check(m: &crate::ir::Module, is_pin: &dyn Fn(&crate::ir::NodeId) -> bool) {
+        let mut child_pins: crate::collections::HashSet<crate::ir::NodeId> = Default::default();
         for c in m.chips.values() {
             child_pins.extend(c.inputs.iter().copied());
             child_pins.extend(c.outputs.iter().copied());
@@ -457,61 +438,8 @@ on trig {
   chip { enc(6) enc(7) }
   chip { enc(7) enc(9) }
 }";
-    let r = compile(src);
-    assert_no_errors(&r);
-
-    // Assign every node a module tag and record which nodes are `_Literal`.
-    // A `_Literal` feeding an operand port (InputA/InputB) must live in the
-    // SAME module as its consumer, or emit's per-module inlining can't reach it.
-    let mut module_of: std::collections::HashMap<crate::ir::NodeId, usize> =
-        std::collections::HashMap::new();
-    let mut is_literal: std::collections::HashSet<crate::ir::NodeId> =
-        std::collections::HashSet::new();
-    fn index(
-        m: &crate::ir::Module,
-        tag: &mut usize,
-        module_of: &mut std::collections::HashMap<crate::ir::NodeId, usize>,
-        is_literal: &mut std::collections::HashSet<crate::ir::NodeId>,
-    ) {
-        let my = *tag;
-        *tag += 1;
-        for (id, n) in &m.nodes {
-            module_of.insert(*id, my);
-            if n.gate_class == "_Literal" {
-                is_literal.insert(*id);
-            }
-        }
-        for child in m.chips.values() {
-            index(child, tag, module_of, is_literal);
-        }
-    }
-    let mut tag = 0;
-    index(&r.module, &mut tag, &mut module_of, &mut is_literal);
-
-    fn check_wires(
-        m: &crate::ir::Module,
-        module_of: &std::collections::HashMap<crate::ir::NodeId, usize>,
-        is_literal: &std::collections::HashSet<crate::ir::NodeId>,
-    ) {
-        for w in &m.wires {
-            let is_operand = matches!(w.target.port, WirePort::InputA | WirePort::InputB);
-            if is_operand && is_literal.contains(&w.source.node_id) {
-                assert_eq!(
-                    module_of.get(&w.source.node_id),
-                    module_of.get(&w.target.node_id),
-                    "constant operand wire crosses a chip boundary (source {:?} -> \
-                     {:?}.{:?}); emit can't inline it and the operand reads 0",
-                    w.source.node_id,
-                    w.target.node_id,
-                    w.target.port
-                );
-            }
-        }
-        for child in m.chips.values() {
-            check_wires(child, module_of, is_literal);
-        }
-    }
-    check_wires(&r.module, &module_of, &is_literal);
+    let r = compile_ok(src);
+    assert_literal_operands_in_their_module(&r.module);
 }
 
 #[test]
@@ -536,61 +464,36 @@ chip {
 out a: int = ka
 out d: int = kd
 out b: int = k * 5";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
+    assert_literal_operands_in_their_module(&r.module);
+}
 
-    let mut module_of: std::collections::HashMap<crate::ir::NodeId, usize> =
-        std::collections::HashMap::new();
-    let mut is_literal: std::collections::HashSet<crate::ir::NodeId> =
-        std::collections::HashSet::new();
-    fn index(
-        m: &crate::ir::Module,
-        tag: &mut usize,
-        module_of: &mut std::collections::HashMap<crate::ir::NodeId, usize>,
-        is_literal: &mut std::collections::HashSet<crate::ir::NodeId>,
-    ) {
-        let my = *tag;
-        *tag += 1;
-        for (id, n) in &m.nodes {
-            module_of.insert(*id, my);
-            if n.gate_class == "_Literal" {
-                is_literal.insert(*id);
-            }
-        }
-        for child in m.chips.values() {
-            index(child, tag, module_of, is_literal);
+/// Every `_Literal` feeding an operand port (InputA/InputB) lives in its
+/// consumer's module: emit inlines a literal only into same-module consumers, so
+/// a literal wired across a chip boundary leaves the operand reading 0.
+fn assert_literal_operands_in_their_module(root: &crate::ir::Module) {
+    let mut module_of: crate::collections::HashMap<crate::ir::NodeId, usize> = Default::default();
+    for (i, m) in root.modules_deep().into_iter().enumerate() {
+        module_of.extend(m.nodes.keys().map(|id| (*id, i)));
+    }
+    let is_literal = |id: &crate::ir::NodeId| {
+        root.find_deep(*id)
+            .is_some_and(|n| n.gate_class == gc::LITERAL)
+    };
+    for w in root.wires_deep() {
+        if matches!(w.target.port, WirePort::InputA | WirePort::InputB)
+            && is_literal(&w.source.node_id)
+        {
+            assert_eq!(
+                module_of.get(&w.source.node_id),
+                module_of.get(&w.target.node_id),
+                "constant operand wire crosses a chip boundary ({:?} -> {:?}.{:?}); emit can't inline it and the operand reads 0",
+                w.source.node_id,
+                w.target.node_id,
+                w.target.port
+            );
         }
     }
-    let mut tag = 0;
-    index(&r.module, &mut tag, &mut module_of, &mut is_literal);
-
-    // Every `_Literal` feeding an operand must live in its consumer's module —
-    // else emit's per-module inlining can't reach it and the operand reads 0.
-    fn check_wires(
-        m: &crate::ir::Module,
-        module_of: &std::collections::HashMap<crate::ir::NodeId, usize>,
-        is_literal: &std::collections::HashSet<crate::ir::NodeId>,
-    ) {
-        for w in &m.wires {
-            if matches!(w.target.port, WirePort::InputA | WirePort::InputB)
-                && is_literal.contains(&w.source.node_id)
-            {
-                assert_eq!(
-                    module_of.get(&w.source.node_id),
-                    module_of.get(&w.target.node_id),
-                    "cross-chip `let` constant literal not cloned per module \
-                     ({:?} -> {:?}.{:?}); emit can't inline it and the operand reads 0",
-                    w.source.node_id,
-                    w.target.node_id,
-                    w.target.port
-                );
-            }
-        }
-        for child in m.chips.values() {
-            check_wires(child, module_of, is_literal);
-        }
-    }
-    check_wires(&r.module, &module_of, &is_literal);
 }
 
 #[test]
@@ -601,249 +504,132 @@ fn pure_chip_after_handler_reads_vars_continuously() {
     // `Exec_Var_Get` frozen at the var's init value, instead of reading the
     // var's live `.Value`. (Symptom: a display chip's computed value stuck at 0
     // even as the var updates — capTotal/timePercent-style.)
-    let src = "\
-var v: int = 0
+    for src in [
+        "var v: int = 0
 in go: exec
 on go { v = 5 }
 chip {
   let x = v + 1
 }
-out r: int = x";
-    let r = compile(src);
-    assert_no_errors(&r);
-    // The only var READ here is `v` inside the pure chip; it must lower to the
-    // var's continuous `.Value`, never a latched `Exec_Var_Get`.
-    fn count_var_get(m: &crate::ir::Module) -> usize {
-        let mut n = m
-            .nodes
-            .values()
-            .filter(|node| node.gate_class == crate::ir::gate_class::VAR_GET)
-            .count();
-        for c in m.chips.values() {
-            n += count_var_get(c);
-        }
-        n
+out r: int = x",
+        // The chip's own `out` reads the `let` too.
+        "var src: int = 0
+in go: exec
+on go { src = 1 }
+chip { let doubled = src * 2
+out d = doubled }
+",
+    ] {
+        let r = compile_ok(src);
+        // The only var READ is inside the pure chip; it must lower to the
+        // var's continuous `.Value`, never a latched `Exec_Var_Get`.
+        assert_eq!(
+            count_class(&r.module, gc::VAR_GET),
+            0,
+            "a pure chip's var read latched into an Exec_Var_Get:
+{src}"
+        );
     }
-    assert_eq!(
-        count_var_get(&r.module),
-        0,
-        "a pure chip's var read after a handler latched into an Exec_Var_Get \
-         instead of a continuous .Value read"
-    );
-}
-
-#[test]
-fn chip_decls_shared_across_instances() {
-    let src = "\
-chip Add(a: int, b: int) -> (result: int) { out result = a + b }
-let r1 = Add(1, 2)
-let r2 = Add(3, 4)
-let r3 = Add(5, 6)
-out sum = r1.result + r2.result + r3.result";
-    let r = compile(src);
-    assert_eq!(
-        r.module.chips.len(),
-        3,
-        "three chip instances should be created"
-    );
 }
 
 #[test]
 fn namespace_chip_call_resolves() {
-    use crate::resolve::MemLoader;
     let lib_src = "chip Double(x: int) -> (result: int) { out result = x + x }";
-    let main_src = "import * as math from \"lib\"\nlet r = math.Double(5)\nout result = r.result";
-    let mut files = std::collections::HashMap::default();
-    files.insert("lib.ws".to_string(), lib_src.into());
-    let loader = MemLoader { files };
-    // Structural resolution test; force folding off so the constant chip
-    // body isn't elided before the instantiation assert below.
-    let crate::compile::FrontEnd { resolved, typecheck: tc, lowered: lr, .. } =
-        crate::compile::front_end(main_src, "test", None, FoldMode::ForceOff, &loader);
-    assert!(
-        resolved.diagnostics.is_empty(),
-        "import should resolve: {:?}",
-        resolved.diagnostics
-    );
-    assert!(
-        tc.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "typecheck errors: {:?}",
-        tc.diagnostics
-    );
-    assert!(
-        lr.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "lower errors: {:?}",
-        lr.diagnostics
-    );
-    assert!(
-        !lr.module.chips.is_empty(),
-        "namespace chip should create chip instance"
-    );
-}
-
-#[test]
-fn single_output_chip_in_arithmetic() {
-    let r = compile(
-        "\
-chip Sq(x: int) -> int { out _ = x * x }
-let a = Sq(3)
-let b = Sq(4)
-let y = a + b
-out z = y",
-    );
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "single-output chip in arithmetic should compile: {:?}",
-        r.diagnostics
-    );
+    let main_src = "import * as math from \"lib\"
+let r = math.Double(5)
+out result = r.result";
+    let loader = crate::resolve::MemLoader {
+        files: [("lib.ws".to_string(), lib_src.to_string())]
+            .into_iter()
+            .collect(),
+    };
+    // Unfolded, so the constant chip body is not elided before the instance count.
+    let crate::compile::FrontEnd {
+        resolved,
+        typecheck: tc,
+        lowered: lr,
+        ..
+    } = crate::compile::front_end(main_src, "test", None, FoldMode::ForceOff, &loader);
+    crate::test_support::assert_no_diags(&resolved.diagnostics);
+    let errors = [
+        crate::test_support::error_codes(&tc.diagnostics),
+        crate::test_support::error_codes(&lr.diagnostics),
+    ];
+    assert!(errors.iter().all(|e| e.is_empty()), "{errors:?}");
     assert_eq!(
-        r.module.chips.len(),
-        2,
-        "should create 2 chip instances for Sq(3) and Sq(4)"
-    );
-    assert!(
-        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
-        "should produce MathAdd for auto-unwrapped chip results"
+        lr.module.chips.len(),
+        1,
+        "namespace chip should create one chip instance"
     );
 }
 
 #[test]
 fn unused_local_mod_no_warning() {
     let r = compile(
-        "\
-mod foo(x: *int) { x = 1 }
-var y: int = 0
-in player: character
-on player { y = 2 }",
+        "mod foo(x: *int) { x = 1 }\nvar y: int = 0\nin player: character\non player { y = 2 }",
     );
-    let has_ws014 = r.diagnostics.iter().any(|d| d.code == "WS014");
-    assert!(
-        !has_ws014,
-        "locally defined unused mod should not trigger WS014 warning"
-    );
+    assert_no_code(&r.diagnostics, "WS014");
 }
 
-/// Regression: inline mod outputs must not contaminate the parent module's outputs.
-/// When both the mod and the parent have an output named `key_state`, the mod's
-/// inline cleanup must not destroy the parent's output.
+/// Inline mod outputs must not contaminate the parent's: with an output named
+/// `key_state` in both, the mod's inline cleanup keeps the parent's one output,
+/// read whole or as `.key_state` on the auto-unwrapped result, and it emits.
 #[test]
-fn inline_mod_output_does_not_leak_to_parent() {
-    let r = compile(
-        "\
-mod Gamepad(a: bool) -> (key_state: int) {
-  return if a then 0x3FE else 0x3FF
-}
-let pad = Gamepad(true)
-out key_state = pad",
-    );
-    assert_no_errors(&r);
-    assert_eq!(
-        r.module.outputs.len(),
-        1,
-        "parent should have exactly 1 output, got {}",
-        r.module.outputs.len()
-    );
-    let output_nodes: Vec<_> = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.kind == NodeKind::Output)
-        .collect();
-    assert_eq!(
-        output_nodes.len(),
-        1,
-        "should have exactly 1 output node after inline cleanup, got {}",
-        output_nodes.len()
-    );
+fn inline_mod_output_named_like_the_parents_keeps_one_parent_output() {
+    for read in ["pad", "pad.key_state"] {
+        let r = compile_ok(&format!(
+            "mod Gamepad(a: bool) -> (key_state: int) {{\n  return if a then 0x3FE else 0x3FF\n}}\n\
+             let pad = Gamepad(true)\nout key_state = {read}"
+        ));
+        assert_eq!(r.module.outputs.len(), 1, "{read}: the parent's outputs");
+        let output_nodes = r
+            .module
+            .nodes
+            .values()
+            .filter(|n| n.kind == NodeKind::Output)
+            .count();
+        assert_eq!(output_nodes, 1, "{read}: output nodes after inline cleanup");
+        assert_emits(&r.module, &crate::layout::layout(&r.module));
+    }
 }
 
-/// Verify .key_state field access on auto-unwrapped single-output mod works.
+/// An `if` on a literal condition, or on a local bound to one (an inline mod
+/// parameter given `true`), folds: no Branch gate, and only the chosen body
+/// writes.
 #[test]
-fn inline_mod_field_access_on_auto_unwrapped_output() {
-    let r = compile(
-        "\
-mod Gamepad(a: bool) -> (key_state: int) {
-  return if a then 0x3FE else 0x3FF
-}
-let pad = Gamepad(true)
-out key_state = pad.key_state",
-    );
-    assert_no_errors(&r);
-    let lr = crate::layout::layout(&r.module);
-    let brz = crate::emit::emit_brz(
-        &r.module,
-        &Default::default(),
-        &lr,
-        &Default::default(),
-    );
-    assert!(
-        brz.is_ok(),
-        "should compile to brz without port errors: {:?}",
-        brz.err()
-    );
-}
-
-/// Regression: `if true { body }` should be constant-folded - no Branch gate.
-#[test]
-fn if_true_constant_folded() {
-    let r = compile(
-        "\
-var x: int = 0
-in tick: exec
-on tick { if true { x = 1 } }",
-    );
-    assert_no_errors(&r);
-    let branch_count = gate_count(&r, "BrickComponentType_Exec_Branch");
-    assert_eq!(
-        branch_count, 0,
-        "if true should be constant-folded, no Branch gate"
-    );
-    assert!(
-        has_gate(&r, "BrickComponentType_Exec_Var_Set"),
-        "body should still produce Var_Set"
-    );
-}
-
-/// Regression: `if false { body } else { other }` should fold to just the else.
-#[test]
-fn if_false_constant_folded_to_else() {
-    let r = compile(
-        "\
-var x: int = 0
-in tick: exec
-on tick { if false { x = 1 } else { x = 2 } }",
-    );
-    assert_no_errors(&r);
-    let branch_count = gate_count(&r, "BrickComponentType_Exec_Branch");
-    assert_eq!(
-        branch_count, 0,
-        "if false should be constant-folded, no Branch gate"
-    );
-}
-
-/// Regression: constant-fold also applies when condition is a local
-/// bound to a literal bool (e.g. inline mod param with literal `true`).
-#[test]
-fn if_literal_param_constant_folded() {
-    let r = compile(
-        "\
-mod foo(x: *int, cond: bool) { if cond { x = 1 } }
-var v: int = 0
-in tick: exec
-on tick { foo(v, true) }",
-    );
-    assert_no_errors(&r);
-    let branch_count = gate_count(&r, "BrickComponentType_Exec_Branch");
-    assert_eq!(
-        branch_count, 0,
-        "if <literal-param> should be constant-folded"
-    );
+fn an_if_on_a_literal_condition_folds_to_the_chosen_body() {
+    let rows = [
+        (
+            "var x: int = 0\nin tick: exec\non tick { if true { x = 1 } }",
+            1,
+        ),
+        (
+            "var x: int = 0\nin tick: exec\non tick { if false { x = 1 } else { x = 2 } }",
+            2,
+        ),
+        (
+            "mod foo(x: *int, cond: bool) { if cond { x = 1 } }\nvar v: int = 0\nin tick: exec\non tick { foo(v, true) }",
+            1,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (src, written) in rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        let sets: Vec<_> = nodes_of(&r.module, gc::VAR_SET)
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        let branches = count_class(&r.module, gc::BRANCH);
+        if !errors.is_empty()
+            || branches != 0
+            || sets.len() != 1
+            || !stores_value(&r.module, sets[0], written)
+        {
+            failures.push(format!("{src}\n  errors {errors:?}, {branches} branches, {} sets, want one writing {written}", sets.len()));
+        }
+    }
+    report_failures(&failures, rows.len());
 }
 
 /// Record params: ref/array fields are NOT declared MicrochipInput ports
@@ -852,7 +638,7 @@ on tick { foo(v, true) }",
 /// into its own synthesized pin, leaving no raw external capture.
 #[test]
 fn chip_record_param_dissolves_to_ports() {
-    let r = compile(
+    let r = compile_ok(
         "\
 type State = { val: *int, arr: int[] }
 var v: int = 0
@@ -865,7 +651,6 @@ chip Foo(s: State) -> (result: int) {
 let s: State = { val: v, arr: a }
 let r = Foo(s)",
     );
-    assert_no_errors(&r);
     assert_eq!(r.module.chips.len(), 1, "should create one chip instance");
     let chip = r.module.chips.values().next().unwrap();
     let input_labels: Vec<_> = chip
@@ -909,55 +694,33 @@ let r = Foo(s)",
     );
 }
 
-/// Ref params on standalone chips create VarRef input ports.
-#[test]
-fn chip_ref_param_creates_var_binding() {
-    let r = compile(
-        "\
-var flag: bool = false
-chip SetFlag(f: *bool) -> (result: int) {
-  in run: exec
-  on run { f = true }
-  out result = 0
-}
-in go: exec
-on go { let r = SetFlag(flag) }",
-    );
-    assert_no_errors(&r);
-    assert_eq!(r.module.chips.len(), 1);
-}
-
 /// `&x` (address-of) passed to a `*T` param must bind the SAME var as bare `x`,
 /// so a write through the param reaches the caller's var. The `&` form (the
 /// documented `inc(&x)` idiom) needs the inline ref-binding to unwrap
 /// `Expr::RefOf`, or the param binds to nothing and every write is dropped.
 #[test]
 fn addr_of_arg_binds_ref_param_so_write_lands() {
-    let r = compile(
+    let r = compile_ok(
         "\
 var x: int = 0
 mod inc(v: *int) { v = v + 1 }
 in go: exec
 on go { inc(&x) }",
     );
-    assert_no_errors(&r);
     assert!(
-        !r.module.nodes.values().any(|n| n.gate_class.contains("Unsupported")),
+        !has_unsupported(&r.module),
         "the ref param must bind, not fall to an _Unsupported read"
     );
     // The `v = v + 1` write must be wired to x's storage gate (its VarRef).
-    let x_var = find_gate(&r, "BrickComponentType_Var");
+    let x_var = find_gate(&r, gc::VAR);
     let writes = r
         .module
         .wires
         .iter()
-        .filter(|w| {
-            w.source.node_id == x_var
-                && w.source.port == crate::ir::port_registry::WirePort::VarRef
-        })
+        .filter(|w| w.source.node_id == x_var && w.source.port == WirePort::VarRef)
         .count();
-    assert!(
-        writes >= 1,
+    assert_eq!(
+        writes, 1,
         "the write through `&x` must target x's storage gate, not vanish"
     );
 }
@@ -968,19 +731,21 @@ on go { inc(&x) }",
 /// and every write through the param was dropped with no diagnostic.
 #[test]
 fn addr_of_arg_binds_chip_ref_param() {
-    for arg in ["&x", "ref x"] {
+    for arg in ["x", "&x", "ref x"] {
         let src = format!(
             "var x: int = 0
 chip inc(v: *int) {{ v = v + 1 }}
 in go: exec
 on go {{ inc({arg}) }}"
         );
-        let r = compile(&src);
-        assert_no_errors(&r);
-        let x_var = find_gate(&r, "BrickComponentType_Var");
+        let r = compile_ok(&src);
+        assert_eq!(r.module.chips.len(), 1, "`inc({arg})`: one instance");
+        let x_var = find_gate(&r, gc::VAR);
         assert!(
-            r.module.wires.iter().any(|w| w.source.node_id == x_var
-                && w.source.port == crate::ir::port_registry::WirePort::VarRef),
+            r.module
+                .wires
+                .iter()
+                .any(|w| w.source.node_id == x_var && w.source.port == WirePort::VarRef),
             "`inc({arg})` left the chip ref pin unfed, so the write vanished"
         );
     }
@@ -990,37 +755,36 @@ on go {{ inc({arg}) }}"
 /// caller's storage exactly as the bare spellings do.
 #[test]
 fn addr_of_arg_binds_chip_container_and_record_params() {
-    let arr = compile(
+    let arr = compile_ok(
         "var a: int[]
 chip push1(xs: int[]) { xs.push(1) }
 in go: exec
 on go { push1(&a) }",
     );
-    assert_no_errors(&arr);
-    let a_var = find_gate(&arr, "BrickComponentType_ArrayVar");
+    let a_var = find_gate(&arr, gc::ARRAY_VAR);
     assert!(
         arr.module.wires.iter().any(|w| w.source.node_id == a_var),
         "`push1(&a)` left the array ref pin unfed"
     );
 
-    let rec = compile(
+    let rec = compile_ok(
         "type P = { x: int, y: int }
 chip setx(s: *P, v: int) { s.x = v }
          var p: P = { x: 0, y: 0 }
 in go: exec
 on go { setx(&p, 1) }",
     );
-    assert_no_errors(&rec);
     let wired = rec
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_Var")
+        .filter(|n| n.gate_class == gc::VAR)
         .filter(|n| rec.module.wires.iter().any(|w| w.source.node_id == n.id))
         .count();
-    assert!(
-        wired >= 1,
-        "`setx(&p, 1)` left every field of `p` unwired, so the write vanished"
+    // Only the written field `p.x` is wired.
+    assert_eq!(
+        wired, 1,
+        "`setx(&p, 1)` left `p.x` unwired, so the write vanished"
     );
 }
 
@@ -1046,7 +810,7 @@ on player {
         r.diagnostics
     );
     // Writing it clears the diagnostic.
-    let ok = compile(
+    compile_ok(
         "\
 mod good(x: int) -> (result: int) {
   return x + 1
@@ -1056,7 +820,6 @@ on player {
   let b = good(5)
 }",
     );
-    assert_no_errors(&ok);
 }
 
 /// Regression: chip value params that require exec (Var_Get) must be read
@@ -1075,8 +838,7 @@ on start {
   Inc(b)
   let r = Add(a, b)
 }";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
 
     // Find the Add chip's child module (uniquely has a MathAdd body gate).
     let (add_chip_id, add_child) = r
@@ -1084,13 +846,17 @@ on start {
         .chips
         .iter()
         .find(|(_, child)| {
-            child.outputs.len() >= 1
-                && child
-                    .nodes
-                    .values()
-                    .any(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
+            child
+                .nodes
+                .values()
+                .any(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
         })
         .expect("should find Add chip");
+    assert_eq!(
+        add_child.outputs.len(),
+        2,
+        "`result` and the auto `_exec_out`"
+    );
 
     // Exec goes to child's _exec_in MicrochipInput (last input)
     let exec_in_node = *add_child.inputs.last().unwrap();
@@ -1101,22 +867,18 @@ on start {
         .find(|w| w.target.node_id == exec_in_node && w.target.port == WirePort::RerInput)
         .expect("child _exec_in MicrochipInput should have a wire");
 
-    // The exec source should be a Var_Get (args evaluated first), not the
-    // handler entry or a chip node (which would mean exec fires before reads).
-    let exec_source_node = r
+    // The exec comes from the arguments' reads, not the handler entry or a
+    // chip node (which would mean exec fires before reads).
+    let source_class = r
         .module
         .nodes
         .get(&exec_into_chip.source.node_id)
-        .expect("exec source node should exist");
-    let source_class = exec_source_node.gate_class;
-    assert!(
-        source_class.contains("Var_Get")
-            || source_class.contains("Var_Set")
-            || source_class.contains("ArrayVar")
-            || source_class.contains("Exec_"),
-        "exec into chip should come from a Var_Get (args first), got: {} ({})",
-        exec_source_node.id,
+        .expect("exec source node should exist")
+        .gate_class;
+    assert_eq!(
         source_class,
+        gc::VAR_GET,
+        "exec into chip should come from a Var_Get (args first)"
     );
 
     // Verify no layout cycle
@@ -1124,27 +886,6 @@ on start {
     assert!(
         layout.placements.contains_key(add_chip_id),
         "chip node should have a valid layout placement (no cycles)"
-    );
-}
-
-/// Regression: string interpolation (FormatText) must emit valid brz.
-/// FormatText fields are `str` in the game schema, not `wire_graph_variant`.
-#[test]
-fn string_interpolation_emits_brz() {
-    let src = r#"
-in player: character
-on player {
-  var x: int = 42
-  player.DisplayText("value=${x}", fontSize = 30, lifetime = 10.0, textId = 1)
-}"#;
-    let r = compile(src);
-    assert_no_errors(&r);
-    let lr = crate::layout::layout(&r.module);
-    let brz = crate::emit::emit_brz(&r.module, &Default::default(), &lr, &Default::default());
-    assert!(
-        brz.is_ok(),
-        "string interpolation should emit valid brz: {:?}",
-        brz.err()
     );
 }
 
@@ -1165,12 +906,12 @@ on t {
   byId.set(1, e)
   pos.set("spawn", Vec(0.0, 0.0, 0.0))
 }"#;
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(!has_gate(&r, "_Unsupported"), "map methods lowered to _Unsupported");
-    let lr = crate::layout::layout(&r.module);
-    let brz = crate::emit::emit_brz(&r.module, &Default::default(), &lr, &Default::default());
-    assert!(brz.is_ok(), "map program should emit valid brz: {:?}", brz.err());
+    let r = compile_ok(src);
+    assert!(
+        !has_unsupported(&r.module),
+        "map methods lowered to _Unsupported"
+    );
+    assert_emits(&r.module, &crate::layout::layout(&r.module));
 }
 
 #[test]
@@ -1185,30 +926,16 @@ var teams: Map<string, string> = { \"red\" => \"f00\" }
 in k: string
 let color = teams.get(k, exec = Change(k).exec)
 out status: string = color";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     assert!(
-        !has_gate(&r, "_Unsupported"),
+        !has_unsupported(&r.module),
         "pure-context map get with exec= must not lower to _Unsupported"
     );
-    assert!(
-        has_gate(&r, crate::ir::gate_class::MAP_GET),
+    assert_eq!(
+        count_class(&r.module, gc::MAP_GET),
+        1,
         "expected a Map_Get gate for the pure-context map get"
     );
-}
-
-#[test]
-fn baked_map_literal_emits_brz() {
-    // A constant map literal bakes into the Pseudo_MapVar's InitialValue;
-    // this exercises the populated-variant emit path end to end.
-    let src =
-        "var scores: Map<int, int> = { :red => 10, :blue => 20 }\nin t: exec\non t { let g = scores.get(:red) }\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let lr = crate::layout::layout(&r.module);
-    let brz = crate::emit::emit_brz(&r.module, &Default::default(), &lr, &Default::default());
-    assert!(brz.is_ok(), "baked map literal should emit valid brz: {:?}", brz.err());
-    assert!(!brz.unwrap().is_empty(), "brz bytes should be non-empty");
 }
 
 #[test]
@@ -1216,43 +943,65 @@ fn emit_value_inside_chip_handler_assigns_outputs() {
     // Init-style chips mint values in an `on` handler and emit them into
     // their outputs. The WS013 unassigned-output check must count `emit`
     // (including nested in handlers), and lowering must accept the shape.
-    let src = "chip Init(t: exec) -> (code: int, done: exec) {\n  on t {\n    emit code = 7\n    emit done\n  }\n}\nin s: exec\nlet r = Init(s)\nout v = r.code";
-    let parsed = crate::parser::parse(src, "test");
-    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        tc.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected typecheck errors: {:?}",
-        tc.diagnostics
+    compile_ok(
+        "chip Init(t: exec) -> (code: int, done: exec) {\n  on t {\n    emit code = 7\n    emit done\n  }\n}\nin s: exec\nlet r = Init(s)\nout v = r.code",
     );
-    let r = compile(src);
-    assert_no_errors(&r);
 }
 
+/// A chip body's push runs on the exec that drives the body: its exec param's
+/// `on init { }` handler (the param does not invoke the body by itself), or an
+/// `exec =` named arg outside an exec context. The push is exec-wired in the
+/// child module and the caller wires the body's exec boundary input.
 #[test]
-fn exec_param_handler_drives_chip_body() {
-    // The `on init { }` handler is how a chip body binds work to its exec
-    // param - the param must NOT implicitly invoke the body (exec-context
-    // callers already get exec-driven bodies via the auto-exec boundary).
-    // The push gate inside the child module must be wired from the handler.
-    // State comes in through a record-of-arrays param here; free top-level
-    // references also work (see named_chip_body_captures_top_level_state).
-    let src = "var names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(init: exec, tables: Tables) -> (code: int) {\n  on init {\n    tables.names.push(\"a\")\n    emit code = 5\n  }\n}\nin s: exec\nlet r = Init(s, TB)\nout v = r.code";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let child = only_chip(&r, "chip instance should produce a child module");
-    let push = child
-        .nodes
-        .values()
-        .find(|n| n.gate_class == "BrickComponentType_Exec_ArrayVar_Push")
-        .expect("child module should contain the push gate");
-    let push_exec_wired = child.wires.iter().any(|w| w.target.node_id == push.id);
-    assert!(
-        push_exec_wired,
-        "push gate should be driven by the chip's exec param"
-    );
+fn a_chip_body_push_is_driven_by_the_exec_given_to_the_body() {
+    let tables =
+        "var names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\n";
+    let rows = [
+        format!(
+            "{tables}chip Init(init: exec, tables: Tables) -> (code: int) {{\n  on init {{\n    tables.names.push(\"a\")\n    \
+             emit code = 5\n  }}\n}}\nin s: exec\nlet r = Init(s, TB)\nout v = r.code"
+        ),
+        format!(
+            "{tables}chip Init(tables: Tables) -> (code: int) {{\n  tables.names.push(\"a\")\n  emit code = 5\n}}\n\
+             in s: exec\nlet r = Init(TB, exec = s)\nout v = r.code"
+        ),
+        "var names: string[]\nvar count: int = 0\nchip Init() -> (code: int) {\n  names.push(\"a\")\n  count = count + 1\n  \
+         emit code = 7\n}\nin s: exec\nlet r = Init(exec = s)\nout v = r.code"
+            .to_string(),
+    ];
+    let mut failures = Vec::new();
+    for src in &rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        let Some(child) = r
+            .module
+            .chips
+            .values()
+            .next()
+            .filter(|_| r.module.chips.len() == 1)
+        else {
+            failures.push(format!(
+                "{src}\n  {} instances, errors {errors:?}",
+                r.module.chips.len()
+            ));
+            continue;
+        };
+        let pushes = nodes_of(child, gc::ARRAY_PUSH);
+        let push_wired =
+            pushes.len() == 1 && child.wires.iter().any(|w| w.target.node_id == pushes[0].id);
+        let exec_in_wired = r
+            .module
+            .wires
+            .iter()
+            .any(|w| child.inputs.contains(&w.target.node_id));
+        if !errors.is_empty() || !push_wired || !exec_in_wired {
+            failures.push(format!(
+                "{src}\n  errors {errors:?}, {} pushes, push wired {push_wired}, boundary input wired {exec_in_wired}",
+                pushes.len()
+            ));
+        }
+    }
+    report_failures(&failures, rows.len());
 }
 
 #[test]
@@ -1265,10 +1014,8 @@ fn entity_setters_compile_to_brz() {
         e.SetRotation(Rotation(0.0, 90.0, 0.0))\n  \
         e.SetVelocity(Vec(0.0, 0.0, 10.0))\n  \
         e.Teleport(d)\n}";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let lr = crate::layout::layout(&r.module);
-    assert_emits(&r.module, &lr);
+    let r = compile_ok(src);
+    assert_emits(&r.module, &crate::layout::layout(&r.module));
 }
 
 #[test]
@@ -1279,20 +1026,27 @@ fn entity_setter_embeds_vector_literal() {
     let src = "in trigger: exec\nin e: entity\non trigger {\n  \
         e.SetLocation(Vec(1.0, 2.0, 3.0))\n  \
         e.SetRotation(Rotation(0.0, 90.0, 0.0))\n}";
-    let r = compile(src);
-    assert_no_errors(&r);
-    for class in [
-        crate::ir::gate_class::MAKE_VECTOR,
-        crate::ir::gate_class::MAKE_ROTATION,
-    ] {
+    let r = compile_ok(src);
+    for class in [gc::MAKE_VECTOR, gc::MAKE_ROTATION] {
         assert!(
-            !r.module.nodes.values().any(|n| n.gate_class == class),
+            !has_gate_deep(&r, class),
             "literal args should embed as gate data, not spawn {class}"
         );
     }
+    let set_loc = find_gate(&r, gc::ENTITY_SET_LOCATION);
+    assert_eq!(
+        r.module.nodes[&set_loc]
+            .properties
+            .get(&crate::intern::intern("Vector")),
+        Some(&Literal::Vector {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0
+        }),
+        "the folded vector should ride the gate's data properties"
+    );
     // and the emit path serializes the embedded f64 struct values
-    let lr = crate::layout::layout(&r.module);
-    assert_emits(&r.module, &lr);
+    assert_emits(&r.module, &crate::layout::layout(&r.module));
 }
 
 #[test]
@@ -1303,10 +1057,8 @@ fn spawn_prefab_compiles_to_brz() {
     // Covers both the bare call and the full argument set.
     let src = "in trigger: exec\non trigger {\n  let car = SpawnPrefab()\n  \
         let boat = SpawnPrefab(offset = Vec(0.0, 0.0, 50.0), rotation = Rotation(0.0, 90.0, 0.0), velocity = Vec(0.0, 0.0, 100.0), lifetime = 10.0, limit = 5)\n}";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let lr = crate::layout::layout(&r.module);
-    assert_emits(&r.module, &lr);
+    let r = compile_ok(src);
+    assert_emits(&r.module, &crate::layout::layout(&r.module));
 }
 
 /// Assert a compiled `SpawnPrefab` call has no `_Unsupported` placeholder
@@ -1317,13 +1069,9 @@ fn spawn_prefab_compiles_to_brz() {
 fn assert_prefab_property_baked(r: &LowerResult, expected_path: &str) {
     assert_no_errors(r);
     assert!(
-        !r.module.nodes.values().any(|n| n.gate_class == gc::UNSUPPORTED),
+        !has_unsupported(&r.module),
         "no _Unsupported placeholder gate should be emitted: {:?}",
-        r.module
-            .nodes
-            .values()
-            .map(|n| (n.id, n.gate_class))
-            .collect::<Vec<_>>()
+        r.module.nodes
     );
     let spawner = find_gate(r, gc::PREFAB_SPAWNER);
     let node = &r.module.nodes[&spawner];
@@ -1374,12 +1122,10 @@ fn spawn_prefab_destroy_all_wires_a_local_exec_signal() {
     // into the const env, `destroyAll = sig` folds the name to `0` and inlines it
     // as a config property, emitting NO wire (the spawned prefabs are then never
     // destroyed).
-    use crate::ir::port_registry::WirePort;
     let src = "in fire: exec\nin go: exec\nlet sig: exec\nvar made: int = 0\n\
                on fire { emit sig }\n\
                on go { let e = SpawnPrefab(prefab = $./foo.brz, destroyAll = sig)\n  made = made + 1 }";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let spawner = find_gate(&r, gc::PREFAB_SPAWNER);
     assert!(
         r.module
@@ -1398,39 +1144,11 @@ fn spawn_prefab_destroy_all_wires_a_local_exec_signal() {
 }
 
 #[test]
-fn exec_named_arg_drives_chip_body_outside_exec_context() {
-    // Outside exec contexts, exec chips take their trigger as an `exec =`
-    // named arg: `let r = Init(TB, exec = s)` at top level. The body's push
-    // gate must be exec-wired, not silently dead.
-    let src = "var names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nlet r = Init(TB, exec = s)\nout v = r.code";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let child = only_chip(&r, "chip instance should produce a child module");
-    let push = child
-        .nodes
-        .values()
-        .find(|n| n.gate_class == "BrickComponentType_Exec_ArrayVar_Push")
-        .expect("child module should contain the push gate");
-    let push_exec_wired = child.wires.iter().any(|w| w.target.node_id == push.id);
-    assert!(
-        push_exec_wired,
-        "push gate should be driven via the exec named arg"
-    );
-    // The exec boundary input must exist and be wired from the caller side.
-    let exec_in = child
-        .inputs
-        .iter()
-        .any(|nid| child.nodes.get(nid).is_some());
-    assert!(exec_in, "child should expose its exec boundary input");
-}
-
-#[test]
 fn exec_arg_call_exposes_exec_field() {
     // A chip call with `exec =` also returns the chip's completion exec as an
     // `exec` record field: `let r = Init(TB, exec = s)` ... `on r.exec { }`.
     let src = "var names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nlet r = Init(TB, exec = s)\nvar hit: int = 0\non r.exec { hit = hit + 1 }\nout v = r.code";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let child = only_chip(&r, "chip instance should produce a child module");
     let exec_out = *child
         .outputs
@@ -1444,108 +1162,95 @@ fn exec_arg_call_exposes_exec_field() {
     );
 }
 
-#[test]
-fn named_chip_body_captures_top_level_state() {
-    // Free references to top-level arrays/vars inside a named chip body
-    // resolve against the caller's scope — wire refs cross chip boundaries,
-    // so the body's gates connect to the outer nodes directly.
-    let src = "var names: string[]\nvar count: int = 0\nchip Init() -> (code: int) {\n  names.push(\"a\")\n  count = count + 1\n  emit code = 7\n}\nin s: exec\nlet r = Init(exec = s)\nout v = r.code";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let child = only_chip(&r, "chip instance should produce a child module");
-    let push = child
-        .nodes
-        .values()
-        .find(|n| n.gate_class == "BrickComponentType_Exec_ArrayVar_Push")
-        .expect("child module should contain the push gate");
-    let push_wired = child.wires.iter().any(|w| w.target.node_id == push.id);
-    assert!(push_wired, "free-array push should be exec-wired");
-}
-
 // ── Use-before-declaration guard (WS021) ──
 
+/// A body reading a top-level `let` declared below its call, or a call before
+/// its mod's declaration, is WS021 once per read or call (it would lower to an
+/// `_Unsupported` reading 0). The same programs declared first, and a call of
+/// a name that is no chip or mod, are not.
 #[test]
-fn use_before_declaration_is_ws021() {
-    // A handler transitively calls `target`, declared later in source. Chips/mods
-    // register into scope in source order, so the call cannot resolve during
-    // lowering: it would otherwise become an `_Unsupported` gate that silently
-    // reads its default (0) at runtime. It must be a hard error instead.
-    let src = "in z: exec\n\
-        mod caller() { let x = target(1) BroadcastChatMessage(\"${x}\") }\n\
-        on z { caller() }\n\
-        mod target(n: int) -> int { return n + 1 }\n";
-    let r = compile(src);
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS021"),
-        "use-before-declaration must emit WS021; got {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn a_body_reading_a_let_declared_after_its_call_is_ws021() {
-    // A chip body reads the top-level `let`s where it is called, and `A`/`B`
-    // are declared below the call, so nothing is bound for them yet. Both
-    // lowered to `_Unsupported` gates reading 0 with only a WSP001 warning.
-    let src = "in n: int\nin m: int\n\
-        chip show(s: int) -> int {\n  return s + A + B\n}\n\
-        out b = show(n)\n\
-        let A = n * 2\nlet B = m * 2\nout a = A\n";
-    let r = compile(src);
-    let ws021 = r.diagnostics.iter().filter(|d| d.code == "WS021").count();
-    assert_eq!(ws021, 2, "each of `A` and `B` must be WS021; got {:?}", r.diagnostics);
-
-    // Declared above the call, the same body compiles.
-    let ok = "in n: int\nin m: int\n\
-        chip show(s: int) -> int {\n  return s + A + B\n}\n\
-        let A = n * 2\nlet B = m * 2\n\
-        out b = show(n)\nout a = A\n";
-    assert_no_errors(&compile(ok));
-}
-
-#[test]
-fn declaration_before_use_is_not_ws021() {
-    // Same program, `target` declared before its caller: resolves normally.
-    let src = "in z: exec\n\
-        mod target(n: int) -> int { return n + 1 }\n\
-        mod caller() { let x = target(1) BroadcastChatMessage(\"${x}\") }\n\
-        on z { caller() }\n";
-    let r = compile(src);
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WS021"),
-        "declaration-before-use must NOT emit WS021; got {:?}",
-        r.diagnostics
-    );
+fn a_use_before_its_declaration_is_ws021_once_per_use() {
+    // (program, WS021 count, their lines where pinned, compiles clean)
+    let rows: [(&str, usize, &[u32], bool); 6] = [
+        // A chip body reads the top-level `let`s where it is called; both were
+        // `_Unsupported` gates reading 0 with only a WSP001 warning.
+        (
+            "in n: int\nin m: int\nchip show(s: int) -> int {\n  return s + A + B\n}\nout b = show(n)\n\
+             let A = n * 2\nlet B = m * 2\nout a = A\n",
+            2,
+            &[],
+            false,
+        ),
+        (
+            "in n: int\nin m: int\nchip show(s: int) -> int {\n  return s + A + B\n}\nlet A = n * 2\nlet B = m * 2\n\
+             out b = show(n)\nout a = A\n",
+            0,
+            &[],
+            true,
+        ),
+        // Type checking and lowering each reported a call before its declaration.
+        (
+            "in go: exec\nvar n: int = 0\non go {\n  n = late(1)\n  n = late(2)\n}\nmod late(a: int) -> int { return a }",
+            2,
+            &[4, 5],
+            false,
+        ),
+        (
+            "in n: int\nin go: exec\nvar v: int = 0\nmod f() -> int { return A }\non go { v = f() }\nlet A = n * 2",
+            1,
+            &[],
+            false,
+        ),
+        (
+            "in z: exec\nmod target(n: int) -> int { return n + 1 }\n\
+             mod caller() { let x = target(1) BroadcastChatMessage(\"${x}\") }\non z { caller() }\n",
+            0,
+            &[],
+            true,
+        ),
+        // `vec` is no declared chip or mod: the placeholder path, not WS021.
+        ("let v = vec(1.0, 2.0, 3.0)\n", 0, &[], false),
+    ];
+    let mut failures = Vec::new();
+    for (src, count, lines, clean) in rows {
+        let r = compile(src);
+        let got: Vec<u32> = r
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "WS021")
+            .map(|d| d.range.start.line)
+            .collect();
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        if got.len() != count
+            || (!lines.is_empty() && got != lines)
+            || (clean && !errors.is_empty())
+        {
+            failures.push(format!(
+                "{src}\n  WS021 at {got:?} (want {count} {lines:?}), errors {errors:?}"
+            ));
+        }
+    }
+    report_failures(&failures, rows.len());
 }
 
 // ── `in` array inputs are first-class ──
 
+/// An `in X: T[]` input works like a var array: indexed, its methods called,
+/// and passed to an inline mod's `int[]` param, whose reads resolve to the
+/// input's ref.
 #[test]
-fn in_array_supports_methods_and_index() {
-    // An `in X: T[]` input must work like a var array: index AND methods.
-    let src = "in counts: int[]\nin z: exec\n\
-        on z { let a = counts[0]  let b = counts.length()  BroadcastChatMessage(\"${a} ${b}\") }";
-    let r = compile(src);
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
-        "input-array index/method must lower (no placeholder); got {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn in_array_passes_to_inline_mod() {
-    // Passing an `in` array to an inline mod's `int[]` param must bind it, so
-    // the mod body's reads resolve to the input's ref.
-    let src = "in counts: int[]\nvar dst: int[]\nin z: exec\n\
-        mod f(a: int[], d: int[]) { d.clear()  d.push(a[0])  BroadcastChatMessage(\"${a.length()}\") }\n\
-        on z { f(counts, dst) }";
-    let r = compile(src);
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
-        "input array passed to inline mod must bind (no placeholder); got {:?}",
-        r.diagnostics
-    );
+fn an_in_array_is_indexed_called_and_passed_like_a_var_array() {
+    for src in [
+        "in counts: int[]\nin z: exec\n\
+         on z { let a = counts[0]  let b = counts.length()  BroadcastChatMessage(\"${a} ${b}\") }",
+        "in counts: int[]\nvar dst: int[]\nin z: exec\n\
+         mod f(a: int[], d: int[]) { d.clear()  d.push(a[0])  BroadcastChatMessage(\"${a.length()}\") }\n\
+         on z { f(counts, dst) }",
+    ] {
+        let r = compile_ok(src);
+        assert_no_code(&r.diagnostics, "WSP001");
+        assert!(!has_unsupported(&r.module), "{src}");
+    }
 }
 
 // ── Namespaced (`import * as`) mods resolve their siblings ──
@@ -1563,29 +1268,13 @@ fn namespaced_mod_resolves_siblings() {
           let h = helper(i)\n\
           ctrl.DisplayText(\"hi\", positionX = v, fontSize = h)\n\
         }";
-    let diags = lower_with_imports(
+    let r = compile_multi(
         "import * as lib from \"lib\"\non ControllerJoined() -> { controller: c, userId: uid } { lib.draw(c, 0) }",
         &[("lib", lib)],
     );
-    assert!(
-        !diags.iter().any(|d| d.code == "WSP001"),
-        "namespaced mod's sibling refs must resolve (no placeholder); got {:?}",
-        diags
-    );
-}
-
-#[test]
-fn unknown_non_function_call_is_not_ws021() {
-    // A call to a name that is NOT a declared chip/mod (here `vec`, a builtin the
-    // lowerer doesn't implement) must keep the "unsupported placeholder" path,
-    // not be reported as a use-before-declaration.
-    let src = "let v = vec(1.0, 2.0, 3.0)\n";
-    let r = compile(src);
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WS021"),
-        "unimplemented builtin must NOT emit WS021; got {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
+    assert_no_code(&r.diagnostics, "WSP001");
+    assert!(!has_unsupported(&r.module));
 }
 
 #[test]
@@ -1603,8 +1292,7 @@ var acc: int = 0
 in t: exec
 chip Bump(n: int) { acc = acc + n }
 on t { Bump(1) Bump(2) }";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
 
     // Only the real `acc` variable is left in the caller; no constant-carrying
     // gate remains feeding a chip boundary.
@@ -1664,17 +1352,19 @@ on t {
   if HasMapElement(m, \"a\") { v = g + mv.Value + el.Value }
 }
 out o = v";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(!has_gate(&r, "_Unsupported"), "gate builtins must not lower to _Unsupported");
+    let r = compile_ok(src);
+    assert!(
+        !has_unsupported(&r.module),
+        "gate builtins must not lower to _Unsupported"
+    );
     for cls in [
-        "BrickComponentType_Exec_Var_Set",
-        "BrickComponentType_Exec_Var_Increment",
-        "BrickComponentType_Exec_ArrayVar_Push",
-        "BrickComponentType_Exec_ArrayVar_SetAtIndex",
-        "BrickComponentType_Exec_MapVar_Set",
-        "BrickComponentType_Exec_MapVar_Get",
-        "BrickComponentType_Exec_MapVar_Has",
+        gc::VAR_SET,
+        gc::VAR_INCREMENT,
+        gc::ARRAY_PUSH,
+        gc::ARRAY_SET_AT_INDEX,
+        gc::MAP_SET,
+        gc::MAP_GET,
+        gc::MAP_HAS,
     ] {
         assert!(has_gate(&r, cls), "expected gate {cls} from a builtin");
     }
@@ -1695,11 +1385,13 @@ on merged { x = 1 }
 on Branch(c, a).A { x = 2 }
 on Branch(c, a).B { x = 3 }
 out o = x";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(!has_gate(&r, "_Unsupported"), "Union/Branch must not lower to _Unsupported");
-    assert!(has_gate(&r, "BrickComponentType_Exec_Union"), "expected an Exec_Union gate");
-    assert!(has_gate(&r, "BrickComponentType_Exec_Branch"), "expected an Exec_Branch gate");
+    let r = compile_ok(src);
+    assert!(
+        !has_unsupported(&r.module),
+        "Union/Branch must not lower to _Unsupported"
+    );
+    assert!(has_gate(&r, gc::UNION), "expected an Exec_Union gate");
+    assert!(has_gate(&r, gc::BRANCH), "expected an Exec_Branch gate");
 }
 
 #[test]
@@ -1718,49 +1410,22 @@ on t {
   GetPlayersInZone(players, zoneA)
   GetEntitiesInZone(ents, zoneA)
 }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(!has_gate(&r, "_Unsupported"), "fill builtins must not lower to _Unsupported");
+    let r = compile_ok(src);
+    assert!(
+        !has_unsupported(&r.module),
+        "fill builtins must not lower to _Unsupported"
+    );
     for cls in [
-        "BrickComponentType_Exec_Gamemode_FillArrayFromPlayers",
-        "BrickComponentType_Exec_Gamemode_FillArrayFromTeamMembers",
-        "BrickComponentType_Exec_Zone_GetPlayers",
-        "BrickComponentType_Exec_Zone_GetEntities",
+        gc::GAMEMODE_FILL_FROM_PLAYERS,
+        gc::GAMEMODE_FILL_FROM_TEAM,
+        gc::ZONE_GET_PLAYERS,
+        gc::ZONE_GET_ENTITIES,
     ] {
         assert!(has_gate(&r, cls), "expected gate {cls} from a fill builtin");
     }
 }
 
 // ── Template cache must key on call-site context, not the bare name ──
-
-/// No input port anywhere (top-level module or any nested chip body) may take
-/// more than one incoming wire. Two wires into one port is a load-time fan-in
-/// failure in-game — never a valid program — so this is a universal invariant.
-fn assert_no_port_fanin(r: &LowerResult) {
-    fn check(m: &crate::ir::Module, path: &str) {
-        let mut counts: crate::collections::HashMap<(crate::ir::NodeId, WirePort), usize> =
-            crate::collections::HashMap::default();
-        for w in &m.wires {
-            // `WirePort::Layout` edges are synthetic placement hints, not wires:
-            // boundary_pins skips them and emit does not turn them into
-            // connections, so several into one node is normal.
-            if w.target.port == WirePort::Layout || w.source.port == WirePort::Layout {
-                continue;
-            }
-            *counts.entry((w.target.node_id, w.target.port)).or_insert(0) += 1;
-        }
-        for ((node, port), count) in &counts {
-            assert!(
-                *count <= 1,
-                "fan-in in {path}: {count} wires into {node:?}.{port:?}"
-            );
-        }
-        for (id, child) in &m.chips {
-            check(child, &format!("{path}/chip[{id:?}]"));
-        }
-    }
-    check(&r.module, "root");
-}
 
 #[test]
 fn pure_then_exec_chip_call_gets_its_own_exec_body() {
@@ -1775,8 +1440,7 @@ let pure = Double(3)
 in go: exec
 var r: int = 0
 on go { r = Double(4) }";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     // Two Double instances: the pure one exposes only `y`; the exec one also
     // carries an `_exec_out` boundary pin. (Assert on OUTPUTS, not inputs — both
     // calls pass a constant, so const-folding drops the `v` input pin either
@@ -1794,7 +1458,7 @@ on go { r = Double(4) }";
         vec![1, 2],
         "the exec-context call must get an `_exec_out` pin (2 outputs) while the pure one stays pin-less (1); got {out_counts:?}"
     );
-    assert_no_port_fanin(&r);
+    assert_no_fan_in(&r.module, "root");
 }
 
 #[test]
@@ -1813,9 +1477,8 @@ on go {
   SumInto(xs)
   SumInto(ys)
 }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert_no_port_fanin(&r);
+    let r = compile_ok(src);
+    assert_no_fan_in(&r.module, "root");
 }
 
 #[test]
@@ -1839,13 +1502,8 @@ on go {
     assert_no_errors(&r);
     // ns_two's body calls GetUnixTime (gate class `..._GetUnixEpoch`); if the
     // 2nd call wrongly got ns_one's const-100 body, no such gate exists anywhere.
-    let has_unix = r
-        .module
-        .chips
-        .values()
-        .any(|c| c.nodes.values().any(|n| n.gate_class.contains("UnixEpoch")));
     assert!(
-        has_unix,
+        has_gate_deep(&r, gc::GET_UNIX_EPOCH),
         "ns_two.Helper's GetUnixTime (GetUnixEpoch) must be present; the 2nd call got ns_one's body"
     );
 }
@@ -1868,9 +1526,8 @@ chip pick() -> (v: int) {
   return 2
 }
 on go { r = pick() }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert_no_port_fanin(&r);
+    let r = compile_ok(src);
+    assert_no_fan_in(&r.module, "root");
     let chip = r
         .module
         .chips
@@ -1893,7 +1550,7 @@ on go { r = pick() }";
     );
     let feeder = &chip.nodes[&into_val[0].source.node_id];
     assert!(
-        feeder.gate_class.contains("Var_Get"),
+        feeder.gate_class == gc::VAR_GET,
         "value output must be fed by the return Var_Get, got {}",
         feeder.gate_class
     );
@@ -1903,10 +1560,7 @@ on go { r = pick() }";
         .values()
         .filter(|n| n.note == Some("ret_set"))
         .count();
-    assert!(
-        set_count >= 2,
-        "expected a Var_Set per return (>=2), got {set_count}"
-    );
+    assert_eq!(set_count, 2, "a Var_Set per return");
 }
 
 // ── Multiple `emit out = v` sites must not fan in on the output ──
@@ -1923,9 +1577,8 @@ in a: exec
 in b: exec
 on a { emit result = 1 }
 on b { emit result = 2 }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert_no_port_fanin(&r);
+    let r = compile_ok(src);
+    assert_no_fan_in(&r.module, "root");
     // A backing PseudoVar, written by a Var_Set on each handler (2).
     let set_count = r
         .module
@@ -1933,10 +1586,7 @@ on b { emit result = 2 }";
         .values()
         .filter(|n| n.note == Some("out_set"))
         .count();
-    assert!(
-        set_count >= 2,
-        "expected a Var_Set per emit site (>=2), got {set_count}"
-    );
+    assert_eq!(set_count, 2, "a Var_Set per emit site");
     assert!(
         r.module
             .nodes
@@ -1958,9 +1608,8 @@ var v: int = 7
 in a: exec
 in b: exec
 on a | b { emit result = v }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert_no_port_fanin(&r);
+    let r = compile_ok(src);
+    assert_no_fan_in(&r.module, "root");
     assert!(
         r.module
             .nodes
@@ -1979,9 +1628,8 @@ var v: int = 7
 in a: exec
 in b: exec
 chip on a | b { emit result = v }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert_no_port_fanin(&r);
+    let r = compile_ok(src);
+    assert_no_fan_in(&r.module, "root");
 }
 
 #[test]
@@ -2000,8 +1648,7 @@ on go {
   await Emitter()
   n = 1
 }";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     let chip = r
         .module
         .chips
@@ -2030,9 +1677,8 @@ fn single_emit_to_output_keeps_direct_wire() {
 out result: int
 in a: exec
 on a { emit result = 42 }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert_no_port_fanin(&r);
+    let r = compile_ok(src);
+    assert_no_fan_in(&r.module, "root");
     assert!(
         !r.module
             .nodes
@@ -2048,7 +1694,7 @@ fn exec_call_initializer_in_a_handler_nested_chip_runs_on_the_chain() {
     // declaration there initializes as it does one level up. The purity rule is
     // for a top-level chip inheriting a leaked exec; here it dropped the
     // initializer entirely, no chip instance and no Var_Set.
-    let r = compile(
+    let r = compile_ok(
         "chip MyExecChip() -> (r: int) {\n\
            let t = ReadBrickGrid().GetLocationRotation()\n\
            return 1\n\
@@ -2057,110 +1703,44 @@ fn exec_call_initializer_in_a_handler_nested_chip_runs_on_the_chain() {
            chip { var helo = MyExecChip() }\n\
          }\n",
     );
-    assert_no_errors(&r);
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_Exec_Var_Set"),
+        count_class(&r.module, gc::VAR_SET),
         1,
         "the initializer must write the var"
     );
     assert!(
-        count_class(&r.module, "BrickComponentType_Internal_ReadBrickGrid") > 0,
+        count_class(&r.module, gc::READ_BRICK_GRID) == 1,
         "the called chip must be instantiated"
     );
 }
 
+/// A field read on a multi-output chip call projects the named output, inline
+/// (`Pair(n).hi`) or through a `let`. The inline call has no record and its
+/// outputs are rerouters, so only the positional pin mapping resolves the
+/// field; both spellings are checked so they cannot drift apart.
 #[test]
-fn a_top_level_chip_after_a_handler_keeps_pure_declarations() {
-    // What the purity rule is for: a top-level `chip { }` after a handler
-    // inherits its `current_exec`, but its declarations are reactive signal
-    // flow, not one-shot reads on that chain.
-    let r = compile(
-        "var src: int = 0\n\
-         in go: exec\n\
-         on go { src = 1 }\n\
-         chip { let doubled = src * 2\nout d = doubled }\n",
-    );
-    assert_no_errors(&r);
-    // A pure read, not an `Exec_Var_Get` latched onto the handler's chain.
-    assert!(
-        !has_gate(&r, "BrickComponentType_Exec_Var_Get"),
-        "chip-level `let` must read the var continuously, not once on the chain"
-    );
-}
-
-/// `Pair(n).hi`, a field read INLINE on a multi-output chip call with no
-/// intermediate `let`, projects the named output. Such a call stashes no inline
-/// record and its outputs are rerouter nodes rather than ports on one gate, so
-/// only the positional pin mapping can resolve the field.
-#[test]
-fn inline_multi_output_chip_field_access_projects_the_named_output() {
-    let src = "in n: int\n\
-               chip Pair(v: int) -> (lo: int, hi: int) {\n\
-                 out lo = v - 1\n\
-                 out hi = v + 1\n\
-               }\n\
-               out total = Pair(n).hi\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
-        "inline Chip().field must project the field, not placeholder: {:?}",
-        r.diagnostics
-    );
-
-    // Not merely "no placeholder": it must pick the SECOND output pin. Falling
-    // back to the call's primary value port would also drop the placeholder
-    // while silently reading `lo`.
-    let chip = only_chip(&r, "the Pair chip instance");
-    let hi_pin = chip.outputs[1];
-    let lo_pin = chip.outputs[0];
-    let total = *r.module.outputs.first().expect("the `total` output pin");
-    assert!(
-        wired_reachable(&r, hi_pin, total),
-        "`total` must be driven by the `hi` pin"
-    );
-    assert!(
-        !wired_reachable(&r, lo_pin, total),
-        "`total` must NOT be driven by the `lo` pin"
-    );
-}
-
-/// The same projection through an intermediate `let`, kept beside the inline
-/// case so the two spellings cannot drift apart.
-#[test]
-fn let_bound_multi_output_chip_field_access_matches_the_inline_form() {
-    let src = "in n: int\n\
-               chip Pair(v: int) -> (lo: int, hi: int) {\n\
-                 out lo = v - 1\n\
-                 out hi = v + 1\n\
-               }\n\
-               let p = Pair(n)\n\
-               out total = p.hi\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
-        "let-bound Chip().field must project the field: {:?}",
-        r.diagnostics
-    );
-    let chip = r.module.chips.values().next().expect("the Pair instance");
-    let total = *r.module.outputs.first().expect("the `total` output pin");
-    assert!(wired_reachable(&r, chip.outputs[1], total));
-    assert!(!wired_reachable(&r, chip.outputs[0], total));
-}
-
-/// Count nodes whose gate class contains `needle`, anywhere in the chip tree.
-fn gate_count_deep(module: &crate::ir::Module, needle: &str) -> usize {
-    module
-        .nodes
-        .values()
-        .filter(|n| n.gate_class.contains(needle))
-        .count()
-        + module
-            .chips
-            .values()
-            .map(|c| gate_count_deep(c, needle))
-            .sum::<usize>()
+fn a_multi_output_chip_field_read_projects_the_named_output() {
+    let decl = "in n: int\nchip Pair(v: int) -> (lo: int, hi: int) {\n  out lo = v - 1\n  out hi = v + 1\n}\n";
+    for read in [
+        "out total = Pair(n).hi\n",
+        "let p = Pair(n)\nout total = p.hi\n",
+    ] {
+        let r = compile_ok(&format!("{decl}{read}"));
+        assert_no_code(&r.diagnostics, "WSP001");
+        // Not merely "no placeholder": it must pick the SECOND output pin.
+        // Falling back to the call's primary value port would also drop the
+        // placeholder while silently reading `lo`.
+        let chip = only_chip(&r, "the Pair chip instance");
+        let total = *r.module.outputs.first().expect("the `total` output pin");
+        assert!(
+            wired_reachable(&r, chip.outputs[1], total),
+            "{read}: `total` must be driven by the `hi` pin"
+        );
+        assert!(
+            !wired_reachable(&r, chip.outputs[0], total),
+            "{read}: `total` must NOT be driven by the `lo` pin"
+        );
+    }
 }
 
 /// An anonymous `chip { }` body shares the top level, and its statements name
@@ -2171,16 +1751,8 @@ fn gate_count_deep(module: &crate::ir::Module, needle: &str) -> usize {
 #[test]
 fn a_top_level_name_beside_anon_chip_storage_hides_nothing_from_the_chip() {
     // A gate is labelled with the name it stores or binds.
-    let outcome = |src: &str, fold: bool| {
-        let mut o = super::shadow_differential::outcome(src, &[], fold);
-        let named = |t: &&str| t.starts_with("_bindname=") || t.starts_with("_label=");
-        for s in &mut o.shape {
-            *s = s.split(' ').filter(|t| !t.is_empty() && !named(t)).collect::<Vec<_>>().join(" ");
-        }
-        o.shape.sort();
-        o.comps.retain(|c| !c.starts_with("BrickComponentData_TextDisplay"));
-        o
-    };
+    let outcome =
+        |src: &str, fold: bool| without_names(super::shadow_differential::outcome(src, &[], fold));
     let head = "in go: exec\nin a: int\nvar n: int = 0\nout on1: int = n\n";
     for body in [
         "const @ = 4\nchip { var x: int = 9\n on go { n = x } }",
@@ -2209,11 +1781,20 @@ fn a_top_level_name_beside_anon_chip_storage_hides_nothing_from_the_chip() {
     // A top-level `let` beside top-level storage of its name hides it from
     // its position on (`WS108`).
     let twice = format!("{head}buffer x: int = x + 1\nlet x = ServerUptime()\non x {{ n = 1 }}");
-    let renamed = format!("{head}buffer x0: int = x0 + 1\nlet x = ServerUptime()\non x {{ n = 1 }}");
+    let renamed =
+        format!("{head}buffer x0: int = x0 + 1\nlet x = ServerUptime()\non x {{ n = 1 }}");
     for fold in [false, true] {
         let (got, want) = (outcome(&twice, fold), outcome(&renamed, fold));
-        assert!(got.compiled && got.codes.contains(&"WS108".to_string()), "{:?}", got.codes);
-        assert_eq!((got.shape, got.comps), (want.shape, want.comps), "fold {fold}");
+        assert!(
+            got.compiled && got.codes.contains(&"WS108".to_string()),
+            "{:?}",
+            got.codes
+        );
+        assert_eq!(
+            (got.shape, got.comps),
+            (want.shape, want.comps),
+            "fold {fold}"
+        );
     }
 }
 
@@ -2227,16 +1808,8 @@ fn a_top_level_name_beside_anon_chip_storage_hides_nothing_from_the_chip() {
 /// the chip on, the top-level one.
 #[test]
 fn a_name_beside_anon_chip_storage_binds_one_declaration_at_each_place() {
-    let outcome = |src: &str, fold: bool| {
-        let mut o = super::shadow_differential::outcome(src, &[], fold);
-        let named = |t: &&str| t.starts_with("_bindname=") || t.starts_with("_label=");
-        for s in &mut o.shape {
-            *s = s.split(' ').filter(|t| !t.is_empty() && !named(t)).collect::<Vec<_>>().join(" ");
-        }
-        o.shape.sort();
-        o.comps.retain(|c| !c.starts_with("BrickComponentData_TextDisplay"));
-        o
-    };
+    let outcome =
+        |src: &str, fold: bool| without_names(super::shadow_differential::outcome(src, &[], fold));
     let head = "in go: exec\nin go2: exec\nin a: int\nvar n: int = 0\nout on1: int = n\nvar s: string = \"\"\nout os: string = s\n";
     let rows: [(&str, &str); 20] = [
         (
@@ -2244,35 +1817,86 @@ fn a_name_beside_anon_chip_storage_binds_one_declaration_at_each_place() {
             "const ch = \"evt\"\nchip { var @: string = \"chipvar\"\n on go { @ = \"y\" } }\n\
              on go2 { s = ch\n SendCustomEvent(ch, 1) }\non CustomEvent(\"evt\") -> (p: int) { n = p }",
         ),
-        ("x", "let x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1\n n = @ } }\non go2 { s = x }"),
-        ("x", "chip { var @: int = 9\n on go { @ += 1\n n = @ } }\nconst x = \"zz\"\non go2 { s = x }"),
+        (
+            "x",
+            "let x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1\n n = @ } }\non go2 { s = x }",
+        ),
+        (
+            "x",
+            "chip { var @: int = 9\n on go { @ += 1\n n = @ } }\nconst x = \"zz\"\non go2 { s = x }",
+        ),
         (
             "ch",
             "const ch = \"evt\"\non go2 { s = ch\n SendCustomEvent(ch, 1) }\nchip { var @: string = \"x\"\n on go { @ = \"y\" } }\n\
              on CustomEvent(\"evt\") -> (p: int) { n = p }",
         ),
-        ("x", "let x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1 } }\nmod rd() -> string { return x }\non go2 { s = rd() }"),
-        ("x", "mod rd() -> string { return x }\nlet x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1 } }\non go2 { s = rd() }"),
-        ("x", "let x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1 } }\nlet z = x\non go2 { s = z }"),
-        ("x", "let x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1 } }\nout ox: string = x"),
-        ("K", "const K = 3\nchip { var @: int = 9\n on go { @ += 1 } }\non go2 { n = K * 2 }"),
-        ("K", "const K = 3\nchip { var @: int = 9\n on go { n = @ * 2 } }"),
-        ("xs", "const xs = 4\nchip { var @: int[] = [1, 2]\n on go { @.push(a)\n n = @.length() } }\non go2 { n = xs }"),
+        (
+            "x",
+            "let x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1 } }\nmod rd() -> string { return x }\non go2 { s = rd() }",
+        ),
+        (
+            "x",
+            "mod rd() -> string { return x }\nlet x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1 } }\non go2 { s = rd() }",
+        ),
+        (
+            "x",
+            "let x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1 } }\nlet z = x\non go2 { s = z }",
+        ),
+        (
+            "x",
+            "let x = \"hello\"\nchip { var @: int = 9\n on go { @ += 1 } }\nout ox: string = x",
+        ),
+        (
+            "K",
+            "const K = 3\nchip { var @: int = 9\n on go { @ += 1 } }\non go2 { n = K * 2 }",
+        ),
+        (
+            "K",
+            "const K = 3\nchip { var @: int = 9\n on go { n = @ * 2 } }",
+        ),
+        (
+            "xs",
+            "const xs = 4\nchip { var @: int[] = [1, 2]\n on go { @.push(a)\n n = @.length() } }\non go2 { n = xs }",
+        ),
         (
             "mm",
             "let mm = a * 2\nchip { var @: Map<string, int> = {}\n on go { @.set(\"k\", a)\n n = @.get(\"k\").Value } }\n\
              on go2 { n = mm }",
         ),
-        ("x", "const x = 4\nchip { buffer @: int = 3\n on go { n = @ } }\non go2 { n = x }"),
-        ("x", "const x = 4\nchip { static var @: int = 9\n on go { @ += 1\n n = @ } }\non go2 { n = x * 2 }"),
-        ("K", "const @ = 3\non go { chip { var K: int = 9\n K += 1 }\n n = K * 2 }\non go2 { n = @ }"),
+        (
+            "x",
+            "const x = 4\nchip { buffer @: int = 3\n on go { n = @ } }\non go2 { n = x }",
+        ),
+        (
+            "x",
+            "const x = 4\nchip { static var @: int = 9\n on go { @ += 1\n n = @ } }\non go2 { n = x * 2 }",
+        ),
+        (
+            "K",
+            "const @ = 3\non go { chip { var K: int = 9\n K += 1 }\n n = K * 2 }\non go2 { n = @ }",
+        ),
         // A declaration written outside the chip reads the top level, called
         // from inside it; one written inside reads the chip's storage.
-        ("K", "const K = 3\nmod rd() -> int { return K * 2 }\nchip { var @: int = 9\n on go { n = rd() } }"),
-        ("x", "let x = \"top\"\nmod rd() -> string { return x }\nchip { var @: string = \"chip\"\n on go { s = rd() } }"),
-        ("x", "let x = \"top\"\nchip CX() -> (o: string) { out o = x }\nchip { var @: string = \"chip\"\n on go { s = CX() } }"),
-        ("K", "const @ = 3\nchip { var K: int = 9\n chip CK() -> (o: int) { out o = K * 2 }\n on go { n = CK() } }"),
-        ("K", "const @ = 3\nchip { var K: int = 9\n mod mk() -> int { return K * 2 }\n on go { n = mk() } }"),
+        (
+            "K",
+            "const K = 3\nmod rd() -> int { return K * 2 }\nchip { var @: int = 9\n on go { n = rd() } }",
+        ),
+        (
+            "x",
+            "let x = \"top\"\nmod rd() -> string { return x }\nchip { var @: string = \"chip\"\n on go { s = rd() } }",
+        ),
+        (
+            "x",
+            "let x = \"top\"\nchip CX() -> (o: string) { out o = x }\nchip { var @: string = \"chip\"\n on go { s = CX() } }",
+        ),
+        (
+            "K",
+            "const @ = 3\nchip { var K: int = 9\n chip CK() -> (o: int) { out o = K * 2 }\n on go { n = CK() } }",
+        ),
+        (
+            "K",
+            "const @ = 3\nchip { var K: int = 9\n mod mk() -> int { return K * 2 }\n on go { n = mk() } }",
+        ),
     ];
     for (name, body) in rows {
         for fold in [false, true] {
@@ -2284,23 +1908,43 @@ fn a_name_beside_anon_chip_storage_binds_one_declaration_at_each_place() {
     }
     // Inside the chip its storage is no constant, for a constant-only slot
     // too.
-    let inside = format!("{head}const ch = \"evt\"\nchip {{ var ch: string = \"x\"\n on go {{ SendCustomEvent(ch, 1) }} }}");
-    assert!(errs(&inside).contains(&"WS028".to_string()), "{:?}", errs(&inside));
+    let inside = format!(
+        "{head}const ch = \"evt\"\nchip {{ var ch: string = \"x\"\n on go {{ SendCustomEvent(ch, 1) }} }}"
+    );
+    assert!(
+        errs(&inside).contains(&"WS028".to_string()),
+        "{:?}",
+        errs(&inside)
+    );
     // The program without the chip reads the `const` where the chip-wrapped
     // one does.
     let sends = |o: &super::shadow_differential::Outcome| {
-        o.comps.iter().any(|c| c.contains("Exec_Var_Set") && c.contains("\"evt\""))
-            && o.comps.iter().any(|c| c.contains("SendCustomEvent") && c.contains("\"evt\""))
+        o.comps
+            .iter()
+            .any(|c| c.contains("Exec_Var_Set") && c.contains("\"evt\""))
+            && o.comps
+                .iter()
+                .any(|c| c.contains("SendCustomEvent") && c.contains("\"evt\""))
     };
     let reads = "\non go2 { s = ch\n SendCustomEvent(ch, 1) }\non CustomEvent(\"evt\") -> (p: int) { n = p }";
-    let o = outcome(&format!("{head}const ch = \"evt\"\nchip {{ var ch: string = \"chipvar\" }}{reads}"), false);
+    let o = outcome(
+        &format!("{head}const ch = \"evt\"\nchip {{ var ch: string = \"chipvar\" }}{reads}"),
+        false,
+    );
     assert!(o.compiled && sends(&o), "{:?} {:?}", o.codes, o.comps);
     // Without the chip, the `var` hides the `const` from its position on
     // (`WS108`), so the send names storage, as it does with the `const`
     // renamed.
-    let twice = errs(&format!("{head}const ch = \"evt\"\nvar ch: string = \"chipvar\"{reads}"));
-    let renamed = errs(&format!("{head}const ch0 = \"evt\"\nvar ch: string = \"chipvar\"{reads}"));
-    assert!(!twice.contains(&"WS013".to_string()) && twice == renamed, "{twice:?} / {renamed:?}");
+    let twice = errs(&format!(
+        "{head}const ch = \"evt\"\nvar ch: string = \"chipvar\"{reads}"
+    ));
+    let renamed = errs(&format!(
+        "{head}const ch0 = \"evt\"\nvar ch: string = \"chipvar\"{reads}"
+    ));
+    assert!(
+        !twice.contains(&"WS013".to_string()) && twice == renamed,
+        "{twice:?} / {renamed:?}"
+    );
 }
 
 /// An anonymous `chip { }` writes its body wherever it is placed. The one
@@ -2317,10 +1961,7 @@ fn an_anon_chip_body_lowers_in_every_placement() {
     // pure position has no ambient exec to fire a call on.
     let body = "on go { BroadcastChatMessage(\"x\") }";
     let cases: Vec<(&str, String)> = vec![
-        (
-            "top level",
-            format!("in go: exec\nchip {{ {body} }}\n"),
-        ),
+        ("top level", format!("in go: exec\nchip {{ {body} }}\n")),
         (
             "in a top-level handler",
             format!("in go: exec\nin go2: exec\non go2 {{ chip {{ {body} }} }}\n"),
@@ -2349,10 +1990,9 @@ fn an_anon_chip_body_lowers_in_every_placement() {
         ),
     ];
     for (label, src) in &cases {
-        let r = compile(src);
-        assert_no_errors(&r);
+        let r = compile_ok(src);
         assert!(
-            gate_count_deep(&r.module, "BroadcastChatMessage") > 0,
+            has_gate_deep(&r, gc::GAMEMODE_BROADCAST_CHAT),
             "{label}: the anon chip's body vanished:\n{src}"
         );
     }
@@ -2367,7 +2007,7 @@ fn an_anon_chip_body_lowers_in_every_placement() {
 /// nodes were affected.
 #[test]
 fn an_anon_chip_in_a_named_chip_gets_its_own_sub_grid() {
-    let r = compile(
+    let r = compile_ok(
         "in go: exec\n\
          chip Outer(t: exec) -> (rr: int) {\n\
            chip {\n\
@@ -2379,8 +2019,12 @@ fn an_anon_chip_in_a_named_chip_gets_its_own_sub_grid() {
          let w = Outer(go)\n\
          out o: int = w\n",
     );
-    assert_no_errors(&r);
-    let outer = r.module.chips.values().next().expect("the Outer instance module");
+    let outer = r
+        .module
+        .chips
+        .values()
+        .next()
+        .expect("the Outer instance module");
     assert!(
         !outer.chips.is_empty(),
         "the nested anon chip must become a child module of Outer, not stay tagged on its grid"
@@ -2400,7 +2044,7 @@ fn an_anon_chip_in_a_named_chip_gets_its_own_sub_grid() {
 /// rerouter. Documented as supported at `docs/src/chips.md:697,714`.
 #[test]
 fn an_anon_chip_in_a_named_chip_body_drives_the_declared_output() {
-    let r = compile(
+    let r = compile_ok(
         "in go: exec\n\
          chip Outer(t: exec) -> (rr: int) {\n\
            chip {\n\
@@ -2413,10 +2057,9 @@ fn an_anon_chip_in_a_named_chip_body_drives_the_declared_output() {
          let w = Outer(go)\n\
          out o: int = w\n",
     );
-    assert_no_errors(&r);
     let outer = only_chip(&r, "the Outer instance module");
     assert!(
-        gate_count_deep(outer, crate::ir::gate_class::VAR) > 0,
+        count_class(outer, gc::VAR) == 1,
         "the nested anon chip's `var counter` must exist in Outer's module tree"
     );
     // `doubled` reaches the declared `rr` pin: unfolded that is a real
@@ -2440,7 +2083,9 @@ fn an_anon_chip_in_a_named_chip_body_drives_the_declared_output() {
 /// `depth` anonymous chips nested one inside the next, each bumping its own
 /// var, wrapped by `wrap` (which receives the nested block).
 fn nested_anon_chips(depth: usize, wrap: impl Fn(&str, &str) -> String) -> String {
-    let vars: String = (1..=depth).map(|i| format!("var v{i}: int = 0\n")).collect();
+    let vars: String = (1..=depth)
+        .map(|i| format!("var v{i}: int = 0\n"))
+        .collect();
     let mut body = String::new();
     for i in 1..=depth {
         body.push_str(&format!("chip {{\nv{i} = v{i} + {i}\n"));
@@ -2462,62 +2107,52 @@ fn assert_chip_tree_complete(m: &crate::ir::Module, what: &str) {
                 crate::intern::resolve(m.name)
             );
         }
-        assert!(n.chip_id.is_none(), "{what}: node {id} kept its chip_id tag");
+        assert!(
+            n.chip_id.is_none(),
+            "{what}: node {id} kept its chip_id tag"
+        );
     }
     for c in m.chips.values() {
         assert_chip_tree_complete(c, what);
     }
 }
 
-fn assert_nested_anon_chips_lower(src: &str, depth: usize, what: &str) {
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert_chip_tree_complete(&r.module, what);
-    assert_eq!(
-        gate_count_deep(&r.module, "Exec_Var_Increment"),
-        depth,
-        "{what}: every nesting level's increment must survive:\n{src}"
-    );
-    let lr = crate::layout::layout(&r.module);
-    assert_emits(&r.module, &lr);
-}
-
 /// The partition built every anon chip's module flat and then re-nested them
 /// in hash order, dropping a grandchild's module whenever its parent moved
 /// first, so three or more levels failed at emit with a wire to an unknown node.
+/// Nested in a handler, a named chip's handler, or a mod body, every level gets
+/// its module, keeps its increment, and the program emits.
 #[test]
-fn deeply_nested_anon_chips_in_a_handler_all_get_modules() {
-    for depth in 3..=5 {
-        let src = nested_anon_chips(depth, |vars, body| {
+fn deeply_nested_anon_chips_all_get_modules() {
+    let wraps: [(&str, fn(&str, &str) -> String); 3] = [
+        ("handler", |vars, body| {
             format!("in go: exec\n{vars}on go {{\n{body}v1 = 9\n}}\nout o: int = v1 + v2\n")
-        });
-        assert_nested_anon_chips_lower(&src, depth, &format!("handler depth {depth}"));
-    }
-}
-
-#[test]
-fn deeply_nested_anon_chips_in_a_named_chip_all_get_modules() {
-    for depth in 3..=5 {
-        let src = nested_anon_chips(depth, |vars, body| {
+        }),
+        ("named chip", |vars, body| {
             format!(
                 "in go: exec\nchip Outer(t: exec) -> (r: int) {{\n{vars}on t {{\n{body}}}\n\
                  out r = v1 + v2\n}}\nlet w = Outer(go)\nout o: int = w\n"
             )
-        });
-        assert_nested_anon_chips_lower(&src, depth, &format!("named chip depth {depth}"));
-    }
-}
-
-#[test]
-fn deeply_nested_anon_chips_in_a_mod_all_get_modules() {
-    for depth in 3..=5 {
-        let src = nested_anon_chips(depth, |vars, body| {
+        }),
+        ("mod", |vars, body| {
             format!(
-                "in go: exec\n{vars}mod bump() {{\n{body}}}\non go {{ bump() }}\n\
-                 out o: int = v1 + v2\n"
+                "in go: exec\n{vars}mod bump() {{\n{body}}}\non go {{ bump() }}\nout o: int = v1 + v2\n"
             )
-        });
-        assert_nested_anon_chips_lower(&src, depth, &format!("mod depth {depth}"));
+        }),
+    ];
+    for (place, wrap) in wraps {
+        for depth in 3..=5 {
+            let src = nested_anon_chips(depth, wrap);
+            let what = format!("{place} depth {depth}");
+            let r = compile_ok(&src);
+            assert_chip_tree_complete(&r.module, &what);
+            assert_eq!(
+                count_class(&r.module, gc::VAR_INCREMENT),
+                depth,
+                "{what}: every nesting level's increment must survive:\n{src}"
+            );
+            assert_emits(&r.module, &crate::layout::layout(&r.module));
+        }
     }
 }
 
@@ -2526,17 +2161,12 @@ fn deeply_nested_anon_chips_in_a_mod_all_get_modules() {
 /// always kept it).
 #[test]
 fn plain_emit_ending_an_anon_chip_keeps_the_chain() {
-    let r = compile(
+    let r = compile_ok(
         "in go: exec\nvar a: int = 0\nvar b: int = 0\nlet sig: exec\n\
          on go {\n  chip {\n    a = 1\n    emit sig\n  }\n  b = 2\n}\n\
          on sig { a = a + 10 }\nout o: int = a + b\n",
     );
-    assert_no_errors(&r);
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WS058"),
-        "`b = 2` must stay on the chain: {:?}",
-        r.diagnostics
-    );
+    assert_no_code(&r.diagnostics, "WS058");
     assert_eq!(
         triggered_var_sets(&r.module),
         2,
@@ -2548,29 +2178,31 @@ fn plain_emit_ending_an_anon_chip_keeps_the_chain() {
 
 /// `Exec_Var_Set` gates, tree-wide, whose `Exec` input is wired.
 fn triggered_var_sets(m: &crate::ir::Module) -> usize {
-    m.nodes
-        .iter()
-        .filter(|(id, n)| {
-            n.gate_class == "BrickComponentType_Exec_Var_Set"
-                && m
-                    .wires
+    m.modules_deep()
+        .into_iter()
+        .map(|sub| {
+            let triggered = |id: &crate::ir::NodeId| {
+                sub.wires
                     .iter()
-                    .any(|w| w.target.node_id == **id && w.target.port == WirePort::Exec)
+                    .any(|w| w.target.node_id == *id && w.target.port == WirePort::Exec)
+            };
+            sub.nodes
+                .values()
+                .filter(|n| n.gate_class == gc::VAR_SET && triggered(&n.id))
+                .count()
         })
-        .count()
-        + m.chips.values().map(triggered_var_sets).sum::<usize>()
+        .sum()
 }
 
 /// A BUFFERED `emit` ending the chip does close the chain; the statement after
 /// it is reported as cut off by that emit, not as sitting in a pure position.
 #[test]
 fn buffered_emit_ending_an_anon_chip_names_the_emit() {
-    let r = compile(
+    let r = compile_ok(
         "in go: exec\nvar a: int = 0\nvar b: int = 0\nlet sig: exec\n\
          on go {\n  chip {\n    a = 1\n    buffer emit sig\n  }\n  b = 2\n}\n\
          on sig { a = a + 10 }\nout o: int = a + b\n",
     );
-    assert_no_errors(&r);
     let ws058: Vec<_> = r.diagnostics.iter().filter(|d| d.code == "WS058").collect();
     assert_eq!(ws058.len(), 1, "{:?}", r.diagnostics);
     assert!(
@@ -2585,7 +2217,7 @@ fn buffered_emit_ending_an_anon_chip_names_the_emit() {
 fn var_set_value_source(r: &LowerResult, label: &str) -> Option<crate::ir::NodeId> {
     let m = &r.module;
     let var = m.nodes.iter().find(|(_, n)| {
-        n.gate_class == "BrickComponentType_Var"
+        n.gate_class == gc::VAR
             && matches!(
                 n.properties.get(&crate::intern::sym::NAME_LABEL),
                 Some(crate::ir::Literal::String(s)) if s == label
@@ -2596,7 +2228,7 @@ fn var_set_value_source(r: &LowerResult, label: &str) -> Option<crate::ir::NodeI
             && w.target.port == WirePort::VarRef
             && m.nodes
                 .get(&w.target.node_id)
-                .is_some_and(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
+                .is_some_and(|n| n.gate_class == gc::VAR_SET)
     })?;
     m.wires
         .iter()
@@ -2621,7 +2253,7 @@ fn assert_outputs_driven_once(m: &crate::ir::Module, what: &str) {
 /// storage drives each pin once.
 #[test]
 fn multi_output_chip_with_early_returns_drives_each_output_once() {
-    let r = compile(
+    let r = compile_ok(
         "in go: exec\nin ia: int\nin ib: int\nin bd: bool\nvar oa: int = 0\nvar ob: int = 0\n\
          chip C(a0: int, b0: int, d0: bool) -> (zeta: int, alpha: int) {\n\
            if d0 { return (a0 + 1, b0 + 2) }\n\
@@ -2629,11 +2261,13 @@ fn multi_output_chip_with_early_returns_drives_each_output_once() {
          }\n\
          on go {\n  let (u, v) = C(ia, ib, bd)\n  oa = u\n  ob = v\n}\n",
     );
-    assert_no_errors(&r);
     let c = only_chip(&r, "the C instance module");
     assert_outputs_driven_once(c, "C");
     assert_eq!(
-        c.nodes.values().filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set").count(),
+        c.nodes
+            .values()
+            .filter(|n| n.gate_class == gc::VAR_SET)
+            .count(),
         4,
         "each of the two returns stores both outputs"
     );
@@ -2646,7 +2280,7 @@ fn multi_output_chip_with_early_returns_drives_each_output_once() {
 /// had one, so `v.x` split a vector off the `p.x` pin and `w` read `p.y`.
 #[test]
 fn multi_output_chip_with_a_record_output_wires_every_pin() {
-    let r = compile(
+    let r = compile_ok(
         "type P = { x: int, y: int }\nin ia: int\nin ib: int\n\
          var oa: int = 0\nvar ob: int = 0\nvar ox: int = 0\n\
          chip D(a0: int, b0: int) -> (a: int, p: P, b: int) {\n\
@@ -2655,8 +2289,10 @@ fn multi_output_chip_with_a_record_output_wires_every_pin() {
          in go2: exec\n\
          on go2 {\n  let (u, v, w) = D(ia, ib)\n  oa = u\n  ox = v.x\n  ob = w\n}\n",
     );
-    assert_no_errors(&r);
-    assert!(!has_gate(&r, "BrickComponentType_Expr_SplitVector"), "`v.x` is a record field, not a swizzle");
+    assert!(
+        !has_gate_deep(&r, gc::SPLIT_VECTOR),
+        "`v.x` is a record field, not a swizzle"
+    );
     let d = only_chip(&r, "the D instance module");
     assert_outputs_driven_once(d, "D");
     // Pins in declaration order: a, p.x, p.y, b.
@@ -2670,7 +2306,7 @@ fn multi_output_chip_with_a_record_output_wires_every_pin() {
 /// Both at once: a record output among several, written by two returns.
 #[test]
 fn multi_output_chip_with_a_record_output_and_early_returns() {
-    let r = compile(
+    let r = compile_ok(
         "type P = { x: int, y: int }\nin go: exec\nin ia: int\nin ib: int\nin bd: bool\n\
          var oa: int = 0\nvar ob: int = 0\nvar ox: int = 0\nvar oy: int = 0\n\
          chip D(a0: int, b0: int, d0: bool) -> (a: int, p: P, b: int) {\n\
@@ -2679,11 +2315,13 @@ fn multi_output_chip_with_a_record_output_and_early_returns() {
          }\n\
          on go {\n  let (u, v, w) = D(ia, ib, bd)\n  oa = u\n  ox = v.x\n  oy = v.y\n  ob = w\n}\n",
     );
-    assert_no_errors(&r);
     let d = only_chip(&r, "the D instance module");
     assert_outputs_driven_once(d, "D");
     assert_eq!(
-        d.nodes.values().filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set").count(),
+        d.nodes
+            .values()
+            .filter(|n| n.gate_class == gc::VAR_SET)
+            .count(),
         8,
         "each of the two returns stores all four leaves"
     );
@@ -2709,26 +2347,24 @@ fn tuple_return_skips_an_exec_output_between_values() {
                  {kw} M(a0: int, d0: bool) -> (a: int, done: exec, b: int) {{\n{body}\n}}\n\
                  on go {{\n  let r = M(ia, bd)\n  oa = r.a\n  ob = r.b\n}}\n"
             );
-            let r = compile(&src);
-            assert_no_errors(&r);
+            let r = compile_ok(&src);
             let what = format!("{kw}: {body}");
             // Every `a0 + k` the body computes reaches a write or an output pin.
-            fn adds_used(m: &crate::ir::Module) -> (usize, usize) {
-                let adds: Vec<_> = m
-                    .nodes
-                    .iter()
-                    .filter(|(_, n)| n.gate_class == "BrickComponentType_Expr_MathAdd")
-                    .map(|(id, _)| *id)
-                    .collect();
-                let used = adds
-                    .iter()
-                    .filter(|id| m.wires.iter().any(|w| w.source.node_id == **id))
-                    .count();
-                let (a, u) = m.chips.values().map(adds_used).fold((0, 0), |x, y| (x.0 + y.0, x.1 + y.1));
-                (adds.len() + a, used + u)
-            }
-            let (adds, used) = adds_used(&r.module);
-            assert_eq!(adds, body.matches("a0 +").count(), "{what}: every returned value is lowered");
+            let adds = nodes_of(&r.module, "BrickComponentType_Expr_MathAdd");
+            let used = r.module.modules_deep().into_iter().map(|m| {
+                adds.iter()
+                    .filter(|n| {
+                        m.nodes.contains_key(&n.id)
+                            && m.wires.iter().any(|w| w.source.node_id == n.id)
+                    })
+                    .count()
+            });
+            let (adds, used) = (adds.len(), used.sum::<usize>());
+            assert_eq!(
+                adds,
+                body.matches("a0 +").count(),
+                "{what}: every returned value is lowered"
+            );
             assert_eq!(adds, used, "{what}: {used} of {adds} values reach anything");
             if kw == "chip" {
                 let m = only_chip(&r, "the M instance module");
@@ -2753,8 +2389,20 @@ fn tuple_return_skips_an_exec_output_between_values() {
 fn branch_returns_without_an_exec_chain_are_reported() {
     for (kw, sig, ret1, ret2, read) in [
         ("chip", "-> int", "a0 + 1", "a0 + 3", "C(ia, bd)"),
-        ("chip", "-> (p: int, q: int)", "(a0 + 1, a0)", "(a0 + 3, a0)", "C(ia, bd).p"),
-        ("mod", "-> (p: int, q: int)", "(a0 + 1, a0)", "(a0 + 3, a0)", "C(ia, bd).p"),
+        (
+            "chip",
+            "-> (p: int, q: int)",
+            "(a0 + 1, a0)",
+            "(a0 + 3, a0)",
+            "C(ia, bd).p",
+        ),
+        (
+            "mod",
+            "-> (p: int, q: int)",
+            "(a0 + 1, a0)",
+            "(a0 + 3, a0)",
+            "C(ia, bd).p",
+        ),
     ] {
         let src = format!(
             "in ia: int\nin bd: bool\n\
@@ -2779,8 +2427,16 @@ fn branch_returns_without_an_exec_chain_are_reported() {
 fn record_output_chip_returns_drive_the_field_pins() {
     for (sig, body, sets) in [
         ("-> P", "return { x: a0, y: 1 }", 0),
-        ("-> P", "if d0 { return { x: a0, y: 1 } }\nreturn { x: 2, y: a0 }", 4),
-        ("-> (r: P)", "if d0 { emit r = { x: a0, y: 1 } }\nreturn { x: 2, y: a0 }", 4),
+        (
+            "-> P",
+            "if d0 { return { x: a0, y: 1 } }\nreturn { x: 2, y: a0 }",
+            4,
+        ),
+        (
+            "-> (r: P)",
+            "if d0 { emit r = { x: a0, y: 1 } }\nreturn { x: 2, y: a0 }",
+            4,
+        ),
     ] {
         let src = format!(
             "type P = {{ x: int, y: int }}\nin go: exec\nin ia: int\nin bd: bool\n\
@@ -2788,12 +2444,14 @@ fn record_output_chip_returns_drive_the_field_pins() {
              chip D(a0: int, d0: bool) {sig} {{\n{body}\n}}\n\
              on go {{\n  let p = D(ia, bd)\n  ox = p.x\n  oy = p.y\n}}\n"
         );
-        let r = compile(&src);
-        assert_no_errors(&r);
+        let r = compile_ok(&src);
         let d = only_chip(&r, "the D instance module");
         assert_outputs_driven_once(d, body);
         assert_eq!(
-            d.nodes.values().filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set").count(),
+            d.nodes
+                .values()
+                .filter(|n| n.gate_class == gc::VAR_SET)
+                .count(),
             sets,
             "{body}: every write stores both fields"
         );
@@ -2802,31 +2460,6 @@ fn record_output_chip_returns_drive_the_field_pins() {
         let lr = crate::layout::layout(&r.module);
         assert_emits(&r.module, &lr);
     }
-}
-
-/// No input port anywhere in the tree has two drivers.
-fn assert_no_fan_in(m: &crate::ir::Module, what: &str) {
-    let mut seen: crate::collections::HashSet<(crate::ir::NodeId, WirePort)> = Default::default();
-    for w in &m.wires {
-        if w.target.port == WirePort::Layout {
-            continue;
-        }
-        assert!(
-            seen.insert((w.target.node_id, w.target.port)),
-            "{what}: {}.{:?} in {:?} has two drivers",
-            w.target.node_id,
-            w.target.port,
-            crate::intern::resolve(m.name)
-        );
-    }
-    for c in m.chips.values() {
-        assert_no_fan_in(c, what);
-    }
-}
-
-fn var_set_count_deep(m: &crate::ir::Module) -> usize {
-    m.nodes.values().filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set").count()
-        + m.chips.values().map(var_set_count_deep).sum::<usize>()
 }
 
 /// A branch `return` in a chip called with no exec chain is reported at the
@@ -2845,7 +2478,12 @@ fn chip_branch_return_ws007_is_reported_at_each_pure_call() {
         .filter(|d| d.code == "WS007" && d.message.contains("returns from inside a branch"))
         .map(|d| d.range.start.line)
         .collect();
-    assert_eq!(lines, vec![10, 11], "one WS007 per pure call, at the call: {:?}", r.diagnostics);
+    assert_eq!(
+        lines,
+        vec![10, 11],
+        "one WS007 per pure call, at the call: {:?}",
+        r.diagnostics
+    );
 }
 
 /// A chip whose first parameter is `exec` has no exec chain of its own, so
@@ -2892,7 +2530,13 @@ fn returns_in_a_nested_handler_or_anon_chip_are_stored() {
             "oa = C(go, ia)",
             2,
         ),
-        ("t: exec, a0: int", "-> int", "on t {\n  return a0 + 1\n}", "oa = C(go, ia)", 1),
+        (
+            "t: exec, a0: int",
+            "-> int",
+            "on t {\n  return a0 + 1\n}",
+            "oa = C(go, ia)",
+            1,
+        ),
         (
             "a0: int, d0: bool",
             "-> (r: int, s: int)",
@@ -2914,18 +2558,23 @@ fn returns_in_a_nested_handler_or_anon_chip_are_stored() {
                 "in go: exec\nin ia: int\nin bd: bool\nvar oa: int = 0\nvar ob: int = 0\n\
                  {kw} C({params}) {sig} {{\n{body}\n}}\non go {{\n  {call}\n}}\n"
             );
-            let r = compile(&src);
-            assert_no_errors(&r);
+            let r = compile_ok(&src);
             assert_no_fan_in(&r.module, &src);
             let caller_sets = if call.contains("ob") { 2 } else { 1 };
             assert_eq!(
-                var_set_count_deep(&r.module),
+                count_class(&r.module, gc::VAR_SET),
                 stores + caller_sets,
                 "every return stores each output:\n{src}"
             );
             if kw == "chip" {
                 let c = only_chip(&r, "the C instance module");
-                for pin in c.outputs.iter().filter(|o| c.nodes[o].ports.inputs.iter().all(|p| p.ty != crate::ir::Type::Exec)) {
+                for pin in c.outputs.iter().filter(|o| {
+                    c.nodes[o]
+                        .ports
+                        .inputs
+                        .iter()
+                        .all(|p| p.ty != crate::ir::Type::Exec)
+                }) {
                     let driver = c
                         .wires
                         .iter()
@@ -2933,7 +2582,7 @@ fn returns_in_a_nested_handler_or_anon_chip_are_stored() {
                         .and_then(|w| c.nodes.get(&w.source.node_id))
                         .map(|n| n.gate_class);
                     assert!(
-                        matches!(driver, Some("BrickComponentType_Var" | "BrickComponentType_Exec_Var_Get")),
+                        matches!(driver, Some(gc::VAR | gc::VAR_GET)),
                         "{src}\nvalue pin {pin} must read the storage, got {driver:?}"
                     );
                 }
@@ -2957,22 +2606,30 @@ fn a_return_in_a_nested_handler_does_not_fire_the_call_continuation() {
     let c = only_chip(&r, "the C instance module");
     let exec_in = *c.inputs.last().expect("_exec_in");
     let exec_out = *c.outputs.last().expect("_exec_out");
-    let drivers: Vec<_> = c.wires.iter().filter(|w| w.target.node_id == exec_out).map(|w| w.source.node_id).collect();
-    assert_eq!(drivers, vec![exec_in], "the call's exec passes straight through");
+    let drivers: Vec<_> = c
+        .wires
+        .iter()
+        .filter(|w| w.target.node_id == exec_out)
+        .map(|w| w.source.node_id)
+        .collect();
+    assert_eq!(
+        drivers,
+        vec![exec_in],
+        "the call's exec passes straight through"
+    );
 }
 
 /// A tuple-typed output among several gets one pin per element, as a record
 /// output gets one per field; it had a single pin and read a placeholder.
 #[test]
 fn tuple_typed_chip_output_gets_a_pin_per_element() {
-    let r = compile(
+    let r = compile_ok(
         "in go: exec\nin ia: int\nvar oa: int = 0\nvar ob: int = 0\nvar oc: int = 0\n\
          chip D(a0: int) -> (a: int, t: (int, int), b: int) {\n\
            return (a0, (a0 + 1, a0 + 2), a0 + 3)\n}\n\
          on go {\n  let (u, v, w) = D(ia)\n  oa = u\n  ob = v.1\n  oc = w\n}\n",
     );
-    assert_no_errors(&r);
-    assert!(!r.diagnostics.iter().any(|d| d.code == "WSP001"), "{:?}", r.diagnostics);
+    assert_no_code(&r.diagnostics, "WSP001");
     let d = only_chip(&r, "the D instance module");
     assert_outputs_driven_once(d, "D");
     // Pins in declaration order: a, t.0, t.1, b.
@@ -2986,7 +2643,7 @@ fn tuple_typed_chip_output_gets_a_pin_per_element() {
 /// The same with a tuple inside a record output, and with two returns.
 #[test]
 fn tuple_inside_a_record_chip_output_and_early_returns() {
-    let r = compile(
+    let r = compile_ok(
         "type P = { x: int, t: (int, int) }\nin go: exec\nin ia: int\nin bd: bool\n\
          var ob: int = 0\nvar oc: int = 0\n\
          chip D(a0: int, d0: bool) -> (a: int, p: P, t: (int, int)) {\n\
@@ -2994,26 +2651,18 @@ fn tuple_inside_a_record_chip_output_and_early_returns() {
            return (2, { x: 3, t: (4, a0) }, (a0, 5))\n}\n\
          on go {\n  let (u, v, w) = D(ia, bd)\n  ob = v.t.1\n  oc = w.0\n}\n",
     );
-    assert_no_errors(&r);
     let d = only_chip(&r, "the D instance module");
     assert_outputs_driven_once(d, "D");
     // Pins: a, p.x, p.t.0, p.t.1, t.0, t.1.
     assert_eq!(var_set_value_source(&r, "ob"), Some(d.outputs[3]));
     assert_eq!(var_set_value_source(&r, "oc"), Some(d.outputs[4]));
-    assert_eq!(var_set_count_deep(d), 12, "two returns store all six leaves");
+    assert_eq!(
+        count_class(d, gc::VAR_SET),
+        12,
+        "two returns store all six leaves"
+    );
     let lr = crate::layout::layout(&r.module);
     assert_emits(&r.module, &lr);
-}
-
-/// A call before its mod's declaration is one WS021 per call; type checking
-/// and lowering each reported it.
-#[test]
-fn a_call_before_its_declaration_is_reported_once() {
-    let r = compile(
-        "in go: exec\nvar n: int = 0\non go {\n  n = late(1)\n  n = late(2)\n}\nmod late(a: int) -> int { return a }",
-    );
-    let ws021: Vec<_> = r.diagnostics.iter().filter(|d| d.code == "WS021").map(|d| d.range.start.line).collect();
-    assert_eq!(ws021, vec![4, 5], "{:?}", r.diagnostics);
 }
 
 /// A top-level `let` read above its declaration outside every mod and chip
@@ -3026,11 +2675,13 @@ fn a_root_read_above_a_let_is_one_ws002() {
         "in n: int\nin go: exec\nvar v: int = 0\non go { v = A }\nlet A = n * 2",
     ] {
         let r = compile(src);
-        let codes: Vec<&str> = r.diagnostics.iter().map(|d| d.code.as_ref()).collect();
-        assert_eq!(codes, ["WS002"], "{src}: {:?}", r.diagnostics);
+        assert_eq!(
+            codes(&r.diagnostics),
+            ["WS002"],
+            "{src}: {:?}",
+            r.diagnostics
+        );
     }
-    let r = compile("in n: int\nin go: exec\nvar v: int = 0\nmod f() -> int { return A }\non go { v = f() }\nlet A = n * 2");
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS021"), "{:?}", r.diagnostics);
 }
 
 /// WS007 for a chip whose output writes need an exec chain names the cause:
@@ -3039,9 +2690,18 @@ fn a_root_read_above_a_let_is_one_ws002() {
 #[test]
 fn an_unsequenced_chip_return_names_its_cause() {
     for (body, cause) in [
-        ("  if d0 { return a0 + 1 }\n  return a0 + 3", "returns from inside a branch"),
-        ("  on t { return 5 }\n  return a0 + 1", "returns from its body and from a nested `on` handler"),
-        ("  emit r = a0 + 2\n  return a0 + 1", "returns a value and also writes an output with `emit` or `out`"),
+        (
+            "  if d0 { return a0 + 1 }\n  return a0 + 3",
+            "returns from inside a branch",
+        ),
+        (
+            "  on t { return 5 }\n  return a0 + 1",
+            "returns from its body and from a nested `on` handler",
+        ),
+        (
+            "  emit r = a0 + 2\n  return a0 + 1",
+            "returns a value and also writes an output with `emit` or `out`",
+        ),
     ] {
         let src = format!(
             "in ia: int\nin bd: bool\nin go: exec\nchip C(a0: int, d0: bool, t: exec) -> (r: int) {{\n{body}\n}}\n\
@@ -3049,7 +2709,9 @@ fn an_unsequenced_chip_return_names_its_cause() {
         );
         let r = compile(&src);
         assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS007" && d.message.contains(&format!("`C` {cause}, so"))),
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS007" && d.message.contains(&format!("`C` {cause}, so"))),
             "{body}: {:?}",
             r.diagnostics
         );
@@ -3064,16 +2726,25 @@ fn a_const_with_no_value_is_one_error() {
         for at in ["top", "handler"] {
             let decl = format!("const s: {ty}");
             let src = match at {
-                "top" => format!("type Sig = exec\nin go: exec\nvar n: int = 0\nout o: int = n\n{decl}\non go {{ n = 1 }}"),
-                _ => format!("type Sig = exec\nin go: exec\nvar n: int = 0\nout o: int = n\non go {{ {decl}\nn = 1 }}"),
+                "top" => format!(
+                    "type Sig = exec\nin go: exec\nvar n: int = 0\nout o: int = n\n{decl}\non go {{ n = 1 }}"
+                ),
+                _ => format!(
+                    "type Sig = exec\nin go: exec\nvar n: int = 0\nout o: int = n\non go {{ {decl}\nn = 1 }}"
+                ),
             };
             let r = compile(&src);
-            let errors: Vec<&crate::diagnostic::Diagnostic> =
-                r.diagnostics.iter().filter(|d| d.severity == crate::diagnostic::Severity::Error).collect();
+            let errors: Vec<&crate::diagnostic::Diagnostic> = r
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == crate::diagnostic::Severity::Error)
+                .collect();
             assert!(
                 errors.len() == 1
                     && errors[0].code == "WSP001"
-                    && errors[0].message.contains(&format!("`const s: {ty}` needs a value")),
+                    && errors[0]
+                        .message
+                        .contains(&format!("`const s: {ty}` needs a value")),
                 "{at} `{decl}`: {errors:?}"
             );
         }
@@ -3095,7 +2766,11 @@ fn a_signal_declared_through_an_alias_of_exec_is_its_exec_twin() {
             for fold in [false, true] {
                 let build = |ty: &str| {
                     let src = format!("{head}{}", body.replace('@', ty));
-                    let r = if fold { compile_folded(&src) } else { compile(&src) };
+                    let r = if fold {
+                        compile_folded(&src)
+                    } else {
+                        compile(&src)
+                    };
                     assert_no_errors(&r);
                     wiring_shape(&r.module)
                 };
@@ -3108,7 +2783,10 @@ fn a_signal_declared_through_an_alias_of_exec_is_its_exec_twin() {
     let e = errs("in go: exec\nvar n: int = 0\non go {\n  let s: int\n  n = s\n}");
     assert!(e.contains(&"WSP001".to_string()), "{e:?}");
     // With a value, an alias of `exec` names that signal again, as before.
-    assert!(errs("type Sig = exec\nvar n: int = 0\nin go: exec\nlet s: Sig = go\non s { n = 2 }").is_empty());
+    assert!(
+        errs("type Sig = exec\nvar n: int = 0\nin go: exec\nlet s: Sig = go\non s { n = 2 }")
+            .is_empty()
+    );
 }
 
 /// A `const` parameter named like an outer binding (a module `var`, `let` or
@@ -3120,18 +2798,46 @@ fn a_const_parameter_named_like_an_outer_binding_is_its_argument() {
     let head = "in go: exec\nvar x: float = 0.0\nout ox: float = x\nvar k: int = 0\nout ok: int = k\n\
                 mod half(v: float) -> float { return v / 2 }\n";
     for (outer, decls, body) in [
-        ("var m: int = 77\nout om: int = m", "mod f(m: const int) -> float { return m }", "x = f(3)"),
-        ("const m = 77", "mod f(m: const int) -> float { return half(m) }", "x = f(3)"),
-        ("let m = 77", "mod f(m: const int) -> int { return m + 1 }", "k = f(3)"),
-        ("const m = 77", "chip C(t: exec, m: const int) -> (r: int) { on t { emit r = m + 1 } }", "k = C(go, 3)"),
+        (
+            "var m: int = 77\nout om: int = m",
+            "mod f(m: const int) -> float { return m }",
+            "x = f(3)",
+        ),
+        (
+            "const m = 77",
+            "mod f(m: const int) -> float { return half(m) }",
+            "x = f(3)",
+        ),
+        (
+            "let m = 77",
+            "mod f(m: const int) -> int { return m + 1 }",
+            "k = f(3)",
+        ),
+        (
+            "const m = 77",
+            "chip C(t: exec, m: const int) -> (r: int) { on t { emit r = m + 1 } }",
+            "k = C(go, 3)",
+        ),
     ] {
         let src = format!("{head}{outer}\n{decls}\non go {{ {body} }}");
         for fold in [false, true] {
             let saved = super::float_slots::save_numbers(&src, fold);
-            let three = |l: &Literal| matches!(l, Literal::Int(3 | 4)) || matches!(l, Literal::Float(f) if [3.0, 1.5].contains(f));
-            let outer_value = |l: &Literal| matches!(l, Literal::Int(78)) || matches!(l, Literal::Float(f) if [77.0, 38.5].contains(f));
-            assert!(saved.iter().any(three), "{decls} fold {fold}: the argument is missing\n{saved:?}");
-            assert!(!saved.iter().any(outer_value), "{decls} fold {fold}: read the outer binding\n{saved:?}");
+            let three = |l: &Literal| {
+                matches!(l, Literal::Int(3 | 4))
+                    || matches!(l, Literal::Float(f) if [3.0, 1.5].contains(f))
+            };
+            let outer_value = |l: &Literal| {
+                matches!(l, Literal::Int(78))
+                    || matches!(l, Literal::Float(f) if [77.0, 38.5].contains(f))
+            };
+            assert!(
+                saved.iter().any(three),
+                "{decls} fold {fold}: the argument is missing\n{saved:?}"
+            );
+            assert!(
+                !saved.iter().any(outer_value),
+                "{decls} fold {fold}: read the outer binding\n{saved:?}"
+            );
         }
     }
 }
@@ -3144,16 +2850,32 @@ fn a_const_record_parameter_named_like_an_outer_binding_is_its_argument() {
     use crate::ir::Literal;
     let head = "type P = { a: int, b: int }\nin go: exec\nvar k: int = 0\nout ok: int = k\nlet m = { a: 55, b: 66 }\n";
     for (decls, body) in [
-        ("chip C(m: const P) -> (r: int) { out r = m.b }", "k = C({ a: 3, b: 4 })"),
-        ("mod f(m: const P) -> int { return m.b + 0 }", "k = f({ a: 3, b: 4 })"),
+        (
+            "chip C(m: const P) -> (r: int) { out r = m.b }",
+            "k = C({ a: 3, b: 4 })",
+        ),
+        (
+            "mod f(m: const P) -> int { return m.b + 0 }",
+            "k = f({ a: 3, b: 4 })",
+        ),
     ] {
         let src = format!("{head}{decls}\non go {{ {body} }}");
         for fold in [false, true] {
-            let r = if fold { compile_folded(&src) } else { compile(&src) };
+            let r = if fold {
+                compile_folded(&src)
+            } else {
+                compile(&src)
+            };
             assert_no_errors(&r);
             let saved = super::float_slots::save_numbers(&src, fold);
-            assert!(saved.contains(&Literal::Int(4)), "{decls} fold {fold}: the argument is missing\n{saved:?}");
-            assert!(!saved.contains(&Literal::Int(66)), "{decls} fold {fold}: read the outer binding\n{saved:?}");
+            assert!(
+                saved.contains(&Literal::Int(4)),
+                "{decls} fold {fold}: the argument is missing\n{saved:?}"
+            );
+            assert!(
+                !saved.contains(&Literal::Int(66)),
+                "{decls} fold {fold}: read the outer binding\n{saved:?}"
+            );
         }
     }
 }
@@ -3172,7 +2894,9 @@ fn a_chip_const_record_parameter_is_its_argument() {
     fn drives_output(m: &Module, want: &Literal) -> bool {
         let holds = |id: &crate::ir::NodeId| {
             m.nodes.get(id).is_some_and(|n| {
-                n.properties.values().any(|l| l == want || matches!(l, Literal::Array(xs) if xs.contains(want)))
+                n.properties
+                    .values()
+                    .any(|l| l == want || matches!(l, Literal::Array(xs) if xs.contains(want)))
             })
         };
         let mut seen: Vec<crate::ir::NodeId> = m.outputs.clone();
@@ -3208,30 +2932,51 @@ var so: string = \"\"
         ("string", "q.s", "so", Literal::String("in".into())),
         ("string", "q.i.s", "so", Literal::String("z".into())),
     ] {
-        let src = format!("{head}chip C(q: const Q) -> (r: {out_ty}) {{ out r = {read} }}
-on go {{ {store} = C({arg}) }}");
+        let src = format!(
+            "{head}chip C(q: const Q) -> (r: {out_ty}) {{ out r = {read} }}
+on go {{ {store} = C({arg}) }}"
+        );
         for fold in [false, true] {
-            let r = if fold { compile_folded(&src) } else { compile(&src) };
+            let r = if fold {
+                compile_folded(&src)
+            } else {
+                compile(&src)
+            };
             assert_no_errors(&r);
-            assert!(!r.diagnostics.iter().any(|d| d.code == "WSP001"), "{read} fold {fold}: {:?}", r.diagnostics);
+            assert!(
+                !r.diagnostics.iter().any(|d| d.code == "WSP001"),
+                "{read} fold {fold}: {:?}",
+                r.diagnostics
+            );
             // Folded, the constant output is the value the caller stores.
-            let stored = r.module.nodes.values().any(|n| {
-                n.gate_class == crate::ir::gate_class::VAR_SET && n.properties.values().any(|l| *l == want)
-            });
+            let stored =
+                r.module.nodes.values().any(|n| {
+                    n.gate_class == gc::VAR_SET && n.properties.values().any(|l| *l == want)
+                });
             assert!(
                 stored || drives_output(only_chip(&r, read), &want),
                 "{read} fold {fold}: {want:?} does not drive `r`"
             );
             // The array fields it does not read get no container.
-            let tables = only_chip(&r, read).nodes.values().filter(|n| n.gate_class == crate::ir::gate_class::ARRAY_VAR).count();
+            let tables = only_chip(&r, read)
+                .nodes
+                .values()
+                .filter(|n| n.gate_class == gc::ARRAY_VAR)
+                .count();
             assert_eq!(tables, 0, "{read} fold {fold}");
         }
     }
     // Array fields are the argument's arrays, read at run time: `[1, 2]` for a
     // `float[]` field is a float table, so `fs[0] / fs[1]` is 0.5.
     for (read, want) in [
-        ("q.xs[1] + q.xs.length()", Literal::Array(vec![Literal::Int(6), Literal::Int(7)])),
-        ("q.fs[k] / q.fs[k + 1]", Literal::Array(vec![Literal::Float(1.0), Literal::Float(2.0)])),
+        (
+            "q.xs[1] + q.xs.length()",
+            Literal::Array(vec![Literal::Int(6), Literal::Int(7)]),
+        ),
+        (
+            "q.fs[k] / q.fs[k + 1]",
+            Literal::Array(vec![Literal::Float(1.0), Literal::Float(2.0)]),
+        ),
     ] {
         let out_ty = if read.contains("fs") { "float" } else { "int" };
         let store = if read.contains("fs") { "fo" } else { "n" };
@@ -3240,13 +2985,24 @@ on go {{ {store} = C({arg}) }}");
 on go {{ {store} = C({arg}) }}"
         );
         for fold in [false, true] {
-            let r = if fold { compile_folded(&src) } else { compile(&src) };
+            let r = if fold {
+                compile_folded(&src)
+            } else {
+                compile(&src)
+            };
             assert_no_errors(&r);
             let chip = only_chip(&r, read);
-            let Literal::Array(items) = &want else { unreachable!() };
-            assert!(drives_output(chip, &items[0]), "{read} fold {fold}: {want:?} does not drive `r`");
+            let Literal::Array(items) = &want else {
+                unreachable!()
+            };
             assert!(
-                chip.nodes.values().any(|n| n.properties.values().any(|l| *l == want)),
+                drives_output(chip, &items[0]),
+                "{read} fold {fold}: {want:?} does not drive `r`"
+            );
+            assert!(
+                chip.nodes
+                    .values()
+                    .any(|n| n.properties.values().any(|l| *l == want)),
                 "{read} fold {fold}: the table is not {want:?}"
             );
         }
@@ -3268,27 +3024,86 @@ fn a_nested_record_read_whole_keeps_every_field_below_it() {
     let is = Literal::Array(vec![Literal::Int(33)]);
     for (form, decls, body, whole) in [
         ("let", "", "let inner = q.i\nemit r = inner.fs[k]", true),
-        ("annotated let", "", "let j: I = q.i\nemit r = j.fs[k]", true),
-        ("let of a let", "", "let a = q.i\nlet b = a\nemit r = b.fs[k]", true),
-        ("mod argument", "mod g(i: I, j: int) -> float { return i.fs[j] }\n", "emit r = g(q.i, k)", true),
-        ("returned by a mod", "mod pick(i: I) -> I { return i }\n", "let p = pick(q.i)\nemit r = p.fs[k]", true),
+        (
+            "annotated let",
+            "",
+            "let j: I = q.i\nemit r = j.fs[k]",
+            true,
+        ),
+        (
+            "let of a let",
+            "",
+            "let a = q.i\nlet b = a\nemit r = b.fs[k]",
+            true,
+        ),
+        (
+            "mod argument",
+            "mod g(i: I, j: int) -> float { return i.fs[j] }\n",
+            "emit r = g(q.i, k)",
+            true,
+        ),
+        (
+            "returned by a mod",
+            "mod pick(i: I) -> I { return i }\n",
+            "let p = pick(q.i)\nemit r = p.fs[k]",
+            true,
+        ),
         ("spread", "", "let j = { ...q.i }\nemit r = j.fs[k]", true),
-        ("record literal field", "", "let w = { v: q.i }\nemit r = w.v.fs[k]", true),
+        (
+            "record literal field",
+            "",
+            "let w = { v: q.i }\nemit r = w.v.fs[k]",
+            true,
+        ),
         ("destructured", "", "let { fs } = q.i\nemit r = fs[k]", true),
-        ("if", "", "emit r = (if k > 0 then q.i else q.i).fs[k]", true),
-        ("method receiver", "mod first(self: I) -> float { return self.fs[1] }\n", "emit r = q.i.first()", true),
+        (
+            "if",
+            "",
+            "emit r = (if k > 0 then q.i else q.i).fs[k]",
+            true,
+        ),
+        (
+            "method receiver",
+            "mod first(self: I) -> float { return self.fs[1] }\n",
+            "emit r = q.i.first()",
+            true,
+        ),
         ("field path", "", "emit r = q.i.fs[k]", false),
     ] {
-        let src = format!("{head}{decls}chip C(q: const Q) -> (r: float) {{ on go {{ {body} }} }}\n{call}");
+        let src = format!(
+            "{head}{decls}chip C(q: const Q) -> (r: float) {{ on go {{ {body} }} }}\n{call}"
+        );
         for fold in [false, true] {
-            let r = if fold { compile_folded(&src) } else { compile(&src) };
+            let r = if fold {
+                compile_folded(&src)
+            } else {
+                compile(&src)
+            };
             assert_no_errors(&r);
-            assert!(!r.diagnostics.iter().any(|d| d.code == "WSP001"), "{form} fold {fold}: {:?}", r.diagnostics);
-            let tables: Vec<&Literal> = only_chip(&r, form).nodes.values().flat_map(|n| n.properties.values()).collect();
-            assert!(tables.contains(&&fs), "{form} fold {fold}: no `float` table");
-            assert_eq!(tables.contains(&&is), whole, "{form} fold {fold}: the `int` table");
+            assert!(
+                !r.diagnostics.iter().any(|d| d.code == "WSP001"),
+                "{form} fold {fold}: {:?}",
+                r.diagnostics
+            );
+            let tables: Vec<&Literal> = only_chip(&r, form)
+                .nodes
+                .values()
+                .flat_map(|n| n.properties.values())
+                .collect();
+            assert!(
+                tables.contains(&&fs),
+                "{form} fold {fold}: no `float` table"
+            );
+            assert_eq!(
+                tables.contains(&&is),
+                whole,
+                "{form} fold {fold}: the `int` table"
+            );
             let saved = super::float_slots::save_numbers(&src, fold);
-            assert!(saved.contains(&Literal::Float(2.5)), "{form} fold {fold}: not in the save\n{saved:?}");
+            assert!(
+                saved.contains(&Literal::Float(2.5)),
+                "{form} fold {fold}: not in the save\n{saved:?}"
+            );
         }
     }
 }
@@ -3303,12 +3118,36 @@ fn a_name_shadowing_a_constant_does_not_decide_an_if_or_match() {
     let head = "type P = { a: int, b: int }\nenum Hue { Red, Green }\nin go: exec\nvar n: int = 0\nvar k: int = 3\n\
                 var pv: P = { a: 3, b: 4 }\nvar hv: Hue = Hue.Green\n";
     for (outer, prog, renamed) in [
-        ("const m = 5", "mod f(m: int) -> int { if m == 3 { return 30 } return 50 }\non go { n = f(k) }", "q"),
-        ("const m = { a: 5, b: 6 }", "mod f(m: P) -> int { if m.a == 3 { return 30 } return 50 }\non go { n = f(pv) }", "q"),
-        ("const m = 5", "on go { var m: int = k\n if m == 3 { n = 30 } else { n = 50 } }", "q"),
-        ("const m = 5", "on go { for m in 0..k { if m == 5 { n = 1 } } }", "q"),
-        ("const m = 5", "on go { let { a: m } = pv\n if m == 3 { n = 30 } else { n = 50 } }", "q"),
-        ("const m = Hue.Red", "mod f(m: Hue) -> int { return match m { Hue.Red => 30, _ => 50 } }\non go { n = f(hv) }", "q"),
+        (
+            "const m = 5",
+            "mod f(m: int) -> int { if m == 3 { return 30 } return 50 }\non go { n = f(k) }",
+            "q",
+        ),
+        (
+            "const m = { a: 5, b: 6 }",
+            "mod f(m: P) -> int { if m.a == 3 { return 30 } return 50 }\non go { n = f(pv) }",
+            "q",
+        ),
+        (
+            "const m = 5",
+            "on go { var m: int = k\n if m == 3 { n = 30 } else { n = 50 } }",
+            "q",
+        ),
+        (
+            "const m = 5",
+            "on go { for m in 0..k { if m == 5 { n = 1 } } }",
+            "q",
+        ),
+        (
+            "const m = 5",
+            "on go { let { a: m } = pv\n if m == 3 { n = 30 } else { n = 50 } }",
+            "q",
+        ),
+        (
+            "const m = Hue.Red",
+            "mod f(m: Hue) -> int { return match m { Hue.Red => 30, _ => 50 } }\non go { n = f(hv) }",
+            "q",
+        ),
         (
             "const m = { a: 5, b: 6 }",
             "mod f(m: const P) -> int { if m.a == 3 { return 30 } return 50 }\non go { n = f({ a: 3, b: 4 }) }",
@@ -3321,20 +3160,31 @@ fn a_name_shadowing_a_constant_does_not_decide_an_if_or_match() {
         let twin = if renamed.is_empty() {
             format!("{head}{}\n{prog}", outer.replacen("const m", "const mm", 1))
         } else {
-            let p = prog.replace("(m: ", &format!("({renamed}: ")).replace("var m:", &format!("var {renamed}:"));
-            let p = p.replace("for m in", &format!("for {renamed} in")).replace("{ a: m }", &format!("{{ a: {renamed} }}"));
-            let p = p.replace("if m", &format!("if {renamed}")).replace("match m", &format!("match {renamed}"));
+            let p = prog
+                .replace("(m: ", &format!("({renamed}: "))
+                .replace("var m:", &format!("var {renamed}:"));
+            let p = p
+                .replace("for m in", &format!("for {renamed} in"))
+                .replace("{ a: m }", &format!("{{ a: {renamed} }}"));
+            let p = p
+                .replace("if m", &format!("if {renamed}"))
+                .replace("match m", &format!("match {renamed}"));
             format!("{head}{outer}\n{p}")
         };
         assert_ne!(src, twin);
         // A local var is labelled with its name.
         let shape = |r: &LowerResult| {
-            let mut s: Vec<String> =
-                super::generic_differential::shape(r).into_iter().map(|l| l.replace("_label=String(\"q\")", "_label=String(\"m\")")).collect();
+            let mut s: Vec<String> = super::generic_differential::shape(r)
+                .into_iter()
+                .map(|l| l.replace("_label=String(\"q\")", "_label=String(\"m\")"))
+                .collect();
             s.sort();
             s
         };
-        for ((mode, a), (_, b)) in super::generics::both_folds(&src).into_iter().zip(super::generics::both_folds(&twin)) {
+        for ((mode, a), (_, b)) in super::generics::both_folds(&src)
+            .into_iter()
+            .zip(super::generics::both_folds(&twin))
+        {
             assert_no_errors(&a);
             assert_eq!(shape(&a), shape(&b), "`{prog}`, {mode}");
         }
@@ -3356,13 +3206,7 @@ fn a_name_shadowing_a_constant_does_not_decide_an_if_or_match() {
 #[test]
 fn a_declaration_written_in_an_anonymous_chip_reads_the_chips_names_wherever_called() {
     let outcome = |src: &str, fold: bool| {
-        let mut o = super::shadow_differential::outcome(src, &[], fold);
-        let named = |t: &&str| t.starts_with("_bindname=") || t.starts_with("_label=");
-        for s in &mut o.shape {
-            *s = s.split(' ').filter(|t| !t.is_empty() && !named(t)).collect::<Vec<_>>().join(" ");
-        }
-        o.shape.sort();
-        o.comps.retain(|c| !c.starts_with("BrickComponentData_TextDisplay"));
+        let mut o = without_names(super::shadow_differential::outcome(src, &[], fold));
         // A boundary pin is labelled with the name it carries.
         for c in &mut o.comps {
             if let Some(at) = c.find("PortLabel: ") {
@@ -3375,15 +3219,27 @@ fn a_declaration_written_in_an_anonymous_chip_reads_the_chips_names_wherever_cal
     };
     let head = "in go: exec\nin go2: exec\nin a: int\nvar n: int = 0\nout on1: int = n\nvar s: string = \"\"\nout os: string = s\n";
     let rows: [(&str, &str); 12] = [
-        ("x", "let x = \"four\"\nchip { var @: int = 1\n mod rd() -> int { return @ * 10 }\n on go { @ += 1 } }\non go2 { n = rd() }"),
-        ("x", "let x = 4\nchip { var @: int = 1\n mod rd() -> int { return @ * 10 }\n on go { @ += 1 } }\non go2 { n = rd() }"),
-        ("x", "let x = 4\nchip { var @: int = 1\n chip RC() -> (o: int) { out o = @ * 10 }\n on go { @ += 1 } }\non go2 { n = RC() }"),
+        (
+            "x",
+            "let x = \"four\"\nchip { var @: int = 1\n mod rd() -> int { return @ * 10 }\n on go { @ += 1 } }\non go2 { n = rd() }",
+        ),
+        (
+            "x",
+            "let x = 4\nchip { var @: int = 1\n mod rd() -> int { return @ * 10 }\n on go { @ += 1 } }\non go2 { n = rd() }",
+        ),
+        (
+            "x",
+            "let x = 4\nchip { var @: int = 1\n chip RC() -> (o: int) { out o = @ * 10 }\n on go { @ += 1 } }\non go2 { n = RC() }",
+        ),
         (
             "K",
             "const K = 4\nchip { var @: int = 1\n mod rd() -> int { return @ * 10 }\n on go { @ += 1 } }\n\
              mod outer() -> int { return rd() + 1 }\non go2 { n = outer() }",
         ),
-        ("x", "let x = \"four\"\nchip { var @: int = 1\n mod rd() -> int { return @ * 10 }\n on go { @ += 1\n n = rd() } }\non go2 { n = rd() }"),
+        (
+            "x",
+            "let x = \"four\"\nchip { var @: int = 1\n mod rd() -> int { return @ * 10 }\n on go { @ += 1\n n = rd() } }\non go2 { n = rd() }",
+        ),
         (
             "x",
             "let x = 4\nchip { var @: int = 1\n chip { mod rd() -> int { return @ * 10 }\n on go { @ += 1 } } }\n\
@@ -3394,15 +3250,27 @@ fn a_declaration_written_in_an_anonymous_chip_reads_the_chips_names_wherever_cal
             "const ch = \"evt\"\nchip { const @ = \"inner\"\n on go { s = @ } }\non go2 { s = ch\n SendCustomEvent(ch, 1) }\n\
              on CustomEvent(\"evt\") -> (p: int) { n = p }",
         ),
-        ("K", "const K = 3\nchip { const @ = 5\n on go { n = @ } }\non go2 { n = K\n await SleepTicks(_, delay = K)\n n = K * 2 }"),
+        (
+            "K",
+            "const K = 3\nchip { const @ = 5\n on go { n = @ } }\non go2 { n = K\n await SleepTicks(_, delay = K)\n n = K * 2 }",
+        ),
         (
             "ch",
             "const ch = \"evt\"\nchip { const @ = \"inner\"\n on go { SendCustomEvent(@, 1) } }\n\
              on CustomEvent(\"inner\") -> (p: int) { n = p }\non go2 { SendCustomEvent(ch, 2) }",
         ),
-        ("x", "let x = 3\nchip { let @ = 5\n on go { n = @ } }\non go2 { n = x * 2 }"),
-        ("K", "const K = 3\nchip { const @ = 5\n mod rd() -> int { return @ * 2 }\n on go { n = rd() } }\non go2 { n = rd() + K }"),
-        ("K", "chip { const @ = 5\n on go { n = @ } }\nconst K = 3\non go2 { await SleepTicks(_, delay = K)\n n = K }"),
+        (
+            "x",
+            "let x = 3\nchip { let @ = 5\n on go { n = @ } }\non go2 { n = x * 2 }",
+        ),
+        (
+            "K",
+            "const K = 3\nchip { const @ = 5\n mod rd() -> int { return @ * 2 }\n on go { n = rd() } }\non go2 { n = rd() + K }",
+        ),
+        (
+            "K",
+            "chip { const @ = 5\n on go { n = @ } }\nconst K = 3\non go2 { await SleepTicks(_, delay = K)\n n = K }",
+        ),
     ];
     let mut wrong = Vec::new();
     for (name, body) in rows {
@@ -3410,7 +3278,12 @@ fn a_declaration_written_in_an_anonymous_chip_reads_the_chips_names_wherever_cal
             let got = outcome(&format!("{head}{}", body.replace('@', name)), fold);
             let want = outcome(&format!("{head}{}", body.replace('@', "cz")), fold);
             if !got.compiled || got != want {
-                let only = |a: &[String], b: &[String]| a.iter().filter(|s| !b.contains(s)).cloned().collect::<Vec<_>>();
+                let only = |a: &[String], b: &[String]| {
+                    a.iter()
+                        .filter(|s| !b.contains(s))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                };
                 wrong.push(format!(
                     "{body}, fold {fold}: {:?} {:?} {:?} / {:?}; {:?} / {:?}",
                     got.codes,
@@ -3426,7 +3299,11 @@ fn a_declaration_written_in_an_anonymous_chip_reads_the_chips_names_wherever_cal
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     let codes = |src: &str| outcome(&format!("{head}{src}"), false).codes;
     let twice = "chip { const k = 1\n const k = 2\n on go { n = k } }";
-    assert!(codes(twice).contains(&"WS013".to_string()), "{twice}: {:?}", codes(twice));
+    assert!(
+        codes(twice).contains(&"WS013".to_string()),
+        "{twice}: {:?}",
+        codes(twice)
+    );
 }
 
 /// A name the top level of a file declares more than once is read by
@@ -3446,13 +3323,7 @@ fn a_declaration_written_in_an_anonymous_chip_reads_the_chips_names_wherever_cal
 #[test]
 fn a_name_the_top_level_declares_twice_is_read_by_position() {
     let outcome = |src: &str, fold: bool| {
-        let mut o = super::shadow_differential::outcome(src, &[], fold);
-        let named = |t: &&str| t.starts_with("_bindname=") || t.starts_with("_label=");
-        for s in &mut o.shape {
-            *s = s.split(' ').filter(|t| !t.is_empty() && !named(t)).collect::<Vec<_>>().join(" ");
-        }
-        o.shape.sort();
-        o.comps.retain(|c| !c.starts_with("BrickComponentData_TextDisplay"));
+        let mut o = without_names(super::shadow_differential::outcome(src, &[], fold));
         o.comps.sort();
         o
     };
@@ -3535,11 +3406,21 @@ fn a_name_the_top_level_declares_twice_is_read_by_position() {
         ),
     ];
     let mut wrong = Vec::new();
+    let mut failed = 0;
     for row in &rows {
         for fold in [false, true] {
             let got = outcome(&format!("{head}{}", row.replace('@', "k")), fold);
             let want = outcome(&format!("{head}{}", row.replace('@', "k0")), fold);
-            let without = |codes: &[String]| codes.iter().filter(|c| *c != "WS108").cloned().collect::<Vec<_>>();
+            if !fold && !want.compiled {
+                failed += 1;
+            }
+            let without = |codes: &[String]| {
+                codes
+                    .iter()
+                    .filter(|c| *c != "WS108")
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
             let warned = !got.compiled || got.codes.iter().any(|c| c == "WS108");
             if got.compiled != want.compiled
                 || got.shape != want.shape
@@ -3547,12 +3428,14 @@ fn a_name_the_top_level_declares_twice_is_read_by_position() {
                 || without(&got.codes) != want.codes
                 || !warned
             {
-                wrong.push(format!("{row}, fold {fold}: {:?} / {:?}", got.codes, want.codes));
+                wrong.push(format!(
+                    "{row}, fold {fold}: {:?} / {:?}",
+                    got.codes, want.codes
+                ));
             }
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    let failed = rows.iter().filter(|r| !outcome(&format!("{head}{}", r.replace('@', "k0")), false).compiled).count();
     assert_eq!(failed, 1, "only the storage row fails");
 
     // A library declaring a name twice reads it by position however it is
@@ -3560,16 +3443,26 @@ fn a_name_the_top_level_declares_twice_is_read_by_position() {
     // later declaration; an importer reads its last declaration.
     let lib_outcome = |src: &str, deps: &[(&str, &str)], fold: bool| {
         let mut o = super::shadow_differential::outcome(src, deps, fold);
-        o.comps.retain(|c| !c.starts_with("BrickComponentData_TextDisplay"));
+        o.comps
+            .retain(|c| !c.starts_with("BrickComponentData_TextDisplay"));
         o.comps.sort();
         o
     };
-    let fab = "const @ = 2\nmod fa() -> int { return @ }\nconst k = 30\nmod fb() -> int { return k }\n";
+    let fab =
+        "const @ = 2\nmod fa() -> int { return @ }\nconst k = 30\nmod fb() -> int { return k }\n";
     let flat = "import \"lib\"\n";
     let libs: [(&str, &str, &str); 7] = [
         (fab, flat, "on go { n = fa() * 1000 + fb() * 10 + k }"),
-        (fab, "import { fa, fb, k } from \"lib\"\n", "on go { n = fa() * 1000 + fb() * 10 + k }"),
-        (fab, "import \"pa\"\nimport \"pb\"\n", "on go { n = ma() * 1000 + mb() * 10 + k }"),
+        (
+            fab,
+            "import { fa, fb, k } from \"lib\"\n",
+            "on go { n = fa() * 1000 + fb() * 10 + k }",
+        ),
+        (
+            fab,
+            "import \"pa\"\nimport \"pb\"\n",
+            "on go { n = ma() * 1000 + mb() * 10 + k }",
+        ),
         ("let @ = 2\nlet k = \"str\"\n", flat, "on go { s = k }"),
         (
             "const @ = \"a\"\nmod sa() { SendCustomEvent(@, 1) }\nconst k = \"b\"\nmod sb() { SendCustomEvent(k, 2) }\n",
@@ -3587,7 +3480,10 @@ fn a_name_the_top_level_declares_twice_is_read_by_position() {
             "on go { n = f0() * 100 + f2() + k }",
         ),
     ];
-    let paths = [("pa", "import \"lib\"\nmod ma() -> int { return fa() }\n"), ("pb", "import \"lib\"\nmod mb() -> int { return fb() }\n")];
+    let paths = [
+        ("pa", "import \"lib\"\nmod ma() -> int { return fa() }\n"),
+        ("pb", "import \"lib\"\nmod mb() -> int { return fb() }\n"),
+    ];
     for (lib, imports, body) in libs {
         let src = format!("{imports}{head}{body}{recv}");
         for fold in [false, true] {
@@ -3603,9 +3499,22 @@ fn a_name_the_top_level_declares_twice_is_read_by_position() {
             let got = lib_outcome(&src, &as_refs(&dk), fold);
             let want = lib_outcome(&src, &as_refs(&dk0), fold);
             let warned = got.codes.iter().filter(|c| *c == "WS108").count();
-            let without = |codes: &[String]| codes.iter().filter(|c| *c != "WS108").cloned().collect::<Vec<_>>();
-            if !got.compiled || got.comps != want.comps || without(&got.codes) != want.codes || warned != 1 {
-                wrong.push(format!("{lib}{src}, fold {fold}: {:?} / {:?}", got.codes, want.codes));
+            let without = |codes: &[String]| {
+                codes
+                    .iter()
+                    .filter(|c| *c != "WS108")
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            if !got.compiled
+                || got.comps != want.comps
+                || without(&got.codes) != want.codes
+                || warned != 1
+            {
+                wrong.push(format!(
+                    "{lib}{src}, fold {fold}: {:?} / {:?}",
+                    got.codes, want.codes
+                ));
             }
         }
     }
@@ -3616,28 +3525,37 @@ fn a_name_the_top_level_declares_twice_is_read_by_position() {
 /// declares a name twice at the top level and warns `WS108`; the twin renames
 /// the declarations the program's reads must not name. Each mismatch is
 /// pushed to `wrong`.
-fn same_as_renamed_twin(rows: &[(String, String)], deps: &[(&str, &str)], twin_deps: &[(&str, &str)], wrong: &mut Vec<String>) {
+fn same_as_renamed_twin(
+    rows: &[(String, String)],
+    deps: &[(&str, &str)],
+    twin_deps: &[(&str, &str)],
+    wrong: &mut Vec<String>,
+) {
     let outcome = |src: &str, deps: &[(&str, &str)], fold: bool| {
-        let mut o = super::shadow_differential::outcome(src, deps, fold);
-        let named = |t: &&str| t.starts_with("_bindname=") || t.starts_with("_label=");
-        for s in &mut o.shape {
-            *s = s.split(' ').filter(|t| !t.is_empty() && !named(t)).collect::<Vec<_>>().join(" ");
-        }
-        o.shape.sort();
-        o.comps.retain(|c| !c.starts_with("BrickComponentData_TextDisplay"));
+        let mut o = without_names(super::shadow_differential::outcome(src, deps, fold));
         o.comps.sort();
         o
     };
     // The imports a row starts with stay above the declarations it reads.
     let placed = |row: &str| {
-        let at = row.lines().take_while(|l| l.starts_with("import")).map(|l| l.len() + 1).sum::<usize>();
+        let at = row
+            .lines()
+            .take_while(|l| l.starts_with("import"))
+            .map(|l| l.len() + 1)
+            .sum::<usize>();
         format!("{}{DUP_HEAD}{}", &row[..at], &row[at..])
     };
     for (row, twin) in rows {
         for fold in [false, true] {
             let got = outcome(&placed(row), deps, fold);
             let want = outcome(&placed(twin), twin_deps, fold);
-            let without = |codes: &[String]| codes.iter().filter(|c| *c != "WS108").cloned().collect::<Vec<_>>();
+            let without = |codes: &[String]| {
+                codes
+                    .iter()
+                    .filter(|c| *c != "WS108")
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
             if !got.compiled
                 || !want.compiled
                 || got.shape != want.shape
@@ -3645,7 +3563,10 @@ fn same_as_renamed_twin(rows: &[(String, String)], deps: &[(&str, &str)], twin_d
                 || without(&got.codes) != without(&want.codes)
                 || !got.codes.iter().any(|c| c == "WS108")
             {
-                wrong.push(format!("{row}\n  fold {fold}: {:?} / twin {:?}", got.codes, want.codes));
+                wrong.push(format!(
+                    "{row}\n  fold {fold}: {:?} / twin {:?}",
+                    got.codes, want.codes
+                ));
             }
         }
     }
@@ -3736,7 +3657,13 @@ fn a_duplicate_initialized_by_a_const_mod_holds_its_own_value() {
     ];
     let mut wrong = Vec::new();
     same_as_renamed_twin(&pairs, &[], &[], &mut wrong);
-    assert!(wrong.is_empty(), "{} of {} rows:\n{}", wrong.len(), pairs.len() * 2, wrong.join("\n"));
+    assert!(
+        wrong.is_empty(),
+        "{} of {} rows:\n{}",
+        wrong.len(),
+        pairs.len() * 2,
+        wrong.join("\n")
+    );
 }
 
 /// A `var` or `static var` initializer reads the declaration visible before
@@ -3796,26 +3723,69 @@ fn a_var_initializer_reads_the_declaration_before_it() {
 /// line. A library imported both flat and `import * as` gets one warning.
 #[test]
 fn a_library_reached_by_several_imports_reads_its_duplicates_in_source_order() {
-    let lib = "const K = 2\nmod fa() -> int { return K }\nconst K = 30\nmod fb() -> int { return K }\n";
-    let lib_t = "const K0 = 2\nmod fa() -> int { return K0 }\nconst K = 30\nmod fb() -> int { return K }\n";
+    let lib =
+        "const K = 2\nmod fa() -> int { return K }\nconst K = 30\nmod fb() -> int { return K }\n";
+    let lib_t =
+        "const K0 = 2\nmod fa() -> int { return K0 }\nconst K = 30\nmod fb() -> int { return K }\n";
     let above = "mod f0() -> int { return K }\nconst K = 2\nmod fa() -> int { return K }\nconst K = 30\n\
                  mod fb() -> int { return K }\n";
     let above_t = "mod f0() -> int { return K0 }\nconst K0 = 2\nmod fa() -> int { return K0 }\nconst K = 30\n\
                    mod fb() -> int { return K }\n";
     let all = "on go { n = fa() * 1000 + fb() * 10 + K }";
     let paths = [
-        ("NK", "import { K } from \"L\"\nmod mk() -> int { return K }\n"),
+        (
+            "NK",
+            "import { K } from \"L\"\nmod mk() -> int { return K }\n",
+        ),
         ("PA", "import \"L\"\nmod ma() -> int { return fa() }\n"),
-        ("PB", "import { fb } from \"L\"\nmod mb() -> int { return fb() }\n"),
+        (
+            "PB",
+            "import { fb } from \"L\"\nmod mb() -> int { return fb() }\n",
+        ),
     ];
     let rows: Vec<(&str, &str, String, &str)> = vec![
-        (lib, lib_t, "import { K } from \"L\"\nimport \"L\"\n".into(), all),
-        (lib, lib_t, "import \"L\"\nimport { K } from \"L\"\n".into(), all),
-        (lib, lib_t, "import { fb } from \"L\"\nimport \"L\"\n".into(), all),
-        (lib, lib_t, "import { fa } from \"L\"\nimport \"L\"\n".into(), all),
-        (lib, lib_t, "import { fb } from \"L\"\nimport { fa } from \"L\"\nimport { K } from \"L\"\n".into(), all),
-        (lib, lib_t, "import { K } from \"L\"\nimport { fa } from \"L\"\n".into(), "on go { n = fa() * 1000 + K }"),
-        (lib, lib_t, "import { fa } from \"L\"\nimport { fb } from \"L\"\n".into(), "on go { n = fa() * 1000 + fb() * 10 }"),
+        (
+            lib,
+            lib_t,
+            "import { K } from \"L\"\nimport \"L\"\n".into(),
+            all,
+        ),
+        (
+            lib,
+            lib_t,
+            "import \"L\"\nimport { K } from \"L\"\n".into(),
+            all,
+        ),
+        (
+            lib,
+            lib_t,
+            "import { fb } from \"L\"\nimport \"L\"\n".into(),
+            all,
+        ),
+        (
+            lib,
+            lib_t,
+            "import { fa } from \"L\"\nimport \"L\"\n".into(),
+            all,
+        ),
+        (
+            lib,
+            lib_t,
+            "import { fb } from \"L\"\nimport { fa } from \"L\"\nimport { K } from \"L\"\n".into(),
+            all,
+        ),
+        (
+            lib,
+            lib_t,
+            "import { K } from \"L\"\nimport { fa } from \"L\"\n".into(),
+            "on go { n = fa() * 1000 + K }",
+        ),
+        (
+            lib,
+            lib_t,
+            "import { fa } from \"L\"\nimport { fb } from \"L\"\n".into(),
+            "on go { n = fa() * 1000 + fb() * 10 }",
+        ),
         (
             lib,
             lib_t,
@@ -3828,35 +3798,71 @@ fn a_library_reached_by_several_imports_reads_its_duplicates_in_source_order() {
             "import { K as KK } from \"L\"\nimport \"L\"\n".into(),
             "on go { n = fa() * 1000 + fb() * 10 + KK + K }",
         ),
-        (lib, lib_t, "import \"NK\"\nimport \"L\"\n".into(), "on go { n = fa() * 1000 + fb() * 10 + mk() }"),
+        (
+            lib,
+            lib_t,
+            "import \"NK\"\nimport \"L\"\n".into(),
+            "on go { n = fa() * 1000 + fb() * 10 + mk() }",
+        ),
         (
             lib,
             lib_t,
             "import \"PB\"\nimport { K } from \"L\"\nimport \"PA\"\n".into(),
             "on go { n = ma() * 1000 + mb() * 10 + K }",
         ),
-        (above, above_t, "import { K } from \"L\"\nimport \"L\"\n".into(), "on go { n = f0() * 100 + fa() * 10 + fb() + K }"),
-        (above, above_t, "import { fb } from \"L\"\nimport { f0 } from \"L\"\n".into(), "on go { n = f0() * 100 + fb() }"),
+        (
+            above,
+            above_t,
+            "import { K } from \"L\"\nimport \"L\"\n".into(),
+            "on go { n = f0() * 100 + fa() * 10 + fb() + K }",
+        ),
+        (
+            above,
+            above_t,
+            "import { fb } from \"L\"\nimport { f0 } from \"L\"\n".into(),
+            "on go { n = f0() * 100 + fb() }",
+        ),
     ];
     let mut wrong = Vec::new();
     for (l, l_t, imports, body) in &rows {
         let deps: Vec<(&str, &str)> = [("L", *l)].into_iter().chain(paths).collect();
         let twin_deps: Vec<(&str, &str)> = [("L", *l_t)].into_iter().chain(paths).collect();
         let main = format!("{imports}{body}");
-        same_as_renamed_twin(&[(main.clone(), main.clone())], &deps, &twin_deps, &mut wrong);
-        let line_of = |nth: usize| l.lines().enumerate().filter(|(_, x)| x.starts_with("const K")).nth(nth).map(|(i, _)| i + 1);
+        same_as_renamed_twin(
+            &[(main.clone(), main.clone())],
+            &deps,
+            &twin_deps,
+            &mut wrong,
+        );
+        let line_of = |nth: usize| {
+            l.lines()
+                .enumerate()
+                .filter(|(_, x)| x.starts_with("const K"))
+                .nth(nth)
+                .map(|(i, _)| i + 1)
+        };
         let (first, last) = (line_of(0).unwrap_or(0), line_of(1).unwrap_or(0));
-        match super::declaring_scope::compile_main(&format!("{imports}{DUP_HEAD}{body}"), &deps, true) {
+        match super::declaring_scope::compile_main(
+            &format!("{imports}{DUP_HEAD}{body}"),
+            &deps,
+            true,
+        ) {
             Ok(out) => {
-                let warned: Vec<_> = out.diagnostics.iter().filter(|d| d.code == "WS108").collect();
+                let warned: Vec<_> = out
+                    .diagnostics
+                    .iter()
+                    .filter(|d| d.code == "WS108")
+                    .collect();
                 let placed = |d: &&crate::diagnostic::Diagnostic| {
                     d.range.file.ends_with("L.ws")
                         && d.range.start.line as usize == last
                         && d.message.contains(&format!("on line {first}:"))
                 };
                 if warned.len() != 1 || !warned.iter().all(placed) {
-                    let shown: Vec<_> =
-                        warned.iter().map(|d| format!("{}:{} {}", d.range.file, d.range.start.line, d.message)).collect();
+                    let shown: Vec<_> = warned
+                        .iter()
+                        .map(|d| format!("{}:{} {}", d.range.file, d.range.start.line, d.message))
+                        .collect();
                     wrong.push(format!("{main}: WS108 {shown:#?}"));
                 }
             }
@@ -3867,7 +3873,12 @@ fn a_library_reached_by_several_imports_reads_its_duplicates_in_source_order() {
     let both = "import \"L\"\nimport * as ns from \"L\"\nin go: exec\nvar n: int = 0\non go { n = fa() * 1000 + ns.fb() * 10 + K }";
     match super::declaring_scope::compile_main(both, &[("L", lib)], true) {
         Ok(out) => {
-            let warned: Vec<_> = out.diagnostics.iter().filter(|d| d.code == "WS108").map(|d| d.message.clone()).collect();
+            let warned: Vec<_> = out
+                .diagnostics
+                .iter()
+                .filter(|d| d.code == "WS108")
+                .map(|d| d.message.clone())
+                .collect();
             if warned.len() != 1 || !warned[0].contains("import * as") {
                 wrong.push(format!("flat and namespace: {warned:#?}"));
             }

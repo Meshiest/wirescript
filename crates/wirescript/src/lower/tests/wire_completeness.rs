@@ -33,7 +33,11 @@ fn unwired_outputs(module: &Module, path: &str, acc: &mut Vec<String>) {
     }
     for (chip_nid, child) in &module.chips {
         let name = crate::intern::resolve(child.name);
-        unwired_outputs(child, &format!("{path} > chip {name}#{}", chip_id_num(*chip_nid)), acc);
+        unwired_outputs(
+            child,
+            &format!("{path} > chip {name}#{}", chip_id_num(*chip_nid)),
+            acc,
+        );
     }
 }
 
@@ -60,11 +64,23 @@ fn program(kind: &str, body: &str, parent_out: &str, call: &str, sig: &str) -> S
 fn wire_completeness_matrix() {
     // (label, sig, body) — single-output return shapes.
     let single_bodies = [
-        ("select_find", "int", "  let res = a.find(x)\n  return if res.Found then res.Index else -1"),
-        ("early_find", "int", "  let res = a.find(x)\n  if res.Found { return res.Index }\n  return -1"),
+        (
+            "select_find",
+            "int",
+            "  let res = a.find(x)\n  return if res.Found then res.Index else -1",
+        ),
+        (
+            "early_find",
+            "int",
+            "  let res = a.find(x)\n  if res.Found { return res.Index }\n  return -1",
+        ),
         ("pure_select", "int", "  return if x > 0 then x else 0 - x"),
         ("plain_value", "int", "  return x + 1"),
-        ("exec_then_value", "int", "  let l = a.length()\n  return l + x"),
+        (
+            "exec_then_value",
+            "int",
+            "  let l = a.length()\n  return l + x",
+        ),
     ];
     let kinds = ["chip", "mod"];
     let parent_outs = [("", "no_out"), ("out extra: int[] = a\n", "with_out")];
@@ -76,7 +92,7 @@ fn wire_completeness_matrix() {
 
     let mut failures: Vec<String> = Vec::new();
     let mut compiled = 0usize;
-    let mut skipped = 0usize;
+    let mut skipped: Vec<String> = Vec::new();
 
     for kind in kinds {
         for (blabel, sig, body) in single_bodies {
@@ -84,12 +100,13 @@ fn wire_completeness_matrix() {
                 for (call, clabel) in calls {
                     let src = program(kind, body, pout, call, sig);
                     let r = compile(&src);
-                    if r.diagnostics.iter().any(|d| d.severity == Severity::Error) {
-                        skipped += 1;
+                    let case = format!("{kind}/{blabel}/{plabel}/{clabel}");
+                    let errors = crate::test_support::error_codes(&r.diagnostics);
+                    if !errors.is_empty() {
+                        skipped.push(format!("{case} {errors:?}"));
                         continue;
                     }
                     compiled += 1;
-                    let case = format!("{kind}/{blabel}/{plabel}/{clabel}");
                     let mut acc = Vec::new();
                     unwired_outputs(&r.module, &case, &mut acc);
                     if !acc.is_empty() {
@@ -105,8 +122,13 @@ fn wire_completeness_matrix() {
         "wire-completeness: {} case(s) with unwired outputs ({} compiled, {} skipped):\n\n{}",
         failures.len(),
         compiled,
-        skipped,
+        skipped.len(),
         failures.join("\n\n")
+    );
+    assert!(
+        skipped.is_empty(),
+        "every program in the matrix must compile ({compiled} did):\n{}",
+        skipped.join("\n")
     );
 }
 
@@ -152,12 +174,16 @@ fn wire_completeness_multi_output_and_nested() {
     let mut failures = Vec::new();
     for (label, snippet) in cases {
         // Always with a parent `out` present (the trigger for the value-drop bug).
-        let src = format!("var a: int[]\nout extra: int[] = a\nvar r: int = 0\nin z: exec\n{snippet}\n");
+        let src =
+            format!("var a: int[]\nout extra: int[] = a\nvar r: int = 0\nin z: exec\n{snippet}\n");
         let r = compile(&src);
         if r.diagnostics.iter().any(|d| d.severity == Severity::Error) {
             failures.push(format!(
                 "--- {label} (COMPILE ERROR) ---\n{src}\n{:?}",
-                r.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect::<Vec<_>>()
+                r.diagnostics
+                    .iter()
+                    .filter(|d| d.severity == Severity::Error)
+                    .collect::<Vec<_>>()
             ));
             continue;
         }
@@ -202,7 +228,10 @@ on z {\n\
     assert!(
         !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
         "unexpected errors: {:?}",
-        r.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect::<Vec<_>>()
+        r.diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect::<Vec<_>>()
     );
 
     // Every chip instance's declared outputs must be driven.
@@ -226,12 +255,22 @@ on z {\n\
         input_sources.push((*chip_nid, src_wire));
     }
 
-    assert_eq!(input_sources.len(), 3, "expected 3 chip instances, got {}", input_sources.len());
+    assert_eq!(
+        input_sources.len(),
+        3,
+        "expected 3 chip instances, got {}",
+        input_sources.len()
+    );
     for (nid, src) in &input_sources {
-        assert!(src.is_some(), "chip instance {nid}'s value-input has no incoming wire");
+        assert!(
+            src.is_some(),
+            "chip instance {nid}'s value-input has no incoming wire"
+        );
     }
-    let distinct: std::collections::HashSet<NodeId> =
-        input_sources.iter().filter_map(|(_, s)| s.map(|p| p.node_id)).collect();
+    let distinct: crate::collections::HashSet<NodeId> = input_sources
+        .iter()
+        .filter_map(|(_, s)| s.map(|p| p.node_id))
+        .collect();
     assert_eq!(
         distinct.len(),
         3,
@@ -244,8 +283,8 @@ on z {\n\
 /// Valid wire-endpoint IDs for `module`: its own nodes, its external
 /// scope-captures, and the boundary (input/output/key) nodes of its direct
 /// child chips — since parent wires legitimately cross into a chip's I/O.
-fn valid_endpoints(module: &Module) -> std::collections::HashSet<NodeId> {
-    let mut ok: std::collections::HashSet<NodeId> = module.nodes.keys().cloned().collect();
+fn valid_endpoints(module: &Module) -> crate::collections::HashSet<NodeId> {
+    let mut ok: crate::collections::HashSet<NodeId> = module.nodes.keys().cloned().collect();
     ok.extend(module.scope_captures.iter().cloned());
     for (chip_key, child) in &module.chips {
         ok.insert(*chip_key);
@@ -262,10 +301,16 @@ fn dangling_wires(module: &Module, path: &str, acc: &mut Vec<String>) {
     let ok = valid_endpoints(module);
     for w in &module.wires {
         if !ok.contains(&w.source.node_id) {
-            acc.push(format!("{path}: wire SOURCE {} references a non-existent node", w.source.node_id));
+            acc.push(format!(
+                "{path}: wire SOURCE {} references a non-existent node",
+                w.source.node_id
+            ));
         }
         if !ok.contains(&w.target.node_id) {
-            acc.push(format!("{path}: wire TARGET {} references a non-existent node", w.target.node_id));
+            acc.push(format!(
+                "{path}: wire TARGET {} references a non-existent node",
+                w.target.node_id
+            ));
         }
     }
     for (chip_key, child) in &module.chips {
@@ -306,7 +351,10 @@ on z {\n\
     assert!(
         !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
         "unexpected errors: {:?}",
-        r.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect::<Vec<_>>()
+        r.diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect::<Vec<_>>()
     );
 
     let mut dangles = Vec::new();
@@ -354,26 +402,49 @@ on z {\n\
     assert!(
         !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
         "unexpected errors: {:?}",
-        r.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect::<Vec<_>>()
+        r.diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect::<Vec<_>>()
     );
 
     let mut dangles = Vec::new();
     dangling_wires(&r.module, "derived", &mut dangles);
-    assert!(dangles.is_empty(), "dangling wires:\n{}", dangles.join("\n"));
+    assert!(
+        dangles.is_empty(),
+        "dangling wires:\n{}",
+        dangles.join("\n")
+    );
 
     // Each of the 3 chip instances must have its `uid` input fed by a DISTINCT
     // source (the per-row array read), not collapsed to one.
     let mut input_sources: Vec<Option<NodeId>> = Vec::new();
     for (_chip_nid, child) in &r.module.chips {
-        let Some(&val_input) = child.inputs.first() else { continue };
-        let src = r.module.wires.iter().find(|w| w.target.node_id == val_input).map(|w| w.source.node_id);
+        let Some(&val_input) = child.inputs.first() else {
+            continue;
+        };
+        let src = r
+            .module
+            .wires
+            .iter()
+            .find(|w| w.target.node_id == val_input)
+            .map(|w| w.source.node_id);
         input_sources.push(src);
     }
-    assert_eq!(input_sources.len(), 3, "expected 3 chip instances, got {}", input_sources.len());
+    assert_eq!(
+        input_sources.len(),
+        3,
+        "expected 3 chip instances, got {}",
+        input_sources.len()
+    );
     for s in &input_sources {
-        assert!(s.is_some(), "a chip instance's uid input has no incoming wire");
+        assert!(
+            s.is_some(),
+            "a chip instance's uid input has no incoming wire"
+        );
     }
-    let distinct: std::collections::HashSet<NodeId> = input_sources.iter().filter_map(|s| *s).collect();
+    let distinct: crate::collections::HashSet<NodeId> =
+        input_sources.iter().filter_map(|s| *s).collect();
     assert_eq!(
         distinct.len(),
         3,
@@ -383,30 +454,38 @@ on z {\n\
     );
 }
 
-/// Every node id reachable anywhere in the chip tree.
-fn all_node_ids(module: &Module, acc: &mut std::collections::HashSet<NodeId>) {
-    acc.extend(module.nodes.keys().cloned());
-    for child in module.chips.values() {
-        all_node_ids(child, acc);
-    }
-}
-
 /// Wire endpoints naming a node that exists in NO module of the tree. This is
 /// exactly what emit rejects as `EmitError::DroppedWire`, and it is stricter
 /// than `dangling_wires`, which accepts anything listed in `scope_captures`
 /// even after the node itself has been deleted.
-fn wires_to_deleted_nodes(module: &Module, path: &str, live: &std::collections::HashSet<NodeId>, acc: &mut Vec<String>) {
+fn wires_to_deleted_nodes(
+    module: &Module,
+    path: &str,
+    live: &crate::collections::HashSet<NodeId>,
+    acc: &mut Vec<String>,
+) {
     for w in &module.wires {
         if !live.contains(&w.source.node_id) {
-            acc.push(format!("{path}: wire SOURCE {} names a node deleted from the whole tree", w.source.node_id));
+            acc.push(format!(
+                "{path}: wire SOURCE {} names a node deleted from the whole tree",
+                w.source.node_id
+            ));
         }
         if !live.contains(&w.target.node_id) {
-            acc.push(format!("{path}: wire TARGET {} names a node deleted from the whole tree", w.target.node_id));
+            acc.push(format!(
+                "{path}: wire TARGET {} names a node deleted from the whole tree",
+                w.target.node_id
+            ));
         }
     }
     for (chip_key, child) in &module.chips {
         let name = crate::intern::resolve(child.name);
-        wires_to_deleted_nodes(child, &format!("{path} > chip {name}#{chip_key}"), live, acc);
+        wires_to_deleted_nodes(
+            child,
+            &format!("{path} > chip {name}#{chip_key}"),
+            live,
+            acc,
+        );
     }
 }
 
@@ -446,10 +525,13 @@ fn exec_signal_consumed_inside_a_chip_survives_the_hub_splice() {
         assert!(
             !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
             "unexpected errors for:\n{src}\n{:?}",
-            r.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect::<Vec<_>>()
+            r.diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .collect::<Vec<_>>()
         );
-        let mut live = std::collections::HashSet::new();
-        all_node_ids(&r.module, &mut live);
+        let live: crate::collections::HashSet<NodeId> =
+            r.module.nodes_deep().map(|n| n.id).collect();
         let mut acc = Vec::new();
         wires_to_deleted_nodes(&r.module, "root", &live, &mut acc);
         assert!(acc.is_empty(), "for:\n{src}\n{}", acc.join("\n"));
@@ -466,20 +548,10 @@ fn exec_signal_consumed_inside_a_chip_survives_the_hub_splice() {
 /// Pins are collected tree-wide before the walk because a parent's wire
 /// legitimately names a pin node owned by a child chip.
 pub(super) fn pin_port_violations(root: &Module) -> Vec<String> {
-    fn collect_pins(m: &Module, acc: &mut std::collections::HashMap<NodeId, NodeKind>) {
-        for (id, n) in &m.nodes {
-            if matches!(n.kind, NodeKind::Input | NodeKind::Output) {
-                acc.insert(*id, n.kind);
-            }
-        }
-        for c in m.chips.values() {
-            collect_pins(c, acc);
-        }
-    }
     fn walk(
         m: &Module,
         path: &str,
-        pins: &std::collections::HashMap<NodeId, NodeKind>,
+        pins: &crate::collections::HashMap<NodeId, NodeKind>,
         acc: &mut Vec<String>,
     ) {
         for w in &m.wires {
@@ -502,11 +574,19 @@ pub(super) fn pin_port_violations(root: &Module) -> Vec<String> {
         }
         for (chip_key, child) in &m.chips {
             let name = crate::intern::resolve(child.name);
-            walk(child, &format!("{path} > chip {name}#{chip_key}"), pins, acc);
+            walk(
+                child,
+                &format!("{path} > chip {name}#{chip_key}"),
+                pins,
+                acc,
+            );
         }
     }
-    let mut pins = std::collections::HashMap::new();
-    collect_pins(root, &mut pins);
+    let pins: crate::collections::HashMap<NodeId, NodeKind> = root
+        .nodes_deep()
+        .filter(|n| matches!(n.kind, NodeKind::Input | NodeKind::Output))
+        .map(|n| (n.id, n.kind))
+        .collect();
     let mut acc = Vec::new();
     walk(root, "root", &pins, &mut acc);
     acc
@@ -552,7 +632,10 @@ fn chip_container_params_wire_only_rerouter_ports() {
         assert!(
             !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
             "{label}: unexpected errors for:\n{src}\n{:?}",
-            r.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect::<Vec<_>>()
+            r.diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .collect::<Vec<_>>()
         );
         let acc = pin_port_violations(&r.module);
         assert!(acc.is_empty(), "{label}:\n{src}\n{}", acc.join("\n"));

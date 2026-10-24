@@ -4,9 +4,17 @@ set windows-shell := ["pwsh", "-NoProfile", "-Command"]
 default:
     just --list
 
-# Run all wirescript tests
+# Run every test in the workspace (unit, integration, lsp, wasm)
 test:
+    cargo test --workspace
+
+# Run only the wirescript library's unit tests
+test-lib:
     cargo test -p wirescript --lib
+
+# Run the exhaustive tier: the full cross-product matrices that `test` samples
+test-exhaustive:
+    cargo test --workspace -- --ignored
 
 # Run a specific test by name
 test-one name:

@@ -1,4 +1,5 @@
 use super::*;
+use crate::ir::gate_class as gc;
 
 #[test]
 fn module_has_root_scope_only_for_empty_program() {
@@ -33,18 +34,22 @@ fn handler_allocates_handler_body_scope() {
     assert_eq!(hb.parent, Some(crate::ir::ROOT_SCOPE_ID));
 }
 
+/// An `if` in a handler makes an IfGroup scope with IfCond/IfThen/IfElse
+/// children, each branch owns its body's nodes, and every node's scope id is
+/// one the module holds.
 #[test]
-fn if_creates_if_group_with_cond_then_else_children() {
+fn if_creates_an_if_group_whose_branches_own_their_nodes() {
     let src = "var n: int = 0\non RoundStart() { if (n > 0) { n = 1 } else { n = 2 } }";
-    let r = compile(src);
-    let group_id = r
-        .module
-        .scopes
-        .iter()
-        .find(|(_, s)| matches!(s.kind, ScopeKind::IfGroup))
-        .map(|(id, _)| *id)
-        .expect("expected an IfGroup scope");
-
+    let r = compile_ok(src);
+    let scope_of = |want: fn(&ScopeKind) -> bool| {
+        r.module
+            .scopes
+            .iter()
+            .find(|(_, s)| want(&s.kind))
+            .map(|(id, _)| *id)
+    };
+    let group_id =
+        scope_of(|k| matches!(k, ScopeKind::IfGroup)).expect("expected an IfGroup scope");
     let mut kinds: Vec<&ScopeKind> = r
         .module
         .scopes
@@ -62,12 +67,7 @@ fn if_creates_if_group_with_cond_then_else_children() {
     assert!(matches!(kinds[0], ScopeKind::IfCond));
     assert!(matches!(kinds[1], ScopeKind::IfThen));
     assert!(matches!(kinds[2], ScopeKind::IfElse));
-}
 
-#[test]
-fn every_node_has_a_valid_scope_id() {
-    let src = "var n: int = 0\non RoundStart() { if (n > 0) { n = 1 } else { n = 2 } }";
-    let r = compile(src);
     for node in r.module.nodes.values() {
         assert!(
             r.module.scopes.contains_key(&node.scope_id),
@@ -76,47 +76,18 @@ fn every_node_has_a_valid_scope_id() {
             node.scope_id
         );
     }
-}
 
-#[test]
-fn if_branches_own_their_body_nodes() {
-    // The Set gate for `n = 1` must live in the IfThen scope;
-    // the Set gate for `n = 2` must live in the IfElse scope.
-    let src = "var n: int = 0\non RoundStart() { if (n > 0) { n = 1 } else { n = 2 } }";
-    let r = compile(src);
-
-    let then_id = r
-        .module
-        .scopes
-        .iter()
-        .find(|(_, s)| matches!(s.kind, ScopeKind::IfThen))
-        .map(|(id, _)| *id)
-        .unwrap();
-    let else_id = r
-        .module
-        .scopes
-        .iter()
-        .find(|(_, s)| matches!(s.kind, ScopeKind::IfElse))
-        .map(|(id, _)| *id)
-        .unwrap();
-
-    let in_then: Vec<&str> = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.scope_id == then_id)
-        .map(|n| n.gate_class)
-        .collect();
-    let in_else: Vec<&str> = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.scope_id == else_id)
-        .map(|n| n.gate_class)
-        .collect();
-
-    assert!(!in_then.is_empty(), "IfThen should own at least one node");
-    assert!(!in_else.is_empty(), "IfElse should own at least one node");
+    // The Set for `n = 1` lives in IfThen, the Set for `n = 2` in IfElse.
+    let then_id = scope_of(|k| matches!(k, ScopeKind::IfThen)).unwrap();
+    let else_id = scope_of(|k| matches!(k, ScopeKind::IfElse)).unwrap();
+    assert!(
+        r.module.nodes.values().any(|n| n.scope_id == then_id),
+        "IfThen should own at least one node"
+    );
+    assert!(
+        r.module.nodes.values().any(|n| n.scope_id == else_id),
+        "IfElse should own at least one node"
+    );
 }
 
 // ── block-scoped storage shadowing (regression) ──
@@ -127,10 +98,10 @@ fn if_branches_own_their_body_nodes() {
 // wrote the outer's storage (type-divergent writes, a `static var` reset every
 // call, a load-breaking buffer fan-in).
 
-const PVAR: &str = "BrickComponentType_Var";
-const BUF: &str = "BrickComponentType_BufferTicks";
-const AVAR: &str = "BrickComponentType_ArrayVar";
-const MVAR: &str = "BrickComponentType_MapVar";
+const PVAR: &str = gc::VAR;
+const BUF: &str = gc::BUFFER_TICKS;
+const AVAR: &str = gc::ARRAY_VAR;
+const MVAR: &str = gc::MAP_VAR;
 
 /// How many wires leave `node`'s `VarRef` output (its write consumers).
 fn varref_consumers(r: &LowerResult, node: crate::ir::NodeId) -> usize {
@@ -138,8 +109,7 @@ fn varref_consumers(r: &LowerResult, node: crate::ir::NodeId) -> usize {
         .wires
         .iter()
         .filter(|w| {
-            w.source.node_id == node
-                && w.source.port == crate::ir::port_registry::WirePort::VarRef
+            w.source.node_id == node && w.source.port == crate::ir::port_registry::WirePort::VarRef
         })
         .count()
 }
@@ -147,8 +117,8 @@ fn varref_consumers(r: &LowerResult, node: crate::ir::NodeId) -> usize {
 #[test]
 fn block_local_var_shadowing_ancestor_gets_its_own_gate() {
     // Inner `int` var must not reuse the outer `string` var's storage gate.
-    let r = compile("var x: string = \"hi\"\nin go: exec\non go {\n var x: int = 5\n x = x + 1\n}");
-    assert_no_errors(&r);
+    let r =
+        compile_ok("var x: string = \"hi\"\nin go: exec\non go {\n var x: int = 5\n x = x + 1\n}");
     assert_eq!(
         gate_count(&r, PVAR),
         2,
@@ -171,21 +141,8 @@ fn block_local_var_shadowing_ancestor_gets_its_own_gate() {
 }
 
 #[test]
-fn static_var_not_reset_by_shadowing_block_var() {
-    let r =
-        compile("static var acc: int = 0\nin go: exec\non go {\n var acc: int = 0\n acc = acc + 1\n}");
-    assert_no_errors(&r);
-    assert_eq!(
-        gate_count(&r, PVAR),
-        2,
-        "the block-local `acc` must be its own gate, not reset the static every call"
-    );
-}
-
-#[test]
 fn buffer_shadowing_ancestor_gets_its_own_gate_no_fanin() {
-    let r = compile("var src: int = 0\nbuffer b = src\nin go: exec\non go { buffer b = src }");
-    assert_no_errors(&r);
+    let r = compile_ok("var src: int = 0\nbuffer b = src\nin go: exec\non go { buffer b = src }");
     assert_eq!(
         gate_count(&r, BUF),
         2,
@@ -206,32 +163,51 @@ fn buffer_shadowing_ancestor_gets_its_own_gate_no_fanin() {
     }
 }
 
+/// A block-local declaration named like an ancestor's storage is its own
+/// storage gate: exact storage-gate counts over the whole module tree.
 #[test]
-fn block_local_array_and_map_shadow_get_own_gate() {
-    let ra = compile("var g: int[] = [0]\nin go: exec\non go { var g: int[] = []\n g.push(7) }");
-    assert_no_errors(&ra);
-    assert_eq!(gate_count(&ra, AVAR), 2, "inner array must be its own gate");
-    let rm = compile("var m: Map<int,int>\nin go: exec\non go { var m: Map<int,int>\n m[1] = 5 }");
-    assert_no_errors(&rm);
-    assert_eq!(gate_count(&rm, MVAR), 2, "inner map must be its own gate");
-}
-
-#[test]
-fn mod_body_var_and_nested_if_var_stay_distinct() {
-    // A mod's body-level var and a same-named nested-`if` var are distinct
-    // storage. The recursive body pre-pass used to hoist the nested `var k`
-    // into the mod frame, collapsing it with the body-level `k` — orphaning one
-    // gate and mis-scoping the body-level `return k` onto the nested storage.
-    let r = compile(
-        "in go: exec\nvar out1: int = 0\nin cond: bool\n\
-         mod f() -> (r: int) {\n var k: int = 3\n if cond {\n var k: int = 99\n k = k + 1\n }\n return k\n}\n\
-         on go { out1 = f() }",
-    );
-    assert_no_errors(&r);
-    // out1 + body-level k + nested k = exactly 3 gates (no orphan 4th).
-    assert_eq!(
-        gate_count(&r, PVAR),
-        3,
-        "body-level and nested `k` must be distinct with no orphaned gate"
-    );
+fn block_local_storage_shadowing_an_ancestor_gets_its_own_gate() {
+    let rows: &[(&str, &str, &str, usize)] = &[
+        (
+            "the block-local `acc` is its own gate, not a reset of the static every call",
+            "static var acc: int = 0\nin go: exec\non go {\n var acc: int = 0\n acc = acc + 1\n}",
+            PVAR,
+            2,
+        ),
+        (
+            "an inner array is its own gate",
+            "var g: int[] = [0]\nin go: exec\non go { var g: int[] = []\n g.push(7) }",
+            AVAR,
+            2,
+        ),
+        (
+            "an inner map is its own gate",
+            "var m: Map<int,int>\nin go: exec\non go { var m: Map<int,int>\n m[1] = 5 }",
+            MVAR,
+            2,
+        ),
+        // The body pre-pass must not hoist the nested `var k` into the mod
+        // frame, or the body-level `return k` reads the nested storage.
+        // out1 + k + k = 3.
+        (
+            "a mod's body-level var and a same-named nested-`if` var stay distinct",
+            "in go: exec\nvar out1: int = 0\nin cond: bool\n\
+             mod f() -> (r: int) {\n var k: int = 3\n if cond {\n var k: int = 99\n k = k + 1\n }\n return k\n}\n\
+             on go { out1 = f() }",
+            PVAR,
+            3,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for &(label, src, class, want) in rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        let got = count_class(&r.module, class);
+        if !errors.is_empty() || got != want {
+            failures.push(format!(
+                "{label}: errors {errors:?}, {got} x {class}, want {want}\n{src}"
+            ));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }

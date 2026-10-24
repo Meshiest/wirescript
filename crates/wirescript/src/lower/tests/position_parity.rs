@@ -36,37 +36,162 @@ enum Ctx {
 const ALL: &[Ctx] = &[Ctx::Handler, Ctx::ChipHandler, Ctx::Mod];
 
 const POSITIONS: &[Position] = &[
-    Position { what: "let value", value: "let v = @\nn = v", plain: None, contexts: ALL },
-    Position { what: "var initializer", value: "var w: int = @\nn = w", plain: None, contexts: ALL },
-    Position { what: "assignment value", value: "n = @", plain: None, contexts: ALL },
-    Position { what: "assignment index", value: "xs[@] = 1", plain: None, contexts: ALL },
-    Position { what: "emit value", value: "emit o2 = @", plain: None, contexts: ALL },
-    Position { what: "out value", value: "out o3 = @", plain: None, contexts: &[Ctx::Handler] },
-    Position { what: "return value", value: "return { o: 0, o2: @ }", plain: None, contexts: &[Ctx::Mod] },
-    Position { what: "if condition", value: "if @ > 0 {\nn = 6\n}", plain: None, contexts: ALL },
-    Position { what: "for range end", value: "for i in 0..@ {\nn = n + 1\n}", plain: None, contexts: ALL },
-    Position { what: "for range start", value: "for i in @..9 {\nn = n + 1\n}", plain: None, contexts: ALL },
-    Position { what: "for step", value: "for i in (0..9).step(@) {\nn = n + 1\n}", plain: None, contexts: ALL },
-    Position { what: "for count", value: "for i in count(@) {\nn = n + 1\n}", plain: None, contexts: ALL },
-    Position { what: "if let scrutinee", value: "if let A = toK(@) {\nn = 6\n}", plain: None, contexts: ALL },
+    Position {
+        what: "let value",
+        value: "let v = @\nn = v",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "var initializer",
+        value: "var w: int = @\nn = w",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "assignment value",
+        value: "n = @",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "assignment index",
+        value: "xs[@] = 1",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "emit value",
+        value: "emit o2 = @",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "out value",
+        value: "out o3 = @",
+        plain: None,
+        contexts: &[Ctx::Handler],
+    },
+    Position {
+        what: "return value",
+        value: "return { o: 0, o2: @ }",
+        plain: None,
+        contexts: &[Ctx::Mod],
+    },
+    Position {
+        what: "if condition",
+        value: "if @ > 0 {\nn = 6\n}",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "for range end",
+        value: "for i in 0..@ {\nn = n + 1\n}",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "for range start",
+        value: "for i in @..9 {\nn = n + 1\n}",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "for step",
+        value: "for i in (0..9).step(@) {\nn = n + 1\n}",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "for count",
+        value: "for i in count(@) {\nn = n + 1\n}",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "if let scrutinee",
+        value: "if let A = toK(@) {\nn = 6\n}",
+        plain: None,
+        contexts: ALL,
+    },
     Position {
         what: "let else scrutinee",
         value: "let Hit(x) = toP(@) else {\nemit o = 1\nemit o2 = 2\nreturn\n}\nn = x",
         plain: None,
         contexts: ALL,
     },
-    Position { what: "await value", value: "let v = await (@) on sig\nn = v", plain: None, contexts: &[Ctx::Handler] },
-    Position { what: "array initializer", value: "var ys: int[] = [@, 2]\nn = ys.length()", plain: None, contexts: ALL },
-    Position { what: "call argument", value: "n = id(@)", plain: None, contexts: ALL },
-    Position { what: "method argument", value: "xs.push(@)", plain: None, contexts: ALL },
-    Position { what: "record field", value: "let r = { a: @, b: 2 }\nn = r.a", plain: None, contexts: ALL },
-    Position { what: "tuple element", value: "let t = (@, 2)\nn = t.0", plain: None, contexts: ALL },
-    Position { what: "interpolation", value: "s = \"v=${@}\"", plain: None, contexts: ALL },
-    Position { what: "operator left", value: "n = @ + 1", plain: None, contexts: ALL },
-    Position { what: "operator right", value: "n = 1 + @", plain: None, contexts: ALL },
-    Position { what: "unary operand", value: "n = -(@)", plain: None, contexts: ALL },
-    Position { what: "index read", value: "n = xs[@]", plain: None, contexts: ALL },
-    Position { what: "if-expression condition", value: "n = if @ > 0 then 1 else 2", plain: None, contexts: ALL },
+    Position {
+        what: "await value",
+        value: "let v = await (@) on sig\nn = v",
+        plain: None,
+        contexts: &[Ctx::Handler],
+    },
+    Position {
+        what: "array initializer",
+        value: "var ys: int[] = [@, 2]\nn = ys.length()",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "call argument",
+        value: "n = id(@)",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "method argument",
+        value: "xs.push(@)",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "record field",
+        value: "let r = { a: @, b: 2 }\nn = r.a",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "tuple element",
+        value: "let t = (@, 2)\nn = t.0",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "interpolation",
+        value: "s = \"v=${@}\"",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "operator left",
+        value: "n = @ + 1",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "operator right",
+        value: "n = 1 + @",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "unary operand",
+        value: "n = -(@)",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "index read",
+        value: "n = xs[@]",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "if-expression condition",
+        value: "n = if @ > 0 then 1 else 2",
+        plain: None,
+        contexts: ALL,
+    },
     Position {
         what: "if-expression branch",
         value: "n = if c then @ else 2",
@@ -79,8 +204,18 @@ const POSITIONS: &[Position] = &[
         plain: Some("match k2 { A => {\n#\n} B => { } }\nn = match k2 { A => @, B => 2 }"),
         contexts: ALL,
     },
-    Position { what: "block value", value: "let bv = {\nlet t = 1\nt + @\n}\nn = bv", plain: None, contexts: ALL },
-    Position { what: "nested match scrutinee", value: "n = match toK(@) { A => 1, B => 2 }", plain: None, contexts: ALL },
+    Position {
+        what: "block value",
+        value: "let bv = {\nlet t = 1\nt + @\n}\nn = bv",
+        plain: None,
+        contexts: ALL,
+    },
+    Position {
+        what: "nested match scrutinee",
+        value: "n = match toK(@) { A => 1, B => 2 }",
+        plain: None,
+        contexts: ALL,
+    },
 ];
 
 /// The source for `body` in `ctx`, with a sentinel `n = 5` after it unless
@@ -113,16 +248,33 @@ fn program(ctx: Ctx, body: &str, ends_with_return: bool) -> String {
 }
 
 fn line_of(src: &str, text: &str) -> u32 {
-    let idx = src.lines().position(|l| l.trim() == text).unwrap_or_else(|| panic!("no line `{text}` in\n{src}"));
+    let idx = src
+        .lines()
+        .position(|l| l.trim() == text)
+        .unwrap_or_else(|| panic!("no line `{text}` in\n{src}"));
     idx as u32 + 1
 }
 
 /// Whether some exec root reaches `to` when the exec wires out of `cut` are
 /// removed. A root is a gate no exec wire enters.
-fn reached_without(m: &crate::ir::Module, cut: Option<crate::ir::PortRef>, to: crate::ir::NodeId) -> bool {
+fn reached_without(
+    m: &crate::ir::Module,
+    cut: Option<crate::ir::PortRef>,
+    to: crate::ir::NodeId,
+) -> bool {
     let is_exec = |w: &&crate::ir::Wire| w.target.port.as_str().starts_with("Exec");
-    let entered: crate::collections::HashSet<_> = m.wires.iter().filter(is_exec).map(|w| w.target.node_id).collect();
-    let mut stack: Vec<_> = m.nodes.keys().filter(|id| !entered.contains(*id)).copied().collect();
+    let entered: crate::collections::HashSet<_> = m
+        .wires
+        .iter()
+        .filter(is_exec)
+        .map(|w| w.target.node_id)
+        .collect();
+    let mut stack: Vec<_> = m
+        .nodes
+        .keys()
+        .filter(|id| !entered.contains(*id))
+        .copied()
+        .collect();
     let mut seen = crate::collections::HashSet::default();
     while let Some(n) = stack.pop() {
         if n == to {
@@ -153,19 +305,30 @@ fn reached_from(m: &crate::ir::Module, from: crate::ir::PortRef, id: crate::ir::
 fn deciding_branch(m: &crate::ir::Module, store: crate::ir::NodeId) -> Option<crate::ir::PortRef> {
     let reached = reached_without(m, None, store);
     assert!(reached, "the store is reached from a root");
-    m.nodes.values().filter(|n| n.gate_class == gc::BRANCH).find_map(|b| {
-        [(WirePort::ExecOutA, WirePort::ExecOutB), (WirePort::ExecOutB, WirePort::ExecOutA)]
+    m.nodes
+        .values()
+        .filter(|n| n.gate_class == gc::BRANCH)
+        .find_map(|b| {
+            [
+                (WirePort::ExecOutA, WirePort::ExecOutB),
+                (WirePort::ExecOutB, WirePort::ExecOutA),
+            ]
             .into_iter()
             .find(|(taken, other)| {
-                !reached_without(m, Some(b.id.port(*taken)), store) && !reached_from(m, b.id.port(*other), store)
+                !reached_without(m, Some(b.id.port(*taken)), store)
+                    && !reached_from(m, b.id.port(*other), store)
             })
             .map(|(taken, _)| b.id.port(taken))
-    })
+        })
 }
 
 /// The other output of the Branch output `taken`.
 fn other_side(taken: &crate::ir::PortRef) -> crate::ir::PortRef {
-    let other = if taken.port == WirePort::ExecOutA { WirePort::ExecOutB } else { WirePort::ExecOutA };
+    let other = if taken.port == WirePort::ExecOutA {
+        WirePort::ExecOutB
+    } else {
+        WirePort::ExecOutA
+    };
     taken.node_id.port(other)
 }
 
@@ -176,17 +339,6 @@ fn stores_on(m: &crate::ir::Module, line: u32) -> Vec<crate::ir::NodeId> {
         .filter(|n| n.gate_class == gc::VAR_SET && n.source_range.start.line == line)
         .map(|n| n.id)
         .collect()
-}
-
-/// Whether output `name` is driven once, by its backing var.
-fn backed(m: &crate::ir::Module, name: &str) -> bool {
-    let out = m.nodes.iter().find(|(_, n)| {
-        n.gate_class == gc::MICROCHIP_OUTPUT
-            && matches!(n.properties.get(&*crate::intern::sym::PORT_LABEL), Some(crate::ir::Literal::String(s)) if s == name)
-    });
-    let Some((id, _)) = out else { return false };
-    let drivers: Vec<_> = m.wires.iter().filter(|w| w.target.node_id == *id && w.target.port == WirePort::RerInput).collect();
-    drivers.len() == 1 && m.nodes[&drivers[0].source.node_id].note == Some("out_backing")
 }
 
 /// What the arm's write and exit do, read off the lowered program.
@@ -206,9 +358,16 @@ struct Shape {
 
 fn shape(ctx: Ctx, src: &str, has_sentinel: bool) -> Shape {
     let r = compile(src);
-    let errors: Vec<_> = r.diagnostics.iter().filter(|d| d.severity == crate::diagnostic::Severity::Error).collect();
-    assert!(errors.is_empty(), "{errors:?}
-{src}");
+    let errors: Vec<_> = r
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == crate::diagnostic::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{errors:?}
+{src}"
+    );
     let m = match ctx {
         Ctx::ChipHandler => only_chip(&r, "the chip"),
         _ => &r.module,
@@ -228,9 +387,13 @@ fn shape(ctx: Ctx, src: &str, has_sentinel: bool) -> Shape {
         .map(|n| n.id)
         .collect();
     assert_eq!(o2.len(), 1, "the arm's `o2` store\n{src}");
-    let arm_on_its_branch = deciding_branch(m, arm)
-        .is_some_and(|b| !reached_without(m, Some(b.clone()), o2[0]) && !reached_from(m, other_side(&b), o2[0]));
-    let arm_leaves = !has_sentinel || stores_on(m, line_of(src, "n = 5")).iter().all(|s| !exec_reaches(m, arm, *s));
+    let arm_on_its_branch = deciding_branch(m, arm).is_some_and(|b| {
+        !reached_without(m, Some(b.clone()), o2[0]) && !reached_from(m, other_side(&b), o2[0])
+    });
+    let arm_leaves = !has_sentinel
+        || stores_on(m, line_of(src, "n = 5"))
+            .iter()
+            .all(|s| !exec_reaches(m, arm, *s));
     let (stored, reaches_caller) = match ctx {
         Ctx::Mod => {
             let store_m = stores_on(m, line_of(src, "m = f(gk).o"));
@@ -245,7 +408,12 @@ fn shape(ctx: Ctx, src: &str, has_sentinel: bool) -> Shape {
         }
         _ => (backed(m, "o"), false),
     };
-    Shape { stored, arm_leaves, reaches_caller, arm_on_its_branch }
+    Shape {
+        stored,
+        arm_leaves,
+        reaches_caller,
+        arm_on_its_branch,
+    }
 }
 
 #[test]
@@ -259,11 +427,23 @@ fn a_returning_match_arm_behaves_alike_in_every_position() {
                 None => format!("{STMT_MATCH}\n{}", p.value.replace('@', "3")),
             };
             let has_sentinel = !p.value.starts_with("return");
-            let (value_src, plain_src) = (program(ctx, &value_body, !has_sentinel), program(ctx, &plain_body, !has_sentinel));
+            let (value_src, plain_src) = (
+                program(ctx, &value_body, !has_sentinel),
+                program(ctx, &plain_body, !has_sentinel),
+            );
             let plain = shape(ctx, &plain_src, has_sentinel);
             let value = shape(ctx, &value_src, has_sentinel);
-            assert_eq!(value, plain, "{} in {ctx:?}\n--- value form\n{value_src}\n--- plain form\n{plain_src}", p.what);
-            let want = Shape { stored: true, arm_leaves: true, reaches_caller: ctx == Ctx::Mod, arm_on_its_branch: true };
+            assert_eq!(
+                value, plain,
+                "{} in {ctx:?}\n--- value form\n{value_src}\n--- plain form\n{plain_src}",
+                p.what
+            );
+            let want = Shape {
+                stored: true,
+                arm_leaves: true,
+                reaches_caller: ctx == Ctx::Mod,
+                arm_on_its_branch: true,
+            };
             assert_eq!(plain, want, "{} in {ctx:?}\n{plain_src}", p.what);
             checked += 1;
         }

@@ -1,216 +1,144 @@
 use super::*;
+use crate::ir::gate_class as gc;
 
+const MUL: &str = "BrickComponentType_Expr_MathMultiply";
+const ADD: &str = "BrickComponentType_Expr_MathAdd";
+
+/// Block expressions lower to the gates of their tail expression and their
+/// `let`s, in pure context as plain expression gates: exact counts of the
+/// named classes over the whole module tree, and no exec gate.
 #[test]
-fn block_expr_pure_if_with_let() {
-    let r = compile("\
-var x: int = 5
-let result = if x > 3 then { let a = x + 1; a } else { let b = x - 1; b }
-out y = result");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    let select_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_Expr_Select")
-        .count();
-    assert!(select_count >= 1, "pure block if should produce Select gate");
-    let branch_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_Exec_Branch")
-        .count();
-    assert_eq!(branch_count, 0, "pure block if should NOT produce Branch gate");
+fn block_exprs_lower_to_their_expression_gates() {
+    let rows: &[(&str, &str, &[(&str, usize)])] = &[
+        (
+            "pure block if with let: Select, never Branch",
+            "var x: int = 5\nlet result = if x > 3 then { let a = x + 1; a } else { let b = x - 1; b }\nout y = result",
+            &[(gc::SELECT, 1), (gc::BRANCH, 0), (ADD, 1)],
+        ),
+        (
+            "scoped locals: the MathMultiply for x * 2 inside the block",
+            "var x: int = 10\nlet result = if x > 5 then { let inner = x * 2; inner } else { 0 }\nout y = result",
+            &[(MUL, 1), (gc::SELECT, 1)],
+        ),
+        (
+            "block in a pure let",
+            "var x: int = 10\nlet doubled = { let tmp = x + x; tmp }\nout y = doubled",
+            &[(ADD, 1)],
+        ),
+        (
+            "nested blocks",
+            "var x: int = 0\nlet result = { let a = { let b = 1; b + 1 }; a + 1 }\nout y = result",
+            &[(ADD, 2)],
+        ),
+        (
+            "several lets",
+            "let result = { let a = 1; let b = 2; a + b }\nout y = result",
+            &[(ADD, 1)],
+        ),
+        (
+            "block in the else arm only",
+            "var x: int = 5\nlet result = if x > 0 then x else { let neg = 0 - x; neg }\nout y = result",
+            &[(gc::SELECT, 1)],
+        ),
+        (
+            "block as a function argument",
+            "let y = sin({ let a = 3.14; a })\nout z = y",
+            &[(gc::MATH_SIN, 1)],
+        ),
+        (
+            "two blocks in a binop",
+            "let y = { let a = 1; a } + { let b = 2; b }\nout z = y",
+            &[(ADD, 1)],
+        ),
+        (
+            "block as an if condition",
+            "var x: int = 5\nlet y = if { let a = x + 1; a } > 10 then 1 else 0\nout z = y",
+            &[(gc::SELECT, 1), (ADD, 1)],
+        ),
+        (
+            "block with string interpolation",
+            "let v = { let a = 1; a }\nlet s = \"val=${v}\"\nout z = s",
+            &[(gc::STRING_FORMAT_TEXT, 1)],
+        ),
+        (
+            "`then` and `else` on continuation lines",
+            "var x: int = 5\nlet result = if x > 3\n    then \"big\"\n    else \"small\"\nout y = result",
+            &[(gc::SELECT, 1), (gc::BRANCH, 0)],
+        ),
+        ("an empty block", "let x = { }", &[]),
+        (
+            "a handler-local var read inside a block",
+            "on RoundStart() {\n  var temp: int = 5\n  let result = { let t = temp; t }\n}",
+            &[],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for &(label, src, want) in rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        if !errors.is_empty() {
+            failures.push(format!("{label}: errors {errors:?}\n{src}"));
+            continue;
+        }
+        for &(class, n) in want {
+            let got = count_class(&r.module, class);
+            if got != n {
+                failures.push(format!("{label}: {got} x {class}, want {n}\n{src}"));
+            }
+        }
+        let pure = !src.contains("on RoundStart");
+        if pure
+            && let Some(n) = r
+                .module
+                .nodes_deep()
+                .find(|n| n.gate_class.contains("Exec_"))
+        {
+            failures.push(format!(
+                "{label}: pure block emitted {}\n{src}",
+                n.gate_class
+            ));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
-#[test]
-fn block_expr_scoped_locals() {
-    let r = compile("\
-var x: int = 10
-let result = if x > 5 then { let inner = x * 2; inner } else { 0 }
-out y = result");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    let mul_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_Expr_MathMultiply")
-        .count();
-    assert!(mul_count >= 1, "should have a MathMultiply for x * 2 inside block");
-}
-
-#[test]
-fn block_expr_in_pure_let() {
-    let r = compile("\
-var x: int = 10
-let doubled = { let tmp = x + x; tmp }
-out y = doubled");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    let add_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
-        .count();
-    assert!(add_count >= 1, "should have MathAdd for x + x in block");
-}
-
-#[test]
-fn block_expr_no_stmts_is_just_expr() {
-    // `{ x + 1 }`, not `{ x }`: a lone identifier in braces is record-literal
-    // shorthand (`{ x: x }`), which is what the parser reads it as.
-    let r = compile("\
-var x: int = 5
-let y = if x > 0 then { x + 1 } else { 0 }
-out z = y");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-}
-
-#[test]
-fn block_expr_nested() {
-    let r = compile("\
-var x: int = 0
-let result = { let a = { let b = 1; b + 1 }; a + 1 }
-out y = result");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    let add_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
-        .count();
-    assert!(add_count >= 2, "nested block should produce at least 2 MathAdd gates, found {add_count}");
-}
-
-#[test]
-fn block_expr_multiple_lets() {
-    let r = compile("\
-let result = { let a = 1; let b = 2; a + b }
-out y = result");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    let has_add = r.module.nodes.values()
-        .any(|n| n.gate_class == "BrickComponentType_Expr_MathAdd");
-    assert!(has_add, "block with multiple lets should produce a MathAdd gate");
-}
-
-#[test]
-fn block_expr_in_else_only() {
-    let r = compile("\
-var x: int = 5
-let result = if x > 0 then x else { let neg = 0 - x; neg }
-out y = result");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    let has_select = r.module.nodes.values()
-        .any(|n| n.gate_class == "BrickComponentType_Expr_Select");
-    assert!(has_select, "pure if with block in else should produce a Select gate");
-}
-
-#[test]
-fn block_expr_empty_produces_default() {
-    let r = compile("\
-let x = { }");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "empty block should compile without errors: {:?}", r.diagnostics);
-}
-
+/// A block's own `let inner = 99` hides the outer `inner` only inside the
+/// block: `check` reads the outer 42.
 #[test]
 fn block_expr_scope_does_not_leak() {
-    let r = compile("\
-let inner = 42
-let result = { let inner = 99; inner }
-out check = inner");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "block scope should not leak — outer `inner` must resolve: {:?}", r.diagnostics);
-}
-
-#[test]
-fn block_expr_as_function_arg() {
-    let r = compile("\
-let y = sin({ let a = 3.14; a })
-out z = y");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "block expr as function arg should compile: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_Expr_MathSin"),
-        "should produce a MathSin gate for sin()");
-}
-
-#[test]
-fn block_expr_in_binop() {
-    let r = compile("\
-let y = { let a = 1; a } + { let b = 2; b }
-out z = y");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "two block exprs in binop should compile: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_Expr_MathAdd"),
-        "should produce a MathAdd gate for +");
-}
-
-#[test]
-fn block_expr_as_if_condition() {
-    let r = compile("\
-var x: int = 5
-let y = if { let a = x + 1; a } > 10 then 1 else 0
-out z = y");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "block expr as if condition should compile: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_Expr_Select"),
-        "should produce a Select gate for pure if-then-else");
-    assert!(has_gate(&r, "BrickComponentType_Expr_MathAdd"),
-        "should produce MathAdd for x + 1 inside block condition");
+    let r = compile_ok("let inner = 42\nlet result = { let inner = 99; inner }\nout check = inner");
+    let out = r
+        .module
+        .nodes
+        .iter()
+        .find(|(_, n)| {
+            n.kind == crate::ir::NodeKind::Output
+                && matches!(n.properties.get(&*crate::intern::sym::PORT_LABEL), Some(crate::ir::Literal::String(s)) if s == "check")
+        })
+        .map(|(id, _)| *id)
+        .expect("output `check`");
+    let src =
+        source_of(&r, out, crate::ir::port_registry::WirePort::RerInput).expect("`check` is wired");
+    let values: Vec<_> = r.module.nodes[&src].properties.values().cloned().collect();
+    assert!(
+        values.contains(&crate::ir::Literal::Int(42)),
+        "`check` must be driven by the outer 42, got {values:?}"
+    );
+    assert!(
+        !values.contains(&crate::ir::Literal::Int(99)),
+        "`check` must not see the block's 99, got {values:?}"
+    );
 }
 
 #[test]
 fn block_expr_with_chip_call() {
-    let r = compile("\
-chip Dbl(x: int) -> (result: int) { out result = x * 2 }
-let y = { let d = Dbl(5); d.result }
-out z = y");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "chip call inside block expr should compile: {:?}", r.diagnostics);
-    assert!(!r.module.chips.is_empty(),
-        "should create a chip instance for Dbl call inside block");
-}
-
-#[test]
-fn block_expr_string_interpolation() {
-    let r = compile("\
-let v = { let a = 1; a }
-let s = \"val=${v}\"
-out z = s");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "block expr with string interpolation should compile: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_Expr_String_FormatText"),
-        "should produce a FormatText gate for string interpolation");
-}
-
-#[test]
-fn block_expr_single_expr_no_semicolon() {
-    let r = compile("\
-let x = { 42 }
-out y = x");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "block with single literal should compile: {:?}", r.diagnostics);
-}
-
-#[test]
-fn block_expr_var_not_accessible() {
-    let r = compile("\
-on RoundStart() {
-  var temp: int = 5
-  let result = { let t = temp; t }
-}");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "var used inside block expr should compile: {:?}", r.diagnostics);
-}
-
-#[test]
-fn if_expr_then_on_continuation_line() {
-    // `then` (and `else`) may start their own lines in a pure if expression.
-    let r = compile("\
-var x: int = 5
-let result = if x > 3
-    then \"big\"
-    else \"small\"
-out y = result");
-    assert!(
-        r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
+    let r = compile_ok(
+        "chip Dbl(x: int) -> (result: int) { out result = x * 2 }\nlet y = { let d = Dbl(5); d.result }\nout z = y",
     );
-    let select_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_Expr_Select")
-        .count();
-    assert!(select_count >= 1, "multi-line if/then/else should lower to a Select gate");
+    assert_eq!(
+        r.module.chips.len(),
+        1,
+        "the Dbl call inside the block makes one chip instance"
+    );
+    assert_eq!(count_class(&r.module, MUL), 1);
 }

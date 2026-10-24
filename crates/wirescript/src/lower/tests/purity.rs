@@ -1,245 +1,142 @@
 use super::*;
+use crate::ir::gate_class as gc;
 
-#[test]
-fn pure_chip_no_exec_gates() {
-    let r = compile("\
-chip Foo(x: int) -> (result: int) { out result = x + 1 }
-let v = Foo(10)
-out y = v.result");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    let chip = r.module.chips.values().next().expect("should have one chip instance");
-    let exec_gates: Vec<_> = chip.nodes.values()
-        .filter(|n| n.gate_class.contains("Exec_"))
-        .collect();
-    assert!(exec_gates.is_empty(),
-        "pure chip body should have zero Exec_* gates, found: {:?}",
-        exec_gates.iter().map(|n| &n.gate_class).collect::<Vec<_>>());
-}
+const MUL: &str = "BrickComponentType_Expr_MathMultiply";
+const ADD: &str = "BrickComponentType_Expr_MathAdd";
 
+/// Pure context lowers to expression gates only; exec context reads vars
+/// through `Var_Get`, writes through `Var_Set`, and branches through `Branch`.
+/// Each row gives exact counts of the named classes over the whole module
+/// tree, and whether the program must hold no `Exec_*` gate at all.
 #[test]
-fn pure_let_no_var_get() {
-    let r = compile("\
-var x: int = 5
-let y = x + 1
-out z = y");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    let var_get_count = gate_count(&r, "BrickComponentType_Exec_Var_Get");
-    assert_eq!(var_get_count, 0,
-        "pure context should have zero Exec_Var_Get gates, found {var_get_count}");
-}
-
-#[test]
-fn pure_if_expr_select_not_branch() {
-    let r = compile("\
-var x: int = 1
-let r = if x > 0 then 1 else 0
-out y = r");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_Expr_Select"),
-        "pure if expression should produce Expr_Select gate");
-    assert!(!has_gate(&r, "BrickComponentType_Exec_Branch"),
-        "pure if expression should not produce Exec_Branch gate");
-}
-
-#[test]
-fn exec_var_read_uses_var_get() {
-    let r = compile("\
-var x: int = 5
-in player: character
-on player { let y = x + 1 }");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_Exec_Var_Get"),
-        "exec context should use Exec_Var_Get to read a var");
-}
-
-#[test]
-fn exec_var_write_uses_var_set() {
-    let r = compile("\
-var x: int = 0
-in player: character
-on player { x = 42 }");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_Exec_Var_Set"),
-        "exec context should use Exec_Var_Set to write a var");
-}
-
-#[test]
-fn exec_if_stmt_uses_branch() {
-    let r = compile("\
-var x: int = 0
-in player: character
-on player { if x > 0 { x = 1 } }");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_Exec_Branch"),
-        "exec if statement should produce Exec_Branch gate");
-}
-
-#[test]
-fn exec_array_read_uses_exec_get() {
-    let r = compile("\
-var arr: int[]
-in player: character
-on player { arr.push(42); let v = arr[0] }");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_Exec_ArrayVar_Get"),
-        "exec array indexing should produce Exec_ArrayVar_Get gate");
-}
-
-#[test]
-fn pure_op_in_exec_still_uses_var_get() {
-    let r = compile("\
-var x: int = 5
-in player: character
-on player { let y = x * 2 + 1 }");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_Expr_MathMultiply"),
-        "should have Expr_MathMultiply for x * 2");
-    assert!(has_gate(&r, "BrickComponentType_Expr_MathAdd"),
-        "should have Expr_MathAdd for ... + 1");
-    assert!(has_gate(&r, "BrickComponentType_Exec_Var_Get"),
-        "reading var in exec context should produce Exec_Var_Get");
-}
-
-#[test]
-fn pure_if_expr_in_exec_uses_select_and_var_get() {
-    let r = compile("\
-var x: int = 1
-in player: character
-on player { let r = if x > 0 then 1 else 0 }");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_Expr_Select"),
-        "if expression should produce Expr_Select even in exec context");
-    assert!(has_gate(&r, "BrickComponentType_Exec_Var_Get"),
-        "reading var x in exec context should produce Exec_Var_Get");
-}
-
-#[test]
-fn mod_value_only_params_no_exec_gates() {
-    let r = compile("\
-mod add_pure(a: int, b: int) -> (result: int) { out result = a + b }
-let r = add_pure(3, 4)
-out y = r");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    let exec_gates: Vec<_> = r.module.nodes.values()
-        .filter(|n| n.gate_class.contains("Exec_"))
-        .collect();
-    assert!(exec_gates.is_empty(),
-        "mod with only value params should produce zero Exec_* gates, found: {:?}",
-        exec_gates.iter().map(|n| &n.gate_class).collect::<Vec<_>>());
-}
-
-#[test]
-fn mod_ref_param_has_exec_gates() {
-    let r = compile("\
-mod inc(x: *int) { x = x + 1 }
-var v: int = 0
-in player: character
-on player { inc(v) }");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    let has_set = has_gate(&r, "BrickComponentType_Exec_Var_Set");
-    let has_incr = has_gate(&r, "BrickComponentType_Exec_Var_Increment");
-    assert!(has_set || has_incr,
-        "mod with ref param should produce Exec_Var_Set or Exec_Var_Increment");
-}
-
-#[test]
-fn pure_block_expr_stays_pure() {
-    let r = compile("\
-var x: int = 5
-let r = { let a = x + 1; let b = a * 2; b }
-out y = r");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    let exec_gates: Vec<_> = r.module.nodes.values()
-        .filter(|n| n.gate_class.contains("Exec_"))
-        .collect();
-    assert!(exec_gates.is_empty(),
-        "block expression in pure context should have zero Exec_* gates, found: {:?}",
-        exec_gates.iter().map(|n| &n.gate_class).collect::<Vec<_>>());
-}
-
-#[test]
-fn exec_block_expr_reads_use_var_get() {
-    let r = compile("\
-var x: int = 5
-in player: character
-on player { let r = { let a = x + 1; a } }");
-    assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_Exec_Var_Get"),
-        "block expression in exec context should use Exec_Var_Get for var reads");
-}
-
-#[test]
-fn var_in_exec_emits_var_set() {
-    let r = compile(
-        "\
-on RoundStart() {
-  var x: int = 5
-}",
-    );
-    assert_no_errors(&r);
-    let set_count = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
-        .count();
-    assert!(
-        set_count >= 1,
-        "var in exec context should emit at least one Exec_Var_Set for init, found {set_count}"
-    );
-}
-
-#[test]
-fn static_var_in_exec_no_var_set() {
-    let r = compile(
-        "\
-on RoundStart() {
-  static var x: int = 5
-}",
-    );
-    assert_no_errors(&r);
-    let set_count = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
-        .count();
-    assert_eq!(
-        set_count, 0,
-        "static var should NOT emit any Exec_Var_Set gates, found {set_count}"
-    );
-}
-
-#[test]
-fn pure_top_level_let_after_handler_reads_purely() {
-    // A pure, reactive top-level binding (`let`/`out`) that FOLLOWS an `on`
-    // handler must read its vars purely — never spliced onto the handler's exec
-    // chain as an `Exec_Var_Get`. The flush-handler-ends machinery sets
-    // `current_exec` for genuine imperative continuations (assign/if/expr); a
-    // pure `let` inheriting it tangles unrelated bindings, and — via the
-    // `on Change(v)` synthetic `let _on_expr = Change(v)` — misplaces a trigger's
-    // own input read, corrupting the exec chain into a following gate.
-    let src = "var x: int = 0\nin t: exec\non t { x = 1 }\nlet y = x + 1\nout o = y\n";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(
-        !r.module
-            .nodes
-            .values()
-            .any(|n| n.gate_class == "BrickComponentType_Exec_Var_Get"),
-        "a pure top-level `let` after a handler must read its var purely, not via an Exec_Var_Get"
-    );
+fn context_decides_the_gates_a_read_or_write_lowers_to() {
+    let rows: &[(&str, &str, &[(&str, usize)], bool)] = &[
+        (
+            "pure chip body has no exec gates",
+            "chip Foo(x: int) -> (result: int) { out result = x + 1 }\nlet v = Foo(10)\nout y = v.result",
+            &[(ADD, 1)],
+            true,
+        ),
+        (
+            "pure let reads with no Var_Get",
+            "var x: int = 5\nlet y = x + 1\nout z = y",
+            &[(gc::VAR_GET, 0)],
+            true,
+        ),
+        (
+            "pure if expression is a Select, not a Branch",
+            "var x: int = 1\nlet r = if x > 0 then 1 else 0\nout y = r",
+            &[(gc::SELECT, 1), (gc::BRANCH, 0)],
+            true,
+        ),
+        (
+            "exec var read uses Var_Get",
+            "var x: int = 5\nin player: character\non player { let y = x + 1 }",
+            &[(gc::VAR_GET, 1)],
+            false,
+        ),
+        (
+            "exec var write uses Var_Set",
+            "var x: int = 0\nin player: character\non player { x = 42 }",
+            &[(gc::VAR_SET, 1)],
+            false,
+        ),
+        (
+            "exec if statement uses Branch",
+            "var x: int = 0\nin player: character\non player { if x > 0 { x = 1 } }",
+            &[(gc::BRANCH, 1)],
+            false,
+        ),
+        (
+            "exec array indexing uses ArrayVar_Get",
+            "var arr: int[]\nin player: character\non player { arr.push(42); let v = arr[0] }",
+            &[(gc::ARRAY_GET, 1)],
+            false,
+        ),
+        (
+            "pure ops in exec context still read through Var_Get",
+            "var x: int = 5\nin player: character\non player { let y = x * 2 + 1 }",
+            &[(MUL, 1), (ADD, 1), (gc::VAR_GET, 1)],
+            false,
+        ),
+        (
+            "an if expression in exec context is a Select fed by a Var_Get",
+            "var x: int = 1\nin player: character\non player { let r = if x > 0 then 1 else 0 }",
+            &[(gc::SELECT, 1), (gc::VAR_GET, 1)],
+            false,
+        ),
+        (
+            "mod with only value params has no exec gates",
+            "mod add_pure(a: int, b: int) -> (result: int) { out result = a + b }\nlet r = add_pure(3, 4)\nout y = r",
+            &[(ADD, 1)],
+            true,
+        ),
+        (
+            "mod with a ref param writes through one Var_Increment",
+            "mod inc(x: *int) { x = x + 1 }\nvar v: int = 0\nin player: character\non player { inc(v) }",
+            &[(gc::VAR_INCREMENT, 1), (gc::VAR_SET, 0)],
+            false,
+        ),
+        (
+            "block expression in pure context stays pure",
+            "var x: int = 5\nlet r = { let a = x + 1; let b = a * 2; b }\nout y = r",
+            &[(ADD, 1), (MUL, 1)],
+            true,
+        ),
+        (
+            "block expression in exec context reads through Var_Get",
+            "var x: int = 5\nin player: character\non player { let r = { let a = x + 1; a } }",
+            &[(gc::VAR_GET, 1)],
+            false,
+        ),
+        (
+            "var in exec context initializes through one Var_Set",
+            "on RoundStart() {\n  var x: int = 5\n}",
+            &[(gc::VAR_SET, 1)],
+            false,
+        ),
+        (
+            "static var in exec context emits no Var_Set",
+            "on RoundStart() {\n  static var x: int = 5\n}",
+            &[(gc::VAR_SET, 0)],
+            false,
+        ),
+        // A pure top-level `let`/`out` after a handler reads its vars purely, never
+        // spliced onto the handler's exec chain: inheriting `current_exec` from the
+        // flush-handler-ends machinery tangles unrelated bindings, and through the
+        // synthetic `let _on_expr = Change(v)` misplaces a trigger's own input read.
+        (
+            "pure top-level let after a handler reads purely",
+            "var x: int = 0\nin t: exec\non t { x = 1 }\nlet y = x + 1\nout o = y\n",
+            &[(gc::VAR_GET, 0)],
+            false,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for &(label, src, want, pure) in rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        if !errors.is_empty() {
+            failures.push(format!("{label}: errors {errors:?}\n{src}"));
+            continue;
+        }
+        for &(class, n) in want {
+            let got = count_class(&r.module, class);
+            if got != n {
+                failures.push(format!("{label}: {got} x {class}, want {n}\n{src}"));
+            }
+        }
+        if pure {
+            let exec: Vec<_> = r
+                .module
+                .nodes_deep()
+                .filter(|n| n.gate_class.contains("Exec_"))
+                .map(|n| n.gate_class)
+                .collect();
+            if !exec.is_empty() {
+                failures.push(format!("{label}: pure program emitted {exec:?}\n{src}"));
+            }
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }

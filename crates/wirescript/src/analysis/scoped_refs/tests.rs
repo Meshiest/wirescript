@@ -6,7 +6,11 @@ fn model(src: &str) -> ScopeModel {
 }
 
 fn binding_names(m: &ScopeModel, ns: RefNs) -> Vec<&str> {
-    m.bindings.iter().filter(|b| b.ns == ns).map(|b| b.name.as_str()).collect()
+    m.bindings
+        .iter()
+        .filter(|b| b.ns == ns)
+        .map(|b| b.name.as_str())
+        .collect()
 }
 
 #[test]
@@ -25,17 +29,37 @@ on go {
     assert!(vals.contains(&"v")); // mod param (scoped to body)
     assert!(vals.contains(&"go")); // in port
     assert!(vals.contains(&"tmp")); // handler-body let
-    assert!(m.bindings.iter().any(|b| b.name == "helper" && b.importable));
-    assert!(m.bindings.iter().any(|b| b.name == "v" && b.scope.is_some())); // local, has extent
-    assert!(m.bindings.iter().any(|b| b.name == "score" && b.scope.is_none())); // file scope
+    assert!(
+        m.bindings
+            .iter()
+            .any(|b| b.name == "helper" && b.importable)
+    );
+    assert!(
+        m.bindings
+            .iter()
+            .any(|b| b.name == "v" && b.scope.is_some())
+    ); // local, has extent
+    assert!(
+        m.bindings
+            .iter()
+            .any(|b| b.name == "score" && b.scope.is_none())
+    ); // file scope
 }
 
 #[test]
 fn handler_capture_is_scoped_to_its_handler_body() {
-    let src = "in go: exec\non CharacterSpawned() -> (character) {\n  character.DisplayText(\"hi\")\n}";
+    let src =
+        "in go: exec\non CharacterSpawned() -> (character) {\n  character.DisplayText(\"hi\")\n}";
     let m = model(src);
-    let cap = m.bindings.iter().find(|b| b.name == "character" && b.kind == "capture").unwrap();
-    assert!(cap.scope.is_some(), "capture must carry a lexical scope extent");
+    let cap = m
+        .bindings
+        .iter()
+        .find(|b| b.name == "character" && b.kind == "capture")
+        .unwrap();
+    assert!(
+        cap.scope.is_some(),
+        "capture must carry a lexical scope extent"
+    );
 }
 
 #[test]
@@ -51,130 +75,88 @@ fn await_binding_is_registered_as_value() {
         .find(|b| b.name == "v")
         .expect("await binding registered as a value binding");
     assert_eq!(b.ns, RefNs::Value);
-    assert!(b.scope.is_some(), "block-local await binding must carry a scope extent");
+    assert!(
+        b.scope.is_some(),
+        "block-local await binding must carry a scope extent"
+    );
 }
 
 #[test]
 fn match_arm_binding_is_registered() {
-    // `MatchExpr` has no surface syntax that parses today (the AST node is
-    // reachable only via hand-built ASTs / the template cache), so build a
-    // minimal program directly: one file-scope expr-statement whose expr is a
-    // `match` with a single arm binding `evt`.
-    use crate::ast::*;
-    use crate::diagnostic::{Pos, SourceRange};
-
-    let dummy = SourceRange::new("t.ws", Pos::default(), Pos::default());
-    let arm = MatchArm {
-        pattern: Pattern::Binding { name: "evt".into(), range: dummy.clone() },
-        guard: None,
-        body: MatchBody::Expr(Expr::IntLit {
-            value: 0,
-            text: "0".into(),
-            range: dummy.clone(),
-        }),
-        range: dummy.clone(),
-    };
-    let match_expr = Expr::MatchExpr {
-        scrutinee: Box::new(Expr::Ident { name: "e".into(), range: dummy.clone() }),
-        arms: vec![arm],
-        range: dummy.clone(),
-    };
-    let script = Script {
-        decls: vec![TopDecl::ExprStmt(ExprStmt {
-            expr: match_expr,
-            range: dummy.clone(),
-        })],
-        range: dummy.clone(),
-        ..Default::default()
-    };
-
-    let m = build_scope_model(&script);
+    let m = model("in e: int\nlet r = match e { evt => evt + 1 }");
     let b = m
         .bindings
         .iter()
         .find(|b| b.name == "evt")
         .expect("match-arm binding registered as a value binding");
     assert_eq!(b.ns, RefNs::Value);
-    assert!(b.scope.is_some(), "match-arm binding must carry a scope extent");
-}
-
-#[test]
-fn for_loop_two_bindings_register_both_slots() {
-    let src = "\
-var arr: int[]
-in go: exec
-on go {
-  for i, v in arr {
-    let x = i + v
-  }
-}";
-    let m = model(src);
-    assert!(m.bindings.iter().any(|b| b.name == "i" && b.kind == "for" && b.scope.is_some()));
-    assert!(m.bindings.iter().any(|b| b.name == "v" && b.kind == "for" && b.scope.is_some()));
-}
-
-#[test]
-fn for_range_brace_binding_registers_named_slots() {
-    // `for { index } in 0..n` names the loop's own slots directly - there is
-    // no element to destructure on a range.
-    let src = "\
-var n: int = 0
-in go: exec
-on go {
-  for { index } in 0..n {
-    let x = index
-  }
-}";
-    let m = model(src);
-    assert!(m.bindings.iter().any(|b| b.name == "index" && b.kind == "for"));
-}
-
-#[test]
-fn for_range_brace_binding_alias_binds_the_alias_not_the_slot_label() {
-    let src = "\
-var n: int = 0
-in go: exec
-on go {
-  for { index: idx } in 0..n {
-    let x = idx
-  }
-}";
-    let m = model(src);
-    assert!(m.bindings.iter().any(|b| b.name == "idx" && b.kind == "for"));
     assert!(
-        !m.bindings.iter().any(|b| b.name == "index"),
-        "the slot label itself is not a bound name once aliased"
+        b.scope.is_some(),
+        "match-arm binding must carry a scope extent"
     );
 }
 
+/// Which names a `for` header binds: each row's loop, the names it must bind
+/// as `for` bindings (with a scope extent), and the names it must not bind.
 #[test]
-fn for_range_brace_binding_unknown_slot_registers_nothing() {
-    // `nope` names no slot of a range (only `index`);
-    // typecheck alone reports WS076 for it, so scoped_refs binds nothing
-    // rather than inventing a rename target for a name that never compiles.
-    let src = "\
-var n: int = 0
-in go: exec
-on go {
-  for { nope } in 0..n {
-  }
-}";
-    let m = model(src);
-    assert!(!m.bindings.iter().any(|b| b.name == "nope"));
-}
-
-#[test]
-fn for_ignore_binding_registers_nothing() {
-    let src = "\
-var arr: int[]
-in go: exec
-on go {
-  for _, v in arr {
-    let x = v
-  }
-}";
-    let m = model(src);
-    assert!(!m.bindings.iter().any(|b| b.name == "_"));
+fn for_headers_register_their_bound_names() {
+    let rows: &[(&str, &str, &[&str], &[&str])] = &[
+        (
+            "two bindings register both slots",
+            "var arr: int[]\nin go: exec\non go {\n  for i, v in arr {\n    let x = i + v\n  }\n}",
+            &["i", "v"],
+            &[],
+        ),
+        // `for { index } in 0..n` names the loop's own slots directly - there
+        // is no element to destructure on a range.
+        (
+            "a range brace binding registers its named slots",
+            "var n: int = 0\nin go: exec\non go {\n  for { index } in 0..n {\n    let x = index\n  }\n}",
+            &["index"],
+            &[],
+        ),
+        // The slot label itself is not a bound name once aliased.
+        (
+            "a range brace alias binds the alias, not the slot label",
+            "var n: int = 0\nin go: exec\non go {\n  for { index: idx } in 0..n {\n    let x = idx\n  }\n}",
+            &["idx"],
+            &["index"],
+        ),
+        // `nope` names no slot of a range (only `index`); typecheck alone
+        // reports WS076 for it, so scoped_refs binds nothing rather than
+        // inventing a rename target for a name that never compiles.
+        (
+            "an unknown range slot registers nothing",
+            "var n: int = 0\nin go: exec\non go {\n  for { nope } in 0..n {\n  }\n}",
+            &[],
+            &["nope"],
+        ),
+        (
+            "an ignore binding registers nothing",
+            "var arr: int[]\nin go: exec\non go {\n  for _, v in arr {\n    let x = v\n  }\n}",
+            &[],
+            &["_"],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, bound, unbound) in rows {
+        let m = model(src);
+        for name in *bound {
+            if !m
+                .bindings
+                .iter()
+                .any(|b| b.name == *name && b.kind == "for" && b.scope.is_some())
+            {
+                failures.push(format!("{label}: `{name}` is not a scoped `for` binding"));
+            }
+        }
+        for name in *unbound {
+            if m.bindings.iter().any(|b| b.name == *name) {
+                failures.push(format!("{label}: `{name}` is bound"));
+            }
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 #[test]
@@ -195,7 +177,10 @@ on go {
         .find(|b| b.name == "run")
         .expect("`let run = for` registered as a value binding");
     assert_eq!(b.ns, RefNs::Value);
-    assert!(b.scope.is_some(), "`let run = for` is block-local, not file scope");
+    assert!(
+        b.scope.is_some(),
+        "`let run = for` is block-local, not file scope"
+    );
 }
 
 // --- value-use collection + `references_at` -----------------------
@@ -208,7 +193,8 @@ on go {
 /// `analysis::definition` uses when turning a `SourceRange` into a
 /// (0-based) `Location`.
 fn rename_sites(src: &str, line: usize, col: usize) -> (String, Vec<(usize, usize)>) {
-    let (t, sites) = references_at(&parse(src, "t.ws").ast, src, "t.ws", line, col).expect("target");
+    let (t, sites) =
+        references_at(&parse(src, "t.ws").ast, src, "t.ws", line, col).expect("target");
     let mut cols: Vec<(usize, usize)> = sites
         .iter()
         .map(|s| {
@@ -220,31 +206,6 @@ fn rename_sites(src: &str, line: usize, col: usize) -> (String, Vec<(usize, usiz
         .collect();
     cols.sort();
     (t.name, cols)
-}
-
-#[test]
-fn capture_rename_stays_inside_its_handler() {
-    // The reported bug: renaming the `character` capture must NOT touch a
-    // same-named capture in another handler.
-    let src = "\
-in a: exec
-in b: exec
-on ZoneEntered(zone = a) -> (character) {
-  character.DisplayText(\"A\")
-}
-on ZoneLeft(zone = b) -> (character) {
-  character.DisplayText(\"B\")
-}";
-    // cursor on the FIRST handler's capture `character` in `-> (character)`
-    // (0-based line 2, col 29 is where the name token starts).
-    let (name, sites) = rename_sites(src, 2, 30);
-    assert_eq!(name, "character");
-    // decl (line 2) + one body use (line 3) in THIS handler only = 2 sites.
-    assert_eq!(sites.len(), 2);
-    assert!(
-        sites.iter().all(|(l, _)| *l == 2 || *l == 3),
-        "sites leaked outside the first handler: {sites:?}"
-    );
 }
 
 #[test]
@@ -309,7 +270,11 @@ chip {
 }";
     let (name, sites) = rename_sites(src, 6, 6);
     assert_eq!(name, "cnt");
-    assert_eq!(sites, vec![(2, 12), (4, 10), (4, 16), (5, 8), (6, 2)], "{sites:?}");
+    assert_eq!(
+        sites,
+        vec![(2, 12), (4, 10), (4, 16), (5, 8), (6, 2)],
+        "{sites:?}"
+    );
     let src = "var cnt: int = 7
 in go: exec
 var n: int = 0
@@ -387,53 +352,44 @@ on go { n = rd() + x
     assert_eq!(sites, vec![(1, 6), (10, 5)], "{sites:?}");
 }
 
+/// Renaming a loop binding touches its declaration and its one body use and
+/// nothing outside the loop. Each row: the cursor line, the needle and the
+/// offset into it the cursor sits at, and the two lines the sites may be on.
 #[test]
-fn for_loop_binding_rename_touches_binding_and_body_use_only() {
-    let src = "\
-var total: int = 0
-var n: int = 0
-in go: exec
-on go {
-  for i in 0..n {
-    total += i
-  }
-  total = 0
-}";
-    // cursor on the `i` binding in `for i in 0..n` (0-based line 4).
-    let col = src.lines().nth(4).unwrap().find("for i").unwrap() + 4;
-    let (name, sites) = rename_sites(src, 4, col);
-    assert_eq!(name, "i");
-    // decl (line 4) + the one body use in `total += i` (line 5) = 2 sites;
-    // nothing outside the loop (the pre/post `total` statements) is touched.
-    assert_eq!(sites.len(), 2);
-    assert!(
-        sites.iter().all(|(l, _)| *l == 4 || *l == 5),
-        "sites leaked outside the loop: {sites:?}"
-    );
-}
-
-#[test]
-fn for_binding_shadow_resolves_inside_the_body_only() {
-    let src = "\
-var i: int = 0
-in go: exec
-on go {
-  for i in 0..3 {
-    let y = i
-  }
-  let z = i
-}";
-    // cursor on the loop-body use of `i` inside `let y = i` (0-based line 4).
-    let col = src.lines().nth(4).unwrap().find("= i").unwrap() + 2;
-    let (name, sites) = rename_sites(src, 4, col);
-    assert_eq!(name, "i");
-    // decl (line 3) + the body use (line 4) = 2 sites; the outer `var i`
-    // (line 0) and the post-loop use in `let z = i` (line 6) are untouched.
-    assert_eq!(sites.len(), 2);
-    assert!(
-        sites.iter().all(|(l, _)| *l == 3 || *l == 4),
-        "outer `i` leaked into the loop binding's rename: {sites:?}"
-    );
+fn a_for_binding_rename_stays_inside_its_loop() {
+    let rows: &[(&str, &str, usize, &str, usize, [usize; 2])] = &[
+        // Cursor on the `i` binding; the pre/post `total` statements are
+        // untouched.
+        (
+            "the binding and its body use only",
+            "var total: int = 0\nvar n: int = 0\nin go: exec\non go {\n  for i in 0..n {\n    total += i\n  }\n  total = 0\n}",
+            4,
+            "for i",
+            4,
+            [4, 5],
+        ),
+        // Cursor on the body use; the outer `var i` (line 0) and the
+        // post-loop use in `let z = i` (line 6) are untouched.
+        (
+            "a binding shadowing an outer name resolves inside the body only",
+            "var i: int = 0\nin go: exec\non go {\n  for i in 0..3 {\n    let y = i\n  }\n  let z = i\n}",
+            4,
+            "= i",
+            2,
+            [3, 4],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, line, needle, offset, lines) in rows {
+        let col = src.lines().nth(*line).unwrap().find(needle).unwrap() + offset;
+        let (name, sites) = rename_sites(src, *line, col);
+        if name != "i" || sites.len() != 2 || !sites.iter().all(|(l, _)| lines.contains(l)) {
+            failures.push(format!(
+                "{label}: `{name}` at {sites:?}, want `i` on lines {lines:?}"
+            ));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 #[test]
@@ -491,30 +447,14 @@ on go {
 }
 
 #[test]
-fn cursor_on_a_use_resolves_to_the_same_target_as_the_decl() {
-    // Clicking a USE (not the decl) must resolve to the same binding —
-    // exercises the "cursor lands on a Use, look up its `resolved` id"
-    // branch of dispatch, not just the "cursor lands on a Binding" branch.
-    let src = "\
-in go: exec
-on go {
-  let v = 1
-  let w = v
-}";
-    // cursor on the `v` use inside `let w = v` (0-based line 3, col 10).
-    let (name, sites) = rename_sites(src, 3, 10);
-    assert_eq!(name, "v");
-    assert_eq!(sites.len(), 2);
-    assert!(sites.iter().all(|(l, _)| *l == 2 || *l == 3));
-}
-
-#[test]
 fn file_scope_let_target_is_exported() {
     let src = "let helper = 1\nin go: exec\non go { let x = helper }";
     // cursor on the file-scope `let helper` decl (0-based line 0, col 4).
     let (t, sites) = references_at(&parse(src, "t.ws").ast, src, "t.ws", 0, 4).expect("target");
     assert_eq!(t.name, "helper");
-    assert!(matches!(t.cross_file, CrossFile::Exported { ref export_name } if export_name == "helper"));
+    assert!(
+        matches!(t.cross_file, CrossFile::Exported { ref export_name } if export_name == "helper")
+    );
     assert_eq!(sites.len(), 2);
 }
 
@@ -569,8 +509,14 @@ on go { let { x } = p
         .iter()
         .find(|s| s.range == t.decl_name_range)
         .expect("decl site present");
-    assert!(decl.coarse, "shorthand destructure decl site must be coarse");
-    assert!(decl.is_shorthand, "non-alias destructure decl site must be shorthand");
+    assert!(
+        decl.coarse,
+        "shorthand destructure decl site must be coarse"
+    );
+    assert!(
+        decl.is_shorthand,
+        "non-alias destructure decl site must be shorthand"
+    );
 }
 
 #[test]
@@ -590,7 +536,10 @@ on go { let z = bound }";
         .find(|s| s.range == t.decl_name_range)
         .expect("decl site present");
     assert!(decl.coarse, "aliased destructure decl site must be coarse");
-    assert!(!decl.is_shorthand, "aliased destructure decl site must NOT be shorthand");
+    assert!(
+        !decl.is_shorthand,
+        "aliased destructure decl site must NOT be shorthand"
+    );
     // the `bound` use in `let z = bound` (line 2) is also a resolved site.
     assert!(
         sites.iter().any(|s| s.range.start.line == 3),
@@ -599,23 +548,6 @@ on go { let z = bound }";
 }
 
 // --- type namespace + type-position resolution --------------------
-
-#[test]
-fn capture_named_like_a_type_does_not_touch_type_annotations() {
-    let src = "\
-in go: exec
-in target: character
-on CharacterSpawned() -> (character) {
-  character.DisplayText(\"hi\")
-}";
-    // cursor on the capture `character` (value binding) in `-> (character)`
-    // (0-based line 2, col 33).
-    let (_n, sites) = rename_sites(src, 2, 33);
-    // ONLY the capture decl + its body use — NOT `in target: character`
-    // (type-position, line 1).
-    assert!(sites.iter().all(|(l, _)| *l >= 2), "type annotation must be untouched: {sites:?}");
-    assert_eq!(sites.len(), 2);
-}
 
 #[test]
 fn renaming_a_type_alias_touches_only_type_positions() {
@@ -629,8 +561,14 @@ let q: Point = p";
     // decl (line 0) + `in p: Point` (line 1) + `let q: Point` (line 2) = 3
     // type-position sites.
     assert_eq!(sites.len(), 3);
-    assert!(sites.iter().any(|(l, _)| *l == 1), "the `in p: Point` use must be a site: {sites:?}");
-    assert!(sites.iter().any(|(l, _)| *l == 2), "the `let q: Point` use must be a site: {sites:?}");
+    assert!(
+        sites.iter().any(|(l, _)| *l == 1),
+        "the `in p: Point` use must be a site: {sites:?}"
+    );
+    assert!(
+        sites.iter().any(|(l, _)| *l == 2),
+        "the `let q: Point` use must be a site: {sites:?}"
+    );
 }
 
 #[test]
@@ -675,29 +613,88 @@ on go { emit r = 5 }";
 
 // --- cursor dispatch, target classification, refusals -------------
 
+/// Positions that are no rename target: each row's source and 0-based
+/// cursor, and why it is refused.
 #[test]
-fn builtin_type_position_is_not_renameable() {
-    let src = "in x: character\nin go: exec\non go { }";
-    // cursor on `character` the builtin type (line 0)
-    assert!(prepare_rename_at(&parse(src, "t.ws").ast, src, "t.ws", 0, 6).is_none());
+fn non_binding_positions_refuse_rename() {
+    let rows: &[(&str, &str, usize, usize)] = &[
+        (
+            "`character` the builtin type",
+            "in x: character\nin go: exec\non go { }",
+            0,
+            6,
+        ),
+        // A `.x` field access: a deferred feature.
+        (
+            "a record field name",
+            "type P = { x: int }\nlet p: P = { x: 1 }\nlet a = p.x",
+            2,
+            10,
+        ),
+        // `var`'s own binding carries a COARSE `name_range` running from the
+        // `var` keyword through the whole initializer (`parse_var_decl`), so
+        // without an explicit keyword refusal the cursor sitting on the
+        // keyword itself would resolve as if it were on `x`.
+        (
+            "the `var` keyword",
+            "var x: int = 0\nin go: exec\non go { }",
+            0,
+            1,
+        ),
+        // A `var`'s coarse decl range spans its WHOLE initializer, so a
+        // field-access cursor deep inside it (`p.field`) must not be swallowed
+        // by the coarse `var x` binding and rename `x` instead.
+        (
+            "a field access inside a coarse var initializer",
+            "type P = { field: int }\nin p: P\nvar x: int = p.field",
+            2,
+            17,
+        ),
+        // The KEY half of a record-literal field: the `x` in `{ x: 1 }` must
+        // not be swallowed by the coarse `var p` binding.
+        (
+            "a record-literal key inside a coarse var initializer",
+            "type P = { x: int }\nvar p: P = { x: 1 }",
+            1,
+            13,
+        ),
+        // A call to a name with no matching `chip`/`mod`/`fn` binding (a
+        // builtin gate call) leaves its `Use` unresolved, so `references_at`
+        // itself returns `None`.
+        (
+            "an unresolved call target",
+            "in go: exec\non go { SomeBuiltinCall() }",
+            1,
+            10,
+        ),
+        // A record TYPE field's own name, alongside `FieldAccess.field` and
+        // `RecordLitField::Named`.
+        ("a record type's field name", "type P = { x: int }", 0, 11),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, line, col) in rows {
+        if let Some(got) = prepare_rename_at(&parse(src, "t.ws").ast, src, "t.ws", *line, *col) {
+            failures.push(format!("{label}: renameable as {got:?}"));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 #[test]
 fn every_primitive_type_name_never_resolves_to_a_shadowing_alias() {
     for ty in ["quat", "prefab", "Component", "any", "never"] {
-        let src = format!("type {ty} = {{ x: int }}
-in p: {ty}");
+        let src = format!(
+            "type {ty} = {{ x: int }}
+in p: {ty}"
+        );
         let (name, sites) = rename_sites(&src, 0, 5);
         assert_eq!(name, ty);
-        assert_eq!(sites.len(), 1, "`in p: {ty}` must not resolve to the alias: {sites:?}");
+        assert_eq!(
+            sites.len(),
+            1,
+            "`in p: {ty}` must not resolve to the alias: {sites:?}"
+        );
     }
-}
-
-#[test]
-fn record_field_name_is_refused_for_now() {
-    let src = "type P = { x: int }\nlet p: P = { x: 1 }\nlet a = p.x";
-    // cursor on `.x` field access (line 2) -> refuse (deferred feature)
-    assert!(prepare_rename_at(&parse(src, "t.ws").ast, src, "t.ws", 2, 10).is_none());
 }
 
 #[test]
@@ -709,78 +706,7 @@ fn ordinary_local_is_renameable() {
     assert!(prepare_rename_at(&parse(src, "t.ws").ast, src, "t.ws", 2, 9).is_some());
 }
 
-#[test]
-fn keyword_position_is_not_renameable() {
-    // Regression: `var`'s own binding carries a COARSE `name_range` running
-    // from the `var` keyword through the whole initializer (`parser.rs`'s
-    // `parse_var_decl`), so without an explicit keyword refusal the cursor
-    // sitting on the keyword itself would resolve as if it were on `x`.
-    let src = "var x: int = 0\nin go: exec\non go { }";
-    // cursor on the `var` keyword (0-based line 0, col 1)
-    assert!(prepare_rename_at(&parse(src, "t.ws").ast, src, "t.ws", 0, 1).is_none());
-}
-
-#[test]
-fn field_access_inside_coarse_var_init_is_refused() {
-    // Regression: a `var`'s coarse decl range spans its WHOLE initializer,
-    // so a field-access cursor deep inside it (`p.field`) must not be
-    // swallowed by the coarse `var x` binding and rename `x` instead.
-    let src = "type P = { field: int }\nin p: P\nvar x: int = p.field";
-    // cursor inside `field` of `p.field` (0-based line 2, col 17)
-    assert!(prepare_rename_at(&parse(src, "t.ws").ast, src, "t.ws", 2, 17).is_none());
-}
-
-#[test]
-fn record_lit_field_key_inside_coarse_var_init_is_refused() {
-    // Same hazard as above, for the KEY half of a record-literal field: the
-    // `x` in `{ x: 1 }` must not be swallowed by the coarse `var p` binding.
-    let src = "type P = { x: int }\nvar p: P = { x: 1 }";
-    // cursor on the `x` key (0-based line 1, col 13)
-    assert!(prepare_rename_at(&parse(src, "t.ws").ast, src, "t.ws", 1, 13).is_none());
-}
-
-#[test]
-fn unresolved_call_target_is_not_renameable() {
-    // A call to a name with no matching `chip`/`mod`/`fn` binding (a builtin
-    // gate call) leaves its `Use` unresolved — `references_at` itself
-    // already returns `None` for that, with no extra check needed.
-    let src = "in go: exec\non go { SomeBuiltinCall() }";
-    // cursor on the callee `SomeBuiltinCall` (0-based line 1, col 10)
-    assert!(prepare_rename_at(&parse(src, "t.ws").ast, src, "t.ws", 1, 10).is_none());
-}
-
-#[test]
-fn record_type_field_name_is_refused_for_now() {
-    // The Global Constraints list a record TYPE field's own name as a third
-    // refusal case alongside `FieldAccess.field` / `RecordLitField::Named`.
-    let src = "type P = { x: int }";
-    // cursor on the record type's own field name `x` (0-based line 0, col 11)
-    assert!(prepare_rename_at(&parse(src, "t.ws").ast, src, "t.ws", 0, 11).is_none());
-}
-
 // --- cross-file resolution (`references_to_export`) ---------------
-
-#[test]
-fn import_specifier_and_uses_are_found_not_shadows() {
-    let importer = "\
-import { helper } from \"lib\"
-in go: exec
-on go { helper(1) }";
-    let sites = references_to_export(&parse(importer, "main.ws").ast, "main.ws", "helper", RefNs::Value);
-    // the `{ helper }` specifier + the `helper(1)` call = 2 sites.
-    assert_eq!(sites.len(), 2, "sites: {sites:?}");
-}
-
-#[test]
-fn a_local_shadow_is_excluded_from_export_refs() {
-    let importer = "\
-in go: exec
-on go { let helper = 1
-  let x = helper }";
-    // local `helper`, no import — must NOT be reported as an export ref.
-    let sites = references_to_export(&parse(importer, "main.ws").ast, "main.ws", "helper", RefNs::Value);
-    assert!(sites.is_empty(), "sites: {sites:?}");
-}
 
 #[test]
 fn imported_name_use_classifies_as_imported() {
@@ -790,7 +716,8 @@ in go: exec
 on go { helper(1) }";
     // cursor on the `helper` call site (0-based line 2, col 8 — the start of
     // `helper` in `on go { helper(1) }`).
-    let (t, _sites) = references_at(&parse(importer, "main.ws").ast, importer, "main.ws", 2, 8).expect("target");
+    let (t, _sites) =
+        references_at(&parse(importer, "main.ws").ast, importer, "main.ws", 2, 8).expect("target");
     assert!(
         matches!(t.cross_file, CrossFile::Imported { ref export_name } if export_name == "helper"),
         "cross_file: {:?}",
@@ -813,7 +740,8 @@ import { orig as aliased } from \"lib\"
 in go: exec
 on go { aliased(1) }";
     // cursor on the `aliased` call site (0-based line 2, col 8).
-    let (t, _sites) = references_at(&parse(importer, "main.ws").ast, importer, "main.ws", 2, 8).expect("target");
+    let (t, _sites) =
+        references_at(&parse(importer, "main.ws").ast, importer, "main.ws", 2, 8).expect("target");
     assert!(
         matches!(t.cross_file, CrossFile::Local),
         "aliased import must be file-local, got: {:?}",
@@ -821,55 +749,74 @@ on go { aliased(1) }";
     );
 }
 
+/// `references_to_export` from an importer: each row's importer, the export
+/// name and namespace asked for, how many sites come back, and whether the
+/// first is coarse.
 #[test]
-fn references_to_export_respects_namespace() {
-    // A named import is registered in BOTH namespaces (source file not
-    // resolved locally); `references_to_export` must only return the
-    // binding matching the requested `ns`, not both.
-    let importer = "\
-import { helper } from \"lib\"
-in go: exec
-on go { helper(1) }";
-    let ast = parse(importer, "main.ws").ast;
-    let value_sites = references_to_export(&ast, "main.ws", "helper", RefNs::Value);
-    let type_sites = references_to_export(&ast, "main.ws", "helper", RefNs::Type);
-    assert_eq!(value_sites.len(), 2, "value sites: {value_sites:?}");
-    // only the import specifier itself resolves in the type namespace — no
-    // type-position use of `helper` exists in this program.
-    assert_eq!(type_sites.len(), 1, "type sites: {type_sites:?}");
-}
-
-#[test]
-fn references_to_export_unknown_export_is_empty() {
-    let importer = "\
-import { helper } from \"lib\"
-in go: exec
-on go { helper(1) }";
-    let sites = references_to_export(&parse(importer, "main.ws").ast, "main.ws", "nope", RefNs::Value);
-    assert!(sites.is_empty());
-}
-
-#[test]
-fn references_to_export_aliased_returns_specifier_only_not_alias_uses() {
-    // For an ALIASED importer (`import { helper as x }` + `x(1)`), an EXPORT
-    // rename of `helper` must touch ONLY the specifier — as a coarse whole-
-    // `import …` span the LSP narrows to the original `helper` token — and
-    // NOT the alias uses (`x(1)`), which keep the alias name.
-    let importer = "\
-import { helper as x } from \"lib\"
-in go: exec
-on go { x(1) }";
-    let sites =
-        references_to_export(&parse(importer, "main.ws").ast, "main.ws", "helper", RefNs::Value);
-    assert_eq!(
-        sites.len(),
-        1,
-        "aliased import: the specifier only, no alias uses: {sites:?}"
-    );
-    assert!(
-        sites[0].coarse,
-        "the specifier site must be coarse so the wiring layer narrows it to `helper`"
-    );
+fn references_to_export_finds_the_importers_sites() {
+    const IMPORTER: &str = "import { helper } from \"lib\"\nin go: exec\non go { helper(1) }";
+    let rows: &[(&str, &str, &str, RefNs, usize, Option<bool>)] = &[
+        // The `{ helper }` specifier + the `helper(1)` call. A named import is
+        // registered in BOTH namespaces (source file not resolved locally), so
+        // only the binding matching the requested `ns` may come back.
+        (
+            "value namespace: specifier and call",
+            IMPORTER,
+            "helper",
+            RefNs::Value,
+            2,
+            None,
+        ),
+        // Only the import specifier itself resolves in the type namespace; no
+        // type-position use of `helper` exists in this program.
+        (
+            "type namespace: the specifier only",
+            IMPORTER,
+            "helper",
+            RefNs::Type,
+            1,
+            None,
+        ),
+        (
+            "an unknown export is empty",
+            IMPORTER,
+            "nope",
+            RefNs::Value,
+            0,
+            None,
+        ),
+        // A local `helper`, no import: not an export ref.
+        (
+            "a local shadow is excluded",
+            "in go: exec\non go { let helper = 1\n  let x = helper }",
+            "helper",
+            RefNs::Value,
+            0,
+            None,
+        ),
+        // For an ALIASED importer (`import { helper as x }` + `x(1)`), an
+        // EXPORT rename of `helper` touches ONLY the specifier, as a coarse
+        // whole-`import …` span the LSP narrows to the original `helper`
+        // token, and NOT the alias uses (`x(1)`), which keep the alias name.
+        (
+            "an aliased import: the coarse specifier only",
+            "import { helper as x } from \"lib\"\nin go: exec\non go { x(1) }",
+            "helper",
+            RefNs::Value,
+            1,
+            Some(true),
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, importer, export, ns, want, coarse) in rows {
+        let sites = references_to_export(&parse(importer, "main.ws").ast, "main.ws", export, *ns);
+        if sites.len() != *want || coarse.is_some_and(|c| sites[0].coarse != c) {
+            failures.push(format!(
+                "{label}: want {want} sites (coarse {coarse:?}), got {sites:?}"
+            ));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 #[test]
@@ -887,8 +834,14 @@ out r = 0";
     let (name, sites) = rename_sites(src, 0, decl_col);
     assert_eq!(name, "go");
     assert_eq!(sites.len(), 2, "sites: {sites:?}");
-    assert!(sites.iter().any(|(l, _)| *l == 0), "decl site missing: {sites:?}");
-    assert!(sites.iter().any(|(l, _)| *l == 1), "trigger site missing: {sites:?}");
+    assert!(
+        sites.iter().any(|(l, _)| *l == 0),
+        "decl site missing: {sites:?}"
+    );
+    assert!(
+        sites.iter().any(|(l, _)| *l == 1),
+        "trigger site missing: {sites:?}"
+    );
 
     // Cursor ON the trigger token itself must resolve to the same target.
     let trigger_col = src.lines().nth(1).unwrap().find("go").unwrap();
@@ -912,8 +865,14 @@ out r = 0";
     let (name, sites) = rename_sites(src, 1, decl_col);
     assert_eq!(name, "MyEvent");
     assert_eq!(sites.len(), 2, "sites: {sites:?}");
-    assert!(sites.iter().any(|(l, _)| *l == 1), "decl site missing: {sites:?}");
-    assert!(sites.iter().any(|(l, _)| *l == 2), "trigger site missing: {sites:?}");
+    assert!(
+        sites.iter().any(|(l, _)| *l == 1),
+        "decl site missing: {sites:?}"
+    );
+    assert!(
+        sites.iter().any(|(l, _)| *l == 2),
+        "trigger site missing: {sites:?}"
+    );
 }
 
 #[test]
@@ -930,7 +889,10 @@ on split.Forward { }";
     let (name, sites) = rename_sites(src, 1, decl_col);
     assert_eq!(name, "split");
     assert_eq!(sites.len(), 2, "sites: {sites:?}");
-    assert!(sites.iter().any(|(l, _)| *l == 2), "trigger object site missing: {sites:?}");
+    assert!(
+        sites.iter().any(|(l, _)| *l == 2),
+        "trigger object site missing: {sites:?}"
+    );
 
     // The field half (`Forward`) must be refused for rename.
     let field_col = src.lines().nth(2).unwrap().find("Forward").unwrap();
@@ -964,7 +926,12 @@ on ZoneLeft(zone = b) -> (character) {
   character.DisplayText(\"B\")
 }";
     let decl_line = 3;
-    let decl_col = src.lines().nth(decl_line).unwrap().find("character").unwrap();
+    let decl_col = src
+        .lines()
+        .nth(decl_line)
+        .unwrap()
+        .find("character")
+        .unwrap();
     let (name, sites) = rename_sites(src, decl_line, decl_col);
     assert_eq!(name, "character");
     // decl (line 3) + the one body use (line 6) in THIS handler only.
@@ -993,7 +960,12 @@ chip {
   }
 }";
     let decl_line = 3;
-    let decl_col = src.lines().nth(decl_line).unwrap().find("character").unwrap();
+    let decl_col = src
+        .lines()
+        .nth(decl_line)
+        .unwrap()
+        .find("character")
+        .unwrap();
     let (name, sites) = rename_sites(src, decl_line, decl_col);
     assert_eq!(name, "character");
     assert_eq!(sites.len(), 2, "sites: {sites:?}");
@@ -1068,7 +1040,11 @@ on go {
         let col = src.lines().nth(line).unwrap().find(needle).unwrap();
         let span = span_at(&spans, line, col)
             .unwrap_or_else(|| panic!("no span for {needle} on line {line}"));
-        assert_eq!(span.kind, SemTokenKind::Variable, "{needle}@{line} should be Variable");
+        assert_eq!(
+            span.kind,
+            SemTokenKind::Variable,
+            "{needle}@{line} should be Variable"
+        );
     }
 }
 
@@ -1089,7 +1065,6 @@ fn user_type_alias_use_is_a_type_token() {
     assert_eq!(use_span.name, "Point");
 }
 
-
 #[test]
 fn general_expr_trigger_call_is_not_recolored_by_a_synthetic_token() {
     // `on ReadBrickGrid()` desugars to a synthetic `let _on_expr_0 = ReadBrickGrid()`.
@@ -1106,28 +1081,6 @@ fn general_expr_trigger_call_is_not_recolored_by_a_synthetic_token() {
 }
 
 #[test]
-fn renaming_an_output_port_also_renames_its_reads() {
-    // A rename that moves the declaration but leaves the reads behind produces
-    // a silently dangling port, so this is a test rather than a manual check.
-    let src = "in a: int\n\
-               out y: int = a + 1\n\
-               out z: int = y * 2\n\
-               out w: int = y + 3";
-    // `y` is declared on line 1; the raw site for a coarse decl like `out` is
-    // the whole statement (col 0, the `out` keyword) since `references_at`
-    // leaves narrowing to the name token to the LSP wiring layer's
-    // `find_name_range` (see `prepare_rename_at`), not to this function.
-    // Both reads sit at col 13.
-    let (name, sites) = rename_sites(src, 1, 4);
-    assert_eq!(name, "y");
-    assert_eq!(
-        sites,
-        vec![(1, 0), (2, 13), (3, 13)],
-        "declaration plus both reads"
-    );
-}
-
-#[test]
 fn a_shadowed_port_rename_stays_on_the_var() {
     // `count` names a var and a port. Every read belongs to the var, so
     // renaming from a read must not pull the port's declaration in.
@@ -1138,110 +1091,107 @@ fn a_shadowed_port_rename_stays_on_the_var() {
     assert_eq!(name, "count");
     // (0, 0) is the var's raw coarse decl site (the whole `var count: int =
     // 0` statement, starting at the `var` keyword) - see the narrowing note
-    // above.
+    // on `renaming_a_port_renames_its_reads`.
     assert!(
         sites.contains(&(0, 0)),
         "the read must resolve to the var declaration: {sites:?}"
     );
 }
 
+/// Renaming a port renames every read of it, wherever the port is declared.
+/// A coarse decl like `out` reports the whole statement from the `out`
+/// keyword; the LSP narrows it with `find_name_range`. Each row: source,
+/// 0-based cursor, exact sites.
 #[test]
-fn renaming_a_handler_declared_port_reaches_a_cross_handler_read() {
-    // A port declared inside a top-level `on` handler is hoisted into a real
-    // file-scope boundary port, so a read of it from
-    // an unrelated handler must be part of the same rename, not left dangling
-    // outside the declaring handler's lexical block.
-    let src = "on Clock(interval = 0.2) {\n\
-               @top out flash: bool = Toggle()\n\
-               }\n\
-               in go: exec\n\
-               on go {\n\
-               var b: bool = flash\n\
-               }";
-    // `flash` is declared on line 1; the raw coarse decl site starts at col 5
-    // (the `out` keyword, past the `@top` side annotation) - see the
-    // narrowing note in `renaming_an_output_port_also_renames_its_reads`.
-    // The cross-handler read sits on line 5 col 14.
-    let (name, sites) = rename_sites(src, 1, 9);
-    assert_eq!(name, "flash");
-    assert_eq!(
-        sites,
-        vec![(1, 5), (5, 14)],
-        "declaration plus the cross-handler read"
-    );
-}
-
-#[test]
-fn renaming_an_anon_chip_declared_port_reaches_a_cross_chip_read() {
-    // A file-scope anon chip's `out` binding is the same kind of hoisted
-    // boundary port as a handler-declared one, so a read outside the chip
-    // body must be part of the rename too.
-    let src = "chip { out shared: int = 1 }\n\
-               in go: exec\n\
-               on go {\n\
-               var v: int = shared\n\
-               }";
-    // `shared` is declared on line 0; the raw coarse decl site starts at
-    // col 7 (the `out` keyword, past `chip { `) - see the narrowing note in
-    // `renaming_an_output_port_also_renames_its_reads`. The cross-chip read
-    // sits on line 3 col 13.
-    let (name, sites) = rename_sites(src, 0, 11);
-    assert_eq!(name, "shared");
-    assert_eq!(
-        sites,
-        vec![(0, 7), (3, 13)],
-        "declaration plus the cross-chip read"
-    );
-}
-
-#[test]
-fn renaming_a_statement_level_anon_chip_port_reaches_a_later_read() {
-    // A `chip { }` written as a STATEMENT inside a handler declares a real
-    // boundary port too (`typecheck::stmt::check_anon_chip_stmts` registers it
-    // into the handler's frame, `lower_block_inner` pre-declares it), so a read
-    // later in that handler is part of the same rename rather than dangling
-    // outside the chip's own block.
-    let src = "in go: exec
+fn renaming_a_port_renames_its_reads() {
+    let rows: &[(&str, &str, usize, usize, &str, &[(usize, usize)])] = &[
+        // A rename that moves the declaration but leaves the reads behind
+        // produces a silently dangling port, so this is a test rather than a
+        // manual check.
+        (
+            "an output port and both its reads",
+            "in a: int\n\
+             out y: int = a + 1\n\
+             out z: int = y * 2\n\
+             out w: int = y + 3",
+            1,
+            4,
+            "y",
+            &[(1, 0), (2, 13), (3, 13)],
+        ),
+        // A port declared inside a top-level `on` handler is hoisted into a
+        // real file-scope boundary port, so a read of it from an unrelated
+        // handler is part of the same rename, not left dangling outside the
+        // declaring handler's lexical block.
+        (
+            "a handler-declared port reaches a cross-handler read",
+            "on Clock(interval = 0.2) {\n\
+             @top out flash: bool = Toggle()\n\
+             }\n\
+             in go: exec\n\
+             on go {\n\
+             var b: bool = flash\n\
+             }",
+            1,
+            9,
+            "flash",
+            &[(1, 5), (5, 14)],
+        ),
+        // A file-scope anon chip's `out` binding is the same kind of hoisted
+        // boundary port as a handler-declared one.
+        (
+            "an anon-chip-declared port reaches a cross-chip read",
+            "chip { out shared: int = 1 }\n\
+             in go: exec\n\
+             on go {\n\
+             var v: int = shared\n\
+             }",
+            0,
+            11,
+            "shared",
+            &[(0, 7), (3, 13)],
+        ),
+        // A `chip { }` statement inside a handler declares a real boundary
+        // port in the handler's frame, so a later read in that handler is part
+        // of the same rename.
+        (
+            "a statement-level anon chip port reaches a later read",
+            "in go: exec
                on go {
                chip { out shared: int = 1 }
                var v: int = shared
-               }";
-    let (name, sites) = rename_sites(src, 2, 26);
-    assert_eq!(name, "shared");
-    assert_eq!(
-        sites,
-        vec![(2, 22), (3, 28)],
-        "declaration plus the later in-handler read"
-    );
-}
-
-#[test]
-fn renaming_a_nested_anon_chip_port_reaches_a_read_outside_both() {
-    // An anon chip pushes no scope frame, so one nested inside a file-scope
-    // anon chip declares a file-wide port exactly as its parent does.
-    let src = "chip { chip { out shared: int = 1 } }
+               }",
+            2,
+            26,
+            "shared",
+            &[(2, 22), (3, 28)],
+        ),
+        // An anon chip pushes no scope frame, so one nested inside a
+        // file-scope anon chip declares a file-wide port exactly as its parent
+        // does.
+        (
+            "a nested anon chip port reaches a read outside both",
+            "chip { chip { out shared: int = 1 } }
                in go: exec
                on go {
                var v: int = shared
-               }";
-    let (name, sites) = rename_sites(src, 0, 18);
-    assert_eq!(name, "shared");
-    assert_eq!(
-        sites,
-        vec![(0, 14), (3, 28)],
-        "declaration plus the cross-chip read"
-    );
-}
-
-#[test]
-fn atom_hash_is_a_64_bit_i64() {
-    // Every atom value is `xxh64(name) as i64` — a bit-preserving reinterpret of
-    // a u64, so it always fits an i64 (high-bit-set names read as negative).
-    for name in ["bomber", "the-black", "seer", "x"] {
-        let v = crate::hash::atom_hash(name);
-        // Round-trips through u64 with no loss (proves it's exactly 64 bits).
-        assert_eq!(v, (v as u64) as i64);
+               }",
+            0,
+            18,
+            "shared",
+            &[(0, 14), (3, 28)],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, line, col, want_name, want) in rows {
+        let (name, sites) = rename_sites(src, *line, *col);
+        if name != *want_name || sites != *want {
+            failures.push(format!(
+                "{label}: `{name}` at {sites:?}, want `{want_name}` at {want:?}"
+            ));
+        }
     }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 // --- column conventions: char column in, byte columns out ---------
@@ -1298,7 +1248,10 @@ on go {
 }";
     let ast = parse(src, "t.ws").ast;
     let col = char_col_of(src, 4, "hp}");
-    assert!(field_name_at(&ast, src, 4, col), "the cursor is on the `hp` field name");
+    assert!(
+        field_name_at(&ast, src, 4, col),
+        "the cursor is on the `hp` field name"
+    );
     // The receiver right before it is not a field name.
     let recv = char_col_of(src, 4, "r.hp");
     assert!(!field_name_at(&ast, src, 4, recv));
@@ -1330,7 +1283,11 @@ fn sites_of_k(src: &str) -> Vec<(usize, usize)> {
     for (line, text) in src.lines().enumerate() {
         let bytes = text.as_bytes();
         for (col, c) in bytes.iter().enumerate() {
-            let ident = |i: usize| bytes.get(i).is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
+            let ident = |i: usize| {
+                bytes
+                    .get(i)
+                    .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            };
             if *c == b'k' && (col == 0 || !ident(col - 1)) && !ident(col + 1) {
                 out.push((line, col));
             }
@@ -1357,13 +1314,34 @@ fn a_top_level_name_declared_twice_is_named_where_the_compiler_reads_it() {
             "on go { n = k }\nlet k = 2\non go2 { n = k }\nvar k: int = 1\non go3 { n = k }",
             &[&[0, 3, 4], &[1, 2]],
         ),
-        ("buffer k: int = k + 2\non go { n = k }\nlet k = 5\non go2 { n = k }", &[&[0, 1, 2], &[3, 4]]),
-        ("const k = 1\nlet k = k + 1\non go { n = k }", &[&[0, 2], &[1, 3]]),
-        ("const k = 1\nchip C() { on go { n = k } }\nconst k = 2\nC()\non go2 { n = k }", &[&[0, 1], &[2, 3]]),
-        ("mod f() -> int { return k }\nconst k = 1\nconst k = 2\non go { n = f() + k }", &[&[0, 1], &[2, 3]]),
-        ("mod f() -> int { return k }\nlet k = 1\nvar k: int = 2\non go { n = f() + k }", &[&[0, 2, 3], &[1]]),
-        ("let k = 5\nvar k: int = k\non go { n = k }", &[&[0, 2], &[1, 3]]),
-        ("const k = 5\nstatic var k: int = k + 1\non go { n = k }", &[&[0, 2], &[1, 3]]),
+        (
+            "buffer k: int = k + 2\non go { n = k }\nlet k = 5\non go2 { n = k }",
+            &[&[0, 1, 2], &[3, 4]],
+        ),
+        (
+            "const k = 1\nlet k = k + 1\non go { n = k }",
+            &[&[0, 2], &[1, 3]],
+        ),
+        (
+            "const k = 1\nchip C() { on go { n = k } }\nconst k = 2\nC()\non go2 { n = k }",
+            &[&[0, 1], &[2, 3]],
+        ),
+        (
+            "mod f() -> int { return k }\nconst k = 1\nconst k = 2\non go { n = f() + k }",
+            &[&[0, 1], &[2, 3]],
+        ),
+        (
+            "mod f() -> int { return k }\nlet k = 1\nvar k: int = 2\non go { n = f() + k }",
+            &[&[0, 2, 3], &[1]],
+        ),
+        (
+            "let k = 5\nvar k: int = k\non go { n = k }",
+            &[&[0, 2], &[1, 3]],
+        ),
+        (
+            "const k = 5\nstatic var k: int = k + 1\non go { n = k }",
+            &[&[0, 2], &[1, 3]],
+        ),
     ];
     // A site is compared by its line: a storage declaration's site starts at
     // its keyword.
@@ -1385,7 +1363,8 @@ fn a_top_level_name_declared_twice_is_named_where_the_compiler_reads_it() {
         }
     }
     // A library file the editor opens on its own reads by position too.
-    let lib = "const k = 2\nmod fa() -> int { return k }\nconst k = 30\nmod fb() -> int { return k }";
+    let lib =
+        "const k = 2\nmod fa() -> int { return k }\nconst k = 30\nmod fb() -> int { return k }";
     let ks = sites_of_k(lib);
     assert_eq!(rename_sites(lib, ks[1].0, ks[1].1).1, vec![ks[0], ks[1]]);
     assert_eq!(rename_sites(lib, ks[3].0, ks[3].1).1, vec![ks[2], ks[3]]);

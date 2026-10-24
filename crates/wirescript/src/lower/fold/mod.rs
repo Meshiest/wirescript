@@ -546,7 +546,7 @@ fn try_resolve_branch(
 /// (every OTHER FormatText probe case wires its substitution operand(s)
 /// through `Opaque`, which never resolves — see the probe's own comment on
 /// why), so folding a zero-substituted-slot template is the one way this
-/// pass could visibly diverge `tests/fold_invariants.rs`'s structural-no-op
+/// pass could visibly diverge `tests/it/fold_invariants.rs`'s structural-no-op
 /// guarantee without ever "seeing through" an `Opaque` value. A BAKED slot
 /// still satisfies this guard (unlike the zero-slot case, it means a real
 /// argument was passed and the template genuinely substitutes): with no

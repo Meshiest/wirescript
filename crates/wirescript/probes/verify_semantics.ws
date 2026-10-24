@@ -12,7 +12,7 @@
 /// (3-decimal) text, which a value comparison against full live
 /// precision cannot round-trip in general. Full-precision semantics are
 /// certified separately by the Rust replay gate (see
-/// crates/wirescript/tests/fold_invariants.rs and
+/// crates/wirescript/tests/it/fold_invariants.rs and
 /// lower/fold/eval.rs's replay_every_certified_case).
 mod failLine(msg: string) {
   PrintToConsole(msg)

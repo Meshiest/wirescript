@@ -3,35 +3,13 @@ use crate::lower::boundary_pins::synthesize_boundary_pins;
 
 use super::*;
 
-fn lowered(src: &str) -> LowerResult {
-    // These are boundary-structure tests; force folding off so the fold
-    // pass can't elide the constant chip bodies used as minimal fixtures.
-    let crate::compile::FrontEnd { resolved: parsed, lowered: r, .. } =
-        crate::compile::front_end(src, "test", None, FoldMode::ForceOff, &crate::resolve::FsLoader);
-    assert!(
-        parsed.diagnostics.is_empty(),
-        "parse diags: {:?}",
-        parsed.diagnostics
-    );
-    assert_no_errors(&r);
-    r
-}
-
-/// Recursively collects every synthesized boundary pin's `PortLabel` across
-/// the whole module tree.
+/// Every synthesized boundary pin's `PortLabel` across the whole module tree.
 fn collect_pin_labels(m: &crate::ir::Module, out: &mut Vec<String>) {
-    for n in m.nodes.values() {
-        if n.note == Some("boundary_pin") {
-            if let Some(crate::ir::Literal::String(s)) =
-                n.properties.get(&*crate::intern::sym::PORT_LABEL)
-            {
-                out.push(s.clone());
-            }
-        }
-    }
-    for c in m.chips.values() {
-        collect_pin_labels(c, out);
-    }
+    out.extend(
+        m.nodes_deep()
+            .filter(|n| is_boundary_pin(n))
+            .filter_map(port_label),
+    );
 }
 
 /// Reads a node's `PortLabel` property as a string, if present.
@@ -45,15 +23,15 @@ fn port_label(n: &crate::ir::Node) -> Option<String> {
 /// Total `MicrochipInput` node count across the whole module tree
 /// (declared params, plus anything this pass has already added).
 fn chip_input_count(m: &Module) -> usize {
-    m.inputs.len() + m.chips.values().map(chip_input_count).sum::<usize>()
+    m.modules_deep().iter().map(|m| m.inputs.len()).sum()
 }
 
 fn total_node_count(m: &Module) -> usize {
-    m.nodes.len() + m.chips.values().map(total_node_count).sum::<usize>()
+    m.nodes_deep().count()
 }
 
 fn total_wire_count(m: &Module) -> usize {
-    m.wires.len() + m.chips.values().map(total_wire_count).sum::<usize>()
+    m.wires_deep().count()
 }
 
 /// A pin synthesized by this pass, as opposed to one declared in source.
@@ -63,11 +41,10 @@ fn is_boundary_pin(n: &crate::ir::Node) -> bool {
 
 /// Synthesized boundary pins across the whole module tree.
 fn boundary_pin_count(m: &Module) -> usize {
-    m.nodes.values().filter(|n| is_boundary_pin(n)).count()
-        + m.chips.values().map(boundary_pin_count).sum::<usize>()
+    m.nodes_deep().filter(|n| is_boundary_pin(n)).count()
 }
 
-/// A port declared in source: carries a real source range (synthesized pins
+// A port declared in source: carries a real source range (synthesized pins
 /// are built with `SourceRange::default()`) and no `boundary_pin` marker.
 fn is_declared_port(n: &crate::ir::Node) -> bool {
     !is_boundary_pin(n) && (n.source_range.end.offset > 0 || !n.source_range.file.is_empty())
@@ -83,97 +60,64 @@ fn is_declared_port(n: &crate::ir::Node) -> bool {
 /// endpoint that isn't a pin. No (target node, target port) tuple may
 /// appear twice.
 fn assert_pin_adjacent(root: &Module) {
-    fn owners(
-        m: &Module,
-        path: &mut Vec<NodeId>,
-        out: &mut std::collections::HashMap<NodeId, Vec<NodeId>>,
-    ) {
-        for id in m.nodes.keys() {
-            out.insert(*id, path.clone());
+    // Each node's module path and gate class, so a deep endpoint can be checked
+    // against the pin kind the wire DIRECTION requires: a deep source only
+    // through an output pin, a deep target only through an input pin (a
+    // backwards inpin->outpin wire at the deep end must fail).
+    let mut own: crate::collections::HashMap<NodeId, (Vec<NodeId>, &'static str)> =
+        Default::default();
+    root.walk(&mut |path, m| {
+        for (id, n) in &m.nodes {
+            own.insert(*id, (path.to_vec(), n.gate_class));
         }
-        let mut kids: Vec<_> = m.chips.keys().copied().collect();
-        kids.sort();
-        for k in kids {
-            path.push(k);
-            owners(&m.chips[&k], path, out);
-            path.pop();
+    });
+    let mut targets = crate::collections::HashSet::default();
+    for w in root.wires_deep() {
+        if w.source.port == WirePort::Layout {
+            continue;
+        }
+        assert!(
+            targets.insert((w.target.node_id, w.target.port)),
+            "duplicate wire target tuple {:?}",
+            w.target
+        );
+        let (Some((sp, s_class)), Some((tp, t_class))) =
+            (own.get(&w.source.node_id), own.get(&w.target.node_id))
+        else {
+            continue;
+        };
+        if sp == tp {
+            continue;
+        }
+        let lca = sp.iter().zip(tp.iter()).take_while(|(a, b)| a == b).count();
+        assert!(
+            sp.len() <= lca + 1,
+            "source end spans >1 wall from the wire's LCA: {w:?}"
+        );
+        assert!(
+            tp.len() <= lca + 1,
+            "target end spans >1 wall from the wire's LCA: {w:?}"
+        );
+        if sp.len() == lca + 1 {
+            assert_eq!(
+                *s_class,
+                gc::MICROCHIP_OUTPUT,
+                "deep source endpoint of {w:?} must be a MicrochipOutput pin"
+            );
+        }
+        if tp.len() == lca + 1 {
+            assert_eq!(
+                *t_class,
+                gc::MICROCHIP_INPUT,
+                "deep target endpoint of {w:?} must be a MicrochipInput pin"
+            );
         }
     }
-    // Gate class of a node found by descending `path` from `root`, so the
-    // caller can check it's the pin kind the wire DIRECTION requires — a
-    // wire's deep source endpoint is only legal through an output pin, and
-    // its deep target endpoint only through an input pin (a backwards
-    // inpin->outpin wire at the deep end must fail).
-    fn class_at(root: &Module, path: &[NodeId], id: NodeId) -> Option<&'static str> {
-        let mut m = root;
-        for c in path {
-            m = &m.chips[c];
-        }
-        m.nodes.get(&id).map(|n| n.gate_class)
-    }
-    let mut own = std::collections::HashMap::new();
-    owners(root, &mut Vec::new(), &mut own);
-    let mut targets = std::collections::HashSet::new();
-    fn walk(
-        root: &Module,
-        m: &Module,
-        own: &std::collections::HashMap<NodeId, Vec<NodeId>>,
-        targets: &mut std::collections::HashSet<(NodeId, crate::ir::port_registry::WirePort)>,
-    ) {
-        for w in &m.wires {
-            if w.source.port == crate::ir::port_registry::WirePort::Layout {
-                continue;
-            }
-            assert!(
-                targets.insert((w.target.node_id, w.target.port)),
-                "duplicate wire target tuple {:?}",
-                w.target
-            );
-            let (Some(sp), Some(tp)) = (own.get(&w.source.node_id), own.get(&w.target.node_id))
-            else {
-                continue;
-            };
-            if sp == tp {
-                continue;
-            }
-            let lca = sp.iter().zip(tp.iter()).take_while(|(a, b)| a == b).count();
-            assert!(
-                sp.len() <= lca + 1,
-                "source end spans >1 wall from the wire's LCA: {:?}",
-                w
-            );
-            assert!(
-                tp.len() <= lca + 1,
-                "target end spans >1 wall from the wire's LCA: {:?}",
-                w
-            );
-            if sp.len() == lca + 1 {
-                assert_eq!(
-                    class_at(root, sp, w.source.node_id),
-                    Some(gc::MICROCHIP_OUTPUT),
-                    "deep source endpoint of {:?} must be a MicrochipOutput pin",
-                    w
-                );
-            }
-            if tp.len() == lca + 1 {
-                assert_eq!(
-                    class_at(root, tp, w.target.node_id),
-                    Some(gc::MICROCHIP_INPUT),
-                    "deep target endpoint of {:?} must be a MicrochipInput pin",
-                    w
-                );
-            }
-        }
-        for c in m.chips.values() {
-            walk(root, c, own, targets);
-        }
-    }
-    walk(root, root, &own, &mut targets);
 }
 
 #[test]
 fn global_pure_read_gets_labeled_input_pin() {
-    let r = lowered("var g: int = 1\nchip C() -> (r: int) { out r = g + 2 }\nlet c = C()\n");
+    let r = compile_ok("var g: int = 1\nchip C() -> (r: int) { out r = g + 2 }\nlet c = C()\n");
     let chip = r.module.chips.values().next().unwrap();
     let added: Vec<_> = chip
         .nodes
@@ -195,7 +139,7 @@ fn global_pure_read_gets_labeled_input_pin() {
 /// dedup should collapse them onto a single pin with two interior wires.
 #[test]
 fn two_consumers_share_one_pin() {
-    let r = lowered(
+    let r = compile_ok(
         "var g: int = 1\nchip C() -> (r: int, s: int) { out r = g + 1\n  out s = g + 2 }\nlet c = C()\n",
     );
     let chip = r.module.chips.values().next().unwrap();
@@ -221,63 +165,19 @@ fn two_consumers_share_one_pin() {
 /// crossing pre-pass, since anon chips carry no declared ports of their own.
 #[test]
 fn inside_value_consumed_outside_gets_output_pin() {
-    let r = lowered("chip { let x = 5 + 5 }\nout y = x\n");
+    let r = compile_ok("chip { let x = 5 + 5 }\nout y = x\n");
     let chip = r.module.chips.values().next().unwrap();
     let added: Vec<_> = chip
         .nodes
         .values()
         .filter(|n| n.gate_class == gc::MICROCHIP_OUTPUT)
         .collect();
-    assert_eq!(added.len(), 1, "the chip-internal value needs one new output pin");
-    assert_pin_adjacent(&r.module);
-}
-
-/// Producer's declared output feeding Consumer's declared input, as an
-/// argument (`Consumer(p.r)`) — ordinary declared chip I/O already wires
-/// this pin to pin between two sibling modules, with the middle wire held
-/// at their LCA (root). That is exactly the approved boundary shape:
-/// MicrochipOutput in the source chip, MicrochipInput in the target chip,
-/// direct middle wire at the LCA — so the pass must keep it, adding no
-/// bridge gate and no extra pins.
-#[test]
-fn sibling_chips_chain_out_then_in() {
-    let r = lowered(
-        "chip Producer() -> (r: int) { out r = 5 }\nchip Consumer(v: int) -> (r2: int) { out r2 = v }\nlet p = Producer()\nlet c = Consumer(p.r)\n",
-    );
-    assert_pin_adjacent(&r.module);
-
-    let producer = r
-        .module
-        .chips
-        .values()
-        .find(|c| c.inputs.is_empty())
-        .expect("producer module");
-    let consumer = r
-        .module
-        .chips
-        .values()
-        .find(|c| !c.inputs.is_empty())
-        .expect("consumer module");
-    assert_eq!(producer.outputs.len(), 1, "producer keeps its single declared output pin");
-    assert_eq!(consumer.inputs.len(), 1, "consumer keeps its single declared input pin");
-    // The middle segment is a DIRECT outpin->inpin wire held at the LCA (root).
-    let producer_out = producer.outputs[0];
-    let consumer_in = consumer.inputs[0];
-    let direct = r
-        .module
-        .wires
-        .iter()
-        .filter(|w| w.source.node_id == producer_out && w.target.node_id == consumer_in)
-        .count();
     assert_eq!(
-        direct, 1,
-        "exactly one direct outpin -> inpin middle wire, held in the root (LCA) module"
+        added.len(),
+        1,
+        "the chip-internal value needs one new output pin"
     );
-    fn has_rerouter(m: &Module) -> bool {
-        m.nodes.values().any(|n| n.gate_class == gc::REROUTER)
-            || m.chips.values().any(has_rerouter)
-    }
-    assert!(!has_rerouter(&r.module), "no bridge rerouter is created anywhere");
+    assert_pin_adjacent(&r.module);
 }
 
 /// A normal chip call's declared outpin->inpin wire is already the approved
@@ -287,7 +187,7 @@ fn sibling_chips_chain_out_then_in() {
 /// anywhere in the tree.
 #[test]
 fn declared_chip_call_wires_are_untouched() {
-    let r = lowered(
+    let r = compile_ok(
         "chip Producer() -> (r: int) { out r = 5 }\nchip Consumer(v: int) -> (r2: int) { out r2 = v }\nlet p = Producer()\nlet c = Consumer(p.r)\n",
     );
     let producer = r
@@ -302,8 +202,16 @@ fn declared_chip_call_wires_are_untouched() {
         .values()
         .find(|c| !c.inputs.is_empty())
         .expect("consumer module");
-    assert_eq!(producer.outputs.len(), 1, "producer keeps its single declared output pin");
-    assert_eq!(consumer.inputs.len(), 1, "consumer keeps its single declared input pin");
+    assert_eq!(
+        producer.outputs.len(),
+        1,
+        "producer keeps its single declared output pin"
+    );
+    assert_eq!(
+        consumer.inputs.len(),
+        1,
+        "consumer keeps its single declared input pin"
+    );
 
     // Both endpoints are ports DECLARED in source, not synthesized pins.
     let producer_out = producer.outputs[0];
@@ -339,11 +247,10 @@ fn declared_chip_call_wires_are_untouched() {
         0,
         "an all-declared chip call must not produce any synthesized boundary pin"
     );
-    fn has_rerouter(m: &Module) -> bool {
-        m.nodes.values().any(|n| n.gate_class == gc::REROUTER)
-            || m.chips.values().any(has_rerouter)
-    }
-    assert!(!has_rerouter(&r.module), "no bridge rerouter is created anywhere");
+    assert!(
+        !has_gate_deep(&r, gc::REROUTER),
+        "no bridge rerouter is created anywhere"
+    );
     assert_pin_adjacent(&r.module);
 }
 
@@ -352,7 +259,7 @@ fn declared_chip_call_wires_are_untouched() {
 /// intermediate pin pre-pass — the pass must add one pin per wall.
 #[test]
 fn two_level_nesting_chains_pins_through_each_wall() {
-    let r = lowered(
+    let r = compile_ok(
         "var g: int = 1\nchip Inner() -> (r: int) { out r = g + 1 }\nchip Outer() -> (r: int) {\n  let i = Inner()\n  out r = i.r\n}\nlet o = Outer()\n",
     );
     let outer = r.module.chips.values().next().unwrap();
@@ -376,7 +283,7 @@ fn two_level_nesting_chains_pins_through_each_wall() {
 /// anon chip's interior exec chain is a raw Exec-typed crossing.
 #[test]
 fn exec_crossing_gets_exec_pin() {
-    let r = lowered("in trigger: exec\nchip on trigger { var x: int = 0\n  x = 1 }\n");
+    let r = compile_ok("in trigger: exec\nchip on trigger { var x: int = 0\n  x = 1 }\n");
     let chip = r.module.chips.values().next().unwrap();
     let exec_pins: Vec<_> = chip
         .nodes
@@ -384,7 +291,11 @@ fn exec_crossing_gets_exec_pin() {
         .filter(|n| n.gate_class == gc::MICROCHIP_INPUT)
         .filter(|n| n.ports.outputs.iter().any(|p| p.ty == Type::Exec))
         .collect();
-    assert_eq!(exec_pins.len(), 1, "the exec crossing gets its own exec-typed pin");
+    assert_eq!(
+        exec_pins.len(),
+        1,
+        "the exec crossing gets its own exec-typed pin"
+    );
     assert_pin_adjacent(&r.module);
 }
 
@@ -395,7 +306,8 @@ fn exec_crossing_gets_exec_pin() {
 /// recomputed to match a fresh `compute_scope_captures`.
 #[test]
 fn varref_crossing_gets_local_pin_and_captures_update() {
-    let r = lowered("var g: int = 1\nchip C() { in run: exec\n  on run { g = 1 } }\nlet c = C()\n");
+    let r =
+        compile_ok("var g: int = 1\nchip C() { in run: exec\n  on run { g = 1 } }\nlet c = C()\n");
     let chip = r.module.chips.values().next().unwrap();
     let varref_pin = chip.nodes.values().find(|n| {
         n.gate_class == gc::MICROCHIP_INPUT
@@ -421,7 +333,7 @@ fn varref_crossing_gets_local_pin_and_captures_update() {
     assert_pin_adjacent(&r.module);
 }
 
-/// Constructed by hand rather than via `lowered(src)`: in practice, real
+/// Constructed by hand rather than via `compile_ok(src)`: in practice, real
 /// Wirescript source rarely leaves a genuine cross-module `_Literal`-sourced
 /// wire lying around by the time `lower()` finishes — top-level const
 /// `let`s get cloned into any chip that references them, chip-call constant
@@ -432,7 +344,9 @@ fn varref_crossing_gets_local_pin_and_captures_update() {
 /// increasingly contrived source program.
 #[test]
 fn literal_source_crossings_are_left_alone() {
-    use crate::ir::{GateIO, Literal, Node, NodeKind, PortRef, PortSpec, Wire, port_registry::WirePort};
+    use crate::ir::{
+        GateIO, Literal, Node, NodeKind, PortRef, PortSpec, Wire, port_registry::WirePort,
+    };
     use std::sync::Arc;
 
     let lit_id = NodeId::fresh();
@@ -497,8 +411,16 @@ fn literal_source_crossings_are_left_alone() {
     let nodes_before = total_node_count(&root);
     let wires_before = total_wire_count(&root);
     synthesize_boundary_pins(&mut root);
-    assert_eq!(total_node_count(&root), nodes_before, "no pin synthesized for a literal source");
-    assert_eq!(total_wire_count(&root), wires_before, "the literal-sourced wire is untouched");
+    assert_eq!(
+        total_node_count(&root),
+        nodes_before,
+        "no pin synthesized for a literal source"
+    );
+    assert_eq!(
+        total_wire_count(&root),
+        wires_before,
+        "the literal-sourced wire is untouched"
+    );
     assert_eq!(root.wires.len(), 1);
     assert_eq!(root.wires[0].source.node_id, lit_id);
     assert_eq!(root.wires[0].target.node_id, consumer_id);
@@ -511,16 +433,19 @@ fn literal_source_crossings_are_left_alone() {
 fn templated_module_receiving_pin_loses_template_key() {
     // Control: no crossing, so the pass never touches this chip and
     // `template_key` keeps the value ordinary lowering assigned it.
-    let baseline = lowered("chip Foo() -> (r: int) { out r = 1 }\nlet f = Foo()\n");
+    let baseline = compile_ok("chip Foo() -> (r: int) { out r = 1 }\nlet f = Foo()\n");
     let baseline_chip = baseline.module.chips.values().next().unwrap();
     assert!(
         baseline_chip.template_key.is_some(),
         "sanity: template_key stays set when there's no crossing to pin"
     );
 
-    let r = lowered("var g: int = 1\nchip Foo() -> (r: int) { out r = g + 1 }\nlet f = Foo()\n");
+    let r = compile_ok("var g: int = 1\nchip Foo() -> (r: int) { out r = g + 1 }\nlet f = Foo()\n");
     let chip = r.module.chips.values().next().unwrap();
-    assert!(chip.template_key.is_none(), "receiving a new pin invalidates template_key");
+    assert!(
+        chip.template_key.is_none(),
+        "receiving a new pin invalidates template_key"
+    );
     assert_pin_adjacent(&r.module);
 }
 
@@ -529,7 +454,7 @@ fn templated_module_receiving_pin_loses_template_key() {
 /// wire on its real, first run, leaving every wire module-local.
 #[test]
 fn no_crossings_is_a_no_op() {
-    let r = lowered("var g: int = 1\nout r = g + 2\n");
+    let r = compile_ok("var g: int = 1\nout r = g + 2\n");
     assert!(
         r.module.chips.is_empty(),
         "fixture sanity: a flat program has no chip walls to cross"
@@ -557,7 +482,9 @@ fn no_crossings_is_a_no_op() {
 
 #[test]
 fn scope_pins_are_labeled_with_the_identifier() {
-    let r = lowered("var score: int = 0\nvar log: string[]\nin go: exec\non go {\n  chip {\n    score = score + 1\n    log.push(\"x\")\n  }\n}\n");
+    let r = compile_ok(
+        "var score: int = 0\nvar log: string[]\nin go: exec\non go {\n  chip {\n    score = score + 1\n    log.push(\"x\")\n  }\n}\n",
+    );
     let mut labels: Vec<String> = Vec::new();
     collect_pin_labels(&r.module, &mut labels);
     assert!(labels.iter().any(|l| l == "score"), "got {labels:?}");
@@ -566,14 +493,22 @@ fn scope_pins_are_labeled_with_the_identifier() {
 
 #[test]
 fn pin_labels_are_never_internal_notes_or_empty() {
-    let r = lowered("var score: int = 0\nin go: exec\non go {\n  chip {\n    score = score + 1\n    PrintToConsole(\"${score}\")\n  }\n}\n");
+    let r = compile_ok(
+        "var score: int = 0\nin go: exec\non go {\n  chip {\n    score = score + 1\n    PrintToConsole(\"${score}\")\n  }\n}\n",
+    );
     let mut labels: Vec<String> = Vec::new();
     collect_pin_labels(&r.module, &mut labels);
     assert!(!labels.is_empty());
     for l in &labels {
         assert!(!l.is_empty(), "empty pin label");
-        assert!(!l.contains(' '), "internal note leaked as a pin label: {l:?}");
-        assert!(!l.starts_with("Math"), "gate class leaked as a pin label: {l:?}");
+        assert!(
+            !l.contains(' '),
+            "internal note leaked as a pin label: {l:?}"
+        );
+        assert!(
+            !l.starts_with("Math"),
+            "gate class leaked as a pin label: {l:?}"
+        );
     }
 }
 
@@ -585,7 +520,7 @@ fn pin_labels_are_never_internal_notes_or_empty() {
 /// identifier at all.
 #[test]
 fn array_element_crossing_never_leaks_the_internal_note() {
-    let r = lowered(
+    let r = compile_ok(
         "var arr: int[]\nin go: exec\non go {\n  let v = arr[0]\n  chip {\n    PrintToConsole(\"${v}\")\n  }\n}\n",
     );
     let mut labels: Vec<String> = Vec::new();
@@ -593,7 +528,10 @@ fn array_element_crossing_never_leaks_the_internal_note() {
     assert!(!labels.is_empty(), "expected at least one synthesized pin");
     for l in &labels {
         assert!(!l.is_empty(), "empty pin label");
-        assert!(!l.contains(' '), "internal note leaked as a pin label: {l:?}");
+        assert!(
+            !l.contains(' '),
+            "internal note leaked as a pin label: {l:?}"
+        );
     }
     let mut seen = std::collections::HashSet::new();
     for l in &labels {
@@ -604,28 +542,25 @@ fn array_element_crossing_never_leaks_the_internal_note() {
 
 #[test]
 fn pin_labels_are_unique_within_a_module() {
-    let r = lowered("var a: int = 0\nin go: exec\non go {\n  chip {\n    a = (a + 1) * (a + 2)\n  }\n}\n");
-    fn check(m: &crate::ir::Module) {
-        let mut seen = std::collections::HashSet::new();
-        for n in m.nodes.values() {
-            if n.note == Some("boundary_pin") {
-                if let Some(crate::ir::Literal::String(s)) =
-                    n.properties.get(&*crate::intern::sym::PORT_LABEL)
-                {
-                    assert!(seen.insert(s.clone()), "duplicate pin label {s:?}");
-                }
-            }
-        }
-        for c in m.chips.values() {
-            check(c);
+    let r = compile_ok(
+        "var a: int = 0\nin go: exec\non go {\n  chip {\n    a = (a + 1) * (a + 2)\n  }\n}\n",
+    );
+    for m in r.module.modules_deep() {
+        let mut seen = crate::collections::HashSet::default();
+        for s in m
+            .nodes
+            .values()
+            .filter(|n| is_boundary_pin(n))
+            .filter_map(port_label)
+        {
+            assert!(seen.insert(s.clone()), "duplicate pin label {s:?}");
         }
     }
-    check(&r.module);
 }
 
 #[test]
 fn pass_is_idempotent() {
-    let mut r = lowered(
+    let mut r = compile_ok(
         "chip Producer() -> (r: int) { out r = 5 }\nchip Consumer(v: int) -> (r2: int) { out r2 = v }\nlet p = Producer()\nlet c = Consumer(p.r)\n",
     );
     synthesize_boundary_pins(&mut r.module);
@@ -633,8 +568,16 @@ fn pass_is_idempotent() {
     let nodes_after_one = total_node_count(&r.module);
     let wires_after_one = total_wire_count(&r.module);
     synthesize_boundary_pins(&mut r.module);
-    assert_eq!(total_node_count(&r.module), nodes_after_one, "second run adds no nodes");
-    assert_eq!(total_wire_count(&r.module), wires_after_one, "second run adds no wires");
+    assert_eq!(
+        total_node_count(&r.module),
+        nodes_after_one,
+        "second run adds no nodes"
+    );
+    assert_eq!(
+        total_wire_count(&r.module),
+        wires_after_one,
+        "second run adds no wires"
+    );
     assert_pin_adjacent(&r.module);
 }
 
@@ -645,7 +588,7 @@ fn pass_is_idempotent() {
 /// set counts declared ports too.
 #[test]
 fn a_pin_never_reuses_a_declared_ports_label() {
-    let r = lowered(
+    let r = compile_ok(
         "var score: int = 0\nin go: exec\nchip C(t: exec) -> (score: int) {\n  var h: int = 0\n  on t { h = h + score }\n  out score = h\n}\nlet c = C(go)\nout o = c\n",
     );
     let chip = r.module.chips.values().next().expect("one chip module");
@@ -689,7 +632,7 @@ fn captured_let_pins_use_binding_name_not_ext() {
     // the binding (`base`) via the `BINDING_NAME` hint — not a synthetic
     // `ext1`/`ext2`. (Mirrors `array_element_crossing_never_leaks_the_internal_note`,
     // the case where a `let`'s source node carries no identifier of its own.)
-    let r = lowered(
+    let r = compile_ok(
         "var g: int = 0\nin go: exec\non go {\n  let base = g + 100\n  \
          chip {\n    PrintToConsole(\"${base}\")\n  }\n}\n",
     );

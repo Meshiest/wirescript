@@ -1,13 +1,14 @@
 use super::*;
+use crate::ir::gate_class as gc;
 
 #[test]
 fn string_literal_emits_concatenate_gate() {
-    let r = compile("out x = \"hello\"");
-    assert_no_errors(&r);
-    let has_concat = r.module.nodes.values().any(|n| {
-        n.gate_class
-            == "BrickComponentType_Expr_String_Concatenate"
-    });
+    let r = compile_ok("out x = \"hello\"");
+    let has_concat = r
+        .module
+        .nodes
+        .values()
+        .any(|n| n.gate_class == gc::STRING_CONCATENATE);
     assert!(
         has_concat,
         "string literal should lower to String_Concatenate gate"
@@ -22,83 +23,60 @@ fn string_literal_emits_concatenate_gate() {
     assert!(!has_str_literal, "no _Literal string nodes should remain");
 }
 
+/// Constant string branches of a pure `if` inline straight into the Select
+/// gate's wire-variant inputs: no `String_Concatenate` wrapper, no wired
+/// input, and an empty-string branch inlined as `""`, not lost. Branch to
+/// input slot is a Select-gate convention, so the set is checked, not a slot.
 #[test]
-fn string_in_select_inlines_as_variant() {
-    // if-then-else with constant string branches inlines the strings directly
-    // into the Select gate's wire_graph_variant inputs — no `String_Concatenate`
-    // wrapper.
-    let r = compile("out x = if true then \"yes\" else \"no\"");
-    assert_no_errors(&r);
-    let select = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == "BrickComponentType_Expr_Select")
-        .expect("if-expr should create a Select gate");
-    let concat_count = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.gate_class == "BrickComponentType_Expr_String_Concatenate")
-        .count();
-    assert_eq!(
-        concat_count, 0,
-        "string branches should inline, not wire through Concatenate; found {concat_count}"
-    );
-    // Both branches inline as InputA/InputB data (branch->input slot is a
-    // Select-gate convention, so check the set, not a fixed slot).
-    let mut strs: Vec<String> = ["InputA", "InputB"]
-        .iter()
-        .filter_map(
-            |p| match select.properties.get(&crate::intern::intern(p)) {
-                Some(crate::ir::Literal::String(s)) => Some(s.to_string()),
+fn string_branches_inline_into_the_select() {
+    let rows: &[(&str, &[&str])] = &[
+        ("out x = if true then \"yes\" else \"no\"", &["no", "yes"]),
+        ("out x = if true then \"\" else \"fail\"", &["", "fail"]),
+    ];
+    let mut failures = Vec::new();
+    for &(src, want) in rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        let Some(select) = r.module.nodes.values().find(|n| n.gate_class == gc::SELECT) else {
+            failures.push(format!("{src}: no Select gate, errors {errors:?}"));
+            continue;
+        };
+        let mut strs: Vec<&str> = ["InputA", "InputB"]
+            .iter()
+            .filter_map(|p| match select.properties.get(&crate::intern::intern(p)) {
+                Some(Literal::String(s)) => Some(s.as_str()),
                 _ => None,
-            },
-        )
-        .collect();
-    strs.sort();
-    assert_eq!(
-        strs,
-        vec!["no".to_string(), "yes".to_string()],
-        "both string branches should inline into the Select"
-    );
-    let input_wires = r
-        .module
-        .wires
-        .iter()
-        .filter(|w| {
-            w.target.node_id == select.id
-                && matches!(
-                    w.target.port,
-                    crate::ir::port_registry::WirePort::InputA
-                        | crate::ir::port_registry::WirePort::InputB
-                )
-        })
-        .count();
-    assert_eq!(input_wires, 0, "Select string inputs should be inline, not wired");
+            })
+            .collect();
+        strs.sort();
+        let concat = count_class(&r.module, gc::STRING_CONCATENATE);
+        let wired = r
+            .module
+            .wires
+            .iter()
+            .filter(|w| {
+                w.target.node_id == select.id
+                    && matches!(w.target.port, WirePort::InputA | WirePort::InputB)
+            })
+            .count();
+        if !errors.is_empty() || strs != want || concat != 0 || wired != 0 {
+            failures.push(format!(
+                "{src}: errors {errors:?}, inlined {strs:?} (want {want:?}), {concat} Concatenate, {wired} wired inputs"
+            ));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 #[test]
 fn string_concat_op_works() {
-    let r = compile("let a = \"hello\" .. \" \" .. \"world\"\nout x = a");
-    assert_no_errors(&r);
-    let concat_count = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| {
-            n.gate_class
-                == "BrickComponentType_Expr_String_Concatenate"
-        })
-        .count();
-    // 3 string literals become 3 Concatenate gates, plus 2 concat ops = 5 total
-    // (or the literal Concatenates may be reused by the concat ops)
-    assert!(
-        concat_count >= 2,
-        "string concat should produce Concatenate gates, found {concat_count}"
+    let r = compile_ok("let a = \"hello\" .. \" \" .. \"world\"\nout x = a");
+    let concat_count = count_class(&r.module, gc::STRING_CONCATENATE);
+    assert_eq!(
+        concat_count, 2,
+        "one Concatenate per `..`, the constants baked, found {concat_count}"
     );
 }
-
 #[test]
 fn constant_string_inlines_into_consumers() {
     // A constant string used in a wire-value context (array push, var init,
@@ -110,13 +88,12 @@ fn constant_string_inlines_into_consumers() {
         "in t: exec\non t { var s: string = \"hi\" }",
         "in s: string\nout r = s == \"y\"",
     ] {
-        let r = compile(src);
-        assert_no_errors(&r);
+        let r = compile_ok(src);
         let concat = r
             .module
             .nodes
             .values()
-            .filter(|n| n.gate_class == "BrickComponentType_Expr_String_Concatenate")
+            .filter(|n| n.gate_class == gc::STRING_CONCATENATE)
             .count();
         assert_eq!(
             concat, 0,
@@ -126,62 +103,29 @@ fn constant_string_inlines_into_consumers() {
 }
 
 #[test]
-fn empty_string_in_select_not_lost() {
-    // An empty string "" branch must still reach the Select — inlined as an
-    // empty-string wire-variant (InputA = ""), not dropped.
-    let r = compile("out x = if true then \"\" else \"fail\"");
-    assert_no_errors(&r);
-    let select = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == "BrickComponentType_Expr_Select")
-        .expect("if-expr should create a Select gate");
-    let has_empty = ["InputA", "InputB"].iter().any(|p| {
-        matches!(
-            select.properties.get(&crate::intern::intern(p)),
-            Some(crate::ir::Literal::String(s)) if s.is_empty()
-        )
-    });
-    assert!(has_empty, "the empty-string branch should inline as \"\" (not lost)");
-}
-
-#[test]
 fn string_equality_lowers_to_native_compare() {
     // String == / != now lower directly to the native Compare gates (which
     // accept the `Str` `WireValue` alternative), not the old
     // contains(a,b) && length(a)==length(b) workaround.
-    let r = compile("let a = \"x\"\nlet b = \"y\"\nout eq = a == b\nout ne = a != b");
-    assert_no_errors(&r);
+    let r = compile_ok("let a = \"x\"\nlet b = \"y\"\nout eq = a == b\nout ne = a != b");
     assert!(
-        has_gate(&r, "BrickComponentType_Expr_CompareEqual"),
+        has_gate(&r, gc::COMPARE_EQUAL),
         "string == should lower to CompareEqual"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_Expr_CompareNotEqual"),
+        has_gate(&r, gc::COMPARE_NOT_EQUAL),
         "string != should lower to CompareNotEqual"
     );
     // The old workaround is gone: no String_Length / String_Contains gates,
     // and no LogicalAND/NAND stitched in for the comparison.
     assert_eq!(
-        gate_count(&r, "BrickComponentType_Expr_String_Length"),
+        count_class(&r.module, gc::STRING_LENGTH),
         0,
         "string compare should not synthesize String_Length gates"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_Expr_String_Contains"),
+        !has_gate_deep(&r, gc::STRING_CONTAINS),
         "string compare should not synthesize String_Contains gates"
-    );
-}
-
-#[test]
-fn string_var_stores_and_assigns() {
-    // Strings can be stored in vars (`WireValue` `Str`).
-    let r = compile("static var s: string = \"init\"\non RoundStart() { s = \"hello\" }");
-    assert_no_errors(&r);
-    assert!(
-        has_gate(&r, "BrickComponentType_Var"),
-        "string var should lower to a Var gate"
     );
 }
 
@@ -194,21 +138,20 @@ fn long_interpolation_splits_across_format_text_gates() {
     let src = "in a: int\nin b: int\nin c: int\nin d: int\nin e: int\n\
                in f: int\nin g: int\nin h: int\nin i: int\n\
                out s = \"${a}${b}${c}${d}${e}${f}${g}${h}${i}\"";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
 
-    const FT: &str = "BrickComponentType_Expr_String_FormatText";
-    let ft_ids: std::collections::HashSet<_> = r
+    const FT: &str = gc::STRING_FORMAT_TEXT;
+    let ft_ids: crate::collections::HashSet<_> = r
         .module
         .nodes
         .iter()
         .filter(|(_, n)| n.gate_class == FT)
         .map(|(id, _)| *id)
         .collect();
-    assert!(
-        ft_ids.len() >= 2,
-        "9 interpolations should split into >=2 FormatText gates, got {}",
-        ft_ids.len()
+    assert_eq!(
+        ft_ids.len(),
+        3,
+        "9 interpolations split into 3 FormatText gates"
     );
 
     use crate::ir::port_registry::WirePort::*;
@@ -228,25 +171,9 @@ fn long_interpolation_splits_across_format_text_gates() {
                 && !ft_ids.contains(&w.source.node_id)
         })
         .count();
-    assert_eq!(subst, 9, "all 9 interpolated values must be wired, got {subst}");
-}
-
-#[test]
-fn numeric_literal_still_uses_literal_node() {
-    let r = compile("out x = 42");
-    let _has_literal = r
-        .module
-        .nodes
-        .values()
-        .any(|n| n.gate_class == "_Literal");
-    // _Literal may be inlined away, but if present it should not be a Concatenate
-    let has_str_concat = r.module.nodes.values().any(|n| {
-        n.gate_class
-            == "BrickComponentType_Expr_String_Concatenate"
-    });
-    assert!(
-        !has_str_concat,
-        "numeric literal should not produce a Concatenate gate"
+    assert_eq!(
+        subst, 9,
+        "all 9 interpolated values must be wired, got {subst}"
     );
 }
 
@@ -264,9 +191,8 @@ fn constant_string_operand_bakes_into_each_concat() {
                  ctrl.DisplayText(\"PREFIX: \" .. pl.GetDisplayName())
                  ctrl.DisplayText(\"PREFIX: \" .. pl.GetDisplayName())
                }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    let concat = "BrickComponentType_Expr_String_Concatenate";
+    let r = compile_ok(src);
+    let concat = gc::STRING_CONCATENATE;
     assert_eq!(
         gate_count(&r, concat),
         3,
@@ -282,7 +208,10 @@ fn constant_string_operand_bakes_into_each_concat() {
                     == Some(&crate::ir::Literal::String("PREFIX: ".into()))
         })
         .count();
-    assert_eq!(baked, 3, "each concat carries the constant in its own InputA");
+    assert_eq!(
+        baked, 3,
+        "each concat carries the constant in its own InputA"
+    );
     // No carrier left behind: every remaining concat has a wired input.
     let targets: std::collections::HashSet<crate::ir::NodeId> =
         r.module.wires.iter().map(|w| w.target.node_id).collect();
@@ -296,115 +225,157 @@ fn constant_string_operand_bakes_into_each_concat() {
     );
 }
 
-#[test]
-fn string_into_bool_port_inserts_not_empty_compare() {
-    // A string value assigned into a declared-`bool` var must route through
-    // an inserted `CompareNotEqual(s, "")` gate — the language-level
-    // string -> bool coercion means exactly `s != ""` (empty is false,
-    // everything else true), NOT the game's native content-aware port
-    // truthiness (where "0"/"false" are also falsy). The wire shape is:
-    //   s (MicrochipInput) -> NE.InputA;  NE.InputB baked "";  NE.bOutput -> Var_Set.Value
-    let r = compile("in s: string\nin t: exec\nvar v: bool = false\non t { v = s }");
-    assert_no_errors(&r);
-
-    let ne_class = crate::ir::gate_class::COMPARE_NOT_EQUAL;
-    let ne_nodes: Vec<_> = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.gate_class == ne_class)
-        .collect();
-    assert_eq!(ne_nodes.len(), 1, "exactly one coercion CompareNotEqual");
-    let ne = ne_nodes[0];
-    assert_eq!(
-        ne.properties.get(&*crate::intern::sym::INPUT_B),
-        Some(&Literal::String(String::new())),
-        "the compare's InputB must be baked to the empty string"
-    );
-
-    let s_input = r
-        .module
-        .nodes
-        .values()
-        .find(|n| {
-            n.gate_class == crate::ir::gate_class::MICROCHIP_INPUT
-                && n.properties.get(&*crate::intern::sym::PORT_LABEL)
-                    == Some(&Literal::String("s".into()))
-        })
-        .expect("`in s: string` boundary node");
-    assert!(
-        r.module.wires.iter().any(|w| {
-            w.source.node_id == s_input.id
-                && w.target.node_id == ne.id
-                && w.target.port == crate::ir::port_registry::WirePort::InputA
-        }),
-        "the string source must feed the compare's InputA"
-    );
-
-    let var_set = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::VAR_SET)
-        .expect("`v = s` lowers to a Var_Set gate");
-    let value_wire = r
-        .module
-        .wires
-        .iter()
-        .find(|w| {
-            w.target.node_id == var_set.id
-                && w.target.port == crate::ir::port_registry::WirePort::Value
-        })
-        .expect("Var_Set's Value port must have an incoming wire");
-    assert_eq!(
-        value_wire.source.node_id, ne.id,
-        "Var_Set.Value must be fed by the compare's output, not the raw string"
-    );
-    assert_eq!(
-        value_wire.source.port,
-        crate::ir::port_registry::WirePort::BOutput,
-        "the compare feeds the bool destination from bOutput"
-    );
+/// What feeds a coercion compare's `InputA`.
+enum CoercedFrom {
+    /// The `in` port of this name.
+    Port(&'static str),
+    /// A constant inlined onto the compare.
+    Baked(&'static str),
 }
 
+/// A string reaching a bool destination routes through exactly one inserted
+/// `CompareNotEqual(s, "")` (`s != ""`, not the game's port truthiness where
+/// "0"/"false" are falsy). Each row: what feeds the compare's InputA, and the
+/// gate (class, optional port label) and port its bOutput must feed.
 #[test]
-fn string_if_condition_inserts_not_empty_compare() {
-    // Non-constant path: `if s { ... }` on a string input lowers a real
-    // Branch whose BCond is fed by the inserted `s != ""` compare, not by
-    // the raw string wire.
-    let r = compile("in s: string\nin t: exec\nvar a: int = 0\non t { if s { a = 1 } }");
-    assert_no_errors(&r);
-
-    let ne = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::COMPARE_NOT_EQUAL)
-        .expect("the string condition must insert a CompareNotEqual");
-    assert_eq!(
-        ne.properties.get(&*crate::intern::sym::INPUT_B),
-        Some(&Literal::String(String::new())),
-    );
-
-    let branch = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::BRANCH)
-        .expect("`if s` lowers a Branch gate");
-    let bcond_wire = r
-        .module
-        .wires
-        .iter()
-        .find(|w| {
-            w.target.node_id == branch.id
-                && w.target.port == crate::ir::port_registry::WirePort::BCond
-        })
-        .expect("Branch.BCond must be wired");
-    assert_eq!(
-        bcond_wire.source.node_id, ne.id,
-        "BCond must be fed by the coercion compare, not the raw string"
-    );
+fn a_string_into_a_bool_destination_inserts_a_not_empty_compare() {
+    use CoercedFrom::*;
+    let rows: &[(
+        &str,
+        &str,
+        CoercedFrom,
+        (&str, Option<&str>),
+        Option<WirePort>,
+    )] = &[
+        // s (MicrochipInput) -> NE.InputA; NE.InputB baked ""; NE.bOutput -> Var_Set.Value
+        (
+            "a string assigned into a bool var",
+            "in s: string\nin t: exec\nvar v: bool = false\non t { v = s }",
+            Port("s"),
+            (gc::VAR_SET, None),
+            Some(WirePort::Value),
+        ),
+        // A real Branch whose BCond is the compare, not the raw string wire.
+        (
+            "a string `if` condition",
+            "in s: string\nin t: exec\nvar a: int = 0\non t { if s { a = 1 } }",
+            Port("s"),
+            (gc::BRANCH, None),
+            Some(WirePort::BCond),
+        ),
+        // ArraySetAtIndex's `Value` port is typed with the ELEMENT type (it was
+        // `Type::Any`, hiding the coercion). Array-set values always WIRE, so the
+        // literal form is a compare carrying the inlined "0": "0" != "" is true.
+        (
+            "a string literal into a bool array slot",
+            "in t: exec\nvar a: bool[]\non t { a.push(false)\na[0] = \"0\" }",
+            Baked("0"),
+            (gc::ARRAY_SET_AT_INDEX, None),
+            Some(WirePort::Value),
+        ),
+        (
+            "a string var into a bool array slot",
+            "in s: string\nin t: exec\nvar a: bool[]\non t { a.push(false)\na[0] = s }",
+            Port("s"),
+            (gc::ARRAY_SET_AT_INDEX, None),
+            Some(WirePort::Value),
+        ),
+        // `lower_buffer_body` once wired its initializer with a direct
+        // `builder.connect`, bypassing the coercion choke point.
+        (
+            "a string initializer on a bool buffer",
+            "in s: string\nbuffer buf: bool = s",
+            Port("s"),
+            (gc::BUFFER_TICKS, None),
+            Some(WirePort::Input),
+        ),
+        // The out pin's port type comes from the ANNOTATION (bool), not the value.
+        (
+            "a string into an annotated bool out",
+            "in s: string\nout y: bool = s",
+            Port("s"),
+            (gc::MICROCHIP_OUTPUT, None),
+            None,
+        ),
+        // The chip's `MicrochipInput` pin lives in a NESTED module, so the
+        // interception resolves its bool type through `module.chips`. The compare
+        // belongs to the CALLER's module, feeding the boundary pin cross-module.
+        (
+            "a string argument into a bool chip param",
+            "in s: string\nchip Gate(v: bool) -> (r: int) {\n  out r = if v then 1 else 0\n}\nout y = Gate(s)",
+            Port("s"),
+            (gc::MICROCHIP_INPUT, Some("v")),
+            None,
+        ),
+    ];
+    let label_is = |n: &crate::ir::Node, name: &str| {
+        n.properties.get(&*crate::intern::sym::PORT_LABEL) == Some(&Literal::String(name.into()))
+    };
+    let mut failures = Vec::new();
+    for (label, src, from, (dest_class, dest_label), dest_port) in rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        let ne: Vec<_> = r
+            .module
+            .nodes
+            .values()
+            .filter(|n| n.gate_class == gc::COMPARE_NOT_EQUAL)
+            .collect();
+        if !errors.is_empty() || ne.len() != 1 {
+            failures.push(format!(
+                "{label}: errors {errors:?}, {} CompareNotEqual in the caller, want 1\n{src}",
+                ne.len()
+            ));
+            continue;
+        }
+        let ne = ne[0];
+        if ne.properties.get(&*crate::intern::sym::INPUT_B) != Some(&Literal::String(String::new()))
+        {
+            failures.push(format!(
+                "{label}: InputB is not baked to \"\": {:?}",
+                ne.properties
+            ));
+        }
+        let fed = match from {
+            Port(name) => r
+                .module
+                .nodes
+                .values()
+                .filter(|n| n.gate_class == gc::MICROCHIP_INPUT && label_is(n, name))
+                .any(|s| {
+                    r.module.wires.iter().any(|w| {
+                        w.source.node_id == s.id
+                            && w.target.node_id == ne.id
+                            && w.target.port == WirePort::InputA
+                    })
+                }),
+            Baked(v) => {
+                ne.properties.get(&*crate::intern::sym::INPUT_A)
+                    == Some(&Literal::String((*v).into()))
+            }
+        };
+        if !fed {
+            failures.push(format!(
+                "{label}: the string does not reach the compare's InputA\n{src}"
+            ));
+        }
+        let dests: Vec<_> = r
+            .module
+            .nodes_deep()
+            .filter(|n| n.gate_class == *dest_class && dest_label.is_none_or(|l| label_is(n, l)))
+            .map(|n| n.id)
+            .collect();
+        let drives = r.module.wires.iter().any(|w| {
+            w.source.node_id == ne.id
+                && w.source.port == WirePort::BOutput
+                && dests.contains(&w.target.node_id)
+                && dest_port.is_none_or(|p| w.target.port == p)
+        });
+        if !drives {
+            failures.push(format!("{label}: the compare's bOutput does not feed {dest_class} {dest_port:?}, not the raw string\n{src}"));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 // ---- compile-time string -> bool on literal-BAKE paths ----
@@ -417,301 +388,60 @@ fn string_if_condition_inserts_not_empty_compare() {
 // as false at load, diverging from the documented law) or crashes emit
 // (UnimplementedCast("bool", "String") on a Bool data field).
 
+/// A string literal on a bool data field bakes `Bool(!s.is_empty())`, never
+/// a raw String: "0" is non-empty, so true (native truthiness would call it
+/// false, the divergence this pins).
 #[test]
-fn var_bool_string_literal_init_bakes_bool() {
-    // "0" is non-empty -> true under the `!= ""` law (native truthiness
-    // would call it false — the exact divergence this pin guards).
-    let r = compile("var v: bool = \"0\"");
-    assert_no_errors(&r);
-    let var = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::VAR)
-        .expect("var gate");
-    assert_eq!(
-        var.properties.get(&*crate::intern::sym::INITIAL_VALUE),
-        Some(&Literal::Bool(true)),
-        "string literal init on a bool var must bake Bool(!s.is_empty()), not a raw String"
-    );
-}
-
-#[test]
-fn array_bool_string_literal_inits_bake_elementwise() {
-    let r = compile("var a: bool[] = [\"x\", \"\"]");
-    assert_no_errors(&r);
-    let arr = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::ARRAY_VAR)
-        .expect("array var gate");
-    assert_eq!(
-        arr.properties.get(&crate::intern::intern_static("InitialValue")),
-        Some(&Literal::Array(vec![Literal::Bool(true), Literal::Bool(false)])),
-        "bool[] string inits must convert element-wise: \"x\" -> true, \"\" -> false"
-    );
-}
-
-#[test]
-fn select_string_literal_cond_bakes_bool() {
-    // A bare-literal call argument bakes onto the gate's data field (never
-    // a wire), so the conversion must happen in literal_for_property_port.
-    // Bool(true) baked on bSelectB IS the truthy-side selection: "0" is
-    // non-empty -> true under the `!= ""` law.
-    let r = compile("out y = Select(\"0\", 1, 2)");
-    assert_no_errors(&r);
-    let select = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::SELECT)
-        .expect("Select gate");
-    assert_eq!(
-        select
-            .properties
-            .get(&crate::intern::intern_static("bSelectB")),
-        Some(&Literal::Bool(true)),
-        "Select's string cond must bake as Bool(true), not a raw String on a Bool field"
-    );
-}
-
-#[test]
-fn set_frozen_string_literal_arg_bakes_bool() {
-    let r = compile("in e: entity\nin t: exec\non t { e.SetFrozen(\"yes\") }");
-    assert_no_errors(&r);
-    let gate = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::ENTITY_SET_FROZEN)
-        .expect("SetFrozen gate");
-    assert_eq!(
-        gate.properties.get(&crate::intern::intern_static("bFrozen")),
-        Some(&Literal::Bool(true)),
-        "SetFrozen's string arg must bake as Bool(true)"
-    );
-}
-
-#[test]
-fn string_literal_into_bool_array_slot_inserts_compare() {
-    // `a[i] = "0"` on a `bool[]`: ArraySetAtIndex's `Value` port was typed
-    // `Type::Any`, hiding the coercion from the connect choke point — a
-    // raw String written into a bool slot. The port is now typed with the
-    // ELEMENT type, so the `!= ""` compare inserts. Array-set values always
-    // WIRE (there is no property-bake path for `Value`), so the literal
-    // form's exact shape is an NE gate whose InputA carries the inlined
-    // constant "0" and whose InputB is the baked "" — evaluating
-    // "0" != "" = true at runtime, per the law (native truthiness would
-    // have read a raw "0" as false).
-    let r = compile("in t: exec\nvar a: bool[]\non t { a.push(false)\na[0] = \"0\" }");
-    assert_no_errors(&r);
-
-    let ne_nodes: Vec<_> = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.gate_class == crate::ir::gate_class::COMPARE_NOT_EQUAL)
-        .collect();
-    assert_eq!(ne_nodes.len(), 1, "exactly one coercion CompareNotEqual");
-    let ne = ne_nodes[0];
-    assert_eq!(
-        ne.properties.get(&*crate::intern::sym::INPUT_A),
-        Some(&Literal::String("0".into())),
-        "the constant \"0\" inlines onto the compare's InputA"
-    );
-    assert_eq!(
-        ne.properties.get(&*crate::intern::sym::INPUT_B),
-        Some(&Literal::String(String::new())),
-    );
-
-    let set = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::ARRAY_SET_AT_INDEX)
-        .expect("a[0] = ... lowers to ArrayVar_SetAtIndex");
-    assert!(
-        r.module.wires.iter().any(|w| {
-            w.source.node_id == ne.id
-                && w.source.port == crate::ir::port_registry::WirePort::BOutput
-                && w.target.node_id == set.id
-                && w.target.port == crate::ir::port_registry::WirePort::Value
-        }),
-        "the compare's bOutput must feed the set gate's Value, not the raw string"
-    );
-}
-
-#[test]
-fn string_var_into_bool_array_slot_inserts_compare() {
-    // Wired form of the same hole: `a[i] = s` with a string input.
-    let r = compile(
-        "in s: string\nin t: exec\nvar a: bool[]\non t { a.push(false)\na[0] = s }",
-    );
-    assert_no_errors(&r);
-
-    let ne_nodes: Vec<_> = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.gate_class == crate::ir::gate_class::COMPARE_NOT_EQUAL)
-        .collect();
-    assert_eq!(ne_nodes.len(), 1, "exactly one coercion CompareNotEqual");
-    let ne = ne_nodes[0];
-
-    let s_input = r
-        .module
-        .nodes
-        .values()
-        .find(|n| {
-            n.gate_class == crate::ir::gate_class::MICROCHIP_INPUT
-                && n.properties.get(&*crate::intern::sym::PORT_LABEL)
-                    == Some(&Literal::String("s".into()))
-        })
-        .expect("`in s: string` boundary node");
-    assert!(
-        r.module.wires.iter().any(|w| {
-            w.source.node_id == s_input.id
-                && w.target.node_id == ne.id
-                && w.target.port == crate::ir::port_registry::WirePort::InputA
-        }),
-        "the string source must feed the compare's InputA"
-    );
-
-    let set = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::ARRAY_SET_AT_INDEX)
-        .expect("a[0] = s lowers to ArrayVar_SetAtIndex");
-    assert!(
-        r.module.wires.iter().any(|w| {
-            w.source.node_id == ne.id
-                && w.source.port == crate::ir::port_registry::WirePort::BOutput
-                && w.target.node_id == set.id
-                && w.target.port == crate::ir::port_registry::WirePort::Value
-        }),
-        "the compare's bOutput must feed the set gate's Value"
-    );
-}
-
-#[test]
-fn string_into_bool_buffer_inserts_compare() {
-    // `lower_buffer_body` wired its initializer with a direct
-    // `builder.connect`, bypassing the coercion choke point — a string
-    // initializer on a bool buffer reached the Bool `Input` port raw. Now
-    // routed through `ctx.connect`: exactly one `!= ""` compare between
-    // the string source and the buffer.
-    let r = compile("in s: string\nbuffer buf: bool = s");
-    assert_no_errors(&r);
-
-    let ne_nodes: Vec<_> = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.gate_class == crate::ir::gate_class::COMPARE_NOT_EQUAL)
-        .collect();
-    assert_eq!(ne_nodes.len(), 1, "exactly one coercion CompareNotEqual");
-    let ne = ne_nodes[0];
-    assert_eq!(
-        ne.properties.get(&*crate::intern::sym::INPUT_B),
-        Some(&Literal::String(String::new())),
-    );
-
-    let buffer = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::BUFFER_TICKS)
-        .expect("`buffer buf` lowers to a Buffer_Ticks gate");
-    let input_wire = r
-        .module
-        .wires
-        .iter()
-        .find(|w| {
-            w.target.node_id == buffer.id
-                && w.target.port == crate::ir::port_registry::WirePort::Input
-        })
-        .expect("the buffer's Input must be wired");
-    assert_eq!(
-        input_wire.source.node_id, ne.id,
-        "the buffer's bool Input must be fed by the compare, not the raw string"
-    );
-}
-
-#[test]
-fn string_into_annotated_bool_out_inserts_compare() {
-    // `out y: bool = s` — the out pin's port type must come from the
-    // ANNOTATION (bool), not the value (string); deriving it from the
-    // value made this a string pin and silently skipped the coercion.
-    let r = compile("in s: string\nout y: bool = s");
-    assert_no_errors(&r);
-
-    let ne = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::COMPARE_NOT_EQUAL)
-        .expect("the annotated bool out must insert a CompareNotEqual");
-    assert_eq!(
-        ne.properties.get(&*crate::intern::sym::INPUT_B),
-        Some(&Literal::String(String::new())),
-    );
-
-    let out_node = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::MICROCHIP_OUTPUT)
-        .expect("out y's boundary node");
-    assert!(
-        r.module.wires.iter().any(|w| {
-            w.source.node_id == ne.id
-                && w.source.port == crate::ir::port_registry::WirePort::BOutput
-                && w.target.node_id == out_node.id
-        }),
-        "the compare's bOutput must feed the out pin, not the raw string"
-    );
-}
-
-#[test]
-fn string_arg_into_bool_chip_param_inserts_compare_at_call_site() {
-    // Chip boundary: the instance's `MicrochipInput` pin lives in a NESTED
-    // chip module, so the coercion interception must resolve the pin's
-    // bool type through `module.chips` — a plain top-level node lookup
-    // misses it and silently wires the raw string in (the exact hole this
-    // test pins). The compare belongs to the CALLER's module (coercion at
-    // the call site), feeding the chip's boundary pin cross-module.
-    let r = compile(
-        "in s: string\nchip Gate(v: bool) -> (r: int) {\n  out r = if v then 1 else 0\n}\nout y = Gate(s)",
-    );
-    assert_no_errors(&r);
-
-    let ne = r
-        .module
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::COMPARE_NOT_EQUAL)
-        .expect("coercion compare must live in the caller's module");
-    assert_eq!(
-        ne.properties.get(&*crate::intern::sym::INPUT_B),
-        Some(&Literal::String(String::new())),
-    );
-
-    let child = r.module.chips.values().next().expect("one Gate instance");
-    let v_pin = child
-        .nodes
-        .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::MICROCHIP_INPUT)
-        .expect("the chip has a v boundary pin");
-    assert!(
-        r.module.wires.iter().any(|w| {
-            w.source.node_id == ne.id
-                && w.source.port == crate::ir::port_registry::WirePort::BOutput
-                && w.target.node_id == v_pin.id
-        }),
-        "the compare's bOutput must feed the chip's bool param pin, not the raw string"
-    );
+fn a_string_literal_on_a_bool_data_field_bakes_a_bool() {
+    let rows: &[(&str, &str, &str, &str, Literal)] = &[
+        (
+            "a string init on a bool var",
+            "var v: bool = \"0\"",
+            gc::VAR,
+            "InitialValue",
+            Literal::Bool(true),
+        ),
+        (
+            "bool[] string inits convert element-wise",
+            "var a: bool[] = [\"x\", \"\"]",
+            gc::ARRAY_VAR,
+            "InitialValue",
+            Literal::Array(vec![Literal::Bool(true), Literal::Bool(false)]),
+        ),
+        // A bare-literal call argument bakes onto the gate's data field (never a
+        // wire) in literal_for_property_port; Bool(true) on bSelectB selects B.
+        (
+            "Select's string cond",
+            "out y = Select(\"0\", 1, 2)",
+            gc::SELECT,
+            "bSelectB",
+            Literal::Bool(true),
+        ),
+        (
+            "SetFrozen's string arg",
+            "in e: entity\nin t: exec\non t { e.SetFrozen(\"yes\") }",
+            gc::ENTITY_SET_FROZEN,
+            "bFrozen",
+            Literal::Bool(true),
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, class, field, want) in rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        let got = r
+            .module
+            .nodes
+            .values()
+            .find(|n| n.gate_class == *class)
+            .and_then(|n| n.properties.get(&crate::intern::intern(field)));
+        if !errors.is_empty() || got != Some(want) {
+            failures.push(format!(
+                "{label}: errors {errors:?}, {class}.{field} = {got:?}, want {want:?}\n{src}"
+            ));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 #[test]
@@ -719,14 +449,16 @@ fn string_index_lowers_to_a_substring_gate() {
     // `s[i]` is one Unicode character starting at `i`, which the game's
     // Substring gate produces directly. It is a pure `Expr_` gate, so unlike an
     // array read this needs no exec context.
-    let r = compile("in s: string\nin i: int\nout c: string = s[i]");
-    assert_no_errors(&r);
+    let r = compile_ok("in s: string\nin i: int\nout c: string = s[i]");
     assert!(
-        !r.module.nodes.values().any(|n| n.gate_class == "_Unsupported"),
+        !r.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class == "_Unsupported"),
         "must not lower to a placeholder: {:?}",
         r.diagnostics
     );
-    let sub = "BrickComponentType_Expr_String_Substring";
+    let sub = gc::STRING_SUBSTRING;
     assert_eq!(gate_count(&r, sub), 1, "one Substring gate");
     let node = r
         .module
@@ -747,10 +479,9 @@ fn constant_string_index_folds_to_a_literal() {
     // Both operands constant, so the character is known at compile time and no
     // Substring gate is emitted. Indexing counts Unicode code points, matching
     // the game's own string length semantics.
-    let r = compile("in go: bool\nout c: string = \"foo\"[2]");
-    assert_no_errors(&r);
+    let r = compile_ok("in go: bool\nout c: string = \"foo\"[2]");
     assert_eq!(
-        gate_count(&r, "BrickComponentType_Expr_String_Substring"),
+        count_class(&r.module, gc::STRING_SUBSTRING),
         0,
         "a constant index emits no gate"
     );
@@ -760,7 +491,11 @@ fn constant_string_index_folds_to_a_literal() {
             .values()
             .any(|v| *v == crate::ir::Literal::String("o".into()))),
         "folds to the third code point: {:?}",
-        r.module.nodes.values().map(|n| n.properties.clone()).collect::<Vec<_>>()
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.properties.clone())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -768,21 +503,23 @@ fn constant_string_index_folds_to_a_literal() {
 fn string_index_counts_code_points_and_declines_out_of_range() {
     // Byte indexing would split the two-byte character; code-point indexing
     // yields it whole.
-    let r = compile("in go: bool\nout c: string = \"n\u{e9}o\"[1]");
-    assert_no_errors(&r);
+    let r = compile_ok("in go: bool\nout c: string = \"n\u{e9}o\"[1]");
     assert!(
         r.module.nodes.values().any(|n| n
             .properties
             .values()
             .any(|v| *v == crate::ir::Literal::String("\u{e9}".into()))),
         "index 1 is the whole second code point: {:?}",
-        r.module.nodes.values().map(|n| n.properties.clone()).collect::<Vec<_>>()
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.properties.clone())
+            .collect::<Vec<_>>()
     );
     // Past the end, the gate decides rather than the compiler guessing.
-    let oob = compile("in go: bool\nout c: string = \"foo\"[9]");
-    assert_no_errors(&oob);
+    let oob = compile_ok("in go: bool\nout c: string = \"foo\"[9]");
     assert_eq!(
-        gate_count(&oob, "BrickComponentType_Expr_String_Substring"),
+        gate_count(&oob, gc::STRING_SUBSTRING),
         1,
         "an out-of-range constant index keeps the gate"
     );

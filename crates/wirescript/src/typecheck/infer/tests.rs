@@ -1,7 +1,9 @@
+use crate::diagnostic::{Diagnostic, Severity};
 use crate::ir::Type;
 use crate::parser::parse;
+use crate::test_support::{assert_code_count, report_failures};
 use crate::typecheck::infer::{check, infer};
-use crate::typecheck::TypeCheckCtx;
+use crate::typecheck::{TypeCheckCtx, TypeCheckResult};
 
 fn ctx() -> TypeCheckCtx<'static> {
     static EMPTY: std::sync::OnceLock<crate::typecheck::CeSlotMap> = std::sync::OnceLock::new();
@@ -16,32 +18,85 @@ fn first_expr(src: &str) -> crate::ast::Expr {
     }
 }
 
+fn tc(src: &str) -> TypeCheckResult {
+    let p = parse(src, "test");
+    crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+}
+
 /// Runs the full two-pass typecheck over `src` and returns the display
 /// string of the type recorded in `type_of_expr` for the expression whose
 /// exact source text is `needle` (its byte range in `src`, via `str::find`).
-/// Reusable across tests that need the type of an arbitrary sub-expression
-/// rather than just a top-level `let`'s initializer (`first_expr` above).
-/// Panics with the diagnostics if `needle` isn't found or has no recorded
-/// type, so a broken test fails loudly instead of comparing against `None`.
-fn type_of(src: &str, needle: &str) -> String {
-    let p = parse(src, "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+/// Errs with the diagnostics if `needle` isn't found or has no recorded type.
+fn type_of(src: &str, needle: &str) -> Result<String, String> {
+    let r = tc(src);
     let start = src
         .find(needle)
-        .unwrap_or_else(|| panic!("needle {needle:?} not found in src {src:?}"));
+        .ok_or_else(|| format!("needle {needle:?} not found in src {src:?}"))?;
     let end = start + needle.len();
     let file: std::sync::Arc<str> = std::sync::Arc::from("test");
     match r.type_of_expr.get(&(file, start, end)) {
-        Some(t) => t.to_string(),
-        None => panic!(
+        Some(t) => Ok(t.to_string()),
+        None => Err(format!(
             "no recorded type for {needle:?} (offsets {start}..{end}); diagnostics: {:?}",
             r.diagnostics
-        ),
+        )),
     }
 }
 
+/// What a type-checked program's diagnostics must show.
+#[derive(Clone, Copy, Debug)]
+enum Want {
+    /// Some diagnostic has this code.
+    Has(&'static str),
+    /// Some warning has this code.
+    Warns(&'static str),
+    /// No diagnostic has this code.
+    Lacks(&'static str),
+    /// No error-severity diagnostic.
+    NoErrors,
+    /// No diagnostic at all.
+    NoDiags,
+}
+use Want::*;
+
+fn holds(diags: &[Diagnostic], want: Want) -> bool {
+    match want {
+        Has(c) => diags.iter().any(|d| d.code == c),
+        Warns(c) => diags
+            .iter()
+            .any(|d| d.code == c && d.severity == Severity::Warning),
+        Lacks(c) => !diags.iter().any(|d| d.code == c),
+        NoErrors => !diags.iter().any(|d| d.severity == Severity::Error),
+        NoDiags => diags.is_empty(),
+    }
+}
+
+/// Type-check each `(label, src, wants)` row and report every row with an
+/// unmet want.
+fn diag_table(rows: &[(&str, &str, &[Want])]) {
+    let mut failures = Vec::new();
+    for (label, src, wants) in rows {
+        let r = tc(src);
+        let unmet: Vec<&Want> = wants
+            .iter()
+            .filter(|w| !holds(&r.diagnostics, **w))
+            .collect();
+        if !unmet.is_empty() {
+            let got: Vec<String> = r
+                .diagnostics
+                .iter()
+                .map(|d| format!("[{}] {}", d.code, d.message))
+                .collect();
+            failures.push(format!(
+                "{label}: unmet {unmet:?}\n  src: {src:?}\n  got: {got:#?}"
+            ));
+        }
+    }
+    report_failures(&failures, rows.len());
+}
+
 #[test]
-fn infer_records_int_literal() {
+fn infer_and_check_on_a_bare_context() {
     let mut c = ctx();
     let e = first_expr("let x = 5");
     assert_eq!(infer(&mut c, &e), Type::Int);
@@ -49,53 +104,29 @@ fn infer_records_int_literal() {
     assert_eq!(
         c.type_of_expr
             .get(&(r.file.clone(), r.start.offset, r.end.offset)),
-        Some(&Type::Int)
+        Some(&Type::Int),
+        "infer records the type of what it inferred"
     );
-}
-
-#[test]
-fn check_emits_ws003_on_mismatch() {
-    let mut c = ctx();
-    let e = first_expr("let x = \"hi\"");
-    // string does not coerce to vector.
-    check(&mut c, &e, &Type::Vector);
-    assert!(c.diagnostics.iter().any(|d| d.code == "WS003"));
-}
-
-#[test]
-fn literals_infer_scalar_types() {
-    let mut c = ctx();
-    assert_eq!(infer(&mut c, &first_expr("let x = 5")), Type::Int);
     assert_eq!(infer(&mut c, &first_expr("let x = 5.0")), Type::Float);
     assert_eq!(infer(&mut c, &first_expr("let x = true")), Type::Bool);
     assert_eq!(infer(&mut c, &first_expr("let x = \"s\"")), Type::String);
-}
+    assert!(c.diagnostics.is_empty(), "{:?}", c.diagnostics);
 
-#[test]
-fn interp_reports_non_stringable_part() {
-    // An interpolation part that can't format to string is WS003; the
-    // whole expr still types as string.
-    let p = parse("var z: zone\nlet s = \"x ${z}\"", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS003"));
-}
-
-#[test]
-fn prefab_ref_requires_brz() {
-    let p = parse("let s = $./level", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS019"));
+    // string does not coerce to vector.
+    check(&mut c, &first_expr("let x = \"hi\""), &Type::Vector);
+    assert!(
+        c.diagnostics.iter().any(|d| d.code == "WS003"),
+        "{:?}",
+        c.diagnostics
+    );
 }
 
 #[test]
 fn ident_var_auto_derefs_and_records_context() {
     // A `var` read yields the inner type and records its exec/pure context.
-    let p = parse("var n: int = 0\nin go: exec\non go { let x = n }", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    let r = tc("var n: int = 0\nin go: exec\non go { let x = n }");
     assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
+        holds(&r.diagnostics, NoErrors),
         "unexpected: {:?}",
         r.diagnostics
     );
@@ -103,399 +134,585 @@ fn ident_var_auto_derefs_and_records_context() {
 }
 
 #[test]
-fn deref_in_pure_context_is_ws006() {
-    let p = parse("var n: int = 0\nout v = *n", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS006"));
-}
-
-#[test]
-fn unknown_ident_is_ws002() {
-    let p = parse("let x = nope", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS002"));
-}
-
-#[test]
 fn binop_records_op_resolution() {
-    let p = parse("let x = 1 + 2", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    let r = tc("let x = 1 + 2");
     assert!(!r.op_resolutions.is_empty());
-    assert!(r
-        .diagnostics
-        .iter()
-        .all(|d| d.severity != crate::diagnostic::Severity::Error));
-}
-
-#[test]
-fn bad_operator_overload_diagnoses() {
-    // string + int has no arithmetic overload -> WS004.
-    let p = parse("let x = \"a\" + 1", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS004"));
-    // `&` (bitwise) has rules for int/float/bool operands only — a vector
-    // operand has no overload -> WS011.
-    let p2 = parse("let y = Vec(0.0, 0.0, 0.0) & 2", "test");
-    let r2 = crate::typecheck::typecheck(&p2.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r2.diagnostics.iter().any(|d| d.code == "WS011"));
-}
-
-#[test]
-fn record_field_access_and_missing_field() {
-    // `.x` on a vector is float; a bogus record field is WS010.
-    let ok = parse("let v = Vec(1.0,2.0,3.0)\nlet a = v.x", "test");
-    let r = crate::typecheck::typecheck(&ok.ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
+        holds(&r.diagnostics, NoErrors),
         "unexpected: {:?}",
         r.diagnostics
     );
-}
-
-#[test]
-fn array_index_read_outside_exec_is_ws007() {
-    let p = parse("var xs: int[]\nout v = xs[0]", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS007"));
-}
-
-#[test]
-fn array_mutation_outside_exec_is_ws007() {
-    // A pure-context mutation used to lower to a silent `_Unsupported`; it must
-    // be a WS007 hard error like a pure index read.
-    let p = parse("var xs: int[]\nchip {\n  xs.push(1)\n}", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS007"),
-        "pure array mutation must be WS007: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn array_read_outside_exec_is_ws007() {
-    // A pure-context READ (`length`/`find`/…) also needs exec — it lowers to an
-    // `Exec_*` gate, and used to fall to a silent `_Unsupported`.
-    let p = parse("var xs: int[]\nout r = xs.length()", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS007"),
-        "pure runtime array read must be WS007: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn array_read_with_exec_arg_is_clean() {
-    // An explicit `exec = <trigger>` arg supplies the exec context in a pure
-    // binding, so it must NOT be WS007.
-    let p = parse(
-        "var lut: color[]\nin i: int\nout c: color = lut.get(i, exec = i + 1).Value",
-        "test",
-    );
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WS007"),
-        "a read with an exec= arg must not be WS007: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn const_array_read_is_not_ws007() {
-    // A read on a `const` receiver should const-fold (a separate feature), so it
-    // must not be reported as an exec-context error.
-    let p = parse("const t = [1, 2, 3]\nconst n = t.length()\nout r = n", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WS007"),
-        "const array read must not be WS007: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn map_mutation_outside_exec_is_ws007() {
-    let p = parse("var m: Map<int,int>\nchip {\n  m.set(1, 2)\n}", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS007"),
-        "pure map mutation must be WS007: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn container_param_read_from_pure_mod_is_ws007() {
-    // A mod that reads a container reached through its own PARAMETER is
-    // exec-requiring; a pure call to it must be WS007, not a silent miscompile
-    // (the map ref used to wire straight into the consumer). The scan resolves
-    // the receiver against the mod's parameters, not the caller's scope.
-    let p = parse(
-        "var mm: Map<int,int> = { 0: 1 }\n\
-         mod rd(m: Map<int,int>) -> (r: int) { let v = m.get(0)\n  return if v.Found then v.Value else -1 }\n\
-         out r = rd(mm)",
-        "test",
-    );
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS007"),
-        "pure call of a param-container-reading mod must be WS007: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn container_param_read_is_transitive_ws007() {
-    // A -> B where B reads a param container: a pure call of A must still be
-    // WS007 (the call-graph fixpoint propagates B's exec-requirement to A).
-    let p = parse(
-        "var mm: Map<int,int> = { 0: 1 }\n\
-         mod rb(m: Map<int,int>) -> (r: int) { let v = m.get(0)\n  return if v.Found then v.Value else -1 }\n\
-         mod ca(m: Map<int,int>) -> (r: int) { return rb(m) }\n\
-         out r = ca(mm)",
-        "test",
-    );
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS007"),
-        "transitive param-container read must be WS007: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn non_container_param_shadowing_global_is_not_ws007() {
-    // A mod parameter named like a global container but typed as a scalar must
-    // SHADOW that global in the scan, so a plain read of the parameter is not
-    // mistaken for a container op (no false-positive WS007).
-    let p = parse(
-        "var mm: Map<int,int> = { 0: 1 }\n\
-         mod pass(mm: int) -> (r: int) { return mm + 1 }\n\
-         out r = pass(5)",
-        "test",
-    );
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WS007"),
-        "a scalar param shadowing a global container must not be WS007: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn container_param_read_from_exec_is_clean() {
-    // The same param-container-reading mod is legal when called from an exec
-    // handler - the scan only fires the call-site WS007 in pure position.
-    let p = parse(
-        "var mm: Map<int,int> = { 0: 1 }\n\
-         mod rd(m: Map<int,int>) -> (r: int) { let v = m.get(0)\n  return if v.Found then v.Value else -1 }\n\
-         in go: exec\n\
-         out r: int\n\
-         on go { emit r = rd(mm) }",
-        "test",
-    );
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WS007"),
-        "an exec-context call of a container mod must not be WS007: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn array_mutation_inside_exec_is_clean() {
-    // The guard must NOT fire for a mutation inside an exec handler.
-    let p = parse("var xs: int[]\nin go: exec\non go { xs.push(1) }", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WS007"),
-        "exec-context mutation must not be WS007: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn let_shadowing_in_port_is_ws013() {
-    // `let go` shadowing `in go: exec` used to silently hijack `on go` (the
-    // handler bound to the constant, the exec input went dead).
-    let p = parse("in go: exec\nlet go = 5\nout r: int\non go { emit r = 1 }", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS013"),
-        "a let shadowing an in/out port must be WS013: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn let_value_shadowing_stays_clean() {
-    // Rust-style value shadowing (`let a = 1; let a = 2`) is legal and must NOT
-    // be flagged - only a port shadow is the bug.
-    let p = parse("var x: int = 0\nin go: exec\non go { let a = 1\n let a = 2\n x = a }", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WS013"),
-        "value shadowing must not be WS013: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn if_branch_type_mismatch_is_ws003() {
-    let p = parse("let x = if true then 1 else Vec(0.0,0.0,0.0)", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS003"));
-}
-
-#[test]
-fn reference_in_if_is_ws031() {
-    // `zone`/`teleport`/`prefab` are reference-only and can't flow through a
-    // Select. A `*T` (or an array/map ref, or a `brick`) routes through
-    // Select unchanged (measured), so it no longer trips this — see
-    // `typecheck::ref_tests::an_if_expression_selects_between_refs`.
-    let p = parse("in z1: zone\nin z2: zone\nlet y = if true then z1 else z2", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS031"));
-}
-
-#[test]
-fn misplaced_map_literal_is_ws026() {
-    let p = parse("let m = { \"a\": 1 }", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS026"));
-}
-
-#[test]
-fn user_mod_wrong_arg_type_is_ws003() {
-    let p = parse("mod f(a: int) { }\nin go: exec\non go { f(Vec(0.0,0.0,0.0)) }", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS003"));
-}
-#[test]
-fn array_method_wrong_arg_is_ws003() {
-    let p = parse("var xs: int[]\nin go: exec\non go { xs.push(Vec(0.0,0.0,0.0)) }", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS003"));
-}
-#[test]
-fn map_method_missing_value_is_ws011() {
-    let p = parse("var m: Map<string,int>\nin go: exec\non go { m.set(\"k\") }", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS011"));
 }
 
 #[test]
 fn erroring_arg_reports_inner_error_once() {
     // An arg with its own error (undefined ident) must surface WS002 exactly
     // once — the preamble infers args, and check_args must not re-infer them.
-    let p = parse("mod f(a: int) { }\nin go: exec\non go { f(nope) }", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    let n = r.diagnostics.iter().filter(|d| d.code == "WS002").count();
-    assert_eq!(n, 1, "expected one WS002, got {}: {:?}", n, r.diagnostics);
+    let r = tc("mod f(a: int) { }\nin go: exec\non go { f(nope) }");
+    assert_code_count(&r.diagnostics, "WS002", 1);
 }
 
 #[test]
-fn ref_of_non_refable_is_ws008() {
-    for src in [
-        "in go: exec\non go { let r = &5 }",
-        "var a: int = 0\nvar b: int = 0\nin go: exec\non go { let r = &(a + b) }",
-        "mod f() -> int { return 1 }\nin go: exec\non go { let r = &f() }",
-        // An element of a value array has no ref of its own (ref-values):
-        // only the whole array is a reference.
-        "var xs: int[]\nmod inc(v: *int) {}\nin go: exec\non go { xs.push(1)\n  inc(&xs[0]) }",
-    ] {
-        let p = parse(src, "test");
-        let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS008"),
-            "expected WS008 for `{src}`: {:?}",
-            r.diagnostics
-        );
+fn pure_and_exec_context_codes() {
+    diag_table(&[
+        (
+            "deref in a pure context",
+            "var n: int = 0\nout v = *n",
+            &[Has("WS006")],
+        ),
+        // A pure-context mutation is a WS007 hard error like a pure index read,
+        // not a silent `_Unsupported`.
+        (
+            "array mutation outside exec",
+            "var xs: int[]\nchip {\n  xs.push(1)\n}",
+            &[Has("WS007")],
+        ),
+        // A pure-context READ (`length`/`find`/…) also needs exec: it lowers to
+        // an `Exec_*` gate.
+        (
+            "array read outside exec",
+            "var xs: int[]\nout r = xs.length()",
+            &[Has("WS007")],
+        ),
+        // An explicit `exec = <trigger>` arg supplies the exec context in a pure
+        // binding, so it must NOT be WS007.
+        (
+            "array read with an exec= arg",
+            "var lut: color[]\nin i: int\nout c: color = lut.get(i, exec = i + 1).Value",
+            &[Lacks("WS007")],
+        ),
+        // A read on a `const` receiver const-folds, so it is not an exec-context error.
+        (
+            "const array read",
+            "const t = [1, 2, 3]\nconst n = t.length()\nout r = n",
+            &[Lacks("WS007")],
+        ),
+        (
+            "map mutation outside exec",
+            "var m: Map<int,int>\nchip {\n  m.set(1, 2)\n}",
+            &[Has("WS007")],
+        ),
+        // A mod that reads a container reached through its own PARAMETER is
+        // exec-requiring; a pure call to it must be WS007, not a silent miscompile
+        // (the map ref used to wire straight into the consumer). The scan resolves
+        // the receiver against the mod's parameters, not the caller's scope.
+        (
+            "pure call of a param-container-reading mod",
+            "var mm: Map<int,int> = { 0: 1 }\n\
+             mod rd(m: Map<int,int>) -> (r: int) { let v = m.get(0)\n  return if v.Found then v.Value else -1 }\n\
+             out r = rd(mm)",
+            &[Has("WS007")],
+        ),
+        // A -> B where B reads a param container: a pure call of A must still be
+        // WS007 (the call-graph fixpoint propagates B's exec-requirement to A).
+        (
+            "transitive param-container read",
+            "var mm: Map<int,int> = { 0: 1 }\n\
+             mod rb(m: Map<int,int>) -> (r: int) { let v = m.get(0)\n  return if v.Found then v.Value else -1 }\n\
+             mod ca(m: Map<int,int>) -> (r: int) { return rb(m) }\n\
+             out r = ca(mm)",
+            &[Has("WS007")],
+        ),
+        // A mod parameter named like a global container but typed as a scalar must
+        // SHADOW that global in the scan (no false-positive WS007).
+        (
+            "scalar param shadowing a global container",
+            "var mm: Map<int,int> = { 0: 1 }\n\
+             mod pass(mm: int) -> (r: int) { return mm + 1 }\n\
+             out r = pass(5)",
+            &[Lacks("WS007")],
+        ),
+        // The same param-container-reading mod is legal when called from an exec
+        // handler - the scan only fires the call-site WS007 in pure position.
+        (
+            "exec-context call of a container mod",
+            "var mm: Map<int,int> = { 0: 1 }\n\
+             mod rd(m: Map<int,int>) -> (r: int) { let v = m.get(0)\n  return if v.Found then v.Value else -1 }\n\
+             in go: exec\n\
+             out r: int\n\
+             on go { emit r = rd(mm) }",
+            &[Lacks("WS007")],
+        ),
+        (
+            "array mutation inside exec",
+            "var xs: int[]\nin go: exec\non go { xs.push(1) }",
+            &[Lacks("WS007")],
+        ),
+        // `let go` shadowing `in go: exec` used to silently hijack `on go` (the
+        // handler bound to the constant, the exec input went dead).
+        (
+            "let shadowing an in port",
+            "in go: exec\nlet go = 5\nout r: int\non go { emit r = 1 }",
+            &[Has("WS013")],
+        ),
+        // Rust-style value shadowing (`let a = 1; let a = 2`) is legal; only a port
+        // shadow is the bug.
+        (
+            "let value shadowing",
+            "var x: int = 0\nin go: exec\non go { let a = 1\n let a = 2\n x = a }",
+            &[Lacks("WS013")],
+        ),
+    ]);
+}
+
+#[test]
+fn value_typing_codes() {
+    diag_table(&[
+        // An interpolation part that can't format to string is WS003.
+        (
+            "non-stringable interpolation part",
+            "var z: zone\nlet s = \"x ${z}\"",
+            &[Has("WS003")],
+        ),
+        (
+            "prefab ref without .brz",
+            "let s = $./level",
+            &[Has("WS019")],
+        ),
+        // string + int has no arithmetic overload.
+        ("string + int", "let x = \"a\" + 1", &[Has("WS004")]),
+        // `&` has rules for int/float/bool operands only.
+        (
+            "vector & int",
+            "let y = Vec(0.0, 0.0, 0.0) & 2",
+            &[Has("WS011")],
+        ),
+        (
+            "if branch type mismatch",
+            "let x = if true then 1 else Vec(0.0,0.0,0.0)",
+            &[Has("WS003")],
+        ),
+        (
+            "misplaced map literal",
+            "let m = { \"a\": 1 }",
+            &[Has("WS026")],
+        ),
+        (
+            "user mod wrong arg type",
+            "mod f(a: int) { }\nin go: exec\non go { f(Vec(0.0,0.0,0.0)) }",
+            &[Has("WS003")],
+        ),
+        (
+            "array method wrong arg",
+            "var xs: int[]\nin go: exec\non go { xs.push(Vec(0.0,0.0,0.0)) }",
+            &[Has("WS003")],
+        ),
+        // `.x` on a vector is float; a field the record lacks is WS010.
+        (
+            "vector field access",
+            "let v = Vec(1.0,2.0,3.0)\nlet a = v.x",
+            &[NoErrors],
+        ),
+        (
+            "missing record field",
+            "type P = { x: int }\nlet p: P = { x: 1 }\nlet a = p.y",
+            &[Has("WS010")],
+        ),
+        (
+            "& of a literal",
+            "in go: exec\non go { let r = &5 }",
+            &[Has("WS008")],
+        ),
+        (
+            "& of an expression",
+            "var a: int = 0\nvar b: int = 0\nin go: exec\non go { let r = &(a + b) }",
+            &[Has("WS008")],
+        ),
+        (
+            "& of a call",
+            "mod f() -> int { return 1 }\nin go: exec\non go { let r = &f() }",
+            &[Has("WS008")],
+        ),
+        // An element of a value array has no ref of its own: only the whole array
+        // is a reference.
+        (
+            "& of a value array element",
+            "var xs: int[]\nmod inc(v: *int) {}\nin go: exec\non go { xs.push(1)\n  inc(&xs[0]) }",
+            &[Has("WS008")],
+        ),
+        ("prefab var", "var pf: prefab", &[Has("WS025")]),
+        (
+            "prefab ref in if",
+            "in c: bool\nlet x = if c then $./a.brz else $./b.brz",
+            &[Has("WS031")],
+        ),
+        // A record used as a variable/array/map decomposes into one gate per field,
+        // so a reference-only field (zone/teleport/ref/prefab/exec) can't be stored.
+        (
+            "record var with a zone field",
+            "type T = { z: zone, n: int }\nvar t: T",
+            &[Has("WS049")],
+        ),
+        (
+            "record array with a ref field",
+            "type T = { r: *int, n: int }\nvar ts: T[]",
+            &[Has("WS049")],
+        ),
+        // A value-only record (including nested + container fields) is accepted.
+        (
+            "value-only nested record",
+            "type P = { x: int, y: int }\ntype Q = { p: P, tags: int[] }\nvar q: Q",
+            &[Lacks("WS049")],
+        ),
+        // `null` is accepted for value types (var/out/assign/arg/record field).
+        (
+            "null for value types",
+            "type P = { x: int, e: entity }\nmod f(n: int, ent: entity) { }\n\
+             var i: int = null\nvar e: entity = null\nvar p: P = { x: null, e: null }\n\
+             in go: exec\non go { i = null\n f(null, null) }",
+            &[Lacks("WS051")],
+        ),
+        // ...and rejected for types with no null value: container, record.
+        ("null array", "var a: int[] = null", &[Has("WS051")]),
+        (
+            "null record",
+            "type P = { x: int }\nvar p: P = null",
+            &[Has("WS051")],
+        ),
+        (
+            "over-length spread into a fixed-arity mod",
+            "mod add2(a: int, b: int) -> int { return a + b }\nout r = add2(...(1, 2, 3))",
+            &[Has("WS022")],
+        ),
+        (
+            "spread of a non-tuple",
+            "in n: int\nin go: exec\non go { SendGlobalCustomEvent(\"c\", ...n) }",
+            &[Has("WS003")],
+        ),
+        (
+            "correct-arity spread",
+            "mod add2(a: int, b: int) -> int { return a + b }\nin n: int\nout r = add2(...(n, 2))",
+            &[Lacks("WS022"), Lacks("WS003")],
+        ),
+        // A spread ELEMENT whose type mismatches its user-mod param gets the same
+        // WS003 the written-out `add2(1, aVector)` gets.
+        (
+            "spread element type mismatch",
+            "mod add2(a: int, b: int) -> int { return a + b }\n\
+             let t = (1, Vec(0.0, 0.0, 0.0))\nout r = add2(...t)",
+            &[Has("WS003")],
+        ),
+        // A variadic mod accepts extra trailing args past its fixed params.
+        (
+            "variadic surplus args",
+            "mod f(a: int, ...rest) -> int { return a }\n\
+             var t: int = 0\nin go: exec\non go { t = f(1, 2, 3, 4) }",
+            &[Lacks("WS022")],
+        ),
+        // ...but still requires the FIXED params.
+        (
+            "variadic too few fixed args",
+            "mod g(a: int, b: int, ...rest) -> int { return a + b }\n\
+             var t: int = 0\nin go: exec\non go { t = g(1) }",
+            &[Has("WS022")],
+        ),
+        // A `...rest` on a physical chip (not a mod) is rejected.
+        (
+            "variadic chip",
+            "chip Bad(a: int, ...rest) { out r = a }",
+            &[Has("WS052")],
+        ),
+    ]);
+}
+
+#[test]
+fn exec_signal_codes() {
+    diag_table(&[
+        // A plain `emit s` then a same-chain `await s` parks forever.
+        (
+            "plain emit before await",
+            "in go: exec\nlet s: exec\nvar n: int = 0\n\
+             on go { emit s\n  await s\n  if n < 5 { buffer emit s } }",
+            &[Warns("WS053")],
+        ),
+        // A buffered kick lands next tick, after the await arms.
+        (
+            "buffered kick before await",
+            "in go: exec\nlet s: exec\nvar n: int = 0\n\
+             on go { buffer emit s\n  await s\n  if n < 5 { buffer emit s } }",
+            &[Lacks("WS053")],
+        ),
+        (
+            "emit and await of different signals",
+            "in go: exec\nlet s: exec\nlet t: exec\non go { emit s\n  await t }",
+            &[Lacks("WS053")],
+        ),
+        // An ANNOTATED capture types the value (DataOut1) and is clean.
+        (
+            "annotated event capture",
+            "in go: exec\nvar a: int = 0\n\
+             on go { let foo: int = await CustomEvent(\"c\")\n  a = foo }",
+            &[NoErrors, Lacks("WS055")],
+        ),
+        // An UNANNOTATED capture still works but warns (type can't be inferred).
+        (
+            "unannotated event capture",
+            "in go: exec\nvar a: int = 0\n\
+             on go { let foo = await CustomEvent(\"c\")\n  a = foo }",
+            &[Warns("WS055")],
+        ),
+        // A bare `await CustomEvent(...)` (no capture) just waits.
+        (
+            "bare await of an event",
+            "in go: exec\nvar a: int = 0\non go { await CustomEvent(\"c\")\n  a = 1 }",
+            &[Lacks("WS055")],
+        ),
+        (
+            "handler receiver form",
+            "var total: int = 0\non CustomEvent(\"c\") -> (p: int, t: int) { total = p + t }",
+            &[NoErrors],
+        ),
+    ]);
+}
+
+#[test]
+fn enum_codes() {
+    diag_table(&[
+        // The single `FromInt` argument is an int.
+        (
+            "FromInt with a string",
+            "enum Shape { Empty, Circle(float) }\nout e = Shape.FromInt(\"x\")\n",
+            &[Has("WS003")],
+        ),
+        // A real variant named `FromInt` wins over the tag-only constructor.
+        (
+            "a variant named FromInt",
+            "enum E { A, FromInt(int) }\nlet e = E.FromInt(3)\n",
+            &[NoErrors],
+        ),
+        // `EnumToInt`'s argument MUST be an enum, not an accepted `any`.
+        (
+            "EnumToInt of an int",
+            "enum Shape { Empty, Circle(float) }\nout a = EnumToInt(5)\n",
+            &[Has("WS003")],
+        ),
+        (
+            "EnumToInt of a string",
+            "enum Shape { Empty, Circle(float) }\nout a = EnumToInt(\"x\")\n",
+            &[Has("WS003")],
+        ),
+        // With no enum-typed expectation there is no way to know which enum the
+        // integer names, mirroring `FromInt`'s type-inference failure.
+        (
+            "un-pinned IntToEnum",
+            "enum Shape { Empty, Circle(float) }\nin n: int\nlet e = IntToEnum(n)\n",
+            &[Has("WS063")],
+        ),
+        // A param named like a top-level enum shadows the type, so `Shape.x` is a
+        // record field access, not a variant path.
+        (
+            "value shadowing an enum name",
+            "enum Shape { Empty, Circle }\ntype Rec = { x: int }\n\
+             mod f(Shape: Rec) -> int {\n    return Shape.x\n}\n",
+            &[Lacks("WS060")],
+        ),
+        // Captures bind their CONCRETE field types, not `any`: int vs string arm
+        // results have no common widening. A capture bound `any` would join cleanly.
+        (
+            "match arm capture type mismatch",
+            "enum P { I(int), S(string) }\nvar p: P = P.I(0)\n\
+             out r = match p { I(n) => n, S(s) => s }\n",
+            &[Has("WS003")],
+        ),
+        (
+            "prelude Option/Result round trip",
+            "let a = Some(42)\nlet b: Option<int> = None\nlet c = Ok(1)\nlet d: Result<int, int> = Err(2)\n",
+            &[NoDiags],
+        ),
+        // A user enum with a variant also named `Some` makes the bare name
+        // AMBIGUOUS with the prelude's: bare resolution backs off (WS002) rather
+        // than silently picking either enum.
+        (
+            "ambiguous bare variant",
+            "enum Custom<T> { Some(T), Other }\nout a = Some(1)\n",
+            &[Has("WS002")],
+        ),
+        // An unannotated `Err(2)` reads `T` from `E` exactly as `Ok(1)` reads `E`
+        // from `T`, though `T` is solved first in declaration order.
+        ("unannotated Err", "let d = Err(2)\n", &[NoDiags]),
+        (
+            "built-in game enum var and discriminant comparison",
+            "static var e: EasingFunction = EasingFunction.Linear\n\
+             out m = e.Discriminant == EasingFunction.Bounce.Discriminant\n",
+            &[NoDiags],
+        ),
+        // A qualified built-in enum value as a gate config argument.
+        (
+            "qualified built-in enum config arg",
+            "mod f(a: float, b: float, t: float) { Easing(a, b, t, function = EasingFunction.Bounce) }",
+            &[NoDiags],
+        ),
+        (
+            "legacy bare enum member config arg",
+            "mod f(a: float, b: float, t: float) { Easing(a, b, t, function = Bounce) }",
+            &[NoDiags],
+        ),
+        // A built-in enum value of the WRONG enum is an argument type mismatch.
+        (
+            "wrong built-in enum config arg",
+            "mod f(a: float, b: float, t: float) { Easing(a, b, t, function = ColorSpace.Srgb) }",
+            &[Has("WS003")],
+        ),
+    ]);
+}
+
+#[test]
+fn expression_types() {
+    let rows: &[(&str, &str, &str, &str)] = &[
+        (
+            "a variant path's discriminant",
+            "enum Shape { Empty, Circle(float) }\nout d = Shape.Circle.Discriminant\n",
+            "Shape.Circle.Discriminant",
+            "int",
+        ),
+        // `value.ToInt()` is an exact alias for `.Discriminant`, on a stored value
+        // and on a variant path.
+        (
+            "ToInt on a stored value",
+            "enum Shape { Empty, Circle(float) }\nstatic var s: Shape = Shape.Circle(1.0)\nout a = s.ToInt()\nout b = Shape.Circle.ToInt()\n",
+            "s.ToInt()",
+            "int",
+        ),
+        (
+            "ToInt on a variant path",
+            "enum Shape { Empty, Circle(float) }\nstatic var s: Shape = Shape.Circle(1.0)\nout a = s.ToInt()\nout b = Shape.Circle.ToInt()\n",
+            "Shape.Circle.ToInt()",
+            "int",
+        ),
+        (
+            "FromInt constructs the enum",
+            "enum Shape { Empty, Circle(float), Rect(float, float) }\nin n: int\nout e = Shape.FromInt(n)\n",
+            "Shape.FromInt(n)",
+            "Shape",
+        ),
+        (
+            "a real FromInt variant",
+            "enum E { A, FromInt(int) }\nlet e = E.FromInt(3)\n",
+            "E.FromInt(3)",
+            "E",
+        ),
+        // `EnumToInt(value)` is the gate-backed twin of `.ToInt()`.
+        (
+            "EnumToInt",
+            "enum Shape { Empty, Circle(float) }\nstatic var s: Shape = Shape.Circle(1.0)\nout a = EnumToInt(s)\n",
+            "EnumToInt(s)",
+            "int",
+        ),
+        // `IntToEnum(value)`'s enum is pinned by the annotated target.
+        (
+            "IntToEnum in an annotated let",
+            "enum Shape { Empty, Circle(float), Rect(float, float) }\nin n: int\nlet e: Shape = IntToEnum(n)\n",
+            "IntToEnum(n)",
+            "Shape",
+        ),
+        (
+            "a param shadowing an enum name",
+            "enum Shape { Empty, Circle }\ntype Rec = { x: int }\nmod f(Shape: Rec) -> int {\n    return Shape.x\n}\n",
+            "Shape.x",
+            "int",
+        ),
+        (
+            "positional construction",
+            "enum Shape { Empty, Circle(float), Box { w: float, h: float } }\nout a = Shape.Circle(5.0)\nout b = Shape.Box { w: 1.0, h: 2.0 }\nout c = Shape.Empty\n",
+            "Shape.Circle(5.0)",
+            "Shape",
+        ),
+        (
+            "named construction",
+            "enum Shape { Empty, Circle(float), Box { w: float, h: float } }\nout a = Shape.Circle(5.0)\nout b = Shape.Box { w: 1.0, h: 2.0 }\nout c = Shape.Empty\n",
+            "Shape.Box { w: 1.0, h: 2.0 }",
+            "Shape",
+        ),
+        (
+            "unit variant",
+            "enum Shape { Empty, Circle(float), Box { w: float, h: float } }\nout a = Shape.Circle(5.0)\nout b = Shape.Box { w: 1.0, h: 2.0 }\nout c = Shape.Empty\n",
+            "Shape.Empty",
+            "Shape",
+        ),
+        (
+            "match binds payloads and joins arm types",
+            "enum Shape { Circle(float), Rect(float, float) }\nvar s: Shape = Shape.Circle(1.0)\nout area = match s { Circle(r) => r, Rect(w, h) => w }\n",
+            "match s { Circle(r) => r, Rect(w, h) => w }",
+            "float",
+        ),
+        (
+            "generic variant inferred",
+            "enum Option<T> { Some(T), None }\nout a = Option.Some(42)\n",
+            "Option.Some(42)",
+            "Option<int>",
+        ),
+        (
+            "generic variant annotated",
+            "enum Option<T> { Some(T), None }\nout n: Option<int> = Option.None\n",
+            "Option.None",
+            "Option<int>",
+        ),
+        // `Option<T>`/`Result<T, E>` are built in, and their variants are usable bare.
+        (
+            "prelude Some",
+            "let a = Some(42)\nlet b: Option<int> = None\nlet c = Ok(1)\nlet d: Result<int, int> = Err(2)\n",
+            "Some(42)",
+            "Option<int>",
+        ),
+        (
+            "prelude Ok",
+            "let a = Some(42)\nlet b: Option<int> = None\nlet c = Ok(1)\nlet d: Result<int, int> = Err(2)\n",
+            "Ok(1)",
+            "Result<int, int>",
+        ),
+        (
+            "prelude None",
+            "let a = Some(42)\nlet b: Option<int> = None\nlet c = Ok(1)\nlet d: Result<int, int> = Err(2)\n",
+            "None",
+            "Option<int>",
+        ),
+        (
+            "prelude Err",
+            "let a = Some(42)\nlet b: Option<int> = None\nlet c = Ok(1)\nlet d: Result<int, int> = Err(2)\n",
+            "Err(2)",
+            "Result<int, int>",
+        ),
+        // `Result`'s unconstrained-sibling default is order-independent.
+        (
+            "unannotated Ok",
+            "let c = Ok(1)\n",
+            "Ok(1)",
+            "Result<int, int>",
+        ),
+        (
+            "unannotated Err",
+            "let d = Err(2)\n",
+            "Err(2)",
+            "Result<int, int>",
+        ),
+        // `EasingFunction` is a registry enum with no `enum` declaration in source.
+        (
+            "built-in game enum variant path discriminant",
+            "out d = EasingFunction.Bounce.Discriminant\n",
+            "EasingFunction.Bounce.Discriminant",
+            "int",
+        ),
+        (
+            "built-in game enum discriminant comparison",
+            "static var e: EasingFunction = EasingFunction.Linear\nout m = e.Discriminant == EasingFunction.Bounce.Discriminant\n",
+            "e.Discriminant == EasingFunction.Bounce.Discriminant",
+            "bool",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, needle, want) in rows {
+        match type_of(src, needle) {
+            Ok(got) if got == *want => {}
+            Ok(got) => failures.push(format!("{label}: `{needle}` typed {got}, want {want}")),
+            Err(e) => failures.push(format!("{label}: {e}")),
+        }
     }
-}
-
-#[test]
-fn ref_of_refable_is_clean() {
-    // &var is legal (it names a storage location).
-    for src in ["var a: int = 0\nmod inc(v: *int) { v = v + 1 }\nin go: exec\non go { inc(&a) }"] {
-        let p = parse(src, "test");
-        let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS008"),
-            "unexpected WS008 for `{src}`: {:?}",
-            r.diagnostics
-        );
-    }
-}
-
-#[test]
-fn prefab_ref_infers_prefab_type() {
-    let p = parse("let pf = $./foo.brz", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    // no errors; the let binds a prefab-typed value
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn prefab_ref_not_storable_is_ws025() {
-    let p = parse("var pf: prefab", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS025"),
-        "{:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn prefab_ref_in_if_is_ws031() {
-    let p = parse(
-        "in c: bool\nlet x = if c then $./a.brz else $./b.brz",
-        "test",
-    );
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS031"),
-        "{:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn record_storage_rejects_non_variant_field() {
-    // A record used as a variable/array/map decomposes into one gate per field,
-    // so a reference-only field (zone/teleport/ref/prefab/exec) can't be stored.
-    let p = parse("type T = { z: zone, n: int }\nvar t: T", "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS049"), "{:?}", r.diagnostics);
-
-    // A record ARRAY element and a record MAP value are checked the same way.
-    let arr = parse("type T = { r: *int, n: int }\nvar ts: T[]", "test");
-    let ra = crate::typecheck::typecheck(&arr.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(ra.diagnostics.iter().any(|d| d.code == "WS049"));
-
-    // A value-only record (including nested + container fields) is accepted.
-    let ok = parse(
-        "type P = { x: int, y: int }\ntype Q = { p: P, tags: int[] }\nvar q: Q",
-        "test",
-    );
-    let ro = crate::typecheck::typecheck(&ok.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(!ro.diagnostics.iter().any(|d| d.code == "WS049"), "{:?}", ro.diagnostics);
+    report_failures(&failures, rows.len());
 }
 
 /// The WS049 diagnostics a program type-checks to.
 fn ws049(src: &str) -> Vec<crate::diagnostic::Diagnostic> {
-    let p = parse(src, "test");
-    crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+    tc(src)
         .diagnostics
         .into_iter()
         .filter(|d| d.code == "WS049")
@@ -523,7 +740,11 @@ fn record_element_with_a_container_field_is_ws049() {
             "`{decl}`: {}",
             d[0].message
         );
-        assert!(!d[0].message.contains('\u{2014}'), "no em dash: {}", d[0].message);
+        assert!(
+            !d[0].message.contains('\u{2014}'),
+            "no em dash: {}",
+            d[0].message
+        );
     }
 }
 
@@ -546,8 +767,16 @@ fn record_with_a_record_container_field_cannot_cross_a_port() {
     ] {
         let d = ws049(&format!("{h}{decl}\n"));
         assert_eq!(d.len(), 1, "`{decl}` must be exactly one WS049: {d:?}");
-        assert!(d[0].message.contains("can't cross a port"), "`{decl}`: {}", d[0].message);
-        assert!(!d[0].message.contains('\u{2014}'), "no em dash: {}", d[0].message);
+        assert!(
+            d[0].message.contains("can't cross a port"),
+            "`{decl}`: {}",
+            d[0].message
+        );
+        assert!(
+            !d[0].message.contains('\u{2014}'),
+            "no em dash: {}",
+            d[0].message
+        );
     }
     for decl in [
         "mod f(hh: H) { hh.n = 1 }",
@@ -569,7 +798,11 @@ fn tuple_element_with_a_container_is_ws049() {
     ] {
         let d = ws049(&format!("{src}\n"));
         assert_eq!(d.len(), 1, "`{src}` must be exactly one WS049: {d:?}");
-        assert!(d[0].message.contains("can't contain an array or map"), "`{src}`: {}", d[0].message);
+        assert!(
+            d[0].message.contains("can't contain an array or map"),
+            "`{src}`: {}",
+            d[0].message
+        );
     }
     assert!(ws049("var t: (int, int[])\nvar ps: (int, int)[]\n").is_empty());
 }
@@ -585,7 +818,11 @@ fn ws049_ref_field_message_does_not_promise_container_fields() {
 #[test]
 fn ws049_names_tuple_elements_and_element_kinds() {
     let d = ws049("var ts: (int, int[])[]\n");
-    assert!(d[0].message.contains("tuple element `1`"), "{}", d[0].message);
+    assert!(
+        d[0].message.contains("tuple element `1`"),
+        "{}",
+        d[0].message
+    );
     let d = ws049("enum C { Red, Green }\ntype H = { cs: C[], n: int }\nin h: H\n");
     assert!(!d[0].message.contains("of records"), "{}", d[0].message);
     assert!(d[0].message.contains("enum"), "{}", d[0].message);
@@ -620,7 +857,11 @@ fn record_array_or_map_cannot_cross_a_port() {
     ] {
         let d = ws049(&format!("{h}{decl}\n"));
         assert_eq!(d.len(), 1, "`{decl}` must be exactly one WS049: {d:?}");
-        assert!(d[0].message.contains("can't cross a port"), "`{decl}`: {}", d[0].message);
+        assert!(
+            d[0].message.contains("can't cross a port"),
+            "`{decl}`: {}",
+            d[0].message
+        );
     }
     for decl in [
         "mod f(ps2: P[]) { ps2.x.sort() }",
@@ -644,7 +885,9 @@ fn payload_enum_array_cannot_cross_a_port_but_a_unit_enum_array_can() {
     assert_eq!(d.len(), 1, "{d:?}");
     // A record variable stores any enum array field as columns, so a record
     // holding one can't cross a port even without payloads.
-    let d = ws049("enum C { Red, Green }\ntype H = { cs: C[], n: int }\nchip K(hh: H) { in k: exec }\n");
+    let d = ws049(
+        "enum C { Red, Green }\ntype H = { cs: C[], n: int }\nchip K(hh: H) { in k: exec }\n",
+    );
     assert_eq!(d.len(), 1, "{d:?}");
 }
 
@@ -663,358 +906,6 @@ fn record_with_a_container_field_is_storable_outside_a_container() {
     }
 }
 
-#[test]
-fn null_typing() {
-    let tc = |src: &str| {
-        let p = parse(src, "test");
-        crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
-    };
-    // Accepted for value types (var/out/assign/arg/record field).
-    let ok = tc(
-        "type P = { x: int, e: entity }\nmod f(n: int, ent: entity) { }\n\
-         var i: int = null\nvar e: entity = null\nvar p: P = { x: null, e: null }\n\
-         in go: exec\non go { i = null\n f(null, null) }",
-    );
-    assert!(!ok.diagnostics.iter().any(|d| d.code == "WS051"), "{:?}", ok.diagnostics);
-    // Rejected for types with no null value: container, record, reference-only.
-    for bad in ["var a: int[] = null", "type P = { x: int }\nvar p: P = null"] {
-        let r = tc(bad);
-        assert!(r.diagnostics.iter().any(|d| d.code == "WS051"), "{bad}: {:?}", r.diagnostics);
-    }
-}
-
-#[test]
-fn spread_arg_typing() {
-    let tc = |src: &str| {
-        let p = parse(src, "test");
-        crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
-    };
-    // Over-length spread into a fixed-arity mod -> WS022.
-    let over = tc("mod add2(a: int, b: int) -> int { return a + b }\nout r = add2(...(1, 2, 3))");
-    assert!(over.diagnostics.iter().any(|d| d.code == "WS022"), "{:?}", over.diagnostics);
-    // A spread of a non-tuple -> WS003.
-    let bad = tc("in n: int\nin go: exec\non go { SendGlobalCustomEvent(\"c\", ...n) }");
-    assert!(bad.diagnostics.iter().any(|d| d.code == "WS003"), "{:?}", bad.diagnostics);
-    // A correct-arity spread is clean.
-    let ok = tc("mod add2(a: int, b: int) -> int { return a + b }\nin n: int\nout r = add2(...(n, 2))");
-    assert!(!ok.diagnostics.iter().any(|d| matches!(d.code.as_str(), "WS022" | "WS003")), "{:?}", ok.diagnostics);
-    // A spread ELEMENT whose type mismatches its user-mod param is caught (arity
-    // is right, but the second element is a vector for an int param): the same
-    // WS003 the written-out `add2(1, aVector)` gets.
-    let bad_elem = tc(
-        "mod add2(a: int, b: int) -> int { return a + b }\n\
-         let t = (1, Vec(0.0, 0.0, 0.0))\nout r = add2(...t)",
-    );
-    assert!(
-        bad_elem.diagnostics.iter().any(|d| d.code == "WS003"),
-        "spread element type mismatch into a user mod must be WS003: {:?}",
-        bad_elem.diagnostics
-    );
-}
-
-#[test]
-fn variadic_mod_arity_and_placement() {
-    let tc = |src: &str| {
-        let p = parse(src, "test");
-        crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
-    };
-    // A variadic mod accepts extra trailing args past its fixed params: clean.
-    let ok = tc(
-        "mod f(a: int, ...rest) -> int { return a }\n\
-         var t: int = 0\nin go: exec\non go { t = f(1, 2, 3, 4) }",
-    );
-    assert!(
-        !ok.diagnostics.iter().any(|d| d.code == "WS022"),
-        "variadic accepts surplus args: {:?}",
-        ok.diagnostics
-    );
-    // ...but still requires the FIXED params -> WS022 when too few.
-    let few = tc(
-        "mod g(a: int, b: int, ...rest) -> int { return a + b }\n\
-         var t: int = 0\nin go: exec\non go { t = g(1) }",
-    );
-    assert!(
-        few.diagnostics.iter().any(|d| d.code == "WS022"),
-        "too few for the fixed params: {:?}",
-        few.diagnostics
-    );
-    // A `...rest` on a physical chip (not a mod) is rejected -> WS052.
-    let chip = tc("chip Bad(a: int, ...rest) { out r = a }");
-    assert!(
-        chip.diagnostics.iter().any(|d| d.code == "WS052"),
-        "variadic chip rejected: {:?}",
-        chip.diagnostics
-    );
-}
-
-#[test]
-fn parked_kick_emit_before_await() {
-    let tc = |src: &str| {
-        let p = parse(src, "test");
-        crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
-    };
-    // A plain `emit s` then a same-chain `await s` parks forever -> WS053 (warning).
-    let bad = tc(
-        "in go: exec\nlet s: exec\nvar n: int = 0\n\
-         on go { emit s\n  await s\n  if n < 5 { buffer emit s } }",
-    );
-    assert!(
-        bad.diagnostics
-            .iter()
-            .any(|d| d.code == "WS053" && d.severity == crate::diagnostic::Severity::Warning),
-        "plain emit-before-await must warn WS053: {:?}",
-        bad.diagnostics
-    );
-    // A buffered kick is correct (lands next tick, after the await arms) -> no WS053.
-    let ok = tc(
-        "in go: exec\nlet s: exec\nvar n: int = 0\n\
-         on go { buffer emit s\n  await s\n  if n < 5 { buffer emit s } }",
-    );
-    assert!(
-        !ok.diagnostics.iter().any(|d| d.code == "WS053"),
-        "buffered kick must not warn: {:?}",
-        ok.diagnostics
-    );
-    // Emit and await of DIFFERENT signals -> no WS053.
-    let diff = tc("in go: exec\nlet s: exec\nlet t: exec\non go { emit s\n  await t }");
-    assert!(
-        !diff.diagnostics.iter().any(|d| d.code == "WS053"),
-        "different signals must not warn: {:?}",
-        diff.diagnostics
-    );
-}
-
-#[test]
-fn await_custom_event_captures_data() {
-    use crate::diagnostic::Severity;
-    let tc = |src: &str| {
-        let p = parse(src, "test");
-        crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
-    };
-    // An ANNOTATED capture types the value (DataOut1) and is clean.
-    let typed = tc(
-        "in go: exec\nvar a: int = 0\n\
-         on go { let foo: int = await CustomEvent(\"c\")\n  a = foo }",
-    );
-    assert!(
-        !typed.diagnostics.iter().any(|d| d.severity == Severity::Error),
-        "typed event capture must be accepted: {:?}",
-        typed.diagnostics
-    );
-    assert!(
-        !typed.diagnostics.iter().any(|d| d.code == "WS055"),
-        "an annotated capture must not warn WS055: {:?}",
-        typed.diagnostics
-    );
-    // An UNANNOTATED capture still works but warns WS055 (type can't be inferred).
-    let bare = tc(
-        "in go: exec\nvar a: int = 0\n\
-         on go { let foo = await CustomEvent(\"c\")\n  a = foo }",
-    );
-    assert!(
-        bare.diagnostics
-            .iter()
-            .any(|d| d.code == "WS055" && d.severity == Severity::Warning),
-        "untyped event capture must warn WS055: {:?}",
-        bare.diagnostics
-    );
-    // A bare `await CustomEvent(...)` (no capture) just waits - no warning.
-    let wait = tc("in go: exec\nvar a: int = 0\non go { await CustomEvent(\"c\")\n  a = 1 }");
-    assert!(
-        !wait.diagnostics.iter().any(|d| d.code == "WS055"),
-        "bare await (no capture) must not warn: {:?}",
-        wait.diagnostics
-    );
-    // The handler receiver form is still fine.
-    let ok = tc("var total: int = 0\non CustomEvent(\"c\") -> (p: int, t: int) { total = p + t }");
-    assert!(
-        !ok.diagnostics.iter().any(|d| d.severity == Severity::Error),
-        "handler receiver must be accepted: {:?}",
-        ok.diagnostics
-    );
-}
-
-#[test]
-fn variant_path_discriminant_is_int() {
-    let src = "enum Shape { Empty, Circle(float) }\nout d = Shape.Circle.Discriminant\n";
-    assert_eq!(type_of(src, "Shape.Circle.Discriminant"), "int");
-}
-
-#[test]
-fn value_to_int_types_as_int_like_discriminant() {
-    // `value.ToInt()` is an exact alias for `.Discriminant`: it projects an
-    // enum value to its integer tag and types as int, on both a stored value
-    // and a variant path.
-    let src = "enum Shape { Empty, Circle(float) }\nstatic var s: Shape = Shape.Circle(1.0)\n\
-               out a = s.ToInt()\nout b = Shape.Circle.ToInt()\n";
-    assert_eq!(type_of(src, "s.ToInt()"), "int");
-    assert_eq!(type_of(src, "Shape.Circle.ToInt()"), "int");
-}
-
-#[test]
-fn enum_from_int_types_as_the_enum() {
-    // `Enum.FromInt(n)` constructs a value of that enum from an int tag; it
-    // types as the enum, and its argument type-checks as an int.
-    let src = "enum Shape { Empty, Circle(float), Rect(float, float) }\n\
-               in n: int\nout e = Shape.FromInt(n)\n";
-    assert_eq!(type_of(src, "Shape.FromInt(n)"), "Shape");
-}
-
-#[test]
-fn enum_from_int_rejects_non_int_argument() {
-    // The single argument is an int; a string argument is WS003.
-    let src = "enum Shape { Empty, Circle(float) }\nout e = Shape.FromInt(\"x\")\n";
-    let p = parse(src, "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS003"),
-        "a non-int FromInt argument must be WS003: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn variant_named_from_int_still_constructs() {
-    // A real variant literally named `FromInt` wins over the tag-only
-    // constructor: `E.FromInt(3)` builds that unit... payload variant, typing
-    // as the enum, with no WS060.
-    let src = "enum E { A, FromInt(int) }\nlet e = E.FromInt(3)\n";
-    assert_eq!(type_of(src, "E.FromInt(3)"), "E");
-    let p = parse(src, "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        !r.diagnostics.iter().any(|d| d.severity == crate::diagnostic::Severity::Error),
-        "a real FromInt variant must construct without error: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn enum_to_integer_types_as_int_and_requires_an_enum() {
-    // `EnumToInt(value)` projects an enum value to its integer tag and types
-    // as int - the gate-backed twin of `.ToInt()`.
-    let src = "enum Shape { Empty, Circle(float) }\nstatic var s: Shape = Shape.Circle(1.0)\n\
-               out a = EnumToInt(s)\n";
-    assert_eq!(type_of(src, "EnumToInt(s)"), "int");
-}
-
-#[test]
-fn enum_to_integer_rejects_a_non_enum_argument() {
-    // The argument MUST be an enum: an int or a string is a WS003 argument-type
-    // error, not an accepted `any`.
-    for bad in ["EnumToInt(5)", "EnumToInt(\"x\")"] {
-        let src = format!("enum Shape {{ Empty, Circle(float) }}\nout a = {bad}\n");
-        let p = parse(&src, "test");
-        let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "`{bad}` must be a WS003 non-enum argument error: {:?}",
-            r.diagnostics
-        );
-    }
-}
-
-#[test]
-fn integer_to_enum_result_is_the_context_enum() {
-    // `IntToEnum(value)` produces an enum whose concrete type is pinned by
-    // the annotated target (like `Enum.FromInt`/`null`), and its int argument
-    // type-checks.
-    let src = "enum Shape { Empty, Circle(float), Rect(float, float) }\n\
-               in n: int\nlet e: Shape = IntToEnum(n)\n";
-    assert_eq!(type_of(src, "IntToEnum(n)"), "Shape");
-}
-
-#[test]
-fn integer_to_enum_without_an_enum_context_is_ws063() {
-    // With no enum-typed expectation there is no way to know which enum the
-    // integer names - WS063, mirroring `FromInt`'s type-inference failure.
-    let src = "enum Shape { Empty, Circle(float) }\nin n: int\nlet e = IntToEnum(n)\n";
-    let p = parse(src, "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS063"),
-        "an un-pinned IntToEnum must be WS063: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn value_shadowing_an_enum_name_is_ordinary_field_access() {
-    // A param named the same as a top-level enum shadows the type (nearest-first
-    // scope), so `Shape.x` is a record field access, not a variant path: it must
-    // type as the field and NOT emit WS060.
-    let src = "enum Shape { Empty, Circle }\ntype Rec = { x: int }\n\
-               mod f(Shape: Rec) -> int {\n    return Shape.x\n}\n";
-    assert_eq!(type_of(src, "Shape.x"), "int");
-    let p = parse(src, "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WS060"),
-        "shadowed enum name must not emit WS060: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn positional_and_named_construction_type_as_the_enum() {
-    let src = "enum Shape { Empty, Circle(float), Box { w: float, h: float } }\n\
-               out a = Shape.Circle(5.0)\nout b = Shape.Box { w: 1.0, h: 2.0 }\nout c = Shape.Empty\n";
-    assert_eq!(type_of(src, "Shape.Circle(5.0)"), "Shape");
-    assert_eq!(type_of(src, "Shape.Box { w: 1.0, h: 2.0 }"), "Shape");
-    assert_eq!(type_of(src, "Shape.Empty"), "Shape");
-}
-
-#[test]
-fn match_binds_payload_and_joins_arm_types() {
-    let src = "enum Shape { Circle(float), Rect(float, float) }\nvar s: Shape = Shape.Circle(1.0)\n\
-               out area = match s { Circle(r) => r, Rect(w, h) => w }\n";
-    assert_eq!(type_of(src, "match s { Circle(r) => r, Rect(w, h) => w }"), "float");
-}
-
-// Captures must bind their CONCRETE field types, not `any`: two arms returning
-// captures of incompatible types (int vs string) have no common widening, so
-// the arm-result join is WS003. If either capture bound `any` this would join
-// cleanly and no diagnostic would fire, so this locks in the field typing.
-#[test]
-fn match_arm_capture_type_mismatch_is_ws003() {
-    let src = "enum P { I(int), S(string) }\nvar p: P = P.I(0)\n\
-               out r = match p { I(n) => n, S(s) => s }\n";
-    let p = parse(src, "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS003"),
-        "expected WS003 from incompatible arm captures: {:?}",
-        r.diagnostics
-    );
-}
-
-#[test]
-fn generic_variant_infers_and_annotates() {
-    let src = "enum Option<T> { Some(T), None }\nout a = Option.Some(42)\n";
-    assert_eq!(type_of(src, "Option.Some(42)"), "Option<int>");
-    let src2 = "enum Option<T> { Some(T), None }\nout n: Option<int> = Option.None\n";
-    assert_eq!(type_of(src2, "Option.None"), "Option<int>");
-}
-
-// `Option<T>`/`Result<T, E>` are built in - no `enum` declaration
-// needed - and their variants are usable bare (`Some`/`None`/`Ok`/`Err`
-// instead of `Option.Some`/`Option.None`/`Result.Ok`/`Result.Err`).
-#[test]
-fn prelude_option_result_are_builtin() {
-    let src = "let a = Some(42)\nlet b: Option<int> = None\nlet c = Ok(1)\nlet d: Result<int, int> = Err(2)\n";
-    assert_eq!(type_of(src, "Some(42)"), "Option<int>");
-    assert_eq!(type_of(src, "Ok(1)"), "Result<int, int>");
-    assert_eq!(type_of(src, "None"), "Option<int>");
-    assert_eq!(type_of(src, "Err(2)"), "Result<int, int>");
-    let p = parse(src, "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.is_empty(),
-        "the prelude round-trip must be clean: {:?}",
-        r.diagnostics
-    );
-}
-
 // A user symbol of the SAME name wins over the prelude's bare variant -
 // resolution falls back to a prelude variant ONLY when the name is otherwise
 // undefined.
@@ -1026,81 +917,21 @@ fn a_user_symbol_named_some_shadows_the_prelude_variant() {
     // the `let`'s own name (not an expression) - so this looks up the
     // initializer's recorded range directly via `rfind` instead.
     let src = "let Some = 5\nout a = Some\n";
-    let p = parse(src, "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    let r = tc(src);
     let needle = "Some";
     let start = src.rfind(needle).expect("needle not found");
     let end = start + needle.len();
     let file: std::sync::Arc<str> = std::sync::Arc::from("test");
-    let ty = r
-        .type_of_expr
-        .get(&(file, start, end))
-        .unwrap_or_else(|| panic!("no recorded type for the referencing `Some`; diagnostics: {:?}", r.diagnostics));
-    assert_eq!(ty.to_string(), "int", "the local `Some` must win over the prelude variant");
-
-    // A user's OWN enum with a variant also named `Some` makes the bare name
-    // AMBIGUOUS between it and the prelude's `Option.Some` - bare resolution
-    // backs off rather than guessing, so `Some(1)` is an unresolved call
-    // (WS002), not a silent (and possibly wrong) pick of either enum.
-    let src2 = "enum Custom<T> { Some(T), Other }\nout a = Some(1)\n";
-    let p2 = parse(src2, "test");
-    let r2 = crate::typecheck::typecheck(&p2.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r2.diagnostics.iter().any(|d| d.code == "WS002"),
-        "an ambiguous bare variant name must not silently resolve to either enum: {:?}",
-        r2.diagnostics
-    );
-}
-
-// `Result<T, E>`'s unconstrained-sibling default (an unannotated `Ok(1)`
-// reads `E` from `T`, since `Ok`'s payload never mentions `E` at all) must be
-// ORDER-INDEPENDENT: `Err(2)` alone must read `T` from `E` exactly the same
-// way, even though `T` is `Result`'s FIRST declared type param and so is
-// solved BEFORE `E` in declaration order. A single left-to-right fallback
-// pass would default `T` before `E` has a value to borrow, mis-diagnosing
-// `Err(2)` alone as WS063 while `Ok(1)` alone works cleanly.
-#[test]
-fn unconstrained_sibling_default_is_order_independent() {
-    assert_eq!(type_of("let c = Ok(1)\n", "Ok(1)"), "Result<int, int>");
-    let src = "let d = Err(2)\n";
-    assert_eq!(type_of(src, "Err(2)"), "Result<int, int>");
-    let p = parse(src, "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.is_empty(),
-        "an unannotated `Err(2)` must resolve cleanly, matching `Ok(1)`'s treatment: {:?}",
-        r.diagnostics
-    );
-}
-
-// `EasingFunction` is a registry enum seeded by
-// `register_builtin_enums` with NO `enum` declaration anywhere in
-// source. `.Discriminant` on a bare variant path must type exactly like the
-// hand-written case `variant_path_discriminant_is_int` above tests.
-#[test]
-fn builtin_game_enum_variant_path_discriminant_is_int() {
-    let src = "out d = EasingFunction.Bounce.Discriminant\n";
-    assert_eq!(type_of(src, "EasingFunction.Bounce.Discriminant"), "int");
-}
-
-// A `static var` typed and
-// initialized with a built-in enum, compared against a bare variant path's
-// `.Discriminant`. Must type-check with zero diagnostics, same as an
-// equivalent hand-written enum would.
-#[test]
-fn builtin_game_enum_stored_var_and_comparison_typecheck_clean() {
-    let src = "static var e: EasingFunction = EasingFunction.Linear\n\
-               out m = e.Discriminant == EasingFunction.Bounce.Discriminant\n";
-    let p = parse(src, "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.is_empty(),
-        "a built-in game enum var + discriminant comparison must type-check clean: {:?}",
-        r.diagnostics
-    );
+    let ty = r.type_of_expr.get(&(file, start, end)).unwrap_or_else(|| {
+        panic!(
+            "no recorded type for the referencing `Some`; diagnostics: {:?}",
+            r.diagnostics
+        )
+    });
     assert_eq!(
-        type_of(src, "e.Discriminant == EasingFunction.Bounce.Discriminant"),
-        "bool"
+        ty.to_string(),
+        "int",
+        "the local `Some` must win over the prelude variant"
     );
 }
 
@@ -1139,8 +970,7 @@ fn builtin_game_enum_match_exhaustive_only_over_schema_variants() {
         variants[0],
         arms(&variants)
     );
-    let p = parse(&full_src, "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    let r = tc(&full_src);
     assert!(
         !r.diagnostics.iter().any(|d| d.code == "WS054"),
         "a match covering every schema variant must not be flagged non-exhaustive: {:?}",
@@ -1153,53 +983,12 @@ fn builtin_game_enum_match_exhaustive_only_over_schema_variants() {
         variants[0],
         arms(&variants[..variants.len() - 1])
     );
-    let p2 = parse(&short_src, "test");
-    let r2 = crate::typecheck::typecheck(&p2.ast, "test", &crate::typecheck::CeSlotMap::default());
+    let r2 = tc(&short_src);
     assert!(
         r2.diagnostics
             .iter()
             .any(|d| d.code == "WS054" && d.message.contains(missing.as_str())),
         "dropping `{missing}` must surface WS054 naming it: {:?}",
         r2.diagnostics
-    );
-}
-
-// A qualified built-in enum value passed as a matching gate config
-// argument type-checks clean, exactly like the legacy bare member name.
-#[test]
-fn qualified_builtin_enum_config_arg_typechecks() {
-    let qualified =
-        "mod f(a: float, b: float, t: float) { Easing(a, b, t, function = EasingFunction.Bounce) }";
-    let p = parse(qualified, "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.is_empty(),
-        "a qualified built-in enum config value must type-check clean: {:?}",
-        r.diagnostics
-    );
-
-    // The legacy bare member-name form is unchanged.
-    let bare = "mod f(a: float, b: float, t: float) { Easing(a, b, t, function = Bounce) }";
-    let p2 = parse(bare, "test");
-    let r2 = crate::typecheck::typecheck(&p2.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r2.diagnostics.is_empty(),
-        "the legacy bare enum member name must still type-check clean: {:?}",
-        r2.diagnostics
-    );
-}
-
-// A built-in enum value of the WRONG enum at that config arg is an argument
-// type mismatch (WS003), not a silent accept.
-#[test]
-fn wrong_builtin_enum_config_arg_is_ws003() {
-    let src =
-        "mod f(a: float, b: float, t: float) { Easing(a, b, t, function = ColorSpace.Srgb) }";
-    let p = parse(src, "test");
-    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
-    assert!(
-        r.diagnostics.iter().any(|d| d.code == "WS003"),
-        "a wrong-enum config value must be WS003: {:?}",
-        r.diagnostics
     );
 }

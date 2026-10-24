@@ -5,7 +5,7 @@
 //! against `container_methods.golden`.
 //!
 //! Set `WIRESCRIPT_BLESS=1` to rewrite the golden file from the current
-//! lowering. A missing golden file is written on first run.
+//! lowering. A missing golden file fails the test.
 
 use super::*;
 use crate::ir::{Module, Type};
@@ -55,7 +55,11 @@ fn args(
                 Type::Array(_) | Type::Map(..) => container(&p.ty),
                 t => literal(t, i),
             };
-            if named { format!("{} = {v}", p.name) } else { v }
+            if named {
+                format!("{} = {v}", p.name)
+            } else {
+                v
+            }
         })
         .collect()
 }
@@ -111,7 +115,11 @@ fn program(decls: &str, sink: Option<&Type>, call: &str) -> String {
     )
 }
 
-fn array_program(m: &crate::catalog::arrays::ArrayMethod, elem: &str, form: Form) -> Option<String> {
+fn array_program(
+    m: &crate::catalog::arrays::ArrayMethod,
+    elem: &str,
+    form: Form,
+) -> Option<String> {
     let elem_ty = ty(elem);
     let params = m.params(&elem_ty);
     if form == Form::Required && params.iter().all(|p| !p.optional) {
@@ -126,14 +134,27 @@ fn array_program(m: &crate::catalog::arrays::ArrayMethod, elem: &str, form: Form
             Form::NamedExec => "a.sortMultiple(b, descending = true, exec = u)".to_string(),
         }
     } else {
-        format!("a.{}({})", m.name, call_args(&params, form, |_| "b".to_string()))
+        format!(
+            "a.{}({})",
+            m.name,
+            call_args(&params, form, |_| "b".to_string())
+        )
     };
     let ret = crate::catalog::arrays::array_return_type(m.name, &elem_ty).expect("array method");
     let sink = primary(&ret);
-    Some(program(&format!("var a: {elem}[]\nvar b: {elem}[]\n"), sink.as_ref(), &call))
+    Some(program(
+        &format!("var a: {elem}[]\nvar b: {elem}[]\n"),
+        sink.as_ref(),
+        &call,
+    ))
 }
 
-fn map_program(m: &crate::catalog::maps::MapMethod, key: &str, value: &str, form: Form) -> Option<String> {
+fn map_program(
+    m: &crate::catalog::maps::MapMethod,
+    key: &str,
+    value: &str,
+    form: Form,
+) -> Option<String> {
     let key_ty = ty(key);
     let value_ty = ty(value);
     let params = m.params(&key_ty, &value_ty);
@@ -150,7 +171,8 @@ fn map_program(m: &crate::catalog::maps::MapMethod, key: &str, value: &str, form
             other => panic!("no container for {other:?}"),
         })
     );
-    let ret = crate::catalog::maps::map_return_type(m.name, &key_ty, &value_ty).expect("map method");
+    let ret =
+        crate::catalog::maps::map_return_type(m.name, &key_ty, &value_ty).expect("map method");
     let sink = primary(&ret);
     Some(program(
         &format!(
@@ -220,7 +242,8 @@ fn normalize(module: &Module, out: &mut Vec<String>) {
             })
             .collect();
         inputs.sort();
-        let fmt_out = |p: &crate::ir::PortSpec| format!("{}:{:?}", crate::intern::resolve(p.name), p.ty);
+        let fmt_out =
+            |p: &crate::ir::PortSpec| format!("{}:{:?}", crate::intern::resolve(p.name), p.ty);
         let mut outputs: Vec<String> = node
             .ports
             .outputs
@@ -228,8 +251,13 @@ fn normalize(module: &Module, out: &mut Vec<String>) {
             .filter(|p| !matches!(p.ty, Type::Exec))
             .map(fmt_out)
             .collect();
-        let mut execs: Vec<String> =
-            node.ports.outputs.iter().filter(|p| matches!(p.ty, Type::Exec)).map(fmt_out).collect();
+        let mut execs: Vec<String> = node
+            .ports
+            .outputs
+            .iter()
+            .filter(|p| matches!(p.ty, Type::Exec))
+            .map(fmt_out)
+            .collect();
         execs.sort();
         outputs.extend(execs);
         out.push(format!(
@@ -282,7 +310,10 @@ fn cases(forms: &[Form]) -> Vec<(String, String)> {
             for value in ELEMS {
                 for &form in forms {
                     if let Some(src) = map_program(m, key, value, form) {
-                        out.push((format!("map {} {key}->{value} {}", m.name, form.label()), src));
+                        out.push((
+                            format!("map {} {key}->{value} {}", m.name, form.label()),
+                            src,
+                        ));
                     }
                 }
             }
@@ -292,7 +323,8 @@ fn cases(forms: &[Form]) -> Vec<(String, String)> {
 }
 
 fn golden_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lower/tests/container_methods.golden")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/lower/tests/container_methods.golden")
 }
 
 #[test]
@@ -302,11 +334,18 @@ fn container_methods_match_golden() {
         .map(|(title, src)| render(title, src))
         .collect();
     let path = golden_path();
-    if std::env::var_os("WIRESCRIPT_BLESS").is_some() || !path.exists() {
+    if std::env::var_os("WIRESCRIPT_BLESS").is_some() {
         std::fs::write(&path, &actual).expect("write golden");
         return;
     }
-    let expected = std::fs::read_to_string(&path).expect("read golden").replace("\r\n", "\n");
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| {
+            panic!(
+                "cannot read {} ({e}); rerun with WIRESCRIPT_BLESS=1 to write it",
+                path.display()
+            )
+        })
+        .replace("\r\n", "\n");
     if expected != actual {
         let exp: Vec<&str> = expected.lines().collect();
         let act: Vec<&str> = actual.lines().collect();
@@ -318,7 +357,11 @@ fn container_methods_match_golden() {
                 section = l;
             }
             if e != a {
-                diffs.push(format!("{section}\n  - {}\n  + {}", e.unwrap_or("<none>"), a.unwrap_or("<none>")));
+                diffs.push(format!(
+                    "{section}\n  - {}\n  + {}",
+                    e.unwrap_or("<none>"),
+                    a.unwrap_or("<none>")
+                ));
                 if diffs.len() >= 20 {
                     break;
                 }
@@ -347,7 +390,7 @@ fn named_arguments_lower_like_positional() {
             mismatched.push(format!("{nt} differs from {pt}:\n{n}vs\n{p}"));
         }
     }
-    assert!(mismatched.is_empty(), "{}", mismatched.join("\n"));
+    crate::test_support::report_failures(&mismatched, named.len());
 }
 
 /// A map method with `exec =` that stops early (a `const` destination) still
@@ -358,12 +401,15 @@ fn map_method_exec_trigger_is_restored_on_early_exit() {
     let src = "const K = [1, 2]\nvar m: Map<int, int>\nvar after: int\nin t: exec\nin u: exec\n\
                on t {\n  m.keys(K, exec = u)\n  after = 1\n}\n";
     let r = compile(src);
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS044"), "{:?}", r.diagnostics);
+    crate::test_support::assert_code(&r.diagnostics, "WS044");
     let mut gates = Vec::new();
     normalize(&r.module, &mut gates);
     let set = gates
         .iter()
         .find(|l| l.contains("Var(after).VarRef"))
         .expect("the `after = 1` write");
-    assert!(set.contains("Exec:Exec<-[Internal_MicrochipInput(t).RER_Output]"), "{set}");
+    assert!(
+        set.contains("Exec:Exec<-[Internal_MicrochipInput(t).RER_Output]"),
+        "{set}"
+    );
 }

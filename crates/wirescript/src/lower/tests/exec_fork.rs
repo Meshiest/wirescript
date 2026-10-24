@@ -41,13 +41,17 @@ fn var_set_writing(r: &LowerResult, label: &str) -> crate::ir::NodeId {
         .map(|w| w.target.node_id)
         .filter(|id| r.module.nodes[id].gate_class == gc::VAR_SET)
         .collect();
-    assert_eq!(sets.len(), 1, "expected one write of `{label}`, got {sets:?}");
+    assert_eq!(
+        sets.len(),
+        1,
+        "expected one write of `{label}`, got {sets:?}"
+    );
     sets[0]
 }
 
 fn assert_no_placeholder(r: &LowerResult) {
     assert!(
-        !has_gate(r, crate::ir::gate_class::UNSUPPORTED),
+        !has_unsupported(&r.module),
         "lowering fell to an `_Unsupported` placeholder: {:?}",
         r.diagnostics
     );
@@ -70,8 +74,9 @@ in start: exec
 
 #[test]
 fn call_exec_binds_without_advancing_the_chain() {
-    let r = compile(&format!("{LATER}on start {{\n  let d = later().exec\n  p = 1\n}}"));
-    assert_no_errors(&r);
+    let r = compile_ok(&format!(
+        "{LATER}on start {{\n  let d = later().exec\n  p = 1\n}}"
+    ));
     assert_no_placeholder(&r);
     assert_eq!(
         write_exec_source(&r, "m"),
@@ -83,8 +88,7 @@ fn call_exec_binds_without_advancing_the_chain() {
 
 #[test]
 fn an_ordinary_call_still_sequences() {
-    let r = compile(&format!("{LATER}on start {{\n  later()\n  p = 1\n}}"));
-    assert_no_errors(&r);
+    let r = compile_ok(&format!("{LATER}on start {{\n  later()\n  p = 1\n}}"));
     assert_no_placeholder(&r);
     let m_set = var_set_writing(&r, "m");
     assert_ne!(
@@ -101,10 +105,9 @@ fn an_ordinary_call_still_sequences() {
 
 #[test]
 fn awaiting_a_forked_call_rejoins_downstream_of_it() {
-    let r = compile(&format!(
+    let r = compile_ok(&format!(
         "{LATER}on start {{\n  let d = later().exec\n  p = 1\n  await d\n  q = 2\n}}"
     ));
-    assert_no_errors(&r);
     assert_no_placeholder(&r);
     let m_set = var_set_writing(&r, "m");
     let q_set = var_set_writing(&r, "q");
@@ -120,8 +123,9 @@ fn awaiting_a_forked_call_rejoins_downstream_of_it() {
 
 #[test]
 fn a_discarded_fork_still_emits_the_call() {
-    let r = compile(&format!("{LATER}on start {{\n  let _ = later().exec\n  p = 1\n}}"));
-    assert_no_errors(&r);
+    let r = compile_ok(&format!(
+        "{LATER}on start {{\n  let _ = later().exec\n  p = 1\n}}"
+    ));
     assert_no_placeholder(&r);
     assert_eq!(
         write_exec_source(&r, "m"),
@@ -132,10 +136,9 @@ fn a_discarded_fork_still_emits_the_call() {
 
 #[test]
 fn emit_as_a_value_is_the_current_chain_point() {
-    let r = compile(
+    let r = compile_ok(
         "var p: int = 0\nin start: exec\non start {\n  p = 1\n  let d = SleepTicks(emit, delay = 2)\n  await d\n}",
     );
-    assert_no_errors(&r);
     assert_no_placeholder(&r);
     let buffer = find_gate(&r, gc::BUFFER_TICKS);
     let src = r
@@ -156,7 +159,7 @@ fn emit_as_a_value_is_the_current_chain_point() {
 fn a_forked_chip_call_shares_the_chain_point_and_rejoins_through_its_exec_out() {
     // A physical microchip crosses the boundary through rerouter pins rather
     // than inlining, so its fork is a separate path from the inlined mod above.
-    let r = compile(
+    let r = compile_ok(
         "var m: int = 0\n\
          var p: int = 0\n\
          chip Later() -> (count: int) {\n\
@@ -170,7 +173,6 @@ fn a_forked_chip_call_shares_the_chain_point_and_rejoins_through_its_exec_out() 
          await d\n\
          }",
     );
-    assert_no_errors(&r);
     assert_no_placeholder(&r);
     let (chip_node, body) = r.module.chips.iter().next().expect("one chip instance");
     // The auto-exec pins by their role inside the body: the input whose value

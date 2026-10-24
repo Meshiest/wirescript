@@ -23,6 +23,8 @@ pub(crate) mod types;
 mod layout_tests;
 #[cfg(test)]
 mod emit_tests;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 // The backend: IR, layout and emit, re-exported at their old paths.
 // `layout` brings the module and the `layout` function together.

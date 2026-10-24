@@ -5,19 +5,12 @@
 use super::*;
 use crate::ir::gate_class as gc;
 
-/// Whether output `name` of `m` is driven once, by its backing var.
-fn backed(m: &crate::ir::Module, name: &str) -> bool {
-    let out = m.nodes.iter().find(|(_, n)| {
-        n.gate_class == gc::MICROCHIP_OUTPUT
-            && matches!(n.properties.get(&*crate::intern::sym::PORT_LABEL), Some(crate::ir::Literal::String(s)) if s == name)
-    });
-    let Some((id, _)) = out else { return false };
-    let drivers: Vec<_> = m.wires.iter().filter(|w| w.target.node_id == *id && w.target.port == WirePort::RerInput).collect();
-    drivers.len() == 1 && m.nodes[&drivers[0].source.node_id].note == Some("out_backing")
-}
-
 /// The gate an exec output of `from` starts.
-fn chain_start(m: &crate::ir::Module, from: crate::ir::NodeId, port: WirePort) -> crate::ir::NodeId {
+fn chain_start(
+    m: &crate::ir::Module,
+    from: crate::ir::NodeId,
+    port: WirePort,
+) -> crate::ir::NodeId {
     m.wires
         .iter()
         .find(|w| w.source == from.port(port))
@@ -30,12 +23,11 @@ fn chain_start(m: &crate::ir::Module, from: crate::ir::NodeId, port: WirePort) -
 /// Both drove the output constantly, and two namespaced calls fanned in.
 #[test]
 fn a_call_in_a_loop_bound_or_through_a_namespace_is_a_counted_site() {
-    let r = compile(
+    let r = compile_ok(
         "in go: exec\nin c: bool\nvar n: int = 0\nout on_: int = n\nout o: int\n\
          mod cnt(v: int) -> int {\n  emit o = v\n  return 3\n}\n\
          on go {\n  if c {\n    for i in 0..cnt(7) { n = n + 1 }\n  }\n}",
     );
-    assert_no_errors(&r);
     assert!(backed(&r.module, "o"), "a call in a for bound");
     let lib = "out o: int\nmod setO(v: int) { emit o = v }\n";
     for entry in [
@@ -62,18 +54,17 @@ fn a_write_after_a_possible_return_is_conditional() {
         "out o: int\nmod early(v: int) {\n  if c { return }\n  emit o = v\n}\non go { early(k) }",
     ] {
         let src = format!("{head}{body}");
-        let r = compile(&src);
-        assert_no_errors(&r);
+        let r = compile_ok(&src);
         assert!(backed(&r.module, "o"), "{src}");
     }
-    let r = compile(&format!(
+    let r = compile_ok(&format!(
         "{head}chip C(t: exec) -> (o: int) {{\n  var d: bool = true\n  on t {{\n    if d {{ return }}\n    emit o = 9\n  }}\n}}\nout ro = C(go)"
     ));
-    assert_no_errors(&r);
     assert!(backed(only_chip(&r, "the chip"), "o"), "a chip's handler");
     // With nothing before it that can leave, the write keeps its direct wire.
-    let r = compile(&format!("{head}out o: int\non go {{\n  if c {{ n = 1 }}\n  emit o = 9\n}}"));
-    assert_no_errors(&r);
+    let r = compile_ok(&format!(
+        "{head}out o: int\non go {{\n  if c {{ n = 1 }}\n  emit o = 9\n}}"
+    ));
     assert!(!backed(&r.module, "o"));
 }
 
@@ -86,15 +77,29 @@ fn an_if_or_match_expression_arm_that_acts_runs_only_when_taken() {
     let head = "enum K { A, B }\nin go: exec\nin c: bool\nvar k: K = K.A\nvar n: int = 0\nout on_: int = n\nout o: int\n\
                 mod setO(v: int) -> int {\n  emit o = v\n  return v\n}\n";
     for (body, start) in [
-        ("on go {\n  n = if c then setO(4) else 0\n}", WirePort::ExecOutA),
-        ("on go {\n  n = if c then 0 else setO(4)\n}", WirePort::ExecOutB),
-        ("on go {\n  n = match k { A => setO(4), B => 0 }\n}", WirePort::ExecOutA),
+        (
+            "on go {\n  n = if c then setO(4) else 0\n}",
+            WirePort::ExecOutA,
+        ),
+        (
+            "on go {\n  n = if c then 0 else setO(4)\n}",
+            WirePort::ExecOutB,
+        ),
+        (
+            "on go {\n  n = match k { A => setO(4), B => 0 }\n}",
+            WirePort::ExecOutA,
+        ),
     ] {
         let src = format!("{head}{body}");
-        let r = compile(&src);
-        assert_no_errors(&r);
+        let r = compile_ok(&src);
         assert!(backed(&r.module, "o"), "{src}");
-        let store = r.module.nodes.values().find(|n| n.note == Some("out_set")).expect("o's store").id;
+        let store = r
+            .module
+            .nodes
+            .values()
+            .find(|n| n.note == Some("out_set"))
+            .expect("o's store")
+            .id;
         let branch = r
             .module
             .nodes
@@ -103,30 +108,55 @@ fn an_if_or_match_expression_arm_that_acts_runs_only_when_taken() {
             .map(|n| n.id)
             .min()
             .expect("a branch");
-        assert!(exec_reaches(&r.module, chain_start(&r.module, branch, start), store), "{src}");
-        let other = if start == WirePort::ExecOutA { WirePort::ExecOutB } else { WirePort::ExecOutA };
-        assert!(!exec_reaches(&r.module, chain_start(&r.module, branch, other), store), "{src}");
+        assert!(
+            exec_reaches(&r.module, chain_start(&r.module, branch, start), store),
+            "{src}"
+        );
+        let other = if start == WirePort::ExecOutA {
+            WirePort::ExecOutB
+        } else {
+            WirePort::ExecOutA
+        };
+        assert!(
+            !exec_reaches(&r.module, chain_start(&r.module, branch, other), store),
+            "{src}"
+        );
     }
     // A `return` in a `match` inside a branch leaves the mod on that branch only.
-    let r = compile(
+    let r = compile_ok(
         "enum K { A, B }\nin go: exec\nin c: bool\nvar k: K = K.A\nvar n: int = 0\nout on_: int = n\n\
          mod f() -> int {\n  let q = if c then (match k { A => { return 7 }, B => 2 }) else 3\n  return q\n}\n\
          on go { n = f() }",
     );
-    assert_no_errors(&r);
-    let branch = r.module.nodes.values().filter(|n| n.gate_class == gc::BRANCH).map(|n| n.id).min().expect("the if");
+    let branch = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == gc::BRANCH)
+        .map(|n| n.id)
+        .min()
+        .expect("the if");
     let ret7 = r
         .module
         .nodes
         .values()
         .find(|n| n.note == Some("ret_set") && stores_value(&r.module, n.id, 7))
         .expect("the return of 7");
-    assert!(exec_reaches(&r.module, chain_start(&r.module, branch, WirePort::ExecOutA), ret7.id));
-    assert!(!exec_reaches(&r.module, chain_start(&r.module, branch, WirePort::ExecOutB), ret7.id));
+    assert!(exec_reaches(
+        &r.module,
+        chain_start(&r.module, branch, WirePort::ExecOutA),
+        ret7.id
+    ));
+    assert!(!exec_reaches(
+        &r.module,
+        chain_start(&r.module, branch, WirePort::ExecOutB),
+        ret7.id
+    ));
     // A branch that only reads keeps the pure Select.
-    let r = compile(&format!("{head}mod id(x: int) -> int {{ return x }}\non go {{\n  n = if c then id(4) else 0\n}}"));
-    assert_no_errors(&r);
-    assert!(has_gate(&r, gc::SELECT) && !has_gate(&r, gc::BRANCH));
+    let r = compile_ok(&format!(
+        "{head}mod id(x: int) -> int {{ return x }}\non go {{\n  n = if c then id(4) else 0\n}}"
+    ));
+    assert!(has_gate(&r, gc::SELECT) && !has_gate_deep(&r, gc::BRANCH));
     // A record has no store to choose through: WS097.
     let head = "type P = { x: int, y: int }\nin go: exec\nin c: bool\nvar q: int = 0\nvar p: P = { x: 0, y: 0 }\n\
                 mod bump() -> int {\n  q = q + 1\n  return q\n}\n";
@@ -135,7 +165,11 @@ fn an_if_or_match_expression_arm_that_acts_runs_only_when_taken() {
         "enum K { A, B }\nvar k: K = K.A\non go { p = match k { A => { x: bump(), y: 0 }, B => { x: 0, y: 0 } } }",
     ] {
         let r = compile(&format!("{head}{body}"));
-        assert!(r.diagnostics.iter().any(|d| d.code == "WS097"), "{body}: {:?}", r.diagnostics);
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS097"),
+            "{body}: {:?}",
+            r.diagnostics
+        );
     }
 }
 
@@ -148,13 +182,15 @@ fn a_loop_bound_is_evaluated_once() {
             "in go: exec\nvar q: int = 0\nvar n: int = 0\nout oq: int = q\nout on_: int = n\n\
              mod bump() -> int {{\n  q = q + 1\n  return q\n}}\non go {{\n  for i in {range} {{ n = n + 1 }}\n}}"
         );
-        let r = compile(&src);
-        assert_no_errors(&r);
+        let r = compile_ok(&src);
         let bumps = r
             .module
             .nodes
             .values()
-            .filter(|n| matches!(n.gate_class, gc::VAR_INCREMENT | gc::VAR_SET) && n.source_range.start.line == 7)
+            .filter(|n| {
+                matches!(n.gate_class, gc::VAR_INCREMENT | gc::VAR_SET)
+                    && n.source_range.start.line == 7
+            })
             .count();
         assert_eq!(bumps, 1, "{range}");
     }
@@ -178,7 +214,10 @@ fn path_checks_see_value_match_arms() {
     let e = errs(&format!(
         "{head}mod f(k: K) -> (a: int) {{\n  let v = match k {{ A => {{ emit a = 1\n    return }}, B => 2 }}\n  n = v\n}}\non go {{ n = f(k) + 1 }}"
     ));
-    assert!(!e.contains(&"WS013".to_string()) && e.contains(&"WS090".to_string()), "{e:?}");
+    assert!(
+        !e.contains(&"WS013".to_string()) && e.contains(&"WS090".to_string()),
+        "{e:?}"
+    );
 }
 
 /// A `SendCustomEvent` in a loop is checked against its receiver and types it,
@@ -188,21 +227,20 @@ fn a_custom_event_sent_in_a_loop_is_checked() {
     let src = "in go: exec\nvar got: int = 0\nout o: int = got\non CustomEvent(\"e\") -> (a: int) {\n  got = a\n}\n\
                on go {\n  for i in 0..2 {\n    SendCustomEvent(\"e\", \"hello\")\n  }\n}";
     let r = compile(src);
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS030"), "{:?}", r.diagnostics);
+    crate::test_support::assert_code(&r.diagnostics, "WS030");
     let src = "in go: exec\nvar got: int = 0\nout o: int = got\non CustomEvent(\"e\") -> (a) {\n  got = a\n}\n\
                on go {\n  for i in 0..2 {\n    SendCustomEvent(\"e\", 7)\n  }\n}";
     let r = compile(src);
-    assert!(!r.diagnostics.iter().any(|d| d.code == "WS042"), "{:?}", r.diagnostics);
+    crate::test_support::assert_no_code(&r.diagnostics, "WS042");
 }
 
 /// An `out` in a `match` arm of a handler declares its port as one in an `if`
 /// branch does; it was WS073.
 #[test]
 fn an_out_in_a_handler_match_arm_is_a_port() {
-    let r = compile(
+    let r = compile_ok(
         "enum K { A, B }\nin go: exec\nvar k: K = K.A\non go {\n  match k { A => { out z = 5 } B => { out z = 6 } }\n}",
     );
-    assert_no_errors(&r);
     assert!(backed(&r.module, "z"));
 }
 
@@ -217,25 +255,41 @@ fn a_handler_an_arm_cannot_gate_is_warned() {
                 chip Cx(t: exec, v: int) -> (r: int) {\non t {\ncnt = cnt + 1\nemit r = v\n}\n}\n\
                 chip Pure(t: exec, v: int) -> (r: int) {\non t {\nemit r = v\n}\n}\n";
     let count = |body: &str| {
-        let r = compile(&format!("{head}{body}"));
-        assert_no_errors(&r);
+        let r = compile_ok(&format!("{head}{body}"));
         r.diagnostics.iter().filter(|d| d.code == "WS102").count()
     };
     assert_eq!(count("on go { n = if c then Cx(go, 3) else 0 }"), 1);
     assert_eq!(count("on go { n = if c then 0 else Cx(go, 3) + 1 }"), 1);
     assert_eq!(count("on go { n = match k { A => Cx(go, 3), B => 0 } }"), 1);
-    assert_eq!(count("mod f() -> int { return if c then Cx(go, 3) else 0 }\non go { n = f() + f() }"), 1);
+    assert_eq!(
+        count("mod f() -> int { return if c then Cx(go, 3) else 0 }\non go { n = f() + f() }"),
+        1
+    );
     assert_eq!(count("on go { n = if c then Pure(go, 3) else 0 }"), 0);
     assert_eq!(count("on go { n = Cx(go, 3) }"), 0);
     assert_eq!(count("on go { n = if Cx(go, 3) > 0 then 1 else 0 }"), 0);
     // State the chip declares outside the handler keeps the handler's write.
     let own = |decl: &str, write: &str| {
-        format!("chip Own(t: exec, v: int) -> (r: int) {{\n{decl}\non t {{\n{write}\n}}\n}}\non go {{ n = if c then Own(go, 3) else 0 }}")
+        format!(
+            "chip Own(t: exec, v: int) -> (r: int) {{\n{decl}\non t {{\n{write}\n}}\n}}\non go {{ n = if c then Own(go, 3) else 0 }}"
+        )
     };
-    assert_eq!(count(&own("var own: int = 0", "own = own + v\nemit r = own")), 1);
-    assert_eq!(count(&own("var arr: int[] = []", "arr.push(v)\nemit r = arr.length()")), 1);
+    assert_eq!(
+        count(&own("var own: int = 0", "own = own + v\nemit r = own")),
+        1
+    );
+    assert_eq!(
+        count(&own(
+            "var arr: int[] = []",
+            "arr.push(v)\nemit r = arr.length()"
+        )),
+        1
+    );
     assert_eq!(count(&own("var own: int = 0", "emit r = own + v")), 0);
-    assert_eq!(count(&own("", "var tmp: int = 0\ntmp = v\nemit r = tmp")), 0);
+    assert_eq!(
+        count(&own("", "var tmp: int = 0\ntmp = v\nemit r = tmp")),
+        0
+    );
     assert_eq!(count(&own("", "let q = v + 1\nemit r = q")), 0);
 }
 
@@ -260,11 +314,22 @@ fn an_untyped_output_is_stored_as_the_join_of_its_writes() {
         "on go {\n  if c { out z = pv } else { out z = qv }\n}",
     ] {
         let e = errs(&format!("{head}{body}"));
-        assert_eq!(e.iter().filter(|c| *c == "WS103").count(), 1, "{body}: {e:?}");
+        assert_eq!(
+            e.iter().filter(|c| *c == "WS103").count(),
+            1,
+            "{body}: {e:?}"
+        );
     }
     let lib = "in go: exec\non go { out z = 5 }";
-    let r = compile_multi("import \"lib\"\nin go2: exec\non go2 { out z = \"s\" }", &[("lib", lib)]);
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS103"), "across files: {:?}", r.diagnostics);
+    let r = compile_multi(
+        "import \"lib\"\nin go2: exec\non go2 { out z = \"s\" }",
+        &[("lib", lib)],
+    );
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS103"),
+        "across files: {:?}",
+        r.diagnostics
+    );
     // Joined to `float`: the integer constant is stored as the float.
     for body in [
         "on go {\n  if c { out z = 7 } else { out z = 2.5 }\n}",
@@ -283,13 +348,25 @@ fn an_untyped_output_is_stored_as_the_join_of_its_writes() {
             n.gate_class == gc::MICROCHIP_OUTPUT
                 && matches!(n.properties.get(&*crate::intern::sym::PORT_LABEL), Some(Literal::String(s)) if s == "z")
         });
-        let port_ty = port.and_then(|n| n.ports.inputs.first()).map(|p| p.ty.clone());
-        assert_eq!(port_ty, Some(crate::ir::Type::Float), "{body}: the port is not a float");
+        let port_ty = port
+            .and_then(|n| n.ports.inputs.first())
+            .map(|p| p.ty.clone());
+        assert_eq!(
+            port_ty,
+            Some(crate::ir::Type::Float),
+            "{body}: the port is not a float"
+        );
         for fold in [false, true] {
             let saved = super::float_slots::save_numbers(&src, fold);
             let seven = |l: &Literal| matches!(l, Literal::Float(f) if f.abs() == 7.0);
-            assert!(saved.iter().any(seven), "{body} fold {fold}: no float 7\n{saved:?}");
-            assert!(!saved.iter().any(|l| matches!(l, Literal::Int(7 | -7))), "{body} fold {fold}: {saved:?}");
+            assert!(
+                saved.iter().any(seven),
+                "{body} fold {fold}: no float 7\n{saved:?}"
+            );
+            assert!(
+                !saved.iter().any(|l| matches!(l, Literal::Int(7 | -7))),
+                "{body} fold {fold}: {saved:?}"
+            );
         }
     }
     for body in [
@@ -323,16 +400,20 @@ fn a_mod_body_write_to_an_untyped_output_joins_it() {
         "mod b(v: string) { out z = v }\nmod c(v: string) { b(v) }\non go { out z = 5 }\non go2 { c(s) }",
     ] {
         let e = errs(&format!("{head}{body}"));
-        assert_eq!(e.iter().filter(|c| *c == "WS103").count(), 1, "{body}: {e:?}");
+        assert_eq!(
+            e.iter().filter(|c| *c == "WS103").count(),
+            1,
+            "{body}: {e:?}"
+        );
     }
     let port_ty = |src: &str| {
-        let r = compile(src);
-        assert_no_errors(&r);
+        let r = compile_ok(src);
         let port = r.module.nodes.values().find(|n| {
             n.gate_class == gc::MICROCHIP_OUTPUT
                 && matches!(n.properties.get(&*crate::intern::sym::PORT_LABEL), Some(Literal::String(s)) if s == "z")
         });
-        port.and_then(|n| n.ports.inputs.first()).map(|p| p.ty.clone())
+        port.and_then(|n| n.ports.inputs.first())
+            .map(|p| p.ty.clone())
     };
     // Joined to `float`: the handler's integer constant is stored as the float.
     for body in [
@@ -342,22 +423,46 @@ fn a_mod_body_write_to_an_untyped_output_joins_it() {
         "mod b(v: float) { out z = v }\nmod c(v: float) { b(v) }\non go { out z = 5 }\non go2 { c(fa) }",
     ] {
         let src = format!("{head}{body}");
-        assert_eq!(port_ty(&src), Some(crate::ir::Type::Float), "{body}: the port is not a float");
+        assert_eq!(
+            port_ty(&src),
+            Some(crate::ir::Type::Float),
+            "{body}: the port is not a float"
+        );
         for fold in [false, true] {
             let saved = super::float_slots::save_numbers(&src, fold);
-            assert!(saved.contains(&Literal::Float(5.0)), "{body} fold {fold}: no float 5\n{saved:?}");
-            assert!(!saved.contains(&Literal::Int(5)), "{body} fold {fold}: {saved:?}");
+            assert!(
+                saved.contains(&Literal::Float(5.0)),
+                "{body} fold {fold}: no float 5\n{saved:?}"
+            );
+            assert!(
+                !saved.contains(&Literal::Int(5)),
+                "{body} fold {fold}: {saved:?}"
+            );
         }
     }
     // An instantiation no call makes writes nothing.
-    let src = format!("{head}mod wr<T>(v: T) {{ out z = v }}\non go {{ out z = 5 }}\non go2 {{ wr(a) }}");
-    assert_eq!(port_ty(&src), Some(crate::ir::Type::Int), "an int-only generic write");
+    let src =
+        format!("{head}mod wr<T>(v: T) {{ out z = v }}\non go {{ out z = 5 }}\non go2 {{ wr(a) }}");
+    assert_eq!(
+        port_ty(&src),
+        Some(crate::ir::Type::Int),
+        "an int-only generic write"
+    );
     // Nor does a mod nothing running calls, directly or through another one
     // nothing calls; one a handler reaches through a chain still writes.
     for (body, want) in [
-        ("mod wr(v: float) { out z = v }\nmod never() { wr(1.5) }\non go { out z = 5 }", crate::ir::Type::Int),
-        ("mod wr(v: string) { out z = v }\non go { out z = 5 }", crate::ir::Type::Int),
-        ("mod wr(v: float) { out z = v }\nmod mid() { wr(1.5) }\non go { out z = 5 }\non go2 { mid() }", crate::ir::Type::Float),
+        (
+            "mod wr(v: float) { out z = v }\nmod never() { wr(1.5) }\non go { out z = 5 }",
+            crate::ir::Type::Int,
+        ),
+        (
+            "mod wr(v: string) { out z = v }\non go { out z = 5 }",
+            crate::ir::Type::Int,
+        ),
+        (
+            "mod wr(v: float) { out z = v }\nmod mid() { wr(1.5) }\non go { out z = 5 }\non go2 { mid() }",
+            crate::ir::Type::Float,
+        ),
     ] {
         assert_eq!(port_ty(&format!("{head}{body}")), Some(want), "{body}");
     }
@@ -367,7 +472,12 @@ fn a_mod_body_write_to_an_untyped_output_joins_it() {
 /// first, so a side effect of `a` that `b` reads was not seen.
 #[test]
 fn a_range_evaluates_its_bounds_in_source_order() {
-    for range in ["one()..two()", "(one()..two()).rev()", "(one()..9).step(two())", "count(one(), from = two())"] {
+    for range in [
+        "one()..two()",
+        "(one()..two()).rev()",
+        "(one()..9).step(two())",
+        "count(one(), from = two())",
+    ] {
         let src = format!(
             "in go: exec\nvar q: int = 0\nvar n: int = 0\nout oq: int = q\nout on_: int = n\n\
              mod one() -> int {{\n  q = q + 1\n  return q\n}}\nmod two() -> int {{\n  q = q + 10\n  return q\n}}\n\
@@ -379,12 +489,18 @@ fn a_range_evaluates_its_bounds_in_source_order() {
                 r.module
                     .nodes
                     .values()
-                    .find(|n| matches!(n.gate_class, gc::VAR_INCREMENT | gc::VAR_SET) && n.source_range.start.line == line)
+                    .find(|n| {
+                        matches!(n.gate_class, gc::VAR_INCREMENT | gc::VAR_SET)
+                            && n.source_range.start.line == line
+                    })
                     .map(|n| n.id)
                     .unwrap_or_else(|| panic!("{range}: no write on line {line}"))
             };
             let (first, second) = (at_line(7), at_line(11));
-            assert!(exec_reaches(&r.module, first, second), "{range}: `one()` runs after `two()`");
+            assert!(
+                exec_reaches(&r.module, first, second),
+                "{range}: `one()` runs after `two()`"
+            );
             assert!(!exec_reaches(&r.module, second, first), "{range}");
         }
     }
@@ -407,23 +523,47 @@ fn a_custom_event_mismatch_names_where_the_receiver_type_came_from() {
          on CustomEvent(\"lp\") -> (v) {\n  n = n + 1\n}",
         "WS030",
     );
-    assert!(m.contains("first send on this channel (line 5)") && !m.contains("declares"), "{m}");
+    assert!(
+        m.contains("first send on this channel (line 5)") && !m.contains("declares"),
+        "{m}"
+    );
     let m = msg(
         "in go: exec\nvar n: int = 0\nout onn: int = n\non go { SendCustomEvent(\"lp\", 2.5) }\n\
          on CustomEvent(\"lp\") -> (v: int) {\n  n = v\n}",
         "WS030",
     );
     assert!(m.contains("declares int"), "{m}");
-    msg("var n: int = 0\nout onn: int = n\non CustomEvent(\"q\") -> (v) {\n  n = n + 1\n}", "WS042");
+    msg(
+        "var n: int = 0\nout onn: int = n\non CustomEvent(\"q\") -> (v) {\n  n = n + 1\n}",
+        "WS042",
+    );
     // A first send in another file is named with that file.
     let lib = "in go: exec\non go {\n  SendCustomEvent(\"ch\", 1)\n}";
-    let loader = crate::resolve::MemLoader { files: [("celib.ws".to_string(), lib.to_string())].into_iter().collect() };
+    let loader = crate::resolve::MemLoader {
+        files: [("celib.ws".to_string(), lib.to_string())]
+            .into_iter()
+            .collect(),
+    };
     let src = "import \"celib\"\nin go2: exec\nvar tot: float = 0.0\nout ot: float = tot\n\
                on go2 { SendCustomEvent(\"ch\", 2.5) }\non CustomEvent(\"ch\") -> (x) { tot = tot + x }";
-    let input = crate::CompileInput { source: src, file: "main", module_name: None, fold_mode: crate::FoldMode::Auto };
+    let input = crate::CompileInput {
+        source: src,
+        file: "main",
+        module_name: None,
+        fold_mode: crate::FoldMode::Auto,
+    };
     let r = crate::compile_with_loader(input, Default::default(), &loader).expect("compiles");
-    let m = r.diagnostics.iter().find(|d| d.code == "WS030").map(|d| d.message.clone()).unwrap_or_default();
-    assert!(m.contains("first send on this channel (celib.ws line 3)"), "{m}\n{:?}", r.diagnostics);
+    let m = r
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "WS030")
+        .map(|d| d.message.clone())
+        .unwrap_or_default();
+    assert!(
+        m.contains("first send on this channel (celib.ws line 3)"),
+        "{m}\n{:?}",
+        r.diagnostics
+    );
 }
 
 /// A field read of a record-valued `if` or `match` whose arm acts is WS097 in
@@ -442,14 +582,35 @@ fn a_field_read_of_an_acting_record_choice_says_so() {
         let r = compile(&format!("{head}{body}"));
         let d: Vec<_> = r.diagnostics.iter().filter(|d| d.code == "WS097").collect();
         assert_eq!(d.len(), 1, "{body}: {:?}", r.diagnostics);
-        assert!(d[0].message.starts_with("this reads `.a`"), "{}", d[0].message);
+        assert!(
+            d[0].message.starts_with("this reads `.a`"),
+            "{}",
+            d[0].message
+        );
     }
-    let r = compile(&format!("{head}on go {{ n = if c then mk().a else 3 }}"));
-    assert_no_errors(&r);
-    let branch = r.module.nodes.values().find(|n| n.gate_class == gc::BRANCH).expect("a Branch").id;
-    let bump = r.module.nodes.values().find(|n| n.gate_class == gc::VAR_INCREMENT).expect("the increment").id;
-    let (a, b) = (chain_start(&r.module, branch, WirePort::ExecOutA), chain_start(&r.module, branch, WirePort::ExecOutB));
-    assert!(exec_reaches(&r.module, a, bump), "the write runs on the taken branch");
+    let r = compile_ok(&format!("{head}on go {{ n = if c then mk().a else 3 }}"));
+    let branch = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == gc::BRANCH)
+        .expect("a Branch")
+        .id;
+    let bump = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == gc::VAR_INCREMENT)
+        .expect("the increment")
+        .id;
+    let (a, b) = (
+        chain_start(&r.module, branch, WirePort::ExecOutA),
+        chain_start(&r.module, branch, WirePort::ExecOutB),
+    );
+    assert!(
+        exec_reaches(&r.module, a, bump),
+        "the write runs on the taken branch"
+    );
     assert!(!exec_reaches(&r.module, b, bump), "and not on the other");
 }
 
@@ -461,7 +622,15 @@ fn an_out_after_a_rejected_early_exit_names_no_other_writer() {
     let r = compile(
         "enum K { A, B }\nin go: exec\nvar k: K = K.A\nchip {\n  let v = match k { A => { return }, B => 2 }\n  out ov: int = v\n}",
     );
-    let codes: Vec<_> = r.diagnostics.iter().filter(|d| d.severity == crate::diagnostic::Severity::Error).map(|d| d.code.as_str()).collect();
+    let codes: Vec<_> = r
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == crate::diagnostic::Severity::Error)
+        .map(|d| d.code.as_str())
+        .collect();
     assert!(codes.contains(&"WS095"), "{codes:?}");
-    assert!(!codes.contains(&"WS013") && !codes.contains(&"WS094"), "{codes:?}");
+    assert!(
+        !codes.contains(&"WS013") && !codes.contains(&"WS094"),
+        "{codes:?}"
+    );
 }

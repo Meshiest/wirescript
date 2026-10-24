@@ -1019,3 +1019,6 @@ pub fn completions(
 
     items
 }
+
+#[cfg(test)]
+mod tests;

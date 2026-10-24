@@ -1,1410 +1,1086 @@
-    use super::*;
+use super::*;
 
-    fn doc_state(source: &str) -> DocState {
-        let pre_resolve = wirescript::parse(source, "test");
-        let resolved = resolve(source, "test", &FsLoader);
-        let tc = typecheck_with_inference(&resolved.ast, "test").0;
-        DocState {
-            source: source.to_string(),
-            symbols: Vec::new(),
-            doc_comments: Default::default(),
-            type_map: tc.type_of_expr,
-            if_contexts: tc.if_contexts,
-            var_read_contexts: tc.var_read_contexts,
-            narrowed_reads: tc.narrowed_reads,
-            dropped_ranges: tc.dropped_ranges,
-            resource_estimates: Default::default(),
-            pre_resolve_ast: pre_resolve.ast,
-            imported_files: resolved.imported_files.clone(),
-        }
+fn doc_state(source: &str) -> DocState {
+    let pre_resolve = wirescript::parse(source, "test");
+    let resolved = resolve(source, "test", &FsLoader);
+    let tc = typecheck_with_inference(&resolved.ast, "test").0;
+    DocState {
+        source: source.to_string(),
+        symbols: Vec::new(),
+        doc_comments: Default::default(),
+        type_map: tc.type_of_expr,
+        if_contexts: tc.if_contexts,
+        var_read_contexts: tc.var_read_contexts,
+        narrowed_reads: tc.narrowed_reads,
+        dropped_ranges: tc.dropped_ranges,
+        resource_estimates: Default::default(),
+        pre_resolve_ast: pre_resolve.ast,
+        imported_files: resolved.imported_files.clone(),
     }
+}
 
-    #[test]
-    fn cross_file_references_skip_open_docs_even_with_respelled_uris() {
-        // Clients spell file URIs differently from `Url::from_file_path`
-        // (VS Code sends `file:///c%3A/…`); the same-directory disk scan must
-        // still recognize an open doc as the same file and not re-collect it,
-        // or rename gets two identical edits per site and the client refuses
-        // to apply them.
-        let dir = std::env::temp_dir().join(format!("ws-lsp-refs-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("main.ws");
-        let source = "mod foo() {\n}\nin go: exec\non go { foo() }\n";
-        std::fs::write(&file, source).unwrap();
+#[test]
+fn cross_file_references_skip_open_docs_even_with_respelled_uris() {
+    // Clients spell file URIs differently from `Url::from_file_path`
+    // (VS Code sends `file:///c%3A/…`); the same-directory disk scan must
+    // still recognize an open doc as the same file and not re-collect it,
+    // or rename gets two identical edits per site and the client refuses
+    // to apply them.
+    let dir = std::env::temp_dir().join(format!("ws-lsp-refs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("main.ws");
+    let source = "mod foo() {\n}\nin go: exec\non go { foo() }\n";
+    std::fs::write(&file, source).unwrap();
 
-        let canonical_uri = Url::from_file_path(&file).unwrap();
-        // Same file, percent-encoded spelling -> a different Url value.
-        let respelled = canonical_uri.as_str().replacen("main.ws", "mai%6E.ws", 1);
-        let client_uri = Url::parse(&respelled).unwrap();
-        assert_ne!(client_uri, canonical_uri, "respelling must differ as a Url");
-        assert_eq!(
-            client_uri.to_file_path().unwrap(),
-            canonical_uri.to_file_path().unwrap(),
-            "…but point at the same file"
-        );
+    let canonical_uri = Url::from_file_path(&file).unwrap();
+    // Same file, percent-encoded spelling -> a different Url value.
+    let respelled = canonical_uri.as_str().replacen("main.ws", "mai%6E.ws", 1);
+    let client_uri = Url::parse(&respelled).unwrap();
+    assert_ne!(client_uri, canonical_uri, "respelling must differ as a Url");
+    assert_eq!(
+        client_uri.to_file_path().unwrap(),
+        canonical_uri.to_file_path().unwrap(),
+        "…but point at the same file"
+    );
 
-        let mut docs = HashMap::new();
-        docs.insert(client_uri.clone(), doc_state(source));
+    let mut docs = HashMap::new();
+    docs.insert(client_uri.clone(), doc_state(source));
 
-        // Cursor on the `foo` call site (line 3, `on go { foo() }`).
-        let ds = docs.get(&client_uri).unwrap();
-        let (target, current_sites) =
-            references_at(&ds.pre_resolve_ast, &ds.source, "test", 3, 9).expect("target");
-        let refs = collect_references_across_files(&docs, &client_uri, &target, &current_sites);
-        std::fs::remove_dir_all(&dir).ok();
+    // Cursor on the `foo` call site (line 3, `on go { foo() }`).
+    let ds = docs.get(&client_uri).unwrap();
+    let (target, current_sites) =
+        references_at(&ds.pre_resolve_ast, &ds.source, "test", 3, 9).expect("target");
+    let refs = collect_references_across_files(&docs, &client_uri, &target, &current_sites);
+    std::fs::remove_dir_all(&dir).ok();
 
-        assert_eq!(
-            refs.len(),
-            2,
-            "each site once (def + call), not doubled by the disk scan: {refs:?}"
-        );
-        assert!(
-            refs.iter().all(|(u, _)| u == &client_uri),
-            "sites must be reported under the open doc's URI: {refs:?}"
-        );
-    }
+    assert_eq!(
+        refs.len(),
+        2,
+        "each site once (def + call), not doubled by the disk scan: {refs:?}"
+    );
+    assert!(
+        refs.iter().all(|(u, _)| u == &client_uri),
+        "sites must be reported under the open doc's URI: {refs:?}"
+    );
+}
 
-    fn symbols_for(source: &str) -> Vec<SymbolDef> {
-        let resolved = resolve(source, "test", &FsLoader);
-        let tc = typecheck_with_inference(&resolved.ast, "test").0;
-        collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"))
-    }
+fn symbols_for(source: &str) -> Vec<SymbolDef> {
+    let resolved = resolve(source, "test", &FsLoader);
+    let tc = typecheck_with_inference(&resolved.ast, "test").0;
+    collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"))
+}
 
-    fn labels(source: &str, line: usize, col: usize) -> Vec<String> {
-        let syms = symbols_for(source);
-        build_completions(source, &syms, line, col, &[])
-            .into_iter()
-            .map(|i| i.label)
-            .collect()
-    }
+#[test]
+fn completion_inside_nested_block_isolates_from_outer_context() {
+    // Cursor inside a `$```…``` ` block: the outer SpawnPrefab param names
+    // (`velocity`, `offset`, `lifetime`) must NOT leak in; the block is
+    // completed as its own isolated program.
+    let src = "on go { let e = SpawnPrefab(lifetime = 0, offset = 1, $```in a: exec\non a { v }```) }\nin go: exec";
+    let cursor = src.find("on a { v").unwrap() + "on a { ".len();
+    let (line, col) = offset_to_line_col(src, cursor);
+    let block = nested_block_at(src, "t", line, col);
+    assert!(
+        block.is_some(),
+        "cursor inside the block should be detected"
+    );
+    let (inner, il, ic) = block.unwrap();
+    assert!(
+        inner.contains("in a: exec"),
+        "inner source captured: {inner:?}"
+    );
+    let syms = symbols_for(&inner);
+    let got: Vec<String> = build_completions(&inner, &syms, il, ic, &[])
+        .into_iter()
+        .map(|i| i.label)
+        .collect();
+    assert!(
+        !got.iter()
+            .any(|l| l == "velocity" || l == "offset" || l == "lifetime"),
+        "SpawnPrefab params must not leak into the nested block: {got:?}"
+    );
+}
 
-    fn labels_with_prefabs(
-        source: &str,
-        line: usize,
-        col: usize,
-        prefabs: &[String],
-    ) -> Vec<String> {
-        let syms = symbols_for(source);
-        build_completions(source, &syms, line, col, prefabs)
-            .into_iter()
-            .map(|i| i.label)
-            .collect()
-    }
+#[test]
+fn completion_outside_nested_block_is_not_isolated() {
+    // A cursor that is NOT inside a nested block returns None (the normal
+    // outer-file completion path runs).
+    let src = "on go { SpawnPrefab(prefab = $./a.brz) }\nin go: exec";
+    let col = src.find("SpawnPrefab").unwrap() + 3;
+    assert!(nested_block_at(src, "t", 0, col).is_none());
+}
 
-    #[test]
-    fn a_send_custom_event_offers_its_event_name_not_its_target() {
-        for call in ["SendCustomEvent", "SendGlobalCustomEvent"] {
-            let src = format!("in go: exec
-on go {{ {call}( }}");
-            let col = src.lines().nth(1).unwrap().find('(').unwrap() + 1;
-            let got = labels(&src, 1, col);
-            assert!(got.iter().any(|l| l == "eventName"), "{call}: {got:?}");
-            assert!(!got.iter().any(|l| l.starts_with("target")), "{call}: {got:?}");
-        }
-    }
+/// The labels completed at the `‸` in `src`.
+fn labels_at_cursor(src: &str) -> Vec<String> {
+    let (before, _) = src.split_once('‸').expect("the source marks the cursor");
+    let line = before.matches('\n').count();
+    let col = before.rsplit('\n').next().unwrap_or("").chars().count();
+    let source = src.replacen('‸', "", 1);
+    build_completions(&source, &symbols_for(&source), line, col, &[])
+        .into_iter()
+        .map(|i| i.label)
+        .collect()
+}
 
-    #[test]
-    fn completion_inside_nested_block_isolates_from_outer_context() {
-        // Cursor inside a `$```…``` ` block: the outer SpawnPrefab param names
-        // (`velocity`, `offset`, `lifetime`) must NOT leak in; the block is
-        // completed as its own isolated program.
-        let src = "on go { let e = SpawnPrefab(lifetime = 0, offset = 1, $```in a: exec\non a { v }```) }\nin go: exec";
-        let cursor = src.find("on a { v").unwrap() + "on a { ".len();
-        let (line, col) = offset_to_line_col(src, cursor);
-        let block = nested_block_at(src, "t", line, col);
-        assert!(block.is_some(), "cursor inside the block should be detected");
-        let (inner, il, ic) = block.unwrap();
-        assert!(inner.contains("in a: exec"), "inner source captured: {inner:?}");
-        let syms = symbols_for(&inner);
-        let got: Vec<String> = build_completions(&inner, &syms, il, ic, &[])
-            .into_iter()
-            .map(|i| i.label)
-            .collect();
-        assert!(
-            !got.iter().any(|l| l == "velocity" || l == "offset" || l == "lifetime"),
-            "SpawnPrefab params must not leak into the nested block: {got:?}"
-        );
-    }
-
-    #[test]
-    fn completion_outside_nested_block_is_not_isolated() {
-        // A cursor that is NOT inside a nested block returns None (the normal
-        // outer-file completion path runs).
-        let src = "on go { SpawnPrefab(prefab = $./a.brz) }\nin go: exec";
-        let col = src.find("SpawnPrefab").unwrap() + 3;
-        assert!(nested_block_at(src, "t", 0, col).is_none());
-    }
-
-    #[test]
-    fn prefab_ref_completes_from_candidate_paths() {
-        let prefabs = vec![
-            "./turret.brz".to_string(),
-            "./enemies/tank.brz".to_string(),
-            "./notes.txt".to_string(), // not a candidate; excluded by the scan
+/// The completions that read an enum by the completed text go through the
+/// editor's enum lookup, which only the server's build passes. Each row:
+/// every `has` label is offered and no `lacks` one.
+#[test]
+fn the_editor_enum_lookup_completes_variants_and_discriminants() {
+    let rows: &[(&str, &str, &[&str], &[&str])] = &[
+            // The arm-head position inside `match s {  }` (s: Shape) offers
+            // the enum's variant names as candidate patterns.
+            (
+                "a match arm head offers the variants",
+                "enum Shape { Empty, Circle(float), Rect(float, float) }\nin s: Shape\nout x = match s { ‸ }\n",
+                &["Circle", "Empty", "Rect"],
+                &[],
+            ),
+            // A block-bodied arm may omit its trailing comma, so the line
+            // after `Empty => { 1 }` is still an arm head.
+            (
+                "a match arm head after a block arm offers the variants",
+                "enum Shape { Empty, Circle(float) }\nin s: Shape\nout x = match s {\n  Empty => { 1.0 }\n  ‸\n}\n",
+                &["Circle", "Empty"],
+                &[],
+            ),
+            ("an enum-typed value offers .Discriminant", "enum S { A, B }\nin s: S\nout d = s.‸\n", &["Discriminant"], &[]),
+            // `Shape.` (the enum TYPE name, not a value) offers its variant
+            // names, matching the compiler's own `Enum.Variant` construction
+            // syntax rather than a value's `.Discriminant`.
+            (
+                "a bare enum type receiver offers its variants",
+                "enum Shape { Empty, Circle(float) }\nout d = Shape.‸\n",
+                &["Circle", "Empty"],
+                &["Discriminant"],
+            ),
+            // A value binding (`Shape: int` param) whose name equals the
+            // enum's SHADOWS the type, so `Shape.` here is an (invalid) field
+            // access on an int, never variant construction. Mirrors the
+            // compiler's own shadow guard (`resolve_variant_for_construction`).
+            (
+                "a shadowed enum name offers no variants",
+                "enum Shape { Empty, Circle(float) }\nmod useShape(Shape: int) -> int { return Shape.‸ }\n",
+                &[],
+                &["Empty", "Circle"],
+            ),
+            // `EasingFunction.` (no `enum` decl anywhere in the file) offers
+            // its variant names, same as a user-declared enum.
+            ("a bare built-in game enum receiver offers its variants", "out d = EasingFunction.‸\n", &["Bounce"], &[]),
+            // `EasingFunction.Bounce.` offers `.Discriminant`. `member_receiver_at`
+            // only reports the identifier directly before the dot (`Bounce`),
+            // so this only works if a bare variant name resolves to its
+            // uniquely owning enum.
+            ("a qualified built-in game enum variant offers .Discriminant", "out d = EasingFunction.Bounce.‸\n", &["Discriminant"], &[]),
         ];
-        // `SpawnPrefab(prefab = $./t` -> offers the `./t…` prefab paths.
-        let src = "on x { SpawnPrefab(prefab = $./t) }";
-        let col = src.find("$./t").unwrap() + "$./t".len();
-        let got = labels_with_prefabs(src, 0, col, &prefabs);
-        assert!(got.contains(&"./turret.brz".to_string()), "got: {got:?}");
-        assert!(
-            !got.contains(&"./enemies/tank.brz".to_string()),
-            "`./t` shouldn't match `./enemies/…`: {got:?}"
-        );
-    }
-
-    #[test]
-    fn completion_includes_builtin_events() {
-        let ls = labels("", 0, 0);
-        assert!(ls.iter().any(|l| l == "ChatCommand"), "ChatCommand missing: {ls:?}");
-        assert!(ls.iter().any(|l| l == "RoundStart"), "RoundStart missing");
-        assert!(ls.iter().any(|l| l == "CharacterSpawned"), "CharacterSpawned missing");
-        assert!(ls.iter().any(|l| l == "GetAim"), "GetAim function missing");
-    }
-
-    #[test]
-    fn asset_ref_completes_types_then_names() {
-        // After `$` -> asset types.
-        let src = "let w = $";
-        let ls = labels(src, 0, 9);
-        assert!(ls.iter().any(|l| l == "BRItemBase"), "asset type missing: {ls:?}");
-        assert!(ls.iter().any(|l| l == "BrickAudioDescriptor"), "asset type missing");
-        // It's an isolated context — keywords/functions must not leak in.
-        assert!(!ls.iter().any(|l| l == "if"), "keyword leaked into $ completion");
-
-        // After `$BRItemBase/` -> asset names of that type.
-        let src2 = "let w = $BRItemBase/";
-        let ls2 = labels(src2, 0, 20);
-        assert!(ls2.iter().any(|l| l == "Weapon_Pistol"), "asset name missing: {ls2:?}");
-        assert!(!ls2.iter().any(|l| l == "BRItemBase"), "type leaked into name completion");
-    }
-
-    #[test]
-    fn asset_ref_config_param_completes_typed_refs() {
-        // `weapon = <here>` offers full `$BRItemBase/Name` refs (the author needn't
-        // know the type name), gated on the param being constant-only config.
-        let src = "on go { GiveWeapon(c, weapon = ) }";
-        let col = src.find("weapon = ").unwrap() + "weapon = ".len();
-        let ls = labels(src, 0, col);
-        assert!(
-            ls.iter().any(|l| l == "$BRItemBase/Weapon_Pistol"),
-            "asset-ref value completion: {ls:?}"
-        );
-        // `font = <here>` resolves to the font descriptor type.
-        let src2 = "in p: controller\non go { p.DisplayText(\"hi\", font = ) }";
-        let col2 = src2.rfind("font = ").unwrap() + "font = ".len()
-            - (src2.find('\n').unwrap() + 1); // col within line 1
-        let ls2 = labels(src2, 1, col2);
-        assert!(
-            ls2.iter().any(|l| l == "$BrickFontDescriptor/Roboto"),
-            "font asset completion: {ls2:?}"
-        );
-    }
-
-    #[test]
-    fn event_config_params_complete() {
-        // `on Clock(<here>)` offers the event's wired input + config args (the
-        // call-param path has no CallSpec for an event).
-        let src = "on Clock() { }";
-        let col = src.find("Clock(").unwrap() + "Clock(".len();
-        let ls = labels(src, 0, col);
-        assert!(ls.iter().any(|l| l == "enabled = "), "config arg missing: {ls:?}");
-        assert!(ls.iter().any(|l| l == "interval = "), "wired input missing: {ls:?}");
-    }
-
-    #[test]
-    fn enum_value_slot_completes_all_members() {
-        // `direction = <here>` on SweepSimple offers every EBrickDirection member.
-        let src = "on go { SweepSimple(500.0, direction = ) }";
-        let col = src.find("direction = ").unwrap() + "direction = ".len();
-        let ls = labels(src, 0, col);
-        assert!(ls.iter().any(|l| l == "X_Positive"), "enum member missing: {ls:?}");
-        assert!(ls.iter().any(|l| l == "Y_Negative"), "enum member missing: {ls:?}");
-        // The sentinel is never offered.
-        assert!(!ls.iter().any(|l| l == "MAX"), "sentinel leaked: {ls:?}");
-    }
-
-    #[test]
-    fn match_arm_completes_variants() {
-        // Cursor in arm-head position inside `match s {  }` (s: Shape) offers
-        // the enum's variant names as candidate patterns. `col` is computed
-        // against LINE 2's own text (not the whole multi-line `src`), same
-        // convention as `plain_value_slot_offers_in_scope_idents_not_arg_names`
-        // above - a whole-`src` offset would overshoot a middle-of-line target.
-        let src = "enum Shape { Empty, Circle(float), Rect(float, float) }\nin s: Shape\nout x = match s {  }\n";
-        let line = 2;
-        let col = src.lines().nth(line).unwrap().find("match s { ").unwrap() + "match s { ".len();
-        let ls = labels(src, line, col);
-        assert!(ls.iter().any(|l| l == "Circle"), "variant missing: {ls:?}");
-        assert!(ls.iter().any(|l| l == "Empty"), "variant missing: {ls:?}");
-        assert!(ls.iter().any(|l| l == "Rect"), "variant missing: {ls:?}");
-    }
-
-    #[test]
-    fn discriminant_completes_after_value() {
-        // `s.` on an enum-typed value offers `.Discriminant`.
-        let src = "enum S { A, B }\nin s: S\nout d = s.\n";
-        let line = 2;
-        let col = src.lines().nth(line).unwrap().find("s.").unwrap() + "s.".len();
-        let ls = labels(src, line, col);
-        assert!(ls.iter().any(|l| l == "Discriminant"), "Discriminant missing: {ls:?}");
-    }
-
-    #[test]
-    fn bare_enum_type_receiver_completes_variants() {
-        // `Shape.` (the enum TYPE name, not a value) offers its variant
-        // names, matching the compiler's own `Enum.Variant` construction
-        // syntax rather than a value's `.Discriminant`.
-        let src = "enum Shape { Empty, Circle(float) }\nout d = Shape.\n";
-        let line = 1;
-        let col = src.lines().nth(line).unwrap().find("Shape.").unwrap() + "Shape.".len();
-        let ls = labels(src, line, col);
-        assert!(ls.iter().any(|l| l == "Circle"), "variant missing: {ls:?}");
-        assert!(ls.iter().any(|l| l == "Empty"), "variant missing: {ls:?}");
-        assert!(!ls.iter().any(|l| l == "Discriminant"), "Discriminant should not appear on a type name: {ls:?}");
-    }
-
-    #[test]
-    fn shadowed_enum_name_receiver_offers_no_variants() {
-        // A value binding (`Shape: int` param) whose name equals the enum's
-        // SHADOWS the type, so `Shape.` here is a (invalid) field access on an
-        // int, never variant construction - the completion must not offer the
-        // enum's variants. Mirrors the compiler's own shadow guard
-        // (`resolve_variant_for_construction`).
-        let src = "enum Shape { Empty, Circle(float) }\nmod useShape(Shape: int) -> int { return Shape. }\n";
-        let line = 1;
-        let col = src.lines().nth(line).unwrap().find("return Shape.").unwrap()
-            + "return Shape.".len();
-        let ls = labels(src, line, col);
-        assert!(!ls.iter().any(|l| l == "Empty"), "shadowed enum leaked a variant: {ls:?}");
-        assert!(!ls.iter().any(|l| l == "Circle"), "shadowed enum leaked a variant: {ls:?}");
-    }
-
-    #[test]
-    fn match_arm_after_block_arm_completes_variants() {
-        // A block-bodied arm may omit its trailing comma, so the cursor on the
-        // line after `Empty => { 1 }` is still an arm head and must offer the
-        // remaining variants.
-        let src = "enum Shape { Empty, Circle(float) }\nin s: Shape\nout x = match s {\n  Empty => { 1.0 }\n  \n}\n";
-        let line = 4; // the blank arm-head line between the block arm and `}`
-        let col = 2;
-        let ls = labels(src, line, col);
-        assert!(ls.iter().any(|l| l == "Circle"), "variant missing after block arm: {ls:?}");
-        assert!(ls.iter().any(|l| l == "Empty"), "variant missing after block arm: {ls:?}");
-    }
-
-    #[test]
-    fn plain_value_slot_offers_in_scope_idents_not_arg_names() {
-        // In a non-enum / non-asset value slot (`textId = <here>`), completion
-        // offers in-scope identifiers, NOT the call's argument names.
-        let src = "in c: controller\nlet myVal = 7\nin go: exec\non go {\n  c.DisplayText(\"hi\", textId = )\n}";
-        let line = 4; // the DisplayText line
-        let col =
-            src.lines().nth(line).unwrap().find("textId = ").unwrap() + "textId = ".len();
-        let ls = labels(src, line, col);
-        assert!(ls.iter().any(|l| l == "myVal"), "in-scope ident missing: {ls:?}");
-        assert!(
-            !ls.iter().any(|l| l == "positionX = "),
-            "argument names must not be offered in a value slot: {ls:?}"
-        );
-    }
-
-    #[test]
-    fn data_driven_config_completes_raw_field_names() {
-        // The gate's raw settings-menu field names are offered alongside params.
-        let src = "on go { SweepSimple(500.0, ) }";
-        let col = src.find("500.0, ").unwrap() + "500.0, ".len();
-        let ls = labels(src, 0, col);
-        assert!(
-            ls.iter().any(|l| l == "bOnlyHitPlayerBodyParts = "),
-            "raw config field missing: {ls:?}"
-        );
-        assert!(ls.iter().any(|l| l == "Direction = "), "raw enum config field missing: {ls:?}");
-    }
-
-    #[test]
-    fn data_driven_raw_enum_value_completes() {
-        // `Direction = <here>` (raw field) still offers the enum members.
-        let src = "on go { SweepSimple(500.0, Direction = ) }";
-        let col = src.find("Direction = ").unwrap() + "Direction = ".len();
-        let ls = labels(src, 0, col);
-        assert!(ls.iter().any(|l| l == "X_Positive"), "raw enum member missing: {ls:?}");
-    }
-
-    #[test]
-    fn string_dot_shows_only_string_methods() {
-        let src = "let foo = \"\"\nfoo.";
-        let ls = labels(src, 1, 4); // cursor right after `foo.`
-        assert!(ls.iter().any(|l| l == "Length"), "Length missing: {ls:?}");
-        assert!(ls.iter().any(|l| l == "Contains"), "Contains missing: {ls:?}");
-        // The global list must NOT leak into a member-access context.
-        assert!(!ls.iter().any(|l| l == "if"), "keyword leaked into member completion");
-        assert!(!ls.iter().any(|l| l == "int"), "type leaked into member completion");
-        assert!(!ls.iter().any(|l| l == "GetAim"), "non-string fn leaked");
-        assert!(!ls.iter().any(|l| l == "ChatCommand"), "event leaked into member completion");
-    }
-
-    #[test]
-    fn array_dot_shows_full_method_set() {
-        let src = "var xs: int[]\nxs.";
-        let ls = labels(src, 1, 3);
-        // The full method set is offered, not just push/pop/length.
-        for m in ["push", "find", "sort", "insert", "append", "slice"] {
-            assert!(ls.iter().any(|l| l == m), "array method {m} missing: {ls:?}");
-        }
-        assert!(!ls.iter().any(|l| l == "if"), "keyword leaked");
-    }
-
-    #[test]
-    fn var_array_dot_shows_array_methods() {
-        // `var ids: string[]` is an array-typed var — it must complete array
-        // methods (`.push`, `.find`, ...), not the var Value/prev fields.
-        let src = "var ids: string[]\nids.";
-        let ls = labels(src, 1, 4);
-        assert!(ls.iter().any(|l| l == "push"), "push missing on var array: {ls:?}");
-        assert!(ls.iter().any(|l| l == "find"), "find missing on var array: {ls:?}");
-    }
-
-    #[test]
-    fn shadowed_var_completes_by_scope_not_first_decl() {
-        // Same name in two scopes with different types: a file-scope `players:
-        // string` and a handler-local `players: character[]`. At the cursor
-        // inside the handler, `players.` must complete ARRAY methods (the
-        // in-scope array), not the string's — a flat name-lookup would pick the
-        // first decl and show the wrong members.
-        let src = "var players: string = \"\"\non t {\n  var players: character[]\n  players.\n}";
-        let ls = labels(src, 3, 10);
-        assert!(ls.iter().any(|l| l == "push"), "array method missing on in-scope array: {ls:?}");
-        assert!(ls.iter().any(|l| l == "fillFromPlayers"), "fillFromPlayers missing: {ls:?}");
-        assert!(!ls.iter().any(|l| l == "Contains"), "string method leaked from shadowed decl: {ls:?}");
-    }
-
-    #[test]
-    fn identifier_completion_dedups_shadowed_var_by_scope() {
-        // A file-scope `players: string` and a handler-local `players:
-        // character[]`. Completing a bare identifier at file scope (above and
-        // outside the handler) must offer a SINGLE `players`, typed `string` —
-        // the handler-local array is neither in scope nor declared yet.
-        let src = "var players: string = \"\"\nplayers\non tick {\n  var players: character[]\n}";
-        let syms = symbols_for(src);
-        let items = build_completions(src, &syms, 1, 7, &[]);
-        let players: Vec<&CompletionItem> = items.iter().filter(|i| i.label == "players").collect();
-        assert_eq!(players.len(), 1, "expected one `players`, got: {players:?}");
-        assert_eq!(
-            players[0].detail.as_deref(),
-            Some("string"),
-            "file-scope `players` must show its string type, not the handler-local array"
-        );
-    }
-
-    #[test]
-    fn var_map_dot_shows_map_methods_not_array() {
-        // `var m: Map<K, V>` completes the MAP method table — the map-only names
-        // (`get`/`set`/`has`) and NOT array-only names (`push`/`find`).
-        let src = "var m: Map<string, int>\nm.";
-        let ls = labels(src, 1, 2);
-        for m in ["get", "set", "has", "remove", "clear", "keys", "values"] {
-            assert!(ls.iter().any(|l| l == m), "map method {m} missing: {ls:?}");
-        }
-        assert!(!ls.iter().any(|l| l == "push"), "array-only `push` leaked onto map: {ls:?}");
-        assert!(!ls.iter().any(|l| l == "find"), "array-only `find` leaked onto map: {ls:?}");
-    }
-
-    #[test]
-    fn var_map_via_type_alias_dot_shows_map_methods() {
-        // A var whose type is a type ALIAS of a map (`type Scores = Map<...>`)
-        // must resolve through the alias and complete map methods.
-        let src = "type Scores = Map<string, int>\nvar s: Scores\ns.";
-        let ls = labels(src, 2, 2);
-        assert!(ls.iter().any(|l| l == "get"), "get missing on aliased map: {ls:?}");
-        assert!(ls.iter().any(|l| l == "has"), "has missing on aliased map: {ls:?}");
-        assert!(!ls.iter().any(|l| l == "push"), "array-only `push` leaked onto aliased map: {ls:?}");
-    }
-
-    #[test]
-    fn var_map_via_generic_alias_instance_dot_shows_map_methods() {
-        // `type Grid<T> = Map<string, T>`; `var g: Grid<int>` — the generic-alias
-        // instance resolves by base name to the map table.
-        let src = "type Grid<T> = Map<string, T>\nvar g: Grid<int>\ng.";
-        let ls = labels(src, 2, 2);
-        assert!(ls.iter().any(|l| l == "get"), "get missing on generic-aliased map: {ls:?}");
-        assert!(ls.iter().any(|l| l == "set"), "set missing on generic-aliased map: {ls:?}");
-        assert!(!ls.iter().any(|l| l == "push"), "array-only `push` leaked: {ls:?}");
-    }
-
-    #[test]
-    fn namespace_dot_completes_members() {
-        // `import * as u` exposes qualified `u.member` symbols; `u.` lists the
-        // members by their bare names, and they never leak into the global list.
-        let symbols = vec![
-            SymbolDef { name: "u".into(), kind: "namespace", range: Default::default(), ty: None, exec: false, is_const: false },
-            SymbolDef { name: "u.swap".into(), kind: "mod", range: Default::default(), ty: None, exec: false, is_const: false },
-            SymbolDef { name: "u.clamp".into(), kind: "fn", range: Default::default(), ty: None, exec: false, is_const: false },
-        ];
-        let src = "let a = u.";
-        let ls: Vec<String> = build_completions(src, &symbols, 0, src.len(), &[])
-            .into_iter()
-            .map(|i| i.label)
-            .collect();
-        assert!(ls.contains(&"swap".to_string()), "swap missing: {ls:?}");
-        assert!(ls.contains(&"clamp".to_string()), "clamp missing: {ls:?}");
-        assert!(!ls.iter().any(|l| l.contains('.')), "qualified name leaked: {ls:?}");
-        // A bare-identifier position must NOT list the qualified members.
-        let bare: Vec<String> = build_completions("", &symbols, 0, 0, &[])
-            .into_iter()
-            .map(|i| i.label)
-            .collect();
-        assert!(bare.contains(&"u".to_string()), "namespace alias missing: {bare:?}");
-        assert!(!bare.iter().any(|l| l.contains('.')), "qualified leaked into global: {bare:?}");
-    }
-
-    #[test]
-    fn typed_var_dot_shows_value_and_type_methods() {
-        // `var pos: vector` completes `.Value`/`.prev` AND vector methods/swizzle.
-        let src = "var pos: vector = Vec(1.0, 2.0, 3.0)\npos.";
-        let ls = labels(src, 1, 4);
-        assert!(ls.iter().any(|l| l == "Value"), "Value missing: {ls:?}");
-        assert!(ls.iter().any(|l| l == "Normalize"), "vector method missing: {ls:?}");
-        assert!(ls.iter().any(|l| l == "x"), "swizzle x missing: {ls:?}");
-    }
-
-    #[test]
-    fn static_var_dot_shows_value_prev() {
-        let src = "static var score: int = 0\nscore.";
-        let ls = labels(src, 1, 6);
-        assert!(ls.iter().any(|l| l == "Value"), "Value missing on static var: {ls:?}");
-        assert!(ls.iter().any(|l| l == "prev"), "prev missing on static var: {ls:?}");
-    }
-
-    #[test]
-    fn named_record_alias_dot_completes_fields() {
-        // `let p: Pos = …` where `Pos` is a `type` alias completes Pos's fields.
-        let src = "type Pos = { x: int, y: int }\nlet p: Pos = { x: 1, y: 2 }\np.";
-        let ls = labels(src, 2, 2);
-        assert!(ls.iter().any(|l| l == "x"), "field x missing: {ls:?}");
-        assert!(ls.iter().any(|l| l == "y"), "field y missing: {ls:?}");
-    }
-
-    #[test]
-    fn user_mod_call_completes_param_names() {
-        // Inside `shift(‸)` for a user mod, its param names are offered — not the
-        // whole global keyword/function list.
-        let src = "mod shift(dist: int, fast: bool) {}\non x { shift() }";
-        let line = "on x { shift() }";
-        let col = line.find("shift(").unwrap() + "shift(".len();
-        let ls = labels(src, 1, col);
-        assert!(ls.iter().any(|l| l == "dist"), "param dist missing: {ls:?}");
-        assert!(ls.iter().any(|l| l == "fast"), "param fast missing: {ls:?}");
-        assert!(!ls.iter().any(|l| l == "if"), "global list leaked: {ls:?}");
-    }
-
-    #[test]
-    fn builtin_all_required_call_shows_required_params() {
-        // `Vec(‸)` — all params required — offers x/y/z, not the global list.
-        let src = "let v = Vec()";
-        let col = src.find("Vec(").unwrap() + "Vec(".len();
-        let ls = labels(src, 0, col);
-        for p in ["x", "y", "z"] {
-            assert!(ls.iter().any(|l| l == p), "required param {p} missing: {ls:?}");
-        }
-        assert!(!ls.iter().any(|l| l == "if"), "global list leaked: {ls:?}");
-    }
-
-    #[test]
-    fn method_call_skips_receiver_param() {
-        // `ctrl.DisplayText(‸)` must not offer the already-bound receiver param.
-        let src = "in ctrl: controller\non x { ctrl.DisplayText(\"hi\", ) }";
-        let line = "on x { ctrl.DisplayText(\"hi\", ) }";
-        let col = line.find("\"hi\", ").unwrap() + "\"hi\", ".len();
-        let ls = labels(src, 1, col);
-        assert!(ls.iter().any(|l| l.starts_with("fontSize")), "optional param missing: {ls:?}");
-        assert!(!ls.iter().any(|l| l == "controller" || l == "target"), "receiver leaked: {ls:?}");
-    }
-
-    #[test]
-    fn annotation_completions_include_label_and_closed() {
-        let ls = labels("", 0, 0);
-        for a in ["@left", "@label", "@closed"] {
-            assert!(ls.iter().any(|l| l == a), "annotation {a} missing: {ls:?}");
-        }
-    }
-
-    /// The module-level run that opens a file is offered too. These are the
-    /// annotations a reader is least likely to already know exist, so leaving
-    /// them out of completion is what kept them invisible.
-    #[test]
-    fn annotation_completions_include_the_module_level_run() {
-        let ls = labels("", 0, 0);
-        for a in ["@fold", "@nofold", "@layout", "@flat"] {
-            assert!(ls.iter().any(|l| l == a), "module annotation {a} missing: {ls:?}");
-        }
-    }
-
-    #[test]
-    fn input_reader_field_trigger_completes_record_fields() {
-        // `on split.<here>` where `split = pl.InputReader()` completes the
-        // splitter's record fields (Forward/Right/Up), not nothing.
-        let src = "in pl: character\nlet split = pl.InputReader()\non split.";
-        let ls = labels(src, 2, 9); // cursor right after `on split.`
-        for f in ["Forward", "Right", "Up"] {
-            assert!(ls.iter().any(|l| l == f), "record field {f} missing: {ls:?}");
-        }
-        // Member context is isolated — no keyword/function leak.
-        assert!(!ls.iter().any(|l| l == "if"), "keyword leaked: {ls:?}");
-    }
-
-    #[test]
-    fn receiver_method_completes_inside_nested_call_arg() {
-        // `pl.AddVelocity(linear = pl.<here>` completes pl's methods, not the
-        // enclosing AddVelocity's params — the member access wins.
-        let src = "in pl: character\non x { pl.AddVelocity(linear = pl.) }";
-        let col = src.lines().nth(1).unwrap().find("pl.)").unwrap() + 3;
-        let ls = labels(src, 1, col);
-        assert!(ls.iter().any(|l| l == "GetVelocity"), "GetVelocity missing: {ls:?}");
-        assert!(ls.iter().any(|l| l == "GetLocation"), "GetLocation missing: {ls:?}");
-        // The enclosing call's param name must NOT show here.
-        assert!(!ls.iter().any(|l| l == "linear = "), "call param leaked: {ls:?}");
-    }
-
-    #[test]
-    fn plain_call_paren_still_shows_params() {
-        // A plain `Call(<here>` (dot belongs to the callee) still offers the
-        // call's optional params — member access must not hijack this.
-        let src = "in pl: character\non x { pl.DisplayText(\"hi\", ) }";
-        let col = src.lines().nth(1).unwrap().find("\"hi\", ") .unwrap() + "\"hi\", ".len();
-        let ls = labels(src, 1, col);
-        assert!(
-            ls.iter().any(|l| l.starts_with("fontSize")),
-            "optional param missing: {ls:?}"
-        );
-    }
-
-    #[test]
-    fn type_annotation_completes_builtin_game_enum_name() {
-        // `var e: <here>` offers the built-in game enum type names (e.g.
-        // `EasingFunction`), the same list a hand-declared `enum` would show
-        // once it has a symbol. Game enums never get one, so they're seeded
-        // straight from the catalog into the type-name completion list.
-        let src = "var e: Eas";
-        let ls = labels(src, 0, src.len());
-        assert!(ls.iter().any(|l| l == "EasingFunction"), "EasingFunction missing: {ls:?}");
-    }
-
-    #[test]
-    fn bare_builtin_game_enum_type_receiver_completes_variants() {
-        // `EasingFunction.` (the built-in enum TYPE name, no `enum` decl
-        // anywhere in the file) offers its variant names, same as a
-        // user-declared enum's bare type receiver.
-        let src = "out d = EasingFunction.\n";
-        let col = src.find("EasingFunction.").unwrap() + "EasingFunction.".len();
-        let ls = labels(src, 0, col);
-        assert!(ls.iter().any(|l| l == "Bounce"), "Bounce missing: {ls:?}");
-    }
-
-    #[test]
-    fn qualified_builtin_game_enum_variant_completes_discriminant() {
-        // `EasingFunction.Bounce.` (a bare variant VALUE of a built-in game
-        // enum) offers `.Discriminant`, same as any other enum-typed value
-        // receiver. `member_receiver_at` only reports the identifier directly
-        // before the dot (`Bounce`, not the qualified `EasingFunction.Bounce`),
-        // so this only works if a bare variant name resolves to its uniquely
-        // owning enum.
-        let src = "out d = EasingFunction.Bounce.\n";
-        let col = src.find("EasingFunction.Bounce.").unwrap() + "EasingFunction.Bounce.".len();
-        let ls = labels(src, 0, col);
-        assert!(ls.iter().any(|l| l == "Discriminant"), "Discriminant missing: {ls:?}");
-    }
-
-    #[test]
-    fn config_arg_value_offers_qualified_builtin_enum_variant_alongside_bare_name() {
-        // A config-arg value slot backed by a built-in game enum (`Easing`'s
-        // `function` param, backed by `EBREasingFunction`) offers the
-        // qualified `EasingFunction.Bounce` form alongside the existing bare
-        // `Bounce` suggestion, so an author can disambiguate at the call site
-        // the same way they would construct the value directly.
-        let src = "on go { let e = Easing(0.0, 1.0, 0.5, function = ) }\nin go: exec";
-        let col = src.find("function = ").unwrap() + "function = ".len();
-        let ls = labels(src, 0, col);
-        assert!(ls.iter().any(|l| l == "Bounce"), "bare member missing: {ls:?}");
-        assert!(
-            ls.iter().any(|l| l == "EasingFunction.Bounce"),
-            "qualified member missing: {ls:?}"
-        );
-    }
-
-    // ---------- end-to-end LSP rename / references (scoped resolver) ----------
-
-    /// A rename's edits as document-change OPERATIONS.
-    ///
-    /// The server always answers in the `Operations` form, never the flat
-    /// `Edits` one: only `Operations` carries a per-file version, which is what
-    /// lets an editor refuse a stale multi-file rename instead of applying half
-    /// of it. A test that accepted either form would stop noticing a regression
-    /// to the flat shape.
-    fn rename_operations(edit: WorkspaceEdit) -> Vec<DocumentChangeOperation> {
-        match edit.document_changes.expect("document_changes present") {
-            DocumentChanges::Operations(ops) => ops,
-            DocumentChanges::Edits(_) => panic!("expected Operations, got flat Edits"),
-        }
-    }
-
-    /// A fresh `Backend` wired through the real `LanguageServer` trait (so its
-    /// `rename`/`references`/`prepare_rename` handlers run exactly as the
-    /// editor would call them), with no documents open yet. The returned
-    /// `LspService` owns the `Backend`; `.inner()` gives `&Backend`, which is
-    /// enough to call the trait methods directly — no transport / socket is
-    /// needed since we drive the handlers in-process.
-    fn build_backend() -> LspService<Backend> {
-        let (service, _socket) =
-            LspService::new(|client| Backend {
-                client,
-                docs: Mutex::new(HashMap::new()),
-                foreign_diags: Mutex::new(HashMap::new()),
-                watch_files: std::sync::atomic::AtomicBool::new(false),
-                changes: Mutex::new(HashMap::new()),
-            });
-        service
-    }
-
-    /// Insert a document into a running `Backend` the same shape `did_open`
-    /// would produce (built via the module's own `doc_state` helper above).
-    fn open_doc(service: &LspService<Backend>, uri: &Url, source: &str) {
-        service
-            .inner()
-            .docs
-            .lock()
-            .unwrap()
-            .insert(uri.clone(), doc_state(source));
-    }
-
-    /// Like `doc_state`, but with the symbol table populated — `goto_definition`
-    /// reads `doc.symbols` (its `in_type_def` heuristic and `definition_at`
-    /// both consult it), which `doc_state` leaves empty.
-    fn doc_state_with_symbols(source: &str) -> DocState {
-        let mut ds = doc_state(source);
-        ds.symbols = symbols_for(source);
-        ds
-    }
-
-    fn text_document_position(uri: &Url, line: u32, character: u32) -> TextDocumentPositionParams {
-        TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri: uri.clone() },
-            position: Position { line, character },
-        }
-    }
-
-    /// Run the real `code_action` handler for a zero-width range at
-    /// `(line, col)` and return only the `CodeAction` variants (none of this
-    /// server's actions are bare `Command`s).
-    async fn code_action_at(service: &LspService<Backend>, uri: &Url, line: u32, col: u32) -> Vec<CodeAction> {
-        let pos = Position { line, character: col };
-        let resp = service
-            .inner()
-            .code_action(CodeActionParams {
-                text_document: TextDocumentIdentifier { uri: uri.clone() },
-                range: Range { start: pos, end: pos },
-                context: CodeActionContext {
-                    diagnostics: Vec::new(),
-                    only: None,
-                    trigger_kind: None,
-                },
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
-            })
-            .await
-            .unwrap()
-            .unwrap_or_default();
-        resp.into_iter()
-            .filter_map(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) => Some(ca),
-                CodeActionOrCommand::Command(_) => None,
-            })
-            .collect()
-    }
-
-    /// `code_action_at`, but with the diagnostics the editor would attach to
-    /// the request, since the "ignore this warning" actions are driven by them.
-    async fn code_action_with_diagnostic(
-        service: &LspService<Backend>,
-        uri: &Url,
-        line: u32,
-        code: &str,
-        severity: DiagnosticSeverity,
-    ) -> Vec<CodeAction> {
-        let pos = Position { line, character: 0 };
-        let resp = service
-            .inner()
-            .code_action(CodeActionParams {
-                text_document: TextDocumentIdentifier { uri: uri.clone() },
-                range: Range { start: pos, end: pos },
-                context: CodeActionContext {
-                    diagnostics: vec![Diagnostic {
-                        range: Range { start: pos, end: pos },
-                        severity: Some(severity),
-                        code: Some(NumberOrString::String(code.into())),
-                        source: Some("wirescript".into()),
-                        message: "test".into(),
-                        ..Default::default()
-                    }],
-                    only: None,
-                    trigger_kind: None,
-                },
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
-            })
-            .await
-            .unwrap()
-            .unwrap_or_default();
-        resp.into_iter()
-            .filter_map(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) => Some(ca),
-                CodeActionOrCommand::Command(_) => None,
-            })
-            .collect()
-    }
-
-    /// The `new_text` of a code action's first `TextEdit`.
-    fn first_edit_text(action: &CodeAction) -> String {
-        action
-            .edit
-            .as_ref()
-            .and_then(|e| e.changes.as_ref())
-            .and_then(|c| c.values().next())
-            .and_then(|edits| edits.first())
-            .map(|e| e.new_text.clone())
-            .expect("code action has a text edit")
-    }
-
-    /// A tempdir under a name unique to this test + the process, so parallel
-    /// test runs never collide.
-    fn scratch_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("ws-lsp-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    /// The `$`/`/` that triggers a completion is still in `did_change`'s
-    /// debounce when the request arrives; completion must read that text, not
-    /// the last analysed one.
-    #[tokio::test]
-    async fn completion_reads_the_undebounced_keystroke() {
-        let uri = Url::parse("file:///c:/t/main.ws").unwrap();
-        let service = build_backend();
-        let complete = |typed: &'static str| {
-            let service = &service;
-            let uri = uri.clone();
-            async move {
-                let analysed = "in b: brick\non go {\n  b.GetComponent()\n}\n";
-                let newest = format!("in b: brick\non go {{\n  b.GetComponent({typed})\n}}\n");
-                open_doc(service, &uri, analysed);
-                service.inner().changes.lock().unwrap().insert(uri.clone(), (1, newest));
-                let col = format!("  b.GetComponent({typed}").len() as u32;
-                let resp = service
-                    .inner()
-                    .completion(CompletionParams {
-                        text_document_position: text_document_position(&uri, 2, col),
-                        work_done_progress_params: Default::default(),
-                        partial_result_params: Default::default(),
-                        context: None,
-                    })
-                    .await
-                    .unwrap();
-                match resp {
-                    Some(CompletionResponse::Array(items)) => items,
-                    other => panic!("unexpected response {other:?}"),
-                }
-            }
-        };
-        let names = complete("$Component/").await;
-        assert!(names.iter().any(|i| i.label == "PointLight"), "{:?}", names.iter().map(|i| &i.label).collect::<Vec<_>>());
-        assert!(names.iter().all(|i| i.filter_text.is_none()), "a fixed filter text hides every name once one more letter is typed");
-        let types = complete("$compon").await;
-        assert!(types.iter().any(|i| i.label == "Component"), "{:?}", types.iter().map(|i| &i.label).collect::<Vec<_>>());
-    }
-
-    #[tokio::test]
-    async fn rename_capture_does_not_touch_comments_types_or_other_files() {
-        // main.ws: a `character` capture (a LOCAL binding, scoped to its own
-        // handler body), a `: character` TYPE-position annotation, and a
-        // `// character` comment. other.ws: an unrelated `character`-typed
-        // `in` in a sibling file. None of the three may be touched by
-        // renaming the capture — types are a separate namespace, comments/
-        // strings are never AST sites, and captures never cross files.
-        let dir = scratch_dir("rename-capture");
-        let main_path = dir.join("main.ws");
-        let main_source = "in go: exec\n\
-in target: character\n\
-// character comment\n\
-on CharacterSpawned() -> (character) {\n\
-  character.DisplayText(\"hi\")\n\
-}\n";
-        std::fs::write(&main_path, main_source).unwrap();
-        let other_path = dir.join("other.ws");
-        std::fs::write(&other_path, "in character: character\n").unwrap();
-
-        let main_uri = Url::from_file_path(&main_path).unwrap();
-        let service = build_backend();
-        open_doc(&service, &main_uri, main_source);
-
-        // Cursor on the capture's BODY use (`  character.DisplayText(...)`).
-        let line = 4u32;
-        let col = main_source.lines().nth(4).unwrap().find("character").unwrap() as u32;
-
-        let edit = service
-            .inner()
-            .rename(RenameParams {
-                text_document_position: text_document_position(&main_uri, line, col),
-                new_name: "spawned".to_string(),
-                work_done_progress_params: Default::default(),
-            })
-            .await
-            .unwrap()
-            .expect("rename should produce edits");
-
-        std::fs::remove_dir_all(&dir).ok();
-
-        let changes = rename_operations(edit);
-        assert_eq!(changes.len(), 1, "only main.ws should be edited: {changes:?}");
-        let DocumentChangeOperation::Edit(te) = &changes[0] else {
-            panic!("expected a TextDocumentEdit operation: {:?}", changes[0]);
-        };
-        assert_eq!(te.text_document.uri, main_uri, "edit landed in the wrong file");
-        assert_eq!(
-            te.edits.len(),
-            2,
-            "exactly the capture's decl + its one body use, nothing from the \
-             type annotation, comment, or other.ws: {:?}",
-            te.edits
-        );
-        for e in &te.edits {
-            let OneOf::Left(edit) = e else {
-                panic!("expected a plain TextEdit, got an annotated one: {e:?}")
-            };
-            assert!(
-                edit.range.start.line == 3 || edit.range.start.line == 4,
-                "edit escaped the capture's own handler body: {edit:?}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn rename_exported_mod_updates_import_specifier_and_call_across_files() {
-        // lib.ws defines an exported `mod`; main.ws imports and calls it.
-        // Renaming from the CALL SITE in main.ws (an `Imported` target) must
-        // edit BOTH files: lib.ws's declaration, and main.ws's import
-        // specifier plus its call — even though lib.ws is never opened in
-        // the editor (it's resolved from disk via the import path).
-        let dir = scratch_dir("rename-import");
-        let lib_path = dir.join("lib.ws");
-        std::fs::write(&lib_path, "mod helper() {\n}\n").unwrap();
-        let main_path = dir.join("main.ws");
-        let main_source = "import { helper } from \"lib\"\nin go: exec\non go { helper() }\n";
-        std::fs::write(&main_path, main_source).unwrap();
-
-        let main_uri = Url::from_file_path(&main_path).unwrap();
-        let lib_uri = Url::from_file_path(&lib_path).unwrap();
-        let service = build_backend();
-        open_doc(&service, &main_uri, main_source);
-
-        // Cursor on the `helper()` call in `on go { helper() }` (line 2).
-        let line = 2u32;
-        let col = main_source.lines().nth(2).unwrap().find("helper").unwrap() as u32;
-
-        let edit = service
-            .inner()
-            .rename(RenameParams {
-                text_document_position: text_document_position(&main_uri, line, col),
-                new_name: "assist".to_string(),
-                work_done_progress_params: Default::default(),
-            })
-            .await
-            .unwrap()
-            .expect("rename should produce edits");
-
-        std::fs::remove_dir_all(&dir).ok();
-
-        let changes = rename_operations(edit);
-        let mut by_file: HashMap<Url, usize> = HashMap::new();
-        for op in &changes {
-            let DocumentChangeOperation::Edit(te) = op else {
-                panic!("expected a TextDocumentEdit operation: {op:?}")
-            };
-            by_file.insert(te.text_document.uri.clone(), te.edits.len());
-        }
-        assert_eq!(
-            by_file.get(&lib_uri).copied(),
-            Some(1),
-            "lib.ws's declaration must be renamed even though it was never opened: {by_file:?}"
-        );
-        assert_eq!(
-            by_file.get(&main_uri).copied(),
-            Some(2),
-            "main.ws needs both the import specifier AND the call site renamed: {by_file:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn find_references_is_scoped_not_a_name_string_search() {
-        // Same fixture shape as the capture-rename test: `textDocument/
-        // references` on the `character` capture must return ONLY its
-        // handler-body occurrences (decl + one use) — never the `:
-        // character` type annotation, the `// character` comment, or
-        // other.ws. `references()` and `rename()` share `references_at`, so
-        // this guards both from becoming a naive same-name string search.
-        let dir = scratch_dir("find-refs-scoped");
-        let main_path = dir.join("main.ws");
-        let main_source = "in go: exec\n\
-in target: character\n\
-// character comment\n\
-on CharacterSpawned() -> (character) {\n\
-  character.DisplayText(\"hi\")\n\
-}\n";
-        std::fs::write(&main_path, main_source).unwrap();
-        let other_path = dir.join("other.ws");
-        std::fs::write(&other_path, "in character: character\n").unwrap();
-
-        let main_uri = Url::from_file_path(&main_path).unwrap();
-        let service = build_backend();
-        open_doc(&service, &main_uri, main_source);
-
-        let line = 4u32;
-        let col = main_source.lines().nth(4).unwrap().find("character").unwrap() as u32;
-
-        let locations = service
-            .inner()
-            .references(ReferenceParams {
-                text_document_position: text_document_position(&main_uri, line, col),
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
-                context: ReferenceContext { include_declaration: true },
-            })
-            .await
-            .unwrap()
-            .expect("references should find sites");
-
-        std::fs::remove_dir_all(&dir).ok();
-
-        assert_eq!(
-            locations.len(),
-            2,
-            "exactly the capture's decl + its one body use: {locations:?}"
-        );
-        for loc in &locations {
-            assert_eq!(loc.uri, main_uri, "reference escaped into other.ws: {loc:?}");
-            assert!(
-                loc.range.start.line == 3 || loc.range.start.line == 4,
-                "reference escaped the capture's own handler body: {loc:?}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn find_references_on_field_name_is_refused() {
-        // Regression: only `prepare_rename` used to refuse a field-name
-        // cursor; `references`/`rename` called `references_at` directly, so
-        // a field cursor sitting inside a COARSE enclosing binding's whole-
-        // decl range (here `var x`'s initializer `p.field`) resolved to
-        // THAT binding and returned its whole reference set instead of
-        // being refused — mirrors the scoped_refs unit test
-        // `field_access_inside_coarse_var_init_is_refused`, one layer up
-        // through the real LSP `references` handler.
-        let source = "type P = { field: int }\nin p: P\nvar x: int = p.field\n";
-        let uri = Url::from_file_path(std::env::temp_dir().join("ws-lsp-find-refs-field.ws")).unwrap();
-        let service = build_backend();
-        open_doc(&service, &uri, source);
-
-        // Cursor inside `field` of `p.field` (line 2).
-        let col = source.lines().nth(2).unwrap().find("field").unwrap() as u32 + 1;
-
-        let locations = service
-            .inner()
-            .references(ReferenceParams {
-                text_document_position: text_document_position(&uri, 2, col),
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
-                context: ReferenceContext { include_declaration: true },
-            })
-            .await
-            .unwrap();
-
-        assert!(
-            locations.is_none() || locations.as_ref().unwrap().is_empty(),
-            "field click must be refused, not resolve to the enclosing var's references: {locations:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn rename_export_updates_multiline_aliased_import_specifier_not_whole_decl() {
-        // Regression: `find_name_range` used to search only the coarse
-        // site's FIRST line via a plain substring match — a multi-line
-        // `import { … }` specifier (only ALIASED specifiers stay coarse)
-        // would fail to find the name on that first line and fall back to
-        // replacing the WHOLE `import { … } from "…"` span. This fixture
-        // also plants a decoy (`helperX`) on an earlier line whose name is
-        // a PREFIX of the real target, to catch a non-word-boundary match
-        // landing inside it.
-        let dir = scratch_dir("rename-multiline-import");
-        let lib_path = dir.join("lib.ws");
-        let lib_source = "mod helper() {\n}\n";
-        std::fs::write(&lib_path, lib_source).unwrap();
-        let main_path = dir.join("main.ws");
-        let main_source = "import {\n  helperX,\n  helper as x\n} from \"lib\"\nin go: exec\non go { x() }\n";
-        std::fs::write(&main_path, main_source).unwrap();
-
-        let lib_uri = Url::from_file_path(&lib_path).unwrap();
-        let main_uri = Url::from_file_path(&main_path).unwrap();
-        let service = build_backend();
-        open_doc(&service, &lib_uri, lib_source);
-        open_doc(&service, &main_uri, main_source);
-
-        // Cursor on `helper` in `mod helper` (lib.ws, line 0).
-        let line = 0u32;
-        let col = lib_source.lines().next().unwrap().find("helper").unwrap() as u32;
-
-        let edit = service
-            .inner()
-            .rename(RenameParams {
-                text_document_position: text_document_position(&lib_uri, line, col),
-                new_name: "assist".to_string(),
-                work_done_progress_params: Default::default(),
-            })
-            .await
-            .unwrap()
-            .expect("rename should produce edits");
-
-        std::fs::remove_dir_all(&dir).ok();
-
-        let changes = rename_operations(edit);
-        let main_te = changes
+    let mut failures = Vec::new();
+    for (label, src, has, lacks) in rows {
+        let got = labels_at_cursor(src);
+        let missing: Vec<&&str> = has
             .iter()
-            .find_map(|op| {
-                let DocumentChangeOperation::Edit(te) = op else {
-                    panic!("expected a TextDocumentEdit operation: {op:?}")
-                };
-                (te.text_document.uri == main_uri).then_some(te)
-            })
-            .expect("main.ws must be edited");
-
-        assert_eq!(
-            main_te.edits.len(),
-            1,
-            "only the specifier — the `helper` half — should be edited: {:?}",
-            main_te.edits
-        );
-        let OneOf::Left(edit) = &main_te.edits[0] else {
-            panic!("expected a plain TextEdit: {:?}", main_te.edits[0])
-        };
-        assert_eq!(edit.new_text, "assist");
-        assert_eq!(
-            edit.range.start.line, 2,
-            "the edit must land on line 2 (`  helper as x`), not the decoy or the decl line: {edit:?}"
-        );
-        assert_eq!(edit.range.start.character, 2, "must land on `helper`, not swallow the whole decl: {edit:?}");
-        assert_eq!(edit.range.end.character, 8, "must cover exactly the `helper` token: {edit:?}");
-    }
-
-    #[tokio::test]
-    async fn rename_aliased_import_alias_is_file_local() {
-        // `import { helper as assist } from "lib"` + `assist()`: the alias is
-        // a FILE-LOCAL name. Renaming `assist` must edit ONLY main.ws — the
-        // alias specifier token and the call — and must NOT touch lib.ws
-        // (whose decl still spells `helper`) nor the `helper` half of the
-        // specifier.
-        let dir = scratch_dir("rename-alias-local");
-        let lib_path = dir.join("lib.ws");
-        std::fs::write(&lib_path, "mod helper() {\n}\n").unwrap();
-        let main_path = dir.join("main.ws");
-        let main_source =
-            "import { helper as assist } from \"lib\"\nin go: exec\non go { assist() }\n";
-        std::fs::write(&main_path, main_source).unwrap();
-
-        let main_uri = Url::from_file_path(&main_path).unwrap();
-        let lib_uri = Url::from_file_path(&lib_path).unwrap();
-        let service = build_backend();
-        open_doc(&service, &main_uri, main_source);
-
-        // Cursor on the `assist()` call (line 2).
-        let line = 2u32;
-        let col = main_source.lines().nth(2).unwrap().find("assist").unwrap() as u32;
-
-        let edit = service
-            .inner()
-            .rename(RenameParams {
-                text_document_position: text_document_position(&main_uri, line, col),
-                new_name: "aid".to_string(),
-                work_done_progress_params: Default::default(),
-            })
-            .await
-            .unwrap()
-            .expect("rename should produce edits");
-
-        std::fs::remove_dir_all(&dir).ok();
-
-        let changes = rename_operations(edit);
-        assert_eq!(changes.len(), 1, "only main.ws may be edited: {changes:?}");
-        let DocumentChangeOperation::Edit(te) = &changes[0] else {
-            panic!("expected a TextDocumentEdit operation: {:?}", changes[0]);
-        };
-        assert_eq!(te.text_document.uri, main_uri, "an aliased-import rename must stay in-file");
-        assert_ne!(te.text_document.uri, lib_uri, "lib.ws must be untouched");
-        assert_eq!(
-            te.edits.len(),
-            2,
-            "exactly the alias specifier token + the call site: {:?}",
-            te.edits
-        );
-        for e in &te.edits {
-            let OneOf::Left(edit) = e else {
-                panic!("expected a plain TextEdit: {e:?}")
-            };
-            assert_eq!(edit.new_text, "aid", "each site renames to the new alias");
-            // The specifier edit must land on the alias token, NOT the `helper`
-            // half: on line 0 it starts at/after `import { helper as ` (col > 17).
-            if edit.range.start.line == 0 {
-                assert!(
-                    edit.range.start.character > 17,
-                    "specifier edit hit the `helper` half, not the alias: {edit:?}"
-                );
-            }
+            .filter(|h| !got.iter().any(|l| l == *h))
+            .collect();
+        let leaked: Vec<&&str> = lacks
+            .iter()
+            .filter(|h| got.iter().any(|l| l == *h))
+            .collect();
+        if !missing.is_empty() || !leaked.is_empty() {
+            failures.push(format!(
+                "{label}: missing {missing:?}, leaked {leaked:?}, got {got:?}"
+            ));
         }
     }
+    assert!(
+        failures.is_empty(),
+        "{} of {} rows failed:\n{}",
+        failures.len(),
+        rows.len(),
+        failures.join("\n")
+    );
+}
 
-    #[tokio::test]
-    async fn rename_export_updates_aliased_importer_original_name() {
-        // lib.ws `mod helper(){}`; other.ws `import { helper as x }` + `x()`.
-        // Renaming `helper` from lib.ws's decl must rename lib.ws's decl AND
-        // the `helper` half of other.ws's specifier — but leave the alias `x`
-        // and its call `x()` untouched.
-        let dir = scratch_dir("rename-export-aliased-importer");
-        let lib_path = dir.join("lib.ws");
-        let lib_source = "mod helper() {\n}\n";
-        std::fs::write(&lib_path, lib_source).unwrap();
-        let other_path = dir.join("other.ws");
-        let other_source = "import { helper as x } from \"lib\"\nin go: exec\non go { x() }\n";
-        std::fs::write(&other_path, other_source).unwrap();
+// ---------- end-to-end LSP rename / references (scoped resolver) ----------
 
-        let lib_uri = Url::from_file_path(&lib_path).unwrap();
-        let other_uri = Url::from_file_path(&other_path).unwrap();
-        let service = build_backend();
-        open_doc(&service, &lib_uri, lib_source);
-        open_doc(&service, &other_uri, other_source);
+/// A rename's edits as document-change OPERATIONS.
+///
+/// The server always answers in the `Operations` form, never the flat
+/// `Edits` one: only `Operations` carries a per-file version, which is what
+/// lets an editor refuse a stale multi-file rename instead of applying half
+/// of it. A test that accepted either form would stop noticing a regression
+/// to the flat shape.
+fn rename_operations(edit: WorkspaceEdit) -> Vec<DocumentChangeOperation> {
+    match edit.document_changes.expect("document_changes present") {
+        DocumentChanges::Operations(ops) => ops,
+        DocumentChanges::Edits(_) => panic!("expected Operations, got flat Edits"),
+    }
+}
 
-        // Cursor on `helper` in `mod helper` (lib.ws, line 0).
-        let line = 0u32;
-        let col = lib_source.lines().next().unwrap().find("helper").unwrap() as u32;
+/// A fresh `Backend` wired through the real `LanguageServer` trait (so its
+/// `rename`/`references`/`prepare_rename` handlers run exactly as the
+/// editor would call them), with no documents open yet. The returned
+/// `LspService` owns the `Backend`; `.inner()` gives `&Backend`, which is
+/// enough to call the trait methods directly — no transport / socket is
+/// needed since we drive the handlers in-process.
+fn build_backend() -> LspService<Backend> {
+    LspService::new(Backend::new).0
+}
 
-        let edit = service
-            .inner()
-            .rename(RenameParams {
-                text_document_position: text_document_position(&lib_uri, line, col),
-                new_name: "assist".to_string(),
-                work_done_progress_params: Default::default(),
-            })
-            .await
-            .unwrap()
-            .expect("rename should produce edits");
+/// The real `rename` handler's edit for renaming at `(line, col)` to
+/// `new_name`.
+async fn rename_at(
+    service: &LspService<Backend>,
+    uri: &Url,
+    line: u32,
+    col: u32,
+    new_name: &str,
+) -> WorkspaceEdit {
+    service
+        .inner()
+        .rename(RenameParams {
+            text_document_position: text_document_position(uri, line, col),
+            new_name: new_name.to_string(),
+            work_done_progress_params: Default::default(),
+        })
+        .await
+        .unwrap()
+        .expect("rename should produce edits")
+}
 
-        std::fs::remove_dir_all(&dir).ok();
+/// The real `references` handler's answer at `(line, col)`, declaration
+/// included.
+async fn references_req(
+    service: &LspService<Backend>,
+    uri: &Url,
+    line: u32,
+    col: u32,
+) -> Option<Vec<Location>> {
+    service
+        .inner()
+        .references(ReferenceParams {
+            text_document_position: text_document_position(uri, line, col),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: ReferenceContext {
+                include_declaration: true,
+            },
+        })
+        .await
+        .unwrap()
+}
 
-        let changes = rename_operations(edit);
-        let mut by_file: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-        for op in &changes {
+/// Insert a document into a running `Backend` the same shape `did_open`
+/// would produce (built via the module's own `doc_state` helper above).
+fn open_doc(service: &LspService<Backend>, uri: &Url, source: &str) {
+    service
+        .inner()
+        .docs
+        .lock()
+        .unwrap()
+        .insert(uri.clone(), doc_state(source));
+}
+
+/// Like `doc_state`, but with the symbol table populated — `goto_definition`
+/// reads `doc.symbols` (its `in_type_def` heuristic and `definition_at`
+/// both consult it), which `doc_state` leaves empty.
+fn doc_state_with_symbols(source: &str) -> DocState {
+    let mut ds = doc_state(source);
+    ds.symbols = symbols_for(source);
+    ds
+}
+
+fn text_document_position(uri: &Url, line: u32, character: u32) -> TextDocumentPositionParams {
+    TextDocumentPositionParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        position: Position { line, character },
+    }
+}
+
+/// Run the real `code_action` handler for a zero-width range at
+/// `(line, col)` and return only the `CodeAction` variants (none of this
+/// server's actions are bare `Command`s).
+async fn code_action_at(
+    service: &LspService<Backend>,
+    uri: &Url,
+    line: u32,
+    col: u32,
+) -> Vec<CodeAction> {
+    let pos = Position {
+        line,
+        character: col,
+    };
+    let resp = service
+        .inner()
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: pos,
+                end: pos,
+            },
+            context: CodeActionContext {
+                diagnostics: Vec::new(),
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await
+        .unwrap()
+        .unwrap_or_default();
+    resp.into_iter()
+        .filter_map(|a| match a {
+            CodeActionOrCommand::CodeAction(ca) => Some(ca),
+            CodeActionOrCommand::Command(_) => None,
+        })
+        .collect()
+}
+
+/// `code_action_at`, but with the diagnostics the editor would attach to
+/// the request, since the "ignore this warning" actions are driven by them.
+async fn code_action_with_diagnostic(
+    service: &LspService<Backend>,
+    uri: &Url,
+    line: u32,
+    code: &str,
+    severity: DiagnosticSeverity,
+) -> Vec<CodeAction> {
+    let pos = Position { line, character: 0 };
+    let resp = service
+        .inner()
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: pos,
+                end: pos,
+            },
+            context: CodeActionContext {
+                diagnostics: vec![Diagnostic {
+                    range: Range {
+                        start: pos,
+                        end: pos,
+                    },
+                    severity: Some(severity),
+                    code: Some(NumberOrString::String(code.into())),
+                    source: Some("wirescript".into()),
+                    message: "test".into(),
+                    ..Default::default()
+                }],
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await
+        .unwrap()
+        .unwrap_or_default();
+    resp.into_iter()
+        .filter_map(|a| match a {
+            CodeActionOrCommand::CodeAction(ca) => Some(ca),
+            CodeActionOrCommand::Command(_) => None,
+        })
+        .collect()
+}
+
+/// The `new_text` of a code action's first `TextEdit`.
+fn first_edit_text(action: &CodeAction) -> String {
+    action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.values().next())
+        .and_then(|edits| edits.first())
+        .map(|e| e.new_text.clone())
+        .expect("code action has a text edit")
+}
+
+/// A tempdir under a name unique to this test + the process, so parallel
+/// test runs never collide.
+fn scratch_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("ws-lsp-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// The `$`/`/` that triggers a completion is still in `did_change`'s
+/// debounce when the request arrives; completion must read that text, not
+/// the last analysed one.
+#[tokio::test]
+async fn completion_reads_the_undebounced_keystroke() {
+    let uri = Url::parse("file:///c:/t/main.ws").unwrap();
+    let service = build_backend();
+    let complete = |typed: &'static str| {
+        let service = &service;
+        let uri = uri.clone();
+        async move {
+            let analysed = "in b: brick\non go {\n  b.GetComponent()\n}\n";
+            let newest = format!("in b: brick\non go {{\n  b.GetComponent({typed})\n}}\n");
+            open_doc(service, &uri, analysed);
+            service
+                .inner()
+                .changes
+                .lock()
+                .unwrap()
+                .insert(uri.clone(), (1, newest));
+            let col = format!("  b.GetComponent({typed}").len() as u32;
+            let resp = service
+                .inner()
+                .completion(CompletionParams {
+                    text_document_position: text_document_position(&uri, 2, col),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    context: None,
+                })
+                .await
+                .unwrap();
+            match resp {
+                Some(CompletionResponse::Array(items)) => items,
+                other => panic!("unexpected response {other:?}"),
+            }
+        }
+    };
+    let names = complete("$Component/").await;
+    assert!(
+        names.iter().any(|i| i.label == "PointLight"),
+        "{:?}",
+        names.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+    assert!(
+        names.iter().all(|i| i.filter_text.is_none()),
+        "a fixed filter text hides every name once one more letter is typed"
+    );
+    let types = complete("$compon").await;
+    assert!(
+        types.iter().any(|i| i.label == "Component"),
+        "{:?}",
+        types.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn rename_capture_does_not_touch_comments_types_or_other_files() {
+    // main.ws: a `character` capture (a LOCAL binding, scoped to its own
+    // handler body), a `: character` TYPE-position annotation, and a
+    // `// character` comment. other.ws: an unrelated `character`-typed
+    // `in` in a sibling file. None of the three may be touched by
+    // renaming the capture — types are a separate namespace, comments/
+    // strings are never AST sites, and captures never cross files.
+    let dir = scratch_dir("rename-capture");
+    let main_path = dir.join("main.ws");
+    let main_source = "in go: exec\n\
+in target: character\n\
+// character comment\n\
+on CharacterSpawned() -> (character) {\n\
+  character.DisplayText(\"hi\")\n\
+}\n";
+    std::fs::write(&main_path, main_source).unwrap();
+    let other_path = dir.join("other.ws");
+    std::fs::write(&other_path, "in character: character\n").unwrap();
+
+    let main_uri = Url::from_file_path(&main_path).unwrap();
+    let service = build_backend();
+    open_doc(&service, &main_uri, main_source);
+
+    // Cursor on the capture's BODY use (`  character.DisplayText(...)`).
+    let line = 4u32;
+    let col = main_source
+        .lines()
+        .nth(4)
+        .unwrap()
+        .find("character")
+        .unwrap() as u32;
+
+    let edit = rename_at(&service, &main_uri, line, col, "spawned").await;
+
+    std::fs::remove_dir_all(&dir).ok();
+
+    let changes = rename_operations(edit);
+    assert_eq!(
+        changes.len(),
+        1,
+        "only main.ws should be edited: {changes:?}"
+    );
+    let DocumentChangeOperation::Edit(te) = &changes[0] else {
+        panic!("expected a TextDocumentEdit operation: {:?}", changes[0]);
+    };
+    assert_eq!(
+        te.text_document.uri, main_uri,
+        "edit landed in the wrong file"
+    );
+    assert_eq!(
+        te.edits.len(),
+        2,
+        "exactly the capture's decl + its one body use, nothing from the \
+             type annotation, comment, or other.ws: {:?}",
+        te.edits
+    );
+    for e in &te.edits {
+        let OneOf::Left(edit) = e else {
+            panic!("expected a plain TextEdit, got an annotated one: {e:?}")
+        };
+        assert!(
+            edit.range.start.line == 3 || edit.range.start.line == 4,
+            "edit escaped the capture's own handler body: {edit:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn rename_exported_mod_updates_import_specifier_and_call_across_files() {
+    // lib.ws defines an exported `mod`; main.ws imports and calls it.
+    // Renaming from the CALL SITE in main.ws (an `Imported` target) must
+    // edit BOTH files: lib.ws's declaration, and main.ws's import
+    // specifier plus its call — even though lib.ws is never opened in
+    // the editor (it's resolved from disk via the import path).
+    let dir = scratch_dir("rename-import");
+    let lib_path = dir.join("lib.ws");
+    std::fs::write(&lib_path, "mod helper() {\n}\n").unwrap();
+    let main_path = dir.join("main.ws");
+    let main_source = "import { helper } from \"lib\"\nin go: exec\non go { helper() }\n";
+    std::fs::write(&main_path, main_source).unwrap();
+
+    let main_uri = Url::from_file_path(&main_path).unwrap();
+    let lib_uri = Url::from_file_path(&lib_path).unwrap();
+    let service = build_backend();
+    open_doc(&service, &main_uri, main_source);
+
+    // Cursor on the `helper()` call in `on go { helper() }` (line 2).
+    let line = 2u32;
+    let col = main_source.lines().nth(2).unwrap().find("helper").unwrap() as u32;
+
+    let edit = rename_at(&service, &main_uri, line, col, "assist").await;
+
+    std::fs::remove_dir_all(&dir).ok();
+
+    let changes = rename_operations(edit);
+    let mut by_file: HashMap<Url, usize> = HashMap::new();
+    for op in &changes {
+        let DocumentChangeOperation::Edit(te) = op else {
+            panic!("expected a TextDocumentEdit operation: {op:?}")
+        };
+        by_file.insert(te.text_document.uri.clone(), te.edits.len());
+    }
+    assert_eq!(
+        by_file.get(&lib_uri).copied(),
+        Some(1),
+        "lib.ws's declaration must be renamed even though it was never opened: {by_file:?}"
+    );
+    assert_eq!(
+        by_file.get(&main_uri).copied(),
+        Some(2),
+        "main.ws needs both the import specifier AND the call site renamed: {by_file:?}"
+    );
+}
+
+#[tokio::test]
+async fn find_references_is_scoped_not_a_name_string_search() {
+    // Same fixture shape as the capture-rename test: `textDocument/
+    // references` on the `character` capture must return ONLY its
+    // handler-body occurrences (decl + one use) — never the `:
+    // character` type annotation, the `// character` comment, or
+    // other.ws. `references()` and `rename()` share `references_at`, so
+    // this guards both from becoming a naive same-name string search.
+    let dir = scratch_dir("find-refs-scoped");
+    let main_path = dir.join("main.ws");
+    let main_source = "in go: exec\n\
+in target: character\n\
+// character comment\n\
+on CharacterSpawned() -> (character) {\n\
+  character.DisplayText(\"hi\")\n\
+}\n";
+    std::fs::write(&main_path, main_source).unwrap();
+    let other_path = dir.join("other.ws");
+    std::fs::write(&other_path, "in character: character\n").unwrap();
+
+    let main_uri = Url::from_file_path(&main_path).unwrap();
+    let service = build_backend();
+    open_doc(&service, &main_uri, main_source);
+
+    let line = 4u32;
+    let col = main_source
+        .lines()
+        .nth(4)
+        .unwrap()
+        .find("character")
+        .unwrap() as u32;
+
+    let locations = references_req(&service, &main_uri, line, col)
+        .await
+        .expect("references should find sites");
+
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert_eq!(
+        locations.len(),
+        2,
+        "exactly the capture's decl + its one body use: {locations:?}"
+    );
+    for loc in &locations {
+        assert_eq!(
+            loc.uri, main_uri,
+            "reference escaped into other.ws: {loc:?}"
+        );
+        assert!(
+            loc.range.start.line == 3 || loc.range.start.line == 4,
+            "reference escaped the capture's own handler body: {loc:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn find_references_on_field_name_is_refused() {
+    // A field-name cursor inside a coarse enclosing binding's decl range
+    // (`var x`'s initializer `p.field`) is refused by `references`, not
+    // resolved to that binding: the scoped_refs table
+    // `non_binding_positions_refuse_rename`, through the LSP handler.
+    let source = "type P = { field: int }\nin p: P\nvar x: int = p.field\n";
+    let uri = Url::from_file_path(std::env::temp_dir().join("ws-lsp-find-refs-field.ws")).unwrap();
+    let service = build_backend();
+    open_doc(&service, &uri, source);
+
+    // Cursor inside `field` of `p.field` (line 2).
+    let col = source.lines().nth(2).unwrap().find("field").unwrap() as u32 + 1;
+
+    let locations = references_req(&service, &uri, 2, col).await;
+
+    assert!(
+        locations.is_none() || locations.as_ref().unwrap().is_empty(),
+        "field click must be refused, not resolve to the enclosing var's references: {locations:?}"
+    );
+}
+
+#[tokio::test]
+async fn rename_export_updates_multiline_aliased_import_specifier_not_whole_decl() {
+    // Regression: `find_name_range` used to search only the coarse
+    // site's FIRST line via a plain substring match — a multi-line
+    // `import { … }` specifier (only ALIASED specifiers stay coarse)
+    // would fail to find the name on that first line and fall back to
+    // replacing the WHOLE `import { … } from "…"` span. This fixture
+    // also plants a decoy (`helperX`) on an earlier line whose name is
+    // a PREFIX of the real target, to catch a non-word-boundary match
+    // landing inside it.
+    let dir = scratch_dir("rename-multiline-import");
+    let lib_path = dir.join("lib.ws");
+    let lib_source = "mod helper() {\n}\n";
+    std::fs::write(&lib_path, lib_source).unwrap();
+    let main_path = dir.join("main.ws");
+    let main_source =
+        "import {\n  helperX,\n  helper as x\n} from \"lib\"\nin go: exec\non go { x() }\n";
+    std::fs::write(&main_path, main_source).unwrap();
+
+    let lib_uri = Url::from_file_path(&lib_path).unwrap();
+    let main_uri = Url::from_file_path(&main_path).unwrap();
+    let service = build_backend();
+    open_doc(&service, &lib_uri, lib_source);
+    open_doc(&service, &main_uri, main_source);
+
+    // Cursor on `helper` in `mod helper` (lib.ws, line 0).
+    let line = 0u32;
+    let col = lib_source.lines().next().unwrap().find("helper").unwrap() as u32;
+
+    let edit = rename_at(&service, &lib_uri, line, col, "assist").await;
+
+    std::fs::remove_dir_all(&dir).ok();
+
+    let changes = rename_operations(edit);
+    let main_te = changes
+        .iter()
+        .find_map(|op| {
             let DocumentChangeOperation::Edit(te) = op else {
                 panic!("expected a TextDocumentEdit operation: {op:?}")
             };
-            let plain: Vec<TextEdit> = te
-                .edits
-                .iter()
-                .map(|e| match e {
-                    OneOf::Left(t) => t.clone(),
-                    OneOf::Right(_) => panic!("expected a plain TextEdit"),
-                })
-                .collect();
-            by_file.insert(te.text_document.uri.clone(), plain);
+            (te.text_document.uri == main_uri).then_some(te)
+        })
+        .expect("main.ws must be edited");
+
+    assert_eq!(
+        main_te.edits.len(),
+        1,
+        "only the specifier — the `helper` half — should be edited: {:?}",
+        main_te.edits
+    );
+    let OneOf::Left(edit) = &main_te.edits[0] else {
+        panic!("expected a plain TextEdit: {:?}", main_te.edits[0])
+    };
+    assert_eq!(edit.new_text, "assist");
+    assert_eq!(
+        edit.range.start.line, 2,
+        "the edit must land on line 2 (`  helper as x`), not the decoy or the decl line: {edit:?}"
+    );
+    assert_eq!(
+        edit.range.start.character, 2,
+        "must land on `helper`, not swallow the whole decl: {edit:?}"
+    );
+    assert_eq!(
+        edit.range.end.character, 8,
+        "must cover exactly the `helper` token: {edit:?}"
+    );
+}
+
+#[tokio::test]
+async fn rename_aliased_import_alias_is_file_local() {
+    // `import { helper as assist } from "lib"` + `assist()`: the alias is
+    // a FILE-LOCAL name. Renaming `assist` must edit ONLY main.ws — the
+    // alias specifier token and the call — and must NOT touch lib.ws
+    // (whose decl still spells `helper`) nor the `helper` half of the
+    // specifier.
+    let dir = scratch_dir("rename-alias-local");
+    let lib_path = dir.join("lib.ws");
+    std::fs::write(&lib_path, "mod helper() {\n}\n").unwrap();
+    let main_path = dir.join("main.ws");
+    let main_source = "import { helper as assist } from \"lib\"\nin go: exec\non go { assist() }\n";
+    std::fs::write(&main_path, main_source).unwrap();
+
+    let main_uri = Url::from_file_path(&main_path).unwrap();
+    let lib_uri = Url::from_file_path(&lib_path).unwrap();
+    let service = build_backend();
+    open_doc(&service, &main_uri, main_source);
+
+    // Cursor on the `assist()` call (line 2).
+    let line = 2u32;
+    let col = main_source.lines().nth(2).unwrap().find("assist").unwrap() as u32;
+
+    let edit = rename_at(&service, &main_uri, line, col, "aid").await;
+
+    std::fs::remove_dir_all(&dir).ok();
+
+    let changes = rename_operations(edit);
+    assert_eq!(changes.len(), 1, "only main.ws may be edited: {changes:?}");
+    let DocumentChangeOperation::Edit(te) = &changes[0] else {
+        panic!("expected a TextDocumentEdit operation: {:?}", changes[0]);
+    };
+    assert_eq!(
+        te.text_document.uri, main_uri,
+        "an aliased-import rename must stay in-file"
+    );
+    assert_ne!(te.text_document.uri, lib_uri, "lib.ws must be untouched");
+    assert_eq!(
+        te.edits.len(),
+        2,
+        "exactly the alias specifier token + the call site: {:?}",
+        te.edits
+    );
+    for e in &te.edits {
+        let OneOf::Left(edit) = e else {
+            panic!("expected a plain TextEdit: {e:?}")
+        };
+        assert_eq!(edit.new_text, "aid", "each site renames to the new alias");
+        // The specifier edit must land on the alias token, NOT the `helper`
+        // half: on line 0 it starts at/after `import { helper as ` (col > 17).
+        if edit.range.start.line == 0 {
+            assert!(
+                edit.range.start.character > 17,
+                "specifier edit hit the `helper` half, not the alias: {edit:?}"
+            );
         }
+    }
+}
 
-        let lib_edits = by_file.get(&lib_uri).expect("lib.ws must be edited");
-        assert_eq!(lib_edits.len(), 1, "lib.ws: just the decl: {lib_edits:?}");
-        assert_eq!(lib_edits[0].new_text, "assist");
+#[tokio::test]
+async fn rename_export_updates_aliased_importer_original_name() {
+    // lib.ws `mod helper(){}`; other.ws `import { helper as x }` + `x()`.
+    // Renaming `helper` from lib.ws's decl must rename lib.ws's decl AND
+    // the `helper` half of other.ws's specifier — but leave the alias `x`
+    // and its call `x()` untouched.
+    let dir = scratch_dir("rename-export-aliased-importer");
+    let lib_path = dir.join("lib.ws");
+    let lib_source = "mod helper() {\n}\n";
+    std::fs::write(&lib_path, lib_source).unwrap();
+    let other_path = dir.join("other.ws");
+    let other_source = "import { helper as x } from \"lib\"\nin go: exec\non go { x() }\n";
+    std::fs::write(&other_path, other_source).unwrap();
 
-        let other_edits = by_file.get(&other_uri).expect("other.ws must be edited");
-        assert_eq!(
+    let lib_uri = Url::from_file_path(&lib_path).unwrap();
+    let other_uri = Url::from_file_path(&other_path).unwrap();
+    let service = build_backend();
+    open_doc(&service, &lib_uri, lib_source);
+    open_doc(&service, &other_uri, other_source);
+
+    // Cursor on `helper` in `mod helper` (lib.ws, line 0).
+    let line = 0u32;
+    let col = lib_source.lines().next().unwrap().find("helper").unwrap() as u32;
+
+    let edit = rename_at(&service, &lib_uri, line, col, "assist").await;
+
+    std::fs::remove_dir_all(&dir).ok();
+
+    let changes = rename_operations(edit);
+    let mut by_file: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+    for op in &changes {
+        let DocumentChangeOperation::Edit(te) = op else {
+            panic!("expected a TextDocumentEdit operation: {op:?}")
+        };
+        let plain: Vec<TextEdit> = te
+            .edits
+            .iter()
+            .map(|e| match e {
+                OneOf::Left(t) => t.clone(),
+                OneOf::Right(_) => panic!("expected a plain TextEdit"),
+            })
+            .collect();
+        by_file.insert(te.text_document.uri.clone(), plain);
+    }
+
+    let lib_edits = by_file.get(&lib_uri).expect("lib.ws must be edited");
+    assert_eq!(lib_edits.len(), 1, "lib.ws: just the decl: {lib_edits:?}");
+    assert_eq!(lib_edits[0].new_text, "assist");
+
+    let other_edits = by_file.get(&other_uri).expect("other.ws must be edited");
+    assert_eq!(
             other_edits.len(),
             1,
             "other.ws: only the `helper` half of the specifier, never the alias or its call: {other_edits:?}"
         );
-        let e = &other_edits[0];
-        assert_eq!(e.new_text, "assist");
-        assert_eq!(e.range.start.line, 0, "the specifier edit is on the import line");
-        // The `helper` token sits at cols 9..15 of `import { helper as x }`; the
-        // alias `x` is at col 19. The edit must cover `helper`, not `x`.
-        assert_eq!(e.range.start.character, 9, "edit must land on the `helper` token: {e:?}");
-        assert_eq!(e.range.end.character, 15, "edit must end at the `helper` token: {e:?}");
-    }
+    let e = &other_edits[0];
+    assert_eq!(e.new_text, "assist");
+    assert_eq!(
+        e.range.start.line, 0,
+        "the specifier edit is on the import line"
+    );
+    // The `helper` token sits at cols 9..15 of `import { helper as x }`; the
+    // alias `x` is at col 19. The edit must cover `helper`, not `x`.
+    assert_eq!(
+        e.range.start.character, 9,
+        "edit must land on the `helper` token: {e:?}"
+    );
+    assert_eq!(
+        e.range.end.character, 15,
+        "edit must end at the `helper` token: {e:?}"
+    );
+}
 
-    #[tokio::test]
-    async fn goto_definition_on_record_type_field_routes_through_definition_at() {
-        // A cursor on a record-TYPE field name inside a `type` decl must NOT
-        // resolve to the enclosing type's reference set; it falls through to
-        // `definition_at`. Field rename/resolution is deferred, so
-        // `definition_at` yields no target here — the load-bearing assertion
-        // is that the response is NOT the type's references (which is what
-        // the un-guarded `references_at` branch would return).
-        let source = "type P = { field: int }\n";
-        let uri = Url::from_file_path(std::env::temp_dir().join("ws-lsp-goto-field.ws")).unwrap();
-        let service = build_backend();
-        service
-            .inner()
-            .docs
-            .lock()
-            .unwrap()
-            .insert(uri.clone(), doc_state_with_symbols(source));
+#[tokio::test]
+async fn goto_definition_on_record_type_field_routes_through_definition_at() {
+    // A cursor on a record-TYPE field name inside a `type` decl must NOT
+    // resolve to the enclosing type's reference set; it falls through to
+    // `definition_at`. Field rename/resolution is deferred, so
+    // `definition_at` yields no target here — the load-bearing assertion
+    // is that the response is NOT the type's references (which is what
+    // the un-guarded `references_at` branch would return).
+    let source = "type P = { field: int }\n";
+    let uri = Url::from_file_path(std::env::temp_dir().join("ws-lsp-goto-field.ws")).unwrap();
+    let service = build_backend();
+    service
+        .inner()
+        .docs
+        .lock()
+        .unwrap()
+        .insert(uri.clone(), doc_state_with_symbols(source));
 
-        // Cursor on the record-type field name `field` (line 0).
-        let col = source.find("field").unwrap() as u32;
-        let resp = service
-            .inner()
-            .goto_definition(GotoDefinitionParams {
-                text_document_position_params: text_document_position(&uri, 0, col),
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
-            })
-            .await
-            .unwrap();
+    // Cursor on the record-type field name `field` (line 0).
+    let col = source.find("field").unwrap() as u32;
+    let resp = service
+        .inner()
+        .goto_definition(GotoDefinitionParams {
+            text_document_position_params: text_document_position(&uri, 0, col),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await
+        .unwrap();
 
-        assert!(
-            resp.is_none(),
-            "field click must route to definition_at, not the type's reference set: {resp:?}"
-        );
-    }
+    assert!(
+        resp.is_none(),
+        "field click must route to definition_at, not the type's reference set: {resp:?}"
+    );
+}
 
-    #[tokio::test]
-    async fn semantic_tokens_tag_capture_as_variable_and_annotation_as_type() {
-        // Corrective semantic tokens for the position-blind grammar: a
-        // `character` handler capture (and its use) must NOT show as the
-        // `character` TYPE — the resolver reclassifies it as a plain Variable
-        // token, while the actual `: character` TYPE annotation keeps Type.
-        let source = "\
+#[tokio::test]
+async fn semantic_tokens_tag_capture_as_variable_and_annotation_as_type() {
+    // Corrective semantic tokens for the position-blind grammar: a
+    // `character` handler capture (and its use) must NOT show as the
+    // `character` TYPE — the resolver reclassifies it as a plain Variable
+    // token, while the actual `: character` TYPE annotation keeps Type.
+    let source = "\
 in go: exec
 in foo: character
 on CharacterSpawned() -> (character) {
   character.DisplayText(\"hi\")
 }";
-        let uri = Url::from_file_path(std::env::temp_dir().join("ws-lsp-semtok.ws")).unwrap();
-        let service = build_backend();
-        open_doc(&service, &uri, source);
+    let uri = Url::from_file_path(std::env::temp_dir().join("ws-lsp-semtok.ws")).unwrap();
+    let service = build_backend();
+    open_doc(&service, &uri, source);
 
-        let resp = service
-            .inner()
-            .semantic_tokens_full(SemanticTokensParams {
-                text_document: TextDocumentIdentifier { uri: uri.clone() },
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
-            })
-            .await
-            .unwrap()
-            .expect("semantic tokens should be produced");
+    let resp = service
+        .inner()
+        .semantic_tokens_full(SemanticTokensParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await
+        .unwrap()
+        .expect("semantic tokens should be produced");
 
-        let SemanticTokensResult::Tokens(tokens) = resp else {
-            panic!("expected a full SemanticTokens result, got a delta/partial variant");
+    let SemanticTokensResult::Tokens(tokens) = resp else {
+        panic!("expected a full SemanticTokens result, got a delta/partial variant");
+    };
+
+    // Decode the delta-encoded stream back to absolute (line, start_char,
+    // length, token_type) tuples per the LSP spec's own encoding rule.
+    let mut abs = Vec::new();
+    let mut line = 0u32;
+    let mut start = 0u32;
+    for t in &tokens.data {
+        line += t.delta_line;
+        start = if t.delta_line == 0 {
+            start + t.delta_start
+        } else {
+            t.delta_start
         };
-
-        // Decode the delta-encoded stream back to absolute (line, start_char,
-        // length, token_type) tuples per the LSP spec's own encoding rule.
-        let mut abs = Vec::new();
-        let mut line = 0u32;
-        let mut start = 0u32;
-        for t in &tokens.data {
-            line += t.delta_line;
-            start = if t.delta_line == 0 { start + t.delta_start } else { t.delta_start };
-            abs.push((line, start, t.length, t.token_type));
-        }
-
-        // Legend order (see the capability registration): Type=0,
-        // Function=1, Parameter=2, Variable=3, Namespace=4.
-        let decl_col = source.lines().nth(2).unwrap().find("character").unwrap() as u32;
-        assert!(
-            abs.iter().any(|&(l, c, _, ty)| l == 2 && c == decl_col && ty == 3),
-            "capture decl should tokenize as Variable: {abs:?}"
-        );
-
-        let type_col = source.lines().nth(1).unwrap().find("character").unwrap() as u32;
-        assert!(
-            abs.iter().any(|&(l, c, _, ty)| l == 1 && c == type_col && ty == 0),
-            ": character annotation should tokenize as Type: {abs:?}"
-        );
+        abs.push((line, start, t.length, t.token_type));
     }
 
-    /// An import must resolve against an OPEN EDITOR BUFFER, not the last bytes
-    /// saved to disk. Otherwise a file importing something you are currently
-    /// editing reports diagnostics for a version you can no longer see, until
-    /// you hit save.
-    #[test]
-    fn open_buffer_shadows_disk_for_imports() {
-        let dir = std::env::temp_dir().join(format!("ws-lsp-openimp-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let lib = dir.join("lib.ws");
-        // On DISK the export is named `OLD`.
-        std::fs::write(&lib, "let OLD: int = 1\n").unwrap();
+    // Legend order (see the capability registration): Type=0,
+    // Function=1, Parameter=2, Variable=3, Namespace=4.
+    let decl_col = source.lines().nth(2).unwrap().find("character").unwrap() as u32;
+    assert!(
+        abs.iter()
+            .any(|&(l, c, _, ty)| l == 2 && c == decl_col && ty == 3),
+        "capture decl should tokenize as Variable: {abs:?}"
+    );
 
-        // The unsaved editor buffer for that same file renames it to `FRESH`.
-        let mut open = HashMap::new();
-        open.insert(
-            FsLoader.canonical_path(&lib.to_string_lossy(), "."),
-            "let FRESH: int = 2\n".to_string(),
-        );
-        let loader = OpenDocLoader { open };
+    let type_col = source.lines().nth(1).unwrap().find("character").unwrap() as u32;
+    assert!(
+        abs.iter()
+            .any(|&(l, c, _, ty)| l == 1 && c == type_col && ty == 0),
+        ": character annotation should tokenize as Type: {abs:?}"
+    );
+}
 
-        let main_path = dir.join("main.ws");
-        let r = resolve(
-            "import { FRESH } from \"lib\"\nout o = FRESH",
-            &main_path.to_string_lossy(),
-            &loader,
-        );
-        std::fs::remove_dir_all(&dir).ok();
-        assert!(
-            r.diagnostics.is_empty(),
-            "the unsaved buffer's export must be visible, got {:?}",
-            r.diagnostics
-        );
-    }
+/// An import must resolve against an OPEN EDITOR BUFFER, not the last bytes
+/// saved to disk. Otherwise a file importing something you are currently
+/// editing reports diagnostics for a version you can no longer see, until
+/// you hit save.
+#[test]
+fn open_buffer_shadows_disk_for_imports() {
+    let dir = std::env::temp_dir().join(format!("ws-lsp-openimp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let lib = dir.join("lib.ws");
+    // On DISK the export is named `OLD`.
+    std::fs::write(&lib, "let OLD: int = 1\n").unwrap();
 
-    /// The fallback still reaches disk for a file that is not open.
-    #[test]
-    fn unopened_import_still_loads_from_disk() {
-        let dir = std::env::temp_dir().join(format!("ws-lsp-diskimp-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("lib.ws"), "let ONDISK: int = 1\n").unwrap();
-        let loader = OpenDocLoader { open: HashMap::new() };
-        let main_path = dir.join("main.ws");
-        let r = resolve(
-            "import { ONDISK } from \"lib\"\nout o = ONDISK",
-            &main_path.to_string_lossy(),
-            &loader,
-        );
-        std::fs::remove_dir_all(&dir).ok();
-        assert!(
-            r.diagnostics.is_empty(),
-            "a closed import must still load from disk, got {:?}",
-            r.diagnostics
-        );
-    }
+    // The unsaved editor buffer for that same file renames it to `FRESH`.
+    let mut open = HashMap::new();
+    open.insert(
+        FsLoader.canonical_path(&lib.to_string_lossy(), "."),
+        "let FRESH: int = 2\n".to_string(),
+    );
+    let loader = OpenDocLoader { open };
 
-    /// A mod added since the last save must get a gate estimate immediately.
-    ///
-    /// `did_change` used to carry the previous estimate map forward instead of
-    /// recomputing, and estimates are looked up by NAME — so a newly typed mod
-    /// had no entry and hovered with no gate count while its neighbours showed
-    /// one, which reads as the feature being broken rather than stale.
-    #[tokio::test]
-    async fn a_mod_added_since_the_last_save_still_gets_a_gate_estimate() {
-        let dir = scratch_dir("estimate-freshness");
-        let file = dir.join("main.ws");
-        let opened = "mod alpha(v: *int) { v = v + 1 }\n";
-        std::fs::write(&file, opened).unwrap();
-        let uri = Url::from_file_path(&file).unwrap();
+    let main_path = dir.join("main.ws");
+    let r = resolve(
+        "import { FRESH } from \"lib\"\nout o = FRESH",
+        &main_path.to_string_lossy(),
+        &loader,
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        r.diagnostics.is_empty(),
+        "the unsaved buffer's export must be visible, got {:?}",
+        r.diagnostics
+    );
+}
 
-        let service = build_backend();
+/// The fallback still reaches disk for a file that is not open.
+#[test]
+fn unopened_import_still_loads_from_disk() {
+    let dir = std::env::temp_dir().join(format!("ws-lsp-diskimp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.ws"), "let ONDISK: int = 1\n").unwrap();
+    let loader = OpenDocLoader {
+        open: HashMap::new(),
+    };
+    let main_path = dir.join("main.ws");
+    let r = resolve(
+        "import { ONDISK } from \"lib\"\nout o = ONDISK",
+        &main_path.to_string_lossy(),
+        &loader,
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        r.diagnostics.is_empty(),
+        "a closed import must still load from disk, got {:?}",
+        r.diagnostics
+    );
+}
+
+/// A mod added since the last save must get a gate estimate immediately.
+///
+/// `did_change` used to carry the previous estimate map forward instead of
+/// recomputing, and estimates are looked up by NAME — so a newly typed mod
+/// had no entry and hovered with no gate count while its neighbours showed
+/// one, which reads as the feature being broken rather than stale.
+#[tokio::test]
+async fn a_mod_added_since_the_last_save_still_gets_a_gate_estimate() {
+    let dir = scratch_dir("estimate-freshness");
+    let file = dir.join("main.ws");
+    let opened = "mod alpha(v: *int) { v = v + 1 }\n";
+    std::fs::write(&file, opened).unwrap();
+    let uri = Url::from_file_path(&file).unwrap();
+
+    let service = build_backend();
+    service
+        .inner()
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "wirescript".into(),
+                version: 1,
+                text: opened.into(),
+            },
+        })
+        .await;
+
+    // Type a second mod — a change only, never saved to disk.
+    let edited = "mod alpha(v: *int) { v = v + 1 }\nmod beta(v: *int) { v = v * 3 + 2 }\n";
+    service
+        .inner()
+        .did_change(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version: 2,
+            },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: edited.into(),
+            }],
+        })
+        .await;
+
+    let docs = service.inner().docs.lock().unwrap();
+    let est = &docs.get(&uri).expect("doc state").resource_estimates;
+    assert!(
+        est.contains_key("beta"),
+        "a mod added by an unsaved edit must have an estimate; keys: {:?}",
+        est.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        est.contains_key("alpha"),
+        "the pre-existing mod must keep its estimate"
+    );
+}
+
+/// An edit to one document must not cancel the pending analysis of
+/// another. The debounce counter was shared by every document, so an edit
+/// to `b.ws` within the wait after one to `a.ws` made `a.ws`'s handler
+/// return without analysing, and its newest text got no diagnostics until
+/// it was edited again.
+#[tokio::test]
+async fn an_edit_to_one_document_does_not_cancel_another_documents_analysis() {
+    let dir = scratch_dir("debounce-per-document");
+    let (a_file, b_file) = (dir.join("a.ws"), dir.join("b.ws"));
+    let a_opened = "import \"b\"\nmod alpha(v: *int) { v = v + 1 }\n";
+    let b_opened = "mod helper(v: *int) { v = v + 2 }\n";
+    std::fs::write(&a_file, a_opened).unwrap();
+    std::fs::write(&b_file, b_opened).unwrap();
+    let (a, b) = (
+        Url::from_file_path(&a_file).unwrap(),
+        Url::from_file_path(&b_file).unwrap(),
+    );
+
+    let service = build_backend();
+    for (uri, text) in [(&a, a_opened), (&b, b_opened)] {
         service
             .inner()
             .did_open(DidOpenTextDocumentParams {
@@ -1412,289 +1088,488 @@ on CharacterSpawned() -> (character) {
                     uri: uri.clone(),
                     language_id: "wirescript".into(),
                     version: 1,
-                    text: opened.into(),
+                    text: text.into(),
                 },
             })
             .await;
-
-        // Type a second mod — a change only, never saved to disk.
-        let edited = "mod alpha(v: *int) { v = v + 1 }\nmod beta(v: *int) { v = v * 3 + 2 }\n";
-        service
-            .inner()
-            .did_change(DidChangeTextDocumentParams {
-                text_document: VersionedTextDocumentIdentifier { uri: uri.clone(), version: 2 },
-                content_changes: vec![TextDocumentContentChangeEvent {
-                    range: None,
-                    range_length: None,
-                    text: edited.into(),
-                }],
-            })
-            .await;
-
-        let docs = service.inner().docs.lock().unwrap();
-        let est = &docs.get(&uri).expect("doc state").resource_estimates;
-        assert!(
-            est.contains_key("beta"),
-            "a mod added by an unsaved edit must have an estimate; keys: {:?}",
-            est.keys().collect::<Vec<_>>()
-        );
-        assert!(est.contains_key("alpha"), "the pre-existing mod must keep its estimate");
     }
+    let change = |uri: &Url, text: &str| DidChangeTextDocumentParams {
+        text_document: VersionedTextDocumentIdentifier {
+            uri: uri.clone(),
+            version: 2,
+        },
+        content_changes: vec![TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: text.into(),
+        }],
+    };
+    let a_edited =
+        "import \"b\"\nmod alpha(v: *int) { v = v + 1 }\nmod gamma(v: *int) { v = v * 3 + 2 }\n";
+    let b_edited = "mod helper(v: *int) { v = v + 5 }\n";
+    tokio::join!(service.inner().did_change(change(&a, a_edited)), async {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        service.inner().did_change(change(&b, b_edited)).await;
+    });
 
-    /// An edit to one document must not cancel the pending analysis of
-    /// another. The debounce counter was shared by every document, so an edit
-    /// to `b.ws` within the wait after one to `a.ws` made `a.ws`'s handler
-    /// return without analysing, and its newest text got no diagnostics until
-    /// it was edited again.
-    #[tokio::test]
-    async fn an_edit_to_one_document_does_not_cancel_another_documents_analysis() {
-        let dir = scratch_dir("debounce-per-document");
-        let (a_file, b_file) = (dir.join("a.ws"), dir.join("b.ws"));
-        let a_opened = "import \"b\"\nmod alpha(v: *int) { v = v + 1 }\n";
-        let b_opened = "mod helper(v: *int) { v = v + 2 }\n";
-        std::fs::write(&a_file, a_opened).unwrap();
-        std::fs::write(&b_file, b_opened).unwrap();
-        let (a, b) = (Url::from_file_path(&a_file).unwrap(), Url::from_file_path(&b_file).unwrap());
+    let docs = service.inner().docs.lock().unwrap();
+    let a_doc = docs.get(&a).expect("a.ws is open");
+    assert_eq!(
+        a_doc.source, a_edited,
+        "a.ws must be analysed at its last text"
+    );
+    assert!(
+        a_doc.resource_estimates.contains_key("gamma"),
+        "the mod a.ws's last edit added must be analysed"
+    );
+    assert_eq!(docs.get(&b).expect("b.ws is open").source, b_edited);
+}
 
-        let service = build_backend();
-        for (uri, text) in [(&a, a_opened), (&b, b_opened)] {
-            service
-                .inner()
-                .did_open(DidOpenTextDocumentParams {
-                    text_document: TextDocumentItem {
-                        uri: uri.clone(),
-                        language_id: "wirescript".into(),
-                        version: 1,
-                        text: text.into(),
-                    },
-                })
-                .await;
-        }
-        let change = |uri: &Url, text: &str| DidChangeTextDocumentParams {
-            text_document: VersionedTextDocumentIdentifier { uri: uri.clone(), version: 2 },
-            content_changes: vec![TextDocumentContentChangeEvent { range: None, range_length: None, text: text.into() }],
-        };
-        let a_edited = "import \"b\"\nmod alpha(v: *int) { v = v + 1 }\nmod gamma(v: *int) { v = v * 3 + 2 }\n";
-        let b_edited = "mod helper(v: *int) { v = v + 5 }\n";
-        tokio::join!(service.inner().did_change(change(&a, a_edited)), async {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            service.inner().did_change(change(&b, b_edited)).await;
-        });
+/// `if constexpr` semantics mean an untaken branch is never checked, so it
+/// can silently rot. Making it visible in the editor is the compensation.
+#[tokio::test]
+async fn hovering_dropped_code_says_it_was_removed_at_compile_time() {
+    let dir = scratch_dir("const-dropped");
+    let file = dir.join("main.ws");
+    let src = "const MODE = 1\nvar x: int = 0\nin go: exec\non go {\n  if MODE == 1 { x = 1 } else { x = 2 }\n}\n";
+    std::fs::write(&file, src).unwrap();
+    let uri = Url::from_file_path(&file).unwrap();
+    let service = build_backend();
+    service
+        .inner()
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "wirescript".into(),
+                version: 1,
+                text: src.into(),
+            },
+        })
+        .await;
 
-        let docs = service.inner().docs.lock().unwrap();
-        let a_doc = docs.get(&a).expect("a.ws is open");
-        assert_eq!(a_doc.source, a_edited, "a.ws must be analysed at its last text");
-        assert!(a_doc.resource_estimates.contains_key("gamma"), "the mod a.ws's last edit added must be analysed");
-        assert_eq!(docs.get(&b).expect("b.ws is open").source, b_edited);
-    }
-
-    /// `if constexpr` semantics mean an untaken branch is never checked, so it
-    /// can silently rot. Making it visible in the editor is the compensation.
-    #[tokio::test]
-    async fn hovering_dropped_code_says_it_was_removed_at_compile_time() {
-        let dir = scratch_dir("const-dropped");
-        let file = dir.join("main.ws");
-        let src = "const MODE = 1\nvar x: int = 0\nin go: exec\non go {\n  if MODE == 1 { x = 1 } else { x = 2 }\n}\n";
-        std::fs::write(&file, src).unwrap();
-        let uri = Url::from_file_path(&file).unwrap();
-        let service = build_backend();
-        service.inner().did_open(DidOpenTextDocumentParams {
-            text_document: TextDocumentItem { uri: uri.clone(), language_id: "wirescript".into(), version: 1, text: src.into() },
-        }).await;
-
-        // column inside the `x = 2` else-block body
-        let col = src.lines().nth(4).unwrap().find("x = 2").unwrap() as u32 + 1;
-        let h = service.inner().hover(HoverParams {
+    // column inside the `x = 2` else-block body
+    let col = src.lines().nth(4).unwrap().find("x = 2").unwrap() as u32 + 1;
+    let h = service
+        .inner()
+        .hover(HoverParams {
             text_document_position_params: text_document_position(&uri, 4, col),
             work_done_progress_params: Default::default(),
-        }).await.unwrap().expect("hover");
-        let HoverContents::Markup(m) = h.contents else { panic!("expected markup") };
-        assert!(m.value.contains("Removed at compile time"), "got {:?}", m.value);
-    }
+        })
+        .await
+        .unwrap()
+        .expect("hover");
+    let HoverContents::Markup(m) = h.contents else {
+        panic!("expected markup")
+    };
+    assert!(
+        m.value.contains("Removed at compile time"),
+        "got {:?}",
+        m.value
+    );
+}
 
-    // ---------- fill missing match arms (Task 22) ----------
+// ---------- fill missing match arms (Task 22) ----------
 
-    /// A `match` covering only `Circle` is missing `Empty` and `Rect`; the
-    /// code action must offer both as witness arms, reusing the same
-    /// witness engine (`typecheck::patterns::analyze`) the compiler's own
-    /// WS054 exhaustiveness diagnostic runs. The placeholder body is a plain
-    /// `todo`, never LSP snippet syntax (`${...}`), which this client would
-    /// insert verbatim and fail to parse.
-    #[tokio::test]
-    async fn fill_missing_match_arms_offers_the_witnesses() {
-        let src = "enum Shape { Empty, Circle(float), Rect(float, float) }\nin s: Shape\nout x = match s {\n  Circle(r) => 1.0,\n}\n";
-        let uri = Url::parse("file:///t.ws").unwrap();
-        let service = build_backend();
-        open_doc(&service, &uri, src);
+/// A `match` covering only `Circle` is missing `Empty` and `Rect`; the
+/// code action must offer both as witness arms, reusing the same
+/// witness engine (`typecheck::patterns::analyze`) the compiler's own
+/// WS054 exhaustiveness diagnostic runs. The placeholder body is a plain
+/// `todo`, never LSP snippet syntax (`${...}`), which this client would
+/// insert verbatim and fail to parse.
+#[tokio::test]
+async fn fill_missing_match_arms_offers_the_witnesses() {
+    let src = "enum Shape { Empty, Circle(float), Rect(float, float) }\nin s: Shape\nout x = match s {\n  Circle(r) => 1.0,\n}\n";
+    let uri = Url::parse("file:///t.ws").unwrap();
+    let service = build_backend();
+    open_doc(&service, &uri, src);
 
-        // cursor on the `match` line
-        let actions = code_action_at(&service, &uri, 2, 10).await;
-        let fill = actions
+    // cursor on the `match` line
+    let actions = code_action_at(&service, &uri, 2, 10).await;
+    let fill = actions
+        .iter()
+        .find(|a| a.title.contains("Fill missing match arms"))
+        .expect("action offered");
+    let text = first_edit_text(fill);
+    assert!(text.contains("Empty"), "missing Empty witness: {text:?}");
+    assert!(text.contains("Rect("), "missing Rect witness: {text:?}");
+    assert!(
+        text.contains("todo"),
+        "missing plain placeholder body: {text:?}"
+    );
+    assert!(
+        !text.contains("${"),
+        "must not emit LSP snippet syntax: {text:?}"
+    );
+}
+
+/// A `match` already covering every variant offers no fill action; the
+/// action must not appear when there's nothing to fill.
+#[tokio::test]
+async fn exhaustive_match_offers_no_fill_action() {
+    let src = "enum Shape { Empty, Circle(float) }\nin s: Shape\nout x = match s {\n  Circle(r) => 1.0,\n  Empty => 0.0,\n}\n";
+    let uri = Url::parse("file:///t2.ws").unwrap();
+    let service = build_backend();
+    open_doc(&service, &uri, src);
+
+    let actions = code_action_at(&service, &uri, 2, 10).await;
+    assert!(
+        !actions
             .iter()
-            .find(|a| a.title.contains("Fill missing match arms"))
-            .expect("action offered");
-        let text = first_edit_text(fill);
-        assert!(text.contains("Empty"), "missing Empty witness: {text:?}");
-        assert!(text.contains("Rect("), "missing Rect witness: {text:?}");
-        assert!(text.contains("todo"), "missing plain placeholder body: {text:?}");
-        assert!(!text.contains("${"), "must not emit LSP snippet syntax: {text:?}");
-    }
+            .any(|a| a.title.contains("Fill missing match arms")),
+        "an exhaustive match must not offer a fill action: {actions:?}"
+    );
+}
 
-    /// A `match` already covering every variant offers no fill action; the
-    /// action must not appear when there's nothing to fill.
-    #[tokio::test]
-    async fn exhaustive_match_offers_no_fill_action() {
-        let src = "enum Shape { Empty, Circle(float) }\nin s: Shape\nout x = match s {\n  Circle(r) => 1.0,\n  Empty => 0.0,\n}\n";
-        let uri = Url::parse("file:///t2.ws").unwrap();
-        let service = build_backend();
-        open_doc(&service, &uri, src);
+/// A diagnostic raised inside an imported file must be published against
+/// THAT file. The importer's analysis used to keep only the entry file's
+/// share, so these reached no buffer at all and the editor showed a clean
+/// file for a program the compiler rejects.
+#[tokio::test]
+async fn imported_file_diagnostics_go_to_the_imported_file() {
+    let dir = scratch_dir("import-diags");
+    let util = dir.join("util.ws");
+    // The non-ASCII string puts the error's byte column and its UTF-16
+    // column one apart, so the assertion below also pins that the range
+    // was converted against util.ws's own text and not the importer's.
+    std::fs::write(
+        &util,
+        "mod helper() {\n  let x = \"h\u{e9}llo\" .. undefinedThing\n}\n",
+    )
+    .unwrap();
+    let main = dir.join("main.ws");
+    let main_source = "import \"./util.ws\"\nin go: exec\non go { helper() }\n";
+    std::fs::write(&main, main_source).unwrap();
 
-        let actions = code_action_at(&service, &uri, 2, 10).await;
-        assert!(
-            !actions.iter().any(|a| a.title.contains("Fill missing match arms")),
-            "an exhaustive match must not offer a fill action: {actions:?}"
-        );
-    }
+    let service = build_backend();
+    let split = service
+        .inner()
+        .analyze(&Url::from_file_path(&main).unwrap(), main_source);
+    let util_uri = Url::from_file_path(&util).unwrap();
+    let for_util = split.foreign.get(&util_uri).cloned().unwrap_or_default();
+    let own = split.own.clone();
+    std::fs::remove_dir_all(&dir).ok();
 
-    /// A diagnostic raised inside an imported file must be published against
-    /// THAT file. The importer's analysis used to keep only the entry file's
-    /// share, so these reached no buffer at all and the editor showed a clean
-    /// file for a program the compiler rejects.
-    #[tokio::test]
-    async fn imported_file_diagnostics_go_to_the_imported_file() {
-        let dir = scratch_dir("import-diags");
-        let util = dir.join("util.ws");
-        // The non-ASCII string puts the error's byte column and its UTF-16
-        // column one apart, so the assertion below also pins that the range
-        // was converted against util.ws's own text and not the importer's.
-        std::fs::write(
-            &util,
-            "mod helper() {\n  let x = \"h\u{e9}llo\" .. undefinedThing\n}\n",
-        )
-        .unwrap();
-        let main = dir.join("main.ws");
-        let main_source = "import \"./util.ws\"\nin go: exec\non go { helper() }\n";
-        std::fs::write(&main, main_source).unwrap();
-
-        let service = build_backend();
-        let split = service
-            .inner()
-            .analyze(&Url::from_file_path(&main).unwrap(), main_source);
-        let util_uri = Url::from_file_path(&util).unwrap();
-        let for_util = split.foreign.get(&util_uri).cloned().unwrap_or_default();
-        let own = split.own.clone();
-        std::fs::remove_dir_all(&dir).ok();
-
-        assert!(
+    assert!(
             for_util.iter().any(|d| d.message.contains("undefinedThing")),
             "the unknown-identifier error must be published against util.ws, got {for_util:?} / own {own:?}"
         );
-        assert!(
-            own.iter().all(|d| !d.message.contains("undefinedThing")),
-            "and must not also be reported against main.ws: {own:?}"
-        );
-        let d = for_util
-            .iter()
-            .find(|d| d.message.contains("undefinedThing"))
-            .unwrap();
-        assert_eq!(
-            (d.range.start.line, d.range.start.character),
-            (1, 21),
-            "line 2 of util.ws, at the UTF-16 column of `undefinedThing` in ITS text"
-        );
-    }
+    assert!(
+        own.iter().all(|d| !d.message.contains("undefinedThing")),
+        "and must not also be reported against main.ws: {own:?}"
+    );
+    let d = for_util
+        .iter()
+        .find(|d| d.message.contains("undefinedThing"))
+        .unwrap();
+    assert_eq!(
+        (d.range.start.line, d.range.start.character),
+        (1, 21),
+        "line 2 of util.ws, at the UTF-16 column of `undefinedThing` in ITS text"
+    );
+}
 
-    /// The on-save lowering pass must reach lowering even when the entry file
-    /// has a type error, and its diagnostics must land on the imported file
-    /// they name. `compile` stops at the first stage that reports an error, so
-    /// a file with one never lowered at all and the whole WSP001 class went
-    /// missing from the editor while `wirescript-check` still reported it.
-    #[tokio::test]
-    async fn lowering_diagnostics_survive_a_type_error_and_reach_the_import() {
-        let dir = scratch_dir("lowering-import-diags");
-        let util = dir.join("util.ws");
-        // A non-constant `var` initializer is dropped by lowering with a
-        // WSP001 warning; nothing before lowering says a word about it.
-        std::fs::write(&util, "in a: int\nvar x: int = a + 1\nout r = x\n").unwrap();
-        let main = dir.join("main.ws");
-        let main_source = "import \"./util.ws\"\nin go: exec\non go { let y = undefinedThing }\n";
-        std::fs::write(&main, main_source).unwrap();
-        let uri = Url::from_file_path(&main).unwrap();
+/// The on-save lowering pass must reach lowering even when the entry file
+/// has a type error, and its diagnostics must land on the imported file
+/// they name. `compile` stops at the first stage that reports an error, so
+/// a file with one never lowered at all and the whole WSP001 class went
+/// missing from the editor while `wirescript-check` still reported it.
+#[tokio::test]
+async fn lowering_diagnostics_survive_a_type_error_and_reach_the_import() {
+    let dir = scratch_dir("lowering-import-diags");
+    let util = dir.join("util.ws");
+    // A non-constant `var` initializer is dropped by lowering with a
+    // WSP001 warning; nothing before lowering says a word about it.
+    std::fs::write(&util, "in a: int\nvar x: int = a + 1\nout r = x\n").unwrap();
+    let main = dir.join("main.ws");
+    let main_source = "import \"./util.ws\"\nin go: exec\non go { let y = undefinedThing }\n";
+    std::fs::write(&main, main_source).unwrap();
+    let uri = Url::from_file_path(&main).unwrap();
 
-        let service = build_backend();
-        let mut split = service.inner().analyze(&uri, main_source);
-        split.extend_deduped(service.inner().lowering_diagnostics(&uri, main_source).await);
-        let for_util = split
-            .foreign
-            .get(&Url::from_file_path(&util).unwrap())
-            .cloned()
-            .unwrap_or_default();
-        let own = split.own.clone();
-        std::fs::remove_dir_all(&dir).ok();
-
-        assert!(
-            own.iter().any(|d| d.message.contains("undefinedThing")),
-            "the entry file keeps its own error: {own:?}"
-        );
-        assert!(
-            for_util
-                .iter()
-                .any(|d| d.code == Some(NumberOrString::String("WSP001".into()))),
-            "util.ws's lowering warning must reach util.ws: {for_util:?}"
-        );
-    }
-
-    /// The Compile command is the only diagnostic channel that used to hand
-    /// the editor `Pos::col` unconverted, so its squiggle sat right of the
-    /// token on any line containing non-ASCII text, and disagreed with the
-    /// live diagnostics for the same file.
-    #[test]
-    fn compile_command_diagnostics_carry_utf16_columns() {
-        let source = "let s = \"h\u{e9}llo\" .. undefined\n";
-        // `undefined` starts at byte 20 of that line and UTF-16 column 19.
-        let byte_col = source.find("undefined").unwrap();
-        assert_eq!(byte_col, 20);
-        let range = wirescript::diagnostic::SourceRange {
-            file: "main.ws".into(),
-            start: wirescript::diagnostic::Pos {
-                line: 1,
-                col: byte_col as u32 + 1,
-                offset: byte_col,
-            },
-            end: wirescript::diagnostic::Pos {
-                line: 1,
-                col: byte_col as u32 + 10,
-                offset: byte_col + 9,
-            },
-        };
-        let diags = vec![wirescript::diagnostic::Diagnostic {
-            code: "WS002".into(),
-            message: "unknown identifier 'undefined'".into(),
-            severity: wirescript::diagnostic::Severity::Error,
-            range,
-        }];
-        let mut sources = HashMap::new();
-        sources.insert("main.ws".to_string(), source.to_string());
-
-        let items = compile_diagnostic_items(&diags, &sources);
-        assert_eq!(items[0]["startChar"], 19);
-        assert_eq!(items[0]["endChar"], 28);
-    }
-
-    /// A whole-document format edit must name a position the document actually
-    /// has. `str::lines` drops a trailing newline, so pairing its count with
-    /// the last line's length pointed one line past the end.
-    #[tokio::test]
-    async fn formatting_edit_ends_at_the_document_end() {
-        let uri = Url::parse("file:///fmt.ws").unwrap();
-        let service = build_backend();
-        // Badly indented so the formatter actually returns an edit.
-        open_doc(&service, &uri, "in go: exec\non go {\nlet v: int = 1\n}\n");
-
-        let edits = service
+    let service = build_backend();
+    let mut split = service.inner().analyze(&uri, main_source);
+    split.extend_deduped(
+        service
             .inner()
+            .lowering_diagnostics(&uri, main_source)
+            .await,
+    );
+    let for_util = split
+        .foreign
+        .get(&Url::from_file_path(&util).unwrap())
+        .cloned()
+        .unwrap_or_default();
+    let own = split.own.clone();
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert!(
+        own.iter().any(|d| d.message.contains("undefinedThing")),
+        "the entry file keeps its own error: {own:?}"
+    );
+    assert!(
+        for_util
+            .iter()
+            .any(|d| d.code == Some(NumberOrString::String("WSP001".into()))),
+        "util.ws's lowering warning must reach util.ws: {for_util:?}"
+    );
+}
+
+/// The Compile command is the only diagnostic channel that used to hand
+/// the editor `Pos::col` unconverted, so its squiggle sat right of the
+/// token on any line containing non-ASCII text, and disagreed with the
+/// live diagnostics for the same file.
+#[test]
+fn compile_command_diagnostics_carry_utf16_columns() {
+    let source = "let s = \"h\u{e9}llo\" .. undefined\n";
+    // `undefined` starts at byte 20 of that line and UTF-16 column 19.
+    let byte_col = source.find("undefined").unwrap();
+    assert_eq!(byte_col, 20);
+    let range = wirescript::diagnostic::SourceRange {
+        file: "main.ws".into(),
+        start: wirescript::diagnostic::Pos {
+            line: 1,
+            col: byte_col as u32 + 1,
+            offset: byte_col,
+        },
+        end: wirescript::diagnostic::Pos {
+            line: 1,
+            col: byte_col as u32 + 10,
+            offset: byte_col + 9,
+        },
+    };
+    let diags = vec![wirescript::diagnostic::Diagnostic {
+        code: "WS002".into(),
+        message: "unknown identifier 'undefined'".into(),
+        severity: wirescript::diagnostic::Severity::Error,
+        range,
+    }];
+    let mut sources = HashMap::new();
+    sources.insert("main.ws".to_string(), source.to_string());
+
+    let items = compile_diagnostic_items(&diags, &sources);
+    assert_eq!(items[0]["startChar"], 19);
+    assert_eq!(items[0]["endChar"], 28);
+}
+
+/// A whole-document format edit must name a position the document actually
+/// has. `str::lines` drops a trailing newline, so pairing its count with
+/// the last line's length pointed one line past the end.
+#[tokio::test]
+async fn formatting_edit_ends_at_the_document_end() {
+    let uri = Url::parse("file:///fmt.ws").unwrap();
+    let service = build_backend();
+    // Badly indented so the formatter actually returns an edit.
+    open_doc(&service, &uri, "in go: exec\non go {\nlet v: int = 1\n}\n");
+
+    let edits = service
+        .inner()
+        .formatting(DocumentFormattingParams {
+            text_document: TextDocumentIdentifier { uri },
+            options: FormattingOptions {
+                tab_size: 2,
+                insert_spaces: true,
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+        })
+        .await
+        .unwrap()
+        .expect("the buffer is not formatted, so there is an edit");
+    assert_eq!(
+        (edits[0].range.end.line, edits[0].range.end.character),
+        (4, 0),
+        "four newlines, so the document ends at the start of line 4"
+    );
+}
+
+#[tokio::test]
+async fn code_action_offers_the_ws_ignore_directives_for_a_warning() {
+    // The suppression comment has an exact spelling the compiler reads; the
+    // quick fix is what saves the author from remembering it.
+    let dir = scratch_dir("ws-ignore-action");
+    let path = dir.join("main.ws");
+    let source = "in go: exec
+out r: int = 1
+";
+    std::fs::write(&path, source).unwrap();
+    let uri = Url::from_file_path(&path).unwrap();
+    let service = build_backend();
+    open_doc(&service, &uri, source);
+
+    let actions =
+        code_action_with_diagnostic(&service, &uri, 0, "WS014", DiagnosticSeverity::WARNING).await;
+    std::fs::remove_dir_all(&dir).ok();
+
+    let line_fix = actions
+        .iter()
+        .find(|a| a.title == "Ignore WS014 on this line")
+        .expect(&format!("expected a line-ignore action: {actions:?}"));
+    assert_eq!(first_edit_text(line_fix), " // ws-ignore-line:WS014");
+
+    let file_fix = actions
+        .iter()
+        .find(|a| a.title == "Ignore WS014 in this file")
+        .expect(&format!("expected a file-ignore action: {actions:?}"));
+    assert_eq!(
+        first_edit_text(file_fix),
+        "// ws-ignore-file:WS014
+"
+    );
+}
+
+#[tokio::test]
+async fn code_action_does_not_offer_to_ignore_an_error() {
+    // The compiler never suppresses an error, so offering the action would
+    // hand the author an edit that silently does nothing.
+    let dir = scratch_dir("ws-ignore-action-error");
+    let path = dir.join("main.ws");
+    let source = "in go: exec
+out r: int = 1
+";
+    std::fs::write(&path, source).unwrap();
+    let uri = Url::from_file_path(&path).unwrap();
+    let service = build_backend();
+    open_doc(&service, &uri, source);
+
+    let actions =
+        code_action_with_diagnostic(&service, &uri, 0, "WS002", DiagnosticSeverity::ERROR).await;
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert!(
+        !actions.iter().any(|a| a.title.starts_with("Ignore ")),
+        "an error must not offer a ws-ignore quick fix: {actions:?}"
+    );
+}
+
+#[test]
+fn base64_matches_rfc_4648_vectors() {
+    for (raw, encoded) in [
+        ("", ""),
+        ("f", "Zg=="),
+        ("fo", "Zm8="),
+        ("foo", "Zm9v"),
+        ("foob", "Zm9vYg=="),
+        ("fooba", "Zm9vYmE="),
+        ("foobar", "Zm9vYmFy"),
+    ] {
+        assert_eq!(base64(raw.as_bytes()), encoded, "{raw:?}");
+    }
+    assert_eq!(base64(&[0xff, 0xfe, 0x00]), "//4A");
+}
+
+/// A diagnostic whose code the docs cover links to that section; one they
+/// don't has no link.
+#[test]
+fn diagnostics_link_to_their_docs() {
+    let ruler = Ruler::new("x\n");
+    let range = wirescript::diagnostic::SourceRange::default();
+    let d = to_lsp_diagnostic(
+        &ruler,
+        &wirescript::diagnostic::Diagnostic::error("WS012", "m", range.clone()),
+    );
+    assert_eq!(
+        d.code_description.map(|c| c.href.to_string()).as_deref(),
+        Some("https://wirescript.brickadia.dev/docs/diagnostics.html#names-declarations--imports"),
+    );
+    let d = to_lsp_diagnostic(
+        &ruler,
+        &wirescript::diagnostic::Diagnostic::error("WS-EMIT", "m", range),
+    );
+    assert!(d.code_description.is_none());
+}
+
+/// Typing a program into an empty file, one character at a time, must not
+/// panic any request the editor sends as you type. An empty document used
+/// to take the server down from `code_action` (the record-fill scan
+/// indexed line 0 of no lines).
+#[tokio::test]
+async fn typing_into_an_empty_file_never_panics_a_request() {
+    let program = "type P = { x: int, y: int }\nin go: exec\nvar n: int = 0\n\
+            mod bump(v: *int) { v += 1 }\nlet p: P = {\n  x: 1,\n}\non go {\n  bump(n)\n  \
+            match n {\n    0 => { n = 1 }\n    _ => { n = 2 }\n  }\n  \
+            BroadcastChatMessage(\"n ${n}\")\n}\nlet pf = $./a.brz\n";
+    let uri = Url::parse("file:///c:/t/main.ws").unwrap();
+    let service = build_backend();
+    let backend = service.inner();
+    let ends: Vec<usize> = std::iter::once(0)
+        .chain(program.char_indices().map(|(i, c)| i + c.len_utf8()))
+        .collect();
+    for end in ends {
+        let typed = &program[..end];
+        backend
+            .docs
+            .lock()
+            .unwrap()
+            .insert(uri.clone(), doc_state_with_symbols(typed));
+        let line = typed.matches('\n').count() as u32;
+        let col = typed.rsplit('\n').next().unwrap_or("").chars().count() as u32;
+        let at = || text_document_position(&uri, line, col);
+        let doc = || TextDocumentIdentifier { uri: uri.clone() };
+        let ctx = format!("after typing {typed:?}");
+        backend
+            .completion(CompletionParams {
+                text_document_position: at(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            })
+            .await
+            .expect(&ctx);
+        code_action_at(&service, &uri, line, col).await;
+        backend
+            .hover(HoverParams {
+                text_document_position_params: at(),
+                work_done_progress_params: Default::default(),
+            })
+            .await
+            .expect(&ctx);
+        backend
+            .goto_definition(GotoDefinitionParams {
+                text_document_position_params: at(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .expect(&ctx);
+        backend
+            .references(ReferenceParams {
+                text_document_position: at(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: ReferenceContext {
+                    include_declaration: true,
+                },
+            })
+            .await
+            .expect(&ctx);
+        backend.prepare_rename(at()).await.expect(&ctx);
+        backend
+            .semantic_tokens_full(SemanticTokensParams {
+                text_document: doc(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .expect(&ctx);
+        backend
+            .inlay_hint(InlayHintParams {
+                text_document: doc(),
+                range: Range {
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line,
+                        character: col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            })
+            .await
+            .expect(&ctx);
+        backend
             .formatting(DocumentFormattingParams {
-                text_document: TextDocumentIdentifier { uri },
+                text_document: doc(),
                 options: FormattingOptions {
                     tab_size: 2,
                     insert_spaces: true,
@@ -1703,220 +1578,64 @@ on CharacterSpawned() -> (character) {
                 work_done_progress_params: Default::default(),
             })
             .await
-            .unwrap()
-            .expect("the buffer is not formatted, so there is an edit");
-        assert_eq!(
-            (edits[0].range.end.line, edits[0].range.end.character),
-            (4, 0),
-            "four newlines, so the document ends at the start of line 4"
-        );
+            .expect(&ctx);
+        backend
+            .document_link(DocumentLinkParams {
+                text_document: doc(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .expect(&ctx);
     }
+}
 
-    /// The match-arm completion scanner takes the cursor's char column and
-    /// slices `source` at it. It used to convert that column with a
-    /// byte-indexed helper, so with the cursor just past a multi-byte
-    /// character the slice landed mid-character and the completion request
-    /// panicked instead of answering.
-    #[test]
-    fn match_arm_scrutinee_scan_survives_a_cursor_after_a_multibyte_char() {
-        let src = "enum Shape { Empty, Circle(float) }\nin s: Shape\nout x = match s {\n  Empty => \"\u{e9}\n}\n";
-        let line = 3;
-        // Cursor at the end of the line, i.e. immediately after the `é`.
-        let col = src.lines().nth(line).unwrap().chars().count();
-        assert!(
-            match_arm_head_scrutinee_at(src, line, col).is_none(),
-            "the cursor is in an arm BODY, not a pattern head"
-        );
+#[test]
+fn every_completion_kind_maps_to_its_lsp_kind() {
+    use wirescript::analysis::{Completion, CompletionKind as K};
+    let want = [
+        (K::Text, CompletionItemKind::TEXT),
+        (K::Method, CompletionItemKind::METHOD),
+        (K::Function, CompletionItemKind::FUNCTION),
+        (K::Field, CompletionItemKind::FIELD),
+        (K::Variable, CompletionItemKind::VARIABLE),
+        (K::Class, CompletionItemKind::CLASS),
+        (K::Module, CompletionItemKind::MODULE),
+        (K::Property, CompletionItemKind::PROPERTY),
+        (K::Keyword, CompletionItemKind::KEYWORD),
+        (K::Constant, CompletionItemKind::CONSTANT),
+        (K::EnumMember, CompletionItemKind::ENUM_MEMBER),
+        (K::Event, CompletionItemKind::EVENT),
+        (K::File, CompletionItemKind::FILE),
+    ];
+    let ruler = Ruler::new("x");
+    for (kind, lsp) in want {
+        let c = Completion {
+            label: "x".into(),
+            kind,
+            ..Default::default()
+        };
+        assert_eq!(completion_item(&ruler, 0, 1, c).kind, Some(lsp), "{kind:?}");
     }
+}
 
-    #[tokio::test]
-    async fn code_action_offers_the_ws_ignore_directives_for_a_warning() {
-        // The suppression comment has an exact spelling the compiler reads; the
-        // quick fix is what saves the author from remembering it.
-        let dir = scratch_dir("ws-ignore-action");
-        let path = dir.join("main.ws");
-        let source = "in go: exec
-out r: int = 1
-";
-        std::fs::write(&path, source).unwrap();
-        let uri = Url::from_file_path(&path).unwrap();
-        let service = build_backend();
-        open_doc(&service, &uri, source);
-
-        let actions =
-            code_action_with_diagnostic(&service, &uri, 0, "WS014", DiagnosticSeverity::WARNING)
-                .await;
-        std::fs::remove_dir_all(&dir).ok();
-
-        let line_fix = actions
-            .iter()
-            .find(|a| a.title == "Ignore WS014 on this line")
-            .expect(&format!("expected a line-ignore action: {actions:?}"));
-        assert_eq!(first_edit_text(line_fix), " // ws-ignore-line:WS014");
-
-        let file_fix = actions
-            .iter()
-            .find(|a| a.title == "Ignore WS014 in this file")
-            .expect(&format!("expected a file-ignore action: {actions:?}"));
-        assert_eq!(first_edit_text(file_fix), "// ws-ignore-file:WS014
-");
-    }
-
-    #[tokio::test]
-    async fn code_action_does_not_offer_to_ignore_an_error() {
-        // The compiler never suppresses an error, so offering the action would
-        // hand the author an edit that silently does nothing.
-        let dir = scratch_dir("ws-ignore-action-error");
-        let path = dir.join("main.ws");
-        let source = "in go: exec
-out r: int = 1
-";
-        std::fs::write(&path, source).unwrap();
-        let uri = Url::from_file_path(&path).unwrap();
-        let service = build_backend();
-        open_doc(&service, &uri, source);
-
-        let actions =
-            code_action_with_diagnostic(&service, &uri, 0, "WS002", DiagnosticSeverity::ERROR)
-                .await;
-        std::fs::remove_dir_all(&dir).ok();
-
-        assert!(
-            !actions.iter().any(|a| a.title.starts_with("Ignore ")),
-            "an error must not offer a ws-ignore quick fix: {actions:?}"
-        );
-    }
-
-    #[test]
-    fn base64_matches_rfc_4648_vectors() {
-        for (raw, encoded) in [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foob", "Zm9vYg=="),
-            ("fooba", "Zm9vYmE="),
-            ("foobar", "Zm9vYmFy"),
-        ] {
-            assert_eq!(base64(raw.as_bytes()), encoded, "{raw:?}");
-        }
-        assert_eq!(base64(&[0xff, 0xfe, 0x00]), "//4A");
-    }
-
-    /// A diagnostic whose code the docs cover links to that section; one they
-    /// don't has no link.
-    #[test]
-    fn diagnostics_link_to_their_docs() {
-        let ruler = Ruler::new("x\n");
-        let range = wirescript::diagnostic::SourceRange::default();
-        let d = to_lsp_diagnostic(&ruler, &wirescript::diagnostic::Diagnostic::error("WS012", "m", range.clone()));
-        assert_eq!(
-            d.code_description.map(|c| c.href.to_string()).as_deref(),
-            Some("https://wirescript.brickadia.dev/docs/diagnostics.html#names-declarations--imports"),
-        );
-        let d = to_lsp_diagnostic(&ruler, &wirescript::diagnostic::Diagnostic::error("WS-EMIT", "m", range));
-        assert!(d.code_description.is_none());
-    }
-
-    /// Typing a program into an empty file, one character at a time, must not
-    /// panic any request the editor sends as you type. An empty document used
-    /// to take the server down from `code_action` (the record-fill scan
-    /// indexed line 0 of no lines).
-    #[tokio::test]
-    async fn typing_into_an_empty_file_never_panics_a_request() {
-        let program = "type P = { x: int, y: int }\nin go: exec\nvar n: int = 0\n\
-            mod bump(v: *int) { v += 1 }\nlet p: P = {\n  x: 1,\n}\non go {\n  bump(n)\n  \
-            match n {\n    0 => { n = 1 }\n    _ => { n = 2 }\n  }\n  \
-            BroadcastChatMessage(\"n ${n}\")\n}\nlet pf = $./a.brz\n";
-        let uri = Url::parse("file:///c:/t/main.ws").unwrap();
-        let service = build_backend();
-        let backend = service.inner();
-        let ends: Vec<usize> = std::iter::once(0).chain(program.char_indices().map(|(i, c)| i + c.len_utf8())).collect();
-        for end in ends {
-            let typed = &program[..end];
-            backend.docs.lock().unwrap().insert(uri.clone(), doc_state_with_symbols(typed));
-            let line = typed.matches('\n').count() as u32;
-            let col = typed.rsplit('\n').next().unwrap_or("").chars().count() as u32;
-            let at = || text_document_position(&uri, line, col);
-            let doc = || TextDocumentIdentifier { uri: uri.clone() };
-            let ctx = format!("after typing {typed:?}");
-            backend
-                .completion(CompletionParams {
-                    text_document_position: at(),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                    context: None,
-                })
-                .await
-                .expect(&ctx);
-            code_action_at(&service, &uri, line, col).await;
-            backend
-                .hover(HoverParams { text_document_position_params: at(), work_done_progress_params: Default::default() })
-                .await
-                .expect(&ctx);
-            backend
-                .goto_definition(GotoDefinitionParams {
-                    text_document_position_params: at(),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                })
-                .await
-                .expect(&ctx);
-            backend
-                .references(ReferenceParams {
-                    text_document_position: at(),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                    context: ReferenceContext { include_declaration: true },
-                })
-                .await
-                .expect(&ctx);
-            backend.prepare_rename(at()).await.expect(&ctx);
-            backend
-                .semantic_tokens_full(SemanticTokensParams {
-                    text_document: doc(),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                })
-                .await
-                .expect(&ctx);
-            backend
-                .inlay_hint(InlayHintParams {
-                    text_document: doc(),
-                    range: Range { start: Position { line: 0, character: 0 }, end: Position { line, character: col } },
-                    work_done_progress_params: Default::default(),
-                })
-                .await
-                .expect(&ctx);
-            backend
-                .formatting(DocumentFormattingParams {
-                    text_document: doc(),
-                    options: FormattingOptions { tab_size: 2, insert_spaces: true, ..Default::default() },
-                    work_done_progress_params: Default::default(),
-                })
-                .await
-                .expect(&ctx);
-            backend
-                .document_link(DocumentLinkParams {
-                    text_document: doc(),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                })
-                .await
-                .expect(&ctx);
-        }
-    }
-
-    /// Completion lists the document's folder only inside a `$./` or `$/` file
-    /// reference, so ordinary typing never touches the disk.
-    #[test]
-    fn prefab_path_fragment_only_inside_a_file_reference() {
-        fn at_end(s: &str) -> Option<(usize, &str)> {
-            prefab_path_fragment(s, 0, s.chars().count())
-        }
-        assert_eq!(at_end("let pf = $./sub/a"), Some((9, "./sub/a")));
-        assert_eq!(at_end("let pf = $/abs"), Some((9, "/abs")));
-        for outside in ["", "let x = 1", "let c = $Component/Point", "let pf = $./a.brz + b", "on go {"] {
-            assert_eq!(at_end(outside), None, "{outside:?}");
-        }
-    }
+/// A completion that replaces text before the cursor becomes a text edit
+/// spanning, in UTF-16 columns, from its byte start to the cursor.
+#[test]
+fn a_replacing_completion_is_a_text_edit_in_utf16_columns() {
+    use wirescript::analysis::Completion;
+    let ruler = Ruler::new("\u{1F389} $./a");
+    let c = Completion {
+        label: "$./abc.brz".into(),
+        replace_from: Some(5),
+        ..Default::default()
+    };
+    let Some(CompletionTextEdit::Edit(edit)) = completion_item(&ruler, 0, 6, c).text_edit else {
+        panic!("expected a text edit");
+    };
+    assert_eq!(
+        (edit.range.start.character, edit.range.end.character),
+        (3, 7)
+    );
+    assert_eq!(edit.new_text, "$./abc.brz");
+}

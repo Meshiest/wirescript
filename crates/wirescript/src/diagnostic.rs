@@ -263,3 +263,37 @@ impl Suppressions {
         diagnostics.retain(|d| !self.suppresses(d));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An internal compiler error is dropped from a compile that reports another
+    /// error, which rejects the program already, and kept where it is alone.
+    #[test]
+    fn an_internal_error_is_dropped_only_beside_another_error() {
+        let at = SourceRange::default();
+        let internal = || Diagnostic::error("WS094", "internal", at.clone());
+        let mut alone = vec![internal(), Diagnostic::warning("WSP001", "w", at.clone())];
+        drop_internal_errors_beside_errors(&mut alone);
+        assert_eq!(alone.iter().filter(|d| d.code == "WS094").count(), 1);
+        let mut beside = vec![Diagnostic::error("WS071", "e", at.clone()), internal()];
+        drop_internal_errors_beside_errors(&mut beside);
+        assert!(beside.iter().all(|d| d.code != "WS094"), "{beside:?}");
+        assert_eq!(beside.len(), 1);
+        // A program with an error far from the drop: the `out` after a rejected
+        // early exit is an internal error beside WS095.
+        let src = "enum K { A, B }\nin go: exec\nvar k: K = K.A\nchip {\n  let v = match k { A => { return }, B => 2 }\n  out ov: int = v\n}\n";
+        let all = crate::compile::diagnostics_only(
+            crate::CompileInput {
+                source: src,
+                file: "test.ws",
+                module_name: None,
+                fold_mode: crate::FoldMode::Auto,
+            },
+            &crate::resolve::FsLoader,
+        );
+        assert!(all.iter().any(|d| d.code == "WS095"), "{all:?}");
+        assert!(all.iter().all(|d| d.code != "WS094"), "{all:?}");
+    }
+}

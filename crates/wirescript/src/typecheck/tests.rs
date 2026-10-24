@@ -1,5953 +1,3139 @@
-    use super::*;
-    use crate::parser::parse;
+use super::*;
+use crate::parser::parse;
 
-    fn tc(src: &str) -> TypeCheckResult {
+fn tc(src: &str) -> TypeCheckResult {
+    let p = parse(src, "test");
+    assert!(
+        p.diagnostics.is_empty(),
+        "parse diagnostics: {:?}",
+        p.diagnostics
+    );
+    typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+}
+
+fn assert_no_diags(r: &TypeCheckResult) {
+    let errors: Vec<_> = r
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+use crate::test_support::report_failures;
+use Want::{
+    Codes, Count, Dropped, ErrMsg, Error, FirstMsg, Has, HasExact, HasMsg, Lacks, Msg, NoErrors,
+    Silent, Warning,
+};
+
+/// What a table row expects of a program's typecheck result.
+#[derive(Clone, Copy, Debug)]
+enum Want {
+    /// No error-severity diagnostic.
+    NoErrors,
+    /// No diagnostic of any severity.
+    Silent,
+    /// Some diagnostic has this code.
+    Has(&'static str),
+    /// Some diagnostic has this code and a message containing the text.
+    HasMsg(&'static str, &'static str),
+    /// Some diagnostic has this code and exactly this message.
+    HasExact(&'static str, &'static str),
+    /// The first diagnostic with this code has a message containing the text.
+    FirstMsg(&'static str, &'static str),
+    /// Some error-severity diagnostic has this code.
+    Error(&'static str),
+    /// Some warning-severity diagnostic has this code.
+    Warning(&'static str),
+    /// Some error-severity diagnostic has a message containing the text.
+    ErrMsg(&'static str),
+    /// Some diagnostic has a message containing the text.
+    Msg(&'static str),
+    /// No diagnostic has this code.
+    Lacks(&'static str),
+    /// Exactly this many diagnostics have this code.
+    Count(&'static str, usize),
+    /// The diagnostic codes are exactly these, in order.
+    Codes(&'static [&'static str]),
+    /// Exactly this many blocks were dropped by a compile-time `if`.
+    Dropped(usize),
+}
+
+impl Want {
+    fn holds(self, r: &TypeCheckResult) -> bool {
+        let ds = &r.diagnostics;
+        let is_err = |d: &&crate::diagnostic::Diagnostic| d.severity == Severity::Error;
+        match self {
+            NoErrors => !ds.iter().any(|d| is_err(&d)),
+            Silent => ds.is_empty(),
+            Has(c) => ds.iter().any(|d| d.code == c),
+            HasMsg(c, m) => ds.iter().any(|d| d.code == c && d.message.contains(m)),
+            HasExact(c, m) => ds.iter().any(|d| d.code == c && d.message == m),
+            FirstMsg(c, m) => ds
+                .iter()
+                .find(|d| d.code == c)
+                .is_some_and(|d| d.message.contains(m)),
+            Error(c) => ds.iter().filter(is_err).any(|d| d.code == c),
+            Warning(c) => ds
+                .iter()
+                .any(|d| d.code == c && d.severity == Severity::Warning),
+            ErrMsg(m) => ds.iter().filter(is_err).any(|d| d.message.contains(m)),
+            Msg(m) => ds.iter().any(|d| d.message.contains(m)),
+            Lacks(c) => !ds.iter().any(|d| d.code == c),
+            Count(c, n) => ds.iter().filter(|d| d.code == c).count() == n,
+            Codes(cs) => crate::test_support::codes(ds) == cs,
+            Dropped(n) => r.dropped_ranges.len() == n,
+        }
+    }
+}
+
+/// Check each `(label, source, wants)` row against `check(source)`, which
+/// returns the typecheck result or why there is none; report every miss.
+#[track_caller]
+fn check_rows_with<S: AsRef<str>>(
+    rows: &[(&str, S, &[Want])],
+    check: impl Fn(&str) -> Result<TypeCheckResult, String>,
+) {
+    let mut failures = Vec::new();
+    for (label, src, wants) in rows {
+        let src = src.as_ref();
+        match check(src) {
+            Err(why) => failures.push(format!("{label}: {why}\n{src}")),
+            Ok(r) => {
+                let missed: Vec<Want> = wants.iter().copied().filter(|w| !w.holds(&r)).collect();
+                if !missed.is_empty() {
+                    failures.push(format!(
+                        "{label}: missed {missed:?}\n{src}\n{:#?}",
+                        r.diagnostics
+                    ));
+                }
+            }
+        }
+    }
+    report_failures(&failures, rows.len());
+}
+
+/// `check_rows_with` over a single parse-clean source file.
+#[track_caller]
+fn check_rows<S: AsRef<str>>(rows: &[(&str, S, &[Want])]) {
+    check_rows_with(rows, |src| {
         let p = parse(src, "test");
-        assert!(
-            p.diagnostics.is_empty(),
-            "parse diagnostics: {:?}",
-            p.diagnostics
-        );
-        typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
-    }
+        if !p.diagnostics.is_empty() {
+            return Err(format!("parse diagnostics: {:?}", p.diagnostics));
+        }
+        Ok(typecheck(&p.ast, "test", &CeSlotMap::default()))
+    });
+}
 
-    fn assert_no_diags(r: &TypeCheckResult) {
-        let errors: Vec<_> = r
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
-    }
-
-    #[test]
-    fn statement_form_gate_builtin_reports_helpful_message() {
-        // `SetArrayElement`/`SetVariable`/`IncrementVariable` desugar to
-        // assignments only in statement position with the right arg count.
-        // Anything else — used as a value, or still being typed with too few
-        // args — used to report a bare "unknown identifier" even though
-        // completion offers the name. Both now get a describe-the-builtin hint.
-        let hint = |d: &crate::diagnostic::Diagnostic| {
-            d.code == "WS002"
-                && d.message.contains("SetArrayElement")
-                && d.message.contains("exec statement")
-                && d.message.contains("a[i] = x")
-        };
-        // Used as a value.
-        let r = tc("var a: int[]\nin go: exec\non go { let r = SetArrayElement(a, 0, 9) }");
-        assert!(r.diagnostics.iter().any(hint), "value use: {:?}", r.diagnostics);
-        // Incomplete / wrong arg count (the mid-typing case) — NOT "unknown identifier".
-        let r2 = tc("var a: int[]\nin go: exec\non go { SetArrayElement(a, 0) }");
-        assert!(
-            r2.diagnostics.iter().any(hint)
-                && !r2.diagnostics.iter().any(|d| d.message.contains("unknown identifier")),
-            "wrong arg count: {:?}",
-            r2.diagnostics
-        );
-        // Correct statement desugars to `a[0] = 9` and is clean.
-        assert_no_diags(&tc("var a: int[]\nin go: exec\non go { SetArrayElement(a, 0, 9) }"));
-    }
-
-    /// The same rule for a VOID BUILTIN and for a namespaced `mod`. Three
-    /// sites typed these `Any` instead of `Never`, so nothing checked them and
-    /// lowering wired the gate's EXEC pin into a data port with no diagnostic
-    /// at any level, while the identical mistake against a plain user `mod`
-    /// already reported.
-    #[test]
-    fn void_builtin_and_namespaced_mod_used_as_value_error() {
-        let no_value = |r: &TypeCheckResult| {
-            r.diagnostics
+#[test]
+fn statement_form_gate_builtin_reports_helpful_message() {
+    // `SetArrayElement`/`SetVariable`/`IncrementVariable` desugar to
+    // assignments only in statement position with the right arg count.
+    // Anything else — used as a value, or still being typed with too few
+    // args — used to report a bare "unknown identifier" even though
+    // completion offers the name. Both now get a describe-the-builtin hint.
+    let hint = |d: &crate::diagnostic::Diagnostic| {
+        d.code == "WS002"
+            && d.message.contains("SetArrayElement")
+            && d.message.contains("exec statement")
+            && d.message.contains("a[i] = x")
+    };
+    // Used as a value.
+    let r = tc("var a: int[]\nin go: exec\non go { let r = SetArrayElement(a, 0, 9) }");
+    assert!(
+        r.diagnostics.iter().any(hint),
+        "value use: {:?}",
+        r.diagnostics
+    );
+    // Incomplete / wrong arg count (the mid-typing case) — NOT "unknown identifier".
+    let r2 = tc("var a: int[]\nin go: exec\non go { SetArrayElement(a, 0) }");
+    assert!(
+        r2.diagnostics.iter().any(hint)
+            && !r2
+                .diagnostics
                 .iter()
-                .any(|d| d.code == "WS072" && d.message.contains("no value"))
-        };
-        // A void exec builtin, called plainly and as a receiver method.
-        assert!(
-            no_value(&tc("static var v: int = 0\non RoundStart() { v = PrintToConsole(\"x\") }")),
-            "void builtin as a value"
-        );
-        assert!(
-            no_value(&tc(
-                "var a: int[]\nstatic var v: int = 0\nin go: exec\non go { v = a.push(1) }"
-            )),
-            "void receiver method as a value"
-        );
-        // Both stay legal in statement position, which is the whole point.
-        assert_no_diags(&tc("on RoundStart() { PrintToConsole(\"ok\") }"));
-        assert_no_diags(&tc("var a: int[]\nin go: exec\non go { a.push(1) }"));
-    }
+                .any(|d| d.message.contains("unknown identifier")),
+        "wrong arg count: {:?}",
+        r2.diagnostics
+    );
+    // Correct statement desugars to `a[0] = 9` and is clean.
+    assert_no_diags(&tc(
+        "var a: int[]\nin go: exec\non go { SetArrayElement(a, 0, 9) }",
+    ));
+}
 
-    /// A `mod`/`chip` with no output has no value to give, so reading its call
-    /// as one is a WS072 error. It used to type as `any`, which accepted every
-    /// consumer; lowering then handed the caller its EXEC CONTINUATION, so the
-    /// destination read an exec pin as data with no diagnostic at any level.
-    #[test]
-    fn no_output_mod_call_used_as_value_errors() {
-        let pre = "mod noret(x: int) { }\nvar o: int = 0\nin go: exec";
-        let no_value = |r: &TypeCheckResult| {
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS072" && d.message.contains("no value"))
-        };
-        // Assignment RHS, `let` initializer, annotated `var`, and an argument.
-        assert!(no_value(&tc(&format!("{pre}\non go {{ o = noret(1) }}"))), "assign");
-        // A bare `let` of a no-output call binds nothing but is the documented
-        // chip-INSTANTIATION spelling, so it is allowed; READING the name is
-        // what reports.
-        assert_no_diags(&tc(&format!("{pre}\non go {{ let v = noret(1) }}")));
-        assert!(
-            no_value(&tc(&format!("{pre}\non go {{ let v = noret(1)\n o = v }}"))),
-            "let then read"
-        );
-        assert!(no_value(&tc(&format!("{pre}\non go {{ var v: int = noret(1) }}"))), "var");
-        assert!(
-            no_value(&tc(&format!("{pre}\non go {{ PrintToConsole(noret(1)) }}"))),
-            "argument"
-        );
-        // An operand reports what it IS rather than a missing '+' overload
-        // naming `never`, and an interpolated read reports too.
-        assert!(no_value(&tc(&format!("{pre}\non go {{ o = noret(1) + 1 }}"))), "operand");
-        assert!(no_value(&tc(&format!("{pre}\non go {{ o = -noret(1) }}"))), "unary operand");
-        assert!(
-            no_value(&tc(&format!(
-                "{pre}\non go {{ PrintToConsole(\"${{noret(1)}}\") }}"
-            ))),
-            "interpolation"
-        );
-        // A chip with no output is the same shape.
-        assert!(
-            no_value(&tc(&format!(
-                "chip nochip(x: int) {{ }}\nvar q: int = 0\nin g2: exec\non g2 {{ q = nochip(1) }}"
-            ))),
-            "chip"
-        );
-        // Statement position is the normal way to call one and stays clean.
-        assert_no_diags(&tc(&format!("{pre}\non go {{ noret(1) }}")));
-        // A mod that DOES declare an output still binds.
-        assert_no_diags(&tc(
-            "mod ret(x: int) -> (r: int) { out r = x }\nvar o: int = 0\nin go: exec\non go { o = ret(1) }",
-        ));
-    }
+/// A call with no value to give, read as one, is a WS072 error; the same call
+/// in statement position stays legal. Typed `any`, a no-output call would
+/// hand its consumer the exec continuation as data. Void mutations
+/// (`push`/`set`/`clear`) return `Never` for the same reason.
+#[test]
+fn a_call_with_no_value_read_as_one_is_ws072() {
+    const NO_VALUE: &[Want] = &[HasMsg("WS072", "no value")];
+    let m = "mod noret(x: int) { }\nvar o: int = 0\nin go: exec";
+    let c = "var a: int[]\nvar m: Map<string,int>\nin go: exec\n";
+    let rows: &[(&str, String, &[Want])] = &[
+            ("void builtin as a value", "static var v: int = 0\non RoundStart() { v = PrintToConsole(\"x\") }".into(), NO_VALUE),
+            ("void receiver method as a value", "var a: int[]\nstatic var v: int = 0\nin go: exec\non go { v = a.push(1) }".into(), NO_VALUE),
+            ("void builtin as a statement", "on RoundStart() { PrintToConsole(\"ok\") }".into(), &[NoErrors]),
+            ("void receiver method as a statement", "var a: int[]\nin go: exec\non go { a.push(1) }".into(), &[NoErrors]),
+            ("no-output mod: assignment", format!("{m}\non go {{ o = noret(1) }}"), NO_VALUE),
+            // A bare `let` binds nothing but is the documented chip-instantiation
+            // spelling; reading the name is what reports.
+            ("no-output mod: bare let", format!("{m}\non go {{ let v = noret(1) }}"), &[NoErrors]),
+            ("no-output mod: let then read", format!("{m}\non go {{ let v = noret(1)\n o = v }}"), NO_VALUE),
+            ("no-output mod: annotated var", format!("{m}\non go {{ var v: int = noret(1) }}"), NO_VALUE),
+            ("no-output mod: argument", format!("{m}\non go {{ PrintToConsole(noret(1)) }}"), NO_VALUE),
+            // An operand reports what it is, not a missing '+' overload on `never`.
+            ("no-output mod: operand", format!("{m}\non go {{ o = noret(1) + 1 }}"), NO_VALUE),
+            ("no-output mod: unary operand", format!("{m}\non go {{ o = -noret(1) }}"), NO_VALUE),
+            ("no-output mod: interpolation", format!("{m}\non go {{ PrintToConsole(\"${{noret(1)}}\") }}"), NO_VALUE),
+            ("no-output chip", "chip nochip(x: int) { }\nvar q: int = 0\nin g2: exec\non g2 { q = nochip(1) }".into(), NO_VALUE),
+            ("no-output mod as a statement", format!("{m}\non go {{ noret(1) }}"), &[NoErrors]),
+            ("a mod with an output still binds", "mod ret(x: int) -> (r: int) { out r = x }\nvar o: int = 0\nin go: exec\non go { o = ret(1) }".into(), &[NoErrors]),
+            ("let = push", format!("{c}on go {{ let r = a.push(5) }}"), NO_VALUE),
+            ("let = map set", format!("{c}on go {{ let r = m.set(\"k\", 1) }}"), NO_VALUE),
+            ("var = clear", format!("{c}on go {{ var x = a.clear() }}"), NO_VALUE),
+            ("out = push", format!("{c}out y = a.push(5)"), NO_VALUE),
+            ("push as a statement", format!("{c}on go {{ a.push(5) }}"), &[NoErrors]),
+            ("pop still binds", format!("{c}on go {{ let r = a.pop() }}"), &[NoErrors]),
+            ("map get still binds", format!("{c}on go {{ let r = m.get(\"k\") }}"), &[NoErrors]),
+        ];
+    check_rows(rows);
+}
 
-    #[test]
-    fn void_container_mutation_used_as_value_errors() {
-        // Void mutations (`push`/`insert`/`clear`/`set`/`copyFrom`/...) return
-        // `Never`, not `Any`, so binding their "result" is a WS072 error instead
-        // of silently accepting an unusable value. As a statement they're fine,
-        // and value-returning methods (`pop`, `get`) still bind.
-        let pre = "var a: int[]\nvar m: Map<string,int>\nin go: exec\n";
-        let no_value = |r: &TypeCheckResult| {
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS072" && d.message.contains("no value"))
-        };
-        assert!(no_value(&tc(&format!("{pre}on go {{ let r = a.push(5) }}"))), "let/push");
-        assert!(no_value(&tc(&format!("{pre}on go {{ let r = m.set(\"k\", 1) }}"))), "let/set");
-        assert!(no_value(&tc(&format!("{pre}on go {{ var x = a.clear() }}"))), "var/clear");
-        assert!(no_value(&tc(&format!("{pre}out y = a.push(5)"))), "out/push");
-        // Statement form is clean.
-        assert_no_diags(&tc(&format!("{pre}on go {{ a.push(5) }}")));
-        // Value-returning methods still bind fine.
-        assert_no_diags(&tc(&format!("{pre}on go {{ let r = a.pop() }}")));
-        assert_no_diags(&tc(&format!("{pre}on go {{ let r = m.get(\"k\") }}")));
-    }
-
-    #[test]
-    fn generic_array_and_ref_syntax_desugar() {
+/// Programs that must typecheck with no error.
+#[test]
+fn programs_that_typecheck_clean() {
+    const OK: &[Want] = &[NoErrors];
+    let rows: &[(&str, &str, &[Want])] = &[
+        ("an empty script", "", OK),
         // `Array<V>` is an alternate spelling of `V[]`, and `Ref<V>` of `*V`.
-        assert_no_diags(&tc("var a: Array<int> = [1, 2]"));
-        assert_no_diags(&tc("var a: int[] = [1, 2]"));
-        assert_no_diags(&tc("mod inc(v: Ref<int>) { v = v + 1 }"));
-        assert_no_diags(&tc("mod inc(v: *int) { v = v + 1 }"));
-    }
-
-    /// `GetInputs` outputs must carry their real types, not `any`. A coercible
-    /// annotation cannot tell the two apart (`let x: int = <float>` and
-    /// `let x: int = <any>` are both accepted), so each field is checked against
-    /// `vector`, which nothing here coerces to. The float axis, the bool flag,
-    /// and a known-float control must all report the same way.
-    #[test]
-    fn get_inputs_outputs_are_typed_not_any() {
-        let r = tc("in go: exec\n\
-                    in pl: character\n\
-                    on go {\n\
-                      let inp = pl.GetInputs()\n\
-                      let axis: vector = inp.Forward\n\
-                      let flag: vector = inp.PressedC\n\
-                    }");
-        let msgs: Vec<&str> = r
-            .diagnostics
-            .iter()
-            .filter(|d| d.code == "WS016")
-            .map(|d| d.message.as_str())
-            .collect();
-        assert!(
-            msgs.iter().any(|m| m.contains("has type float")),
-            "an axis output must type as float: {:?}",
-            r.diagnostics
-        );
-        assert!(
-            msgs.iter().any(|m| m.contains("has type bool")),
-            "a pressed flag must type as bool: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn get_inputs_unknown_field_is_ws010() {
-        let r = tc("in go: exec\n\
-                    in pl: character\n\
-                    on go {\n\
-                      let inp = pl.GetInputs()\n\
-                      let x = inp.Jump\n\
-                    }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS010"),
-            "an unknown control must be WS010: {:?}",
-            r.diagnostics
-        );
-    }
-
-    /// It is an exec gate, so it samples where the chain reaches it. Used in
-    /// pure position it would otherwise lower to a placeholder that reads a
-    /// default for every control.
-    #[test]
-    fn get_inputs_outside_an_exec_context_is_ws007() {
-        let r = tc("in pl: character\nlet inp = pl.GetInputs()");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS007"),
-            "a pure-position GetInputs must be WS007: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn generic_map_type_resolves() {
-        // `Map<K, V>` resolves to a map type usable in an annotation.
-        assert_no_diags(&tc("mod f(m: Map<string, int>) { }"));
-    }
-
-    #[test]
-    fn map_method_args_are_type_checked() {
-        // `m.set`/`m.get` must validate key/value args against the map's types —
-        // storing the map itself where an `entity` value is expected (the
-        // `prefabs.set(id, prefabs)` bug) is a WS003, not a dangling load wire.
-        let r = tc("var m: Map<string, entity>\nin go: exec\non go { m.set(\"x\", m) }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "map.set value mismatch must be WS003: {:?}",
-            r.diagnostics
-        );
-        // A wrong KEY type is caught too.
-        let rk = tc("var m: Map<string, int>\nin go: exec\non go { let v = m.get(m) }");
-        assert!(
-            rk.diagnostics.iter().any(|d| d.code == "WS003"),
-            "map.get key mismatch must be WS003: {:?}",
-            rk.diagnostics
-        );
-        // Matching types stay clean.
-        assert_no_diags(&tc(
-            "var m: Map<string, int>\nin go: exec\non go { m.set(\"x\", 5)\n  let v = m.get(\"x\") }",
-        ));
-    }
-
-    #[test]
-    fn let_tuple_and_record_annotation_checks_element_types() {
-        // A `let` with a tuple/record annotation must validate its value like
-        // `var`/params/returns do. Previously the `let` path checked record
-        // field NAMES only and skipped tuple annotations entirely (a tuple
-        // literal parses as an index-keyed record, whose expected type is a
-        // `Type::Tuple` the name-check branch bailed on), so malformed elements
-        // slipped through with no diagnostic.
-        let ws003 = |src: &str| tc(src).diagnostics.iter().any(|d| d.code == "WS003");
-        // Tuple element type mismatch + arity.
-        assert!(ws003("let t: (int, int) = (\"s\", 5)"), "tuple element type");
-        assert!(ws003("let t: (int, int) = (1, 2, 3)"), "tuple arity");
-        // Malformed record inside a tuple (missing field / wrong field type).
-        assert!(
-            ws003("type Card = { baz: int }\nlet t: (Card, int) = ({}, 5)"),
-            "record-in-tuple missing field"
-        );
-        assert!(
-            ws003("type Card = { baz: int }\nlet t: (Card, int) = ({ baz: \"s\" }, 5)"),
-            "record-in-tuple wrong field type"
-        );
-        // A record field's VALUE type is checked too, including nested records.
-        assert!(
-            ws003("type Card = { baz: int }\nlet c: Card = { baz: \"s\" }"),
-            "record field value type"
-        );
-        assert!(
-            ws003("type C = { bar: { baz: int } }\nlet c: C = { bar: { baz: \"s\" } }"),
-            "nested record field type"
-        );
-        // Valid tuples/records stay clean; the nice missing-field message and the
-        // string coercion (`let s: string = 5`) are preserved.
-        assert_no_diags(&tc("let t: (int, int) = (1, 2)"));
-        assert_no_diags(&tc("type Card = { baz: int }\nlet c: Card = { baz: 1 }"));
-        assert_no_diags(&tc("let s: string = 5"));
-    }
-
-    #[test]
-    fn map_method_missing_args_are_ws011() {
-        // Map methods have fixed params (no variadics), so a MISSING arg must
-        // be caught by arity (WS011) — the old ad-hoc validator only coerced
-        // the args that were present, so `m.set("k")` (no value) type-checked
-        // clean and emitted a dangling wire at load.
-        let rs = tc("var m: Map<string, int>\nin s: exec\non s { m.set(\"k\") }");
-        assert!(
-            rs.diagnostics.iter().any(|d| d.code == "WS011"),
-            "map.set missing value must be WS011: {:?}",
-            rs.diagnostics
-        );
-        let rg = tc("var m: Map<string, int>\nin s: exec\non s { let g = m.get() }");
-        assert!(
-            rg.diagnostics.iter().any(|d| d.code == "WS011"),
-            "map.get missing key must be WS011: {:?}",
-            rg.diagnostics
-        );
-        let rk = tc("var m: Map<string, int>\nin s: exec\non s { let g = m.keys() }");
-        assert!(
-            rk.diagnostics.iter().any(|d| d.code == "WS011"),
-            "map.keys missing dest array must be WS011: {:?}",
-            rk.diagnostics
-        );
-        // Type-mismatch checks (WS003) must still fire — regression coverage
-        // alongside `map_method_args_are_type_checked` above.
-        let rv = tc("var m: Map<string, int>\nin s: exec\non s { m.set(\"k\", \"v\") }");
-        assert!(
-            rv.diagnostics.iter().any(|d| d.code == "WS003"),
-            "map.set value mismatch must be WS003: {:?}",
-            rv.diagnostics
-        );
-        let rke = tc("var m: Map<string, int>\nin s: exec\non s { let g = m.get(m) }");
-        assert!(
-            rke.diagnostics.iter().any(|d| d.code == "WS003"),
-            "map.get key mismatch must be WS003: {:?}",
-            rke.diagnostics
-        );
-        // Fully-supplied, correctly-typed calls stay clean.
-        assert_no_diags(&tc(
-            "var m: Map<string, int>\nin s: exec\non s { m.set(\"k\", 1)\n  let g = m.get(\"k\") }",
-        ));
-        assert_no_diags(&tc(
-            "var m: Map<string, int>\nvar destArr: string[]\nin s: exec\non s { m.keys(destArr) }",
-        ));
-    }
-
-    #[test]
-    fn container_method_on_a_record_field_types_its_result() {
-        // The array/map method arms only accepted a BARE IDENTIFIER receiver,
-        // while lowering resolves a whole field chain (`resolve_field_chain`)
-        // and emits a real ArrayVar gate. So `g.ready.sum()` lowered correctly
-        // but typed as `any`, and arithmetic on the result reported the
-        // baffling "no overload for '*' on Any, Int".
-        assert_no_diags(&tc(
-            "type G = { ready: int[] }\nmod f(g: G) { let n = g.ready.sum() * 4 }",
-        ));
-        // Maps reach through the same way.
-        assert_no_diags(&tc(
-            "type G = { counts: Map<int, int> }\nmod f(g: G) { let n = g.counts.get(1) + 1 }",
-        ));
-        // And so does a nested record.
-        assert_no_diags(&tc(
-            "type G = { ready: int[] }\ntype O = { g: G }\nmod f(o: O) { let n = o.g.ready.sum() * 2 }",
-        ));
-        // The element type survives the chain, so args are still checked.
-        let r = tc("type G = { ready: int[] }\nmod f(g: G) { g.ready.push(\"nope\") }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "element type must be checked through a record field: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn array_method_args_are_type_checked() {
-        // Array-method call arguments were never routed through `check_args`,
-        // so a mismatched arg (e.g. a string pushed onto an `int[]`) type
-        // checked clean and emitted a mistyped/dangling pin at lower time.
-        let r = tc("var xs: int[]\nin s: exec\non s { xs.push(\"a\") }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "arr.push(wrongType) must be WS003: {:?}",
-            r.diagnostics
-        );
-        // A wrong INDEX type is caught too.
-        let ri = tc("var xs: int[]\nin s: exec\non s { xs.insert(\"i\", 1) }");
-        assert!(
-            ri.diagnostics.iter().any(|d| d.code == "WS003"),
-            "arr.insert(wrongIndexType, _) must be WS003: {:?}",
-            ri.diagnostics
-        );
-        // Correctly-typed calls stay clean.
-        assert_no_diags(&tc(
-            "var xs: int[]\nin s: exec\non s { xs.push(1)\n  xs.insert(0, 2)\n  let v = xs.get(0) }",
-        ));
-        // `pop` takes no args — an extra positional arg is a WS011 arity error.
-        let rp = tc("var xs: int[]\nin s: exec\non s { xs.pop(5) }");
-        assert!(
-            rp.diagnostics.iter().any(|d| d.code == "WS011"),
-            "arr.pop(extraArg) must be WS011: {:?}",
-            rp.diagnostics
-        );
-        // `sortMultiple` is a true variadic (empty declared params, opting it
-        // out of arity checking) — passing parallel arrays must stay clean,
-        // not wrongly fire "expects at most 0, got N".
-        assert_no_diags(&tc(
-            "var xs: int[]\nin s: exec\non s { xs.sortMultiple(xs, xs) }",
-        ));
-        // The `exec = <trigger>` named arg on an array read in a pure binding
-        // must not trip arity or type checking.
-        assert_no_diags(&tc(
-            "var lut: color[]\nin i: int\nout c: color = lut.get(i, exec = i + 1).Value",
-        ));
-    }
-
-    #[test]
-    fn fill_from_zone_requires_zone_not_entity() {
-        // `fillFromZone*`'s zone param is `zone` ONLY — the `Zone` slot never
-        // accepts a plain entity, only a zone rerouter reference (`in z: zone`
-        // -> `Type::Zone`). The `z: zone` form, with and without the optional
-        // tagFilter, type-checks clean:
-        assert_no_diags(&tc(
-            "in z: zone\nvar players: character[]\nin s: exec\non s { players.fillFromZonePlayers(z) }",
-        ));
-        assert_no_diags(&tc(
-            "in z: zone\nvar players: character[]\nin s: exec\non s { players.fillFromZonePlayers(z, \"red\") }",
-        ));
-        assert_no_diags(&tc(
-            "in z: zone\nvar ents: entity[]\nin s: exec\non s { ents.fillFromZoneEntities(z, \"tag\") }",
-        ));
-        // A plain `entity` in the zone slot is REJECTED (entity does not coerce
-        // to zone) — the whole point of the `zone`-only param.
-        let r = tc("in e: entity\nvar players: character[]\nin s: exec\non s { players.fillFromZonePlayers(e) }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "an entity in a zone slot must be WS003: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn pure_chip_stmt_records_var_read_as_pure() {
-        // A `let` inside a pure `chip { }` — even one that follows a handler, so
-        // the chip is exec-wrapped — reads its vars continuously. The read must
-        // record as PURE in `var_read_contexts` (false), or the hover shows the
-        // wrong exec context. (Mirrors the lowering's per-statement chip purity.)
-        let r = tc("var v: int = 0\nin go: exec\non go { v = 5 }\nchip { let x = v + 1 }\nout r: int = x");
-        assert!(!r.var_read_contexts.is_empty(), "no var reads recorded");
-        assert!(
-            r.var_read_contexts.values().all(|&is_exec| !is_exec),
-            "a pure chip's var read was recorded as exec: {:?}",
-            r.var_read_contexts
-        );
-    }
-
-    #[test]
-    fn unknown_generic_errors() {
-        let r = tc("mod f(x: Bogus<int>) { }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS002"),
-            "unknown generic must be WS002: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn ws033_conflict_incompatible_arg_types() {
-        // Two arguments pin the same type param to types with no common widening
-        // (int vs vector) — InferError::Conflict — surfaced as WS033.
-        let r = tc(
-            "in flag: bool\nin v: vector\n\
-             mod pick<T>(c: bool, a: T, b: T) -> T { return a }\n\
-             let x = pick(flag, 1, v)\n",
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS033" && d.message.contains("must be the same type")),
-            "int/vector conflict must fire the WS033 Conflict path: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn ws033_unpinnable_return_only_type_param() {
-        // `T` appears only in the return and the call passes no explicit type
-        // argument, so nothing constrains it — InferError::Unpinnable — WS033.
-        let r = tc(
-            "mod zero<T: Numeric>() -> T { static var z: T\n return z }\n\
-             out r: int = zero()\n",
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS033" && d.message.contains("cannot infer type parameter")),
-            "return-only type param must fire the WS033 Unpinnable path: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn ws033_out_of_mask_arg_violates_bound() {
-        // A `string` argument resolves `T` to a type outside its `Numeric` bound
-        // mask — InferError::OutOfMask — WS033.
-        let r = tc(
-            "mod onlyNumeric<T: Numeric>(v: T) -> T { return v }\n\
-             let x = onlyNumeric(\"hi\")\n",
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS033" && d.message.contains("isn't allowed by its bound")),
-            "out-of-mask arg must fire the WS033 OutOfMask path: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn use_before_declaration_is_ws021() {
-        // A chip/mod call whose declaration lexically follows the call site
-        // cannot resolve during lowering (decls register in source order), so
-        // typecheck flags it so the editor surfaces it before compiling.
-        let r = tc("mod caller() { let x = target(1) }\nmod target(n: int) -> int { return n }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS021"),
-            "use-before-declaration must emit WS021; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn declaration_before_use_no_ws021() {
-        let r = tc("mod target(n: int) -> int { return n }\nmod caller() { let x = target(1) }");
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS021"),
-            "declaration-before-use must NOT emit WS021; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn nested_prefab_types_as_prefab_and_lowers_to_literal() {
-        let src = "in go: exec\non go { SpawnPrefab($```in a: exec```) }\n";
-        let r = tc(src);
-        assert!(
-            !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
-            "nested prefab as SpawnPrefab arg should typecheck: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn body_local_prefab_let_reaches_spawn_prefab() {
-        // A prefab bound to a body-local `let` is a constant and must be
-        // accepted by SpawnPrefab's constant-only `prefab=` config param.
-        let r = tc("in go: exec\non go { let pf = $./foo.brz\n  SpawnPrefab(prefab = pf) }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn top_level_prefab_let_reaches_spawn_prefab() {
-        let r = tc("let pf = $./foo.brz\nin go: exec\non go { SpawnPrefab(prefab = pf) }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn var_prefab_still_rejected_as_ws028() {
-        // A genuine runtime `var` (never a compile-time constant, regardless
-        // of its initializer) must still be rejected — the scoped-const fix
-        // must not weaken constant-only enforcement for `prefab=`.
-        let r = tc(
-            "var pf: string = \"x\"\nin go: exec\non go { SpawnPrefab(prefab = pf) }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS028"),
-            "a var in constant-only 'prefab=' must still be WS028: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn nested_prefab_inner_error_remaps_into_outer_file() {
-        // A syntax error INSIDE the block must surface (not be dropped), remapped
-        // into the block's outer-file span (not left at the inner offset 0).
-        let src = "in go: exec\non go { SpawnPrefab($```on q { let y = }```) }\n";
-        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
-        let err = r.diagnostics.iter().find(|d| d.severity == Severity::Error);
-        assert!(err.is_some(), "inner error should surface: {:?}", r.diagnostics);
-        let block = src.find("$```").unwrap();
-        let d = err.unwrap();
-        assert!(
-            d.range.start.offset >= block,
-            "diagnostic remapped into the block span (offset {} vs block start {})",
-            d.range.start.offset,
-            block
-        );
-    }
-
-    #[test]
-    fn record_typed_custom_event_param_is_rejected() {
-        // An event data slot is ONE wire, so a record (or an enum, which lowers
-        // as a record of `__disc` + slots) cannot travel through it. Lowering
-        // bound the param to a single `Binding::EventParam` and every use of it
-        // produced no gates, so the statement simply vanished. A named error
-        // beats a disappearing statement.
-        let src = "type P = { a: int, b: int }
-                   var q: P = { a: 0, b: 0 }
-                   on CustomEvent(\"ch\") -> (p: P) { q = p }
-";
-        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
-        let d = r
-            .diagnostics
-            .iter()
-            .find(|d| d.code == "WS068")
-            .expect("WS068 for a record-typed event param");
-        assert_eq!(d.severity, Severity::Error);
-        assert!(d.message.contains("p"), "names the param: {}", d.message);
-    }
-
-    #[test]
-    fn scalar_custom_event_param_is_still_accepted() {
-        // The control: the same handler with a wire-typed param must stay clean,
-        // so the new check cannot be a blanket rejection.
-        let src = "var n: int = 0
-                   on CustomEvent(\"ch\") -> (v: int) { n = v }
-";
-        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS068"),
-            "diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn nested_prefab_custom_event_slot_defaults_to_float_and_warns() {
-        // A self-contained prefab block runs the same two-phase inference the
-        // compile path uses: an unannotated custom-event slot with no in-block
-        // sender defaults to float (WS042) and its typed use surfaces WS003 —
-        // in the editor / `just check`, not just at emit time. Both remap into
-        // the block's outer span.
-        let src =
-            "in go: exec\non go { SpawnPrefab($```on CustomEvent(\"init\") -> p { let n = p.GetUserId() }```) }\n";
-        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
-        let block = src.find("$```").unwrap();
-        let ws042 = r
-            .diagnostics
-            .iter()
-            .find(|d| d.code == "WS042")
-            .expect("WS042 for the uninferable slot should surface");
-        assert!(
-            ws042.range.start.offset >= block,
-            "WS042 should remap into the block span (offset {} vs block {})",
-            ws042.range.start.offset,
-            block
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS003" && d.range.start.offset >= block),
-            "the float slot's typed use should surface WS003 inside the block: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn record_fields_match_ref_insensitively() {
-        // A record value's fields match an expected record type treating ref-ness
-        // as an exposure mode (like params/out/assign): a `let r: T = { shorthand }`
-        // built from vars exposes scalar fields as refs and array fields plainly,
-        // yet still passes to a mod whose record param mixes plain arrays and ref
-        // scalars. Reproduces the gba/chip8 (`*int[]` vs `int[]`) and
-        // secret-hitler/2raab data-model plumbing.
-        let cases = [
-            // Array field via shorthand: value exposes `*int[]`, param wants `int[]`.
-            "var regs: int[]\n\
-             type Cpu = { regs: int[] }\n\
-             mod cpu_init({ regs }: Cpu) { regs.push(0) }\n\
-             on RoundStart() {\n  let cpu: Cpu = { regs }\n  cpu_init(cpu)\n}\n",
-            // Scalar ref field: value exposes plain `int`, param wants `*int`.
-            "var counter_a: int = 0\n\
-             type State = { counter: *int, label: int }\n\
-             mod bump({ counter }: State) { counter = counter + 1 }\n\
-             on RoundStart() {\n  let sa: State = { counter: counter_a, label: 1 }\n  bump(sa)\n}\n",
-            // Mixed: arrays plain + scalars ref, all via shorthand (the gba `Cpu`).
-            "var regs: int[]\nvar cpsr: int = 0\nvar halted: bool = false\n\
-             type Cpu = { regs: int[], cpsr: *int, halted: *bool }\n\
-             mod cpu_init({ regs, cpsr, halted }: Cpu) { cpsr = 1 }\n\
-             on RoundStart() {\n  let cpu: Cpu = { regs, cpsr, halted }\n  cpu_init(cpu)\n}\n",
-        ];
-        for src in cases {
-            let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
-            assert!(
-                !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
-                "ref-insensitive record field match should type-check cleanly: {:?}\nsrc:\n{src}",
-                r.diagnostics
-            );
-        }
-    }
-
-    #[test]
-    fn generic_builtins_carry_arg_type() {
-        // Select/Swap/Sleep/SleepTicks resolve their `Type::Param` output to the
-        // args' concrete type, not `any`. Discriminator: if the output stayed
-        // `any`, none of these annotated-let mismatches (WS016) would fire, since
-        // `any` matches every annotation.
-        let cases = [
-            ("in go: exec\non go { let v: vector = Select(true, 1, 2) }\n", "int"),
-            ("in go: exec\non go { let v: vector = Select(false, \"x\", \"y\") }\n", "string"),
-            (
-                "in go: exec\non go { let s = Swap(true, 1, 2)\n  let v: vector = s.Output }\n",
-                "int",
-            ),
-            ("in go: exec\non go { let v: vector = SleepTicks(5, delay = 1) }\n", "int"),
-        ];
-        for (src, ty) in cases {
-            let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
-            assert!(
-                r.diagnostics.iter().any(|d| d.code == "WS016" && d.message.contains(ty)),
-                "generic output should resolve to `{ty}`, not `any`: {:?}",
-                r.diagnostics
-            );
-        }
-    }
-
-    #[test]
-    fn generic_builtin_arg_conflict_is_ws033() {
-        let r = tc("in c: bool\nout y = Select(c, 5, \"hello\")");
-        assert!(r.diagnostics.iter().any(|d| d.code == "WS033"),
-            "conflicting Select args must error WS033: {:?}", r.diagnostics);
-        // Legitimate joins MUST STILL compile clean (do not over-reject):
-        assert_no_diags(&tc("in c: bool\nout y = Select(c, 1, 2)"));
-        assert_no_diags(&tc("in c: bool\nvar i: int = 0\nvar f: float = 0.0\nout y = Select(c, i, f)"));
-        assert_no_diags(&tc("in c: bool\nin z: zone\nlet w = Select(c, z, z)"));
-    }
-
-    #[test]
-    fn find_player_returns_controller_not_character() {
-        // FindPlayer emits the found player's persistent PlayerState (modeled as
-        // `controller`), NOT a character — its output was mistyped `Type::Character`
-        // before the PlayerState upgrade. A minimal program's only object-typed
-        // expression is the call, so its inferred type must be Controller.
-        let r = tc("in go: exec\non go { let p = FindPlayer(\"id\") }");
-        assert_no_diags(&r);
-        assert!(
-            r.type_of_expr.values().any(|t| *t == Type::Controller),
-            "FindPlayer must type as controller/PlayerState: {:?}",
-            r.type_of_expr.values().collect::<Vec<_>>()
-        );
-        assert!(
-            !r.type_of_expr.values().any(|t| *t == Type::Character),
-            "FindPlayer must not type as character: {:?}",
-            r.type_of_expr.values().collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn swap_conflict_reports_ws033_once() {
-        // Swap's output is `Record[("Output", T), ("OutputB", T)]` — both fields
-        // share `T`. A conflict must be reported exactly ONCE, not once per
-        // field; this guards the `resolved` memoization that makes that true.
-        let r = tc("in c: bool\nout y = Swap(c, 5, \"hello\")");
-        let ws033 = r.diagnostics.iter().filter(|d| d.code == "WS033").count();
-        assert_eq!(ws033, 1, "Swap conflict must emit exactly one WS033: {:?}", r.diagnostics);
-    }
-
-    #[test]
-    fn tween_value_output_rides_input_variant() {
-        // Tween's `{ Value: <variant>, Arrived: exec }` output resolves the
-        // `Value` field to the target's concrete type, not the full
-        // `float|int|vector|…` union — so a float target yields a float `Value`
-        // that reads as a float and formats into a string (`${tw}`).
-        let src = "in target: float\n\
-                   let tw = Tween(target, 1.0)\n\
-                   out v: float = tw.Value\n\
-                   out s: string = \"${tw}\"\n";
-        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
-        assert!(
-            !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
-            "a float Tween's Value should be float and format to string: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn tuple_value_matches_tuple_param() {
-        // A tuple literal is represented as an index-keyed record
-        // (`{"0":T0,"1":T1}`), but a tuple TYPE annotation resolves to
-        // `Type::Tuple([T0,T1])`. They describe the same shape and must be
-        // interchangeable — passing a tuple value/literal to a mod whose param
-        // is a tuple type must type-check.
-        let cases = [
+        ("`Array<V>` spelling", "var a: Array<int> = [1, 2]", OK),
+        ("`V[]` spelling", "var a: int[] = [1, 2]", OK),
+        (
+            "`Ref<V>` spelling",
+            "mod inc(v: Ref<int>) { v = v + 1 }",
+            OK,
+        ),
+        ("`*V` spelling", "mod inc(v: *int) { v = v + 1 }", OK),
+        (
+            "`Map<K, V>` resolves in an annotation",
+            "mod f(m: Map<string, int>) { }",
+            OK,
+        ),
+        (
+            "an int literal into a float var coerces",
+            "var x: float = 1",
+            OK,
+        ),
+        // Strings can be stored in vars (`WireValue` supports `Str`).
+        ("a string-annotated var", "var x: string = \"hi\"", OK),
+        ("a string-inferred var", "var x = \"hello\"", OK),
+        // An `any` operand has no `==` overload and would emit WS004.
+        (
+            "an inferred string var is a string, not any",
+            "var s = \"\"\nout r = s == \"ready\"",
+            OK,
+        ),
+        (
+            "an inferred int var works in math",
+            "var n = 0\nout d = n + 1",
+            OK,
+        ),
+        (
+            "an inferred float var works in math",
+            "var f = 1.5\nout d = f * 2.0",
+            OK,
+        ),
+        (
+            "an inferred bool var works in logic",
+            "var b = true\nout d = b && false",
+            OK,
+        ),
+        ("a negative literal infers", "var n = -5\nout d = n + 1", OK),
+        // No literal init: the type refines from the RHS in pass 2, so vector
+        // math resolves.
+        (
+            "a non-literal init refines the var's type",
+            "var v = Vec(1.0, 2.0, 3.0)\nout d = v + Vec(0.0, 0.0, 1.0)",
+            OK,
+        ),
+        (
+            "a handler-local var infers",
+            "on RoundStart() { var v = Vec(1.0, 2.0, 3.0)\n let w = v + v }",
+            OK,
+        ),
+        (
+            "a string annotation accepts the entity family",
+            "in c: controller\nlet msg: string = c",
+            OK,
+        ),
+        (
+            "concat casts a character to string",
+            "in p: character\nout s = \"hi \" .. p",
+            OK,
+        ),
+        // A constant Vec(...) folds to a literal, so it is a legal top-level
+        // array initializer element.
+        (
+            "constant vectors in an array initializer",
+            "var pts: vector[] = [Vec(0.0, 0.0, 0.0), Vec(1.0, 2.0, 3.0)]",
+            OK,
+        ),
+        // `literal_expr_type` knows constructor calls, so this infers vector[], not any[].
+        (
+            "an array of vectors infers its element type",
+            "var pts = [Vec(1.0, 1.0, 1.0)]",
+            OK,
+        ),
+        // Color() returns `color`, so the var refines and a later color assignment checks.
+        (
+            "a color var infers and is reassignable",
+            "var tint = Color(1.0, 0.0, 0.0)\non RoundStart() { tint = Color(0.0, 1.0, 0.0) }",
+            OK,
+        ),
+        (
+            "a string var in a handler",
+            "on RoundStart() { var x: string = \"hi\" }",
+            OK,
+        ),
+        ("a string let", "let x = \"hello\"", OK),
+        // Desugared by the parser to `let _on_expr_0 = a && b` + `on _on_expr_0 { .. }`.
+        (
+            "an `on a && b` trigger",
+            "in a: bool\nin b: bool\nvar x: int = 0\non a && b { x = 1 }",
+            OK,
+        ),
+        (
+            "a typed event param",
+            "on CharacterDied() -> { character: c } { }",
+            OK,
+        ),
+        (
+            "an assignment in a handler",
+            "var n: int = 0\non RoundStart() { n = n + 1 }",
+            &[Silent],
+        ),
+        (
+            "a return in a handler",
+            "var x: int = 0\non RoundStart() { x = 1\nreturn\nx = 2 }",
+            OK,
+        ),
+        (
+            "a return inside an if",
+            "var x: int = 0\non RoundStart() { if x > 5 { return } }",
+            OK,
+        ),
+        ("`!` on an int", "var x: int = 0\nlet y = !x", OK),
+        (
+            "interpolating a var",
+            "var x: int = 0\nlet s = \"value: ${x}\"",
+            OK,
+        ),
+        // A single-output chip call auto-unwraps.
+        (
+            "a single-output chip read in pure context",
+            "chip Foo(x: int) -> (result: int) {\n  out result = x * 2\n}\nlet f = Foo(21)\nlet ok = f == 42",
+            OK,
+        ),
+        (
+            "a single-output chip read in exec context",
+            "chip Foo(x: int) -> (result: int) {\n  out result = x * 2\n}\nlet f = Foo(21)\nvar err: int = 0\non RoundStart() {\n  if f != 42 { err = 1 }\n}",
+            OK,
+        ),
+        (
+            "an annotated buffer",
+            "var x: int = 0\nbuffer prev: int = x",
+            OK,
+        ),
+        (
+            "an inferred buffer",
+            "var x: int = 0\nbuffer prev = x + 1",
+            OK,
+        ),
+        (
+            "a mod call in a handler",
+            "var x: int = 0\nmod inc(v: *int) { v = v + 1 }\non RoundStart() { inc(x) }",
+            OK,
+        ),
+        (
+            "an anon chip shares its parent's scope",
+            "var x: int = 0\nchip { var y: int = 0 }\non RoundStart() { x = 1 }",
+            OK,
+        ),
+        (
+            "`chip on` a handler",
+            "var x: int = 0\nchip on RoundStart() { x = 1 }",
+            OK,
+        ),
+        (
+            "emit in a handler",
+            "var x: int = 0\nout result = x\non RoundStart() { emit result }",
+            OK,
+        ),
+        (
+            "bool literals",
+            "var x: bool = true\nvar y: bool = false",
+            OK,
+        ),
+        (
+            "chip exec params as triggers",
+            "chip Counter(bump: exec, reset: exec) -> (value: int) {\n  var n: int = 0\n  on bump { n = n + 1 }\n  on reset { n = 0 }\n  out value = n.Value\n}",
+            OK,
+        ),
+        (
+            "a character coerces to an entity receiver",
+            "in ch: character\non RoundStart() { ch.SetLocation(Vec(0.0, 0.0, 0.0)) }",
+            OK,
+        ),
+        (
+            "`chip let` is pure",
+            "var x: int = 0\nchip let doubled = x * 2",
+            OK,
+        ),
+        (
+            "a receiver method call",
+            "var ctrl: controller\non RoundStart() { ctrl.DisplayText(\"hi\") }",
+            OK,
+        ),
+        // An entity wire (e.g. Sweep's HitEntity) can be a player, so
+        // character/controller receiver methods and params accept it.
+        (
+            "an entity receiver takes a character method",
+            "in e: entity\nin t: exec\non t { e.ShowStatusMessage(\"hi\") }",
+            OK,
+        ),
+        (
+            "an entity arg takes a character param",
+            "in e: entity\nin t: exec\non t { ShowStatusMessage(e, \"hi\") }",
+            OK,
+        ),
+        // Array reads need exec context (Exec_ArrayVar_Get).
+        (
+            "an array index is its element type",
+            "var items: int[]\nin trigger: exec\non trigger { let x = items[0]\nlet ok = x + 1 }",
+            OK,
+        ),
+        // Array params put the mod in exec context.
+        (
+            "an array param index",
+            "mod process(arr: int[], idx: int) {\n  let old = arr[idx]\n  out r = old\n}",
+            OK,
+        ),
+        (
+            "an array param index `.value`",
+            "mod process(arr: int[], idx: int) {\n  let old = arr[idx].value\n  out r = old\n}",
+            OK,
+        ),
+        // Map subscript reads need exec context and type to the map's VALUE type.
+        (
+            "a map index is its value type",
+            "var m: Map<int, int>\nin trigger: exec\non trigger { let x: int = m[1]\nlet ok = x + 1 }",
+            OK,
+        ),
+        (
+            "array push and pop",
+            "var items: int[]\nin trigger: exec\non trigger { items.push(1)\nitems.pop() }",
+            OK,
+        ),
+        (
+            "an if-then-else value",
+            "var x: int = 0\nlet y = if x > 0 then 1 else 0",
+            OK,
+        ),
+        (
+            "several interpolations",
+            "var a: int = 1\nvar b: float = 2.0\nlet s = \"a=${a} b=${b}\"",
+            OK,
+        ),
+        (
+            "hex, binary and octal literals",
+            "var a: int = 0xFF\nvar b: int = 0b1010\nvar c: int = 0o77",
+            OK,
+        ),
+        (
+            "record field access",
+            "type Point = { x: int, y: int }\nlet p: Point = { x: 1, y: 2 }\nlet sum = p.x + p.y",
+            OK,
+        ),
+        (
+            "record shorthand",
+            "type Point = { x: int, y: int }\nlet x = 1\nlet y = 2\nlet p: Point = { x, y }",
+            OK,
+        ),
+        (
+            "record spread",
+            "type Point = { x: int, y: int }\nlet a: Point = { x: 1, y: 2 }\nlet b: Point = { ...a, y: 99 }",
+            OK,
+        ),
+        (
+            "record destructure",
+            "type Point = { x: int, y: int }\nlet p: Point = { x: 1, y: 2 }\nlet { x, y } = p\nlet sum = x + y",
+            OK,
+        ),
+        // A plain `let`'s `...rest` keeps the remaining fields' real types, so
+        // arithmetic on them resolves (as `Type::Any` it was "no overload for
+        // '+' on Any, Any").
+        (
+            "a runtime `let` rest carries the unconsumed field types",
+            "type P = { x: int, y: int, z: int }\nlet p: P = { x: 1, y: 2, z: 3 }\nlet { x, ...rest } = p\nlet sum = rest.y + rest.z",
+            OK,
+        ),
+        (
+            "a record as a mod param",
+            "type Point = { x: int, y: int }\nmod sum(p: Point) -> (r: int) { return p.x + p.y }\nlet p: Point = { x: 3, y: 4 }\nlet s = sum(p)",
+            OK,
+        ),
+        (
+            "a destructured record mod param",
+            "type Point = { x: int, y: int }\nmod add({ x, y }: Point) -> int { return x + y }\nlet p: Point = { x: 3, y: 4 }\nlet sum = add(p)",
+            OK,
+        ),
+        // `any` on a port resolves real operator overloads (the wildcard
+        // `Type::Opaque` gives it), not the `Type::Any` that WS004 rejects.
+        (
+            "`any` port operators",
+            "in t: any\nlet a = t & 1\nlet b = t + 1\nlet c = t == \"x\"",
+            OK,
+        ),
+        (
+            "an `any` let annotation",
+            "let x: any = 5\nlet y = x + 1",
+            OK,
+        ),
+        (
+            "an `any` mod param",
+            "mod f(v: any) { let inner = v + 1 }",
+            OK,
+        ),
+        (
+            "an `any` chip param and output",
+            "chip C(v: any) -> (z: any) { out z = v }\nlet c = C(1)\nlet y = c + 1",
+            OK,
+        ),
+        ("an `any` out annotation", "in t: any\nout y: any = t", OK),
+        // Random rides the PrimMath variant: vector/color min/max give a matching result.
+        (
+            "Random is polymorphic on the math variant",
+            "in a: vector\nin b: vector\nin c1: color\nin c2: color\nvar rv: vector = Vec(0.0, 0.0, 0.0)\nvar rc: color = ColorHex(\"#000000\")\nin go: exec\non go {\n  rv = Random(a, b)\n  rc = Random(c1, c2)\n}",
+            OK,
+        ),
+        (
+            "Random(int, int) into an int var",
+            "var n: int = 0\nin go: exec\non go { n = Random(1, 10) }",
+            OK,
+        ),
+        // Tween's `Value` resolves to the target's type, not the whole variant
+        // union, so a float target reads as a float and formats into a string.
+        (
+            "a float Tween's Value is a float",
+            "in target: float\nlet tw = Tween(target, 1.0)\nout v: float = tw.Value\nout s: string = \"${tw}\"\n",
+            OK,
+        ),
+        // A tuple literal is an index-keyed record and a tuple annotation is a
+        // `Type::Tuple`; they are the same shape.
+        (
+            "a tuple value fits a tuple param",
             "let w = (1, 2)\nmod f((a, b): (int, int)) -> int { return a + b }\nout o = f(w)\n",
+            OK,
+        ),
+        (
+            "a tuple literal fits a tuple param",
             "mod f((a, b): (int, int)) -> int { return a + b }\nout o = f((1, 2))\n",
+            OK,
+        ),
+        // Record fields match ignoring ref-ness (the gba/chip8 `*int[]` vs
+        // `int[]` and secret-hitler/2raab data-model plumbing).
+        (
+            "an array field via shorthand fits a plain array field",
+            "var regs: int[]\ntype Cpu = { regs: int[] }\nmod cpu_init({ regs }: Cpu) { regs.push(0) }\non RoundStart() {\n  let cpu: Cpu = { regs }\n  cpu_init(cpu)\n}\n",
+            OK,
+        ),
+        (
+            "a plain scalar field fits a ref field",
+            "var counter_a: int = 0\ntype State = { counter: *int, label: int }\nmod bump({ counter }: State) { counter = counter + 1 }\non RoundStart() {\n  let sa: State = { counter: counter_a, label: 1 }\n  bump(sa)\n}\n",
+            OK,
+        ),
+        (
+            "plain arrays and ref scalars by shorthand",
+            "var regs: int[]\nvar cpsr: int = 0\nvar halted: bool = false\ntype Cpu = { regs: int[], cpsr: *int, halted: *bool }\nmod cpu_init({ regs, cpsr, halted }: Cpu) { cpsr = 1 }\non RoundStart() {\n  let cpu: Cpu = { regs, cpsr, halted }\n  cpu_init(cpu)\n}\n",
+            OK,
+        ),
+        // The enclosing handler's EVENT data param is bound as EventParam.
+        (
+            "`on p` over an event data param",
+            "on CustomEvent(\"x\") -> (p: character) {\n  on p { }\n}\n",
+            OK,
+        ),
+        (
+            "`on !p` over an event data param",
+            "on CustomEvent(\"x\") -> (p: character) {\n  on !p { }\n}\n",
+            OK,
+        ),
+        // Contextual keywords: only `unsafe <ident>` / `is <name>` is the construct.
+        (
+            "`unsafe` as an identifier",
+            "var unsafe: int = 1\nout n = unsafe + 1",
+            OK,
+        ),
+        (
+            "`is` as an identifier",
+            "var is: int = 1\nout n = is + 1",
+            OK,
+        ),
+    ];
+    check_rows(rows);
+}
+
+/// `@label` expressions, prefab references and custom-event params.
+#[test]
+fn labels_prefabs_and_event_params_are_checked() {
+    const OK: &[Want] = &[NoErrors];
+    let rows: &[(&str, &str, &[Want])] = &[
+        // A rerouter pin has no text component to wire, so a runtime `@label`
+        // on a PORT stays an error.
+        (
+            "a runtime label on a port",
+            "in x: int\n@label(x) out v: int = 0",
+            &[Has("WS040")],
+        ),
+        // A top-level `var`'s runtime label is DYNAMIC: wired into the label's
+        // Text port at emit.
+        ("a var labelled by itself", "@label(hp) var hp: int = 0", OK),
+        (
+            "a var labelled by another var",
+            "var hp: int = 0\n@label(hp * 2) var shown: int = 0",
+            OK,
+        ),
+        // A var label's names are still resolved.
+        (
+            "an undefined name in a var label",
+            "@label(nope) var v: int = 0",
+            &[HasMsg("WS002", "'nope'")],
+        ),
+        ("a folded constant label", "@label(1 + 2) chip { }", OK),
+        (
+            "a constant let as a label",
+            "let title = \"Score\"\n@label(title) out v: int = 0",
+            OK,
+        ),
+        // Decls inside a handler and inside an `if` are visited too.
+        (
+            "a runtime label inside a handler",
+            "in x: int\non ControllerJoined() -> { controller: c, userId: id, userName: name } {\n@label(x) var y: int = 0\n}",
+            &[Has("WS040")],
+        ),
+        (
+            "a runtime label inside an `if`",
+            "in go: exec\nin x: int\non go {\nif x > 0 {\n@label(x) var y: int = 0\n}\n}",
+            &[Has("WS040")],
+        ),
+        // A prefab bound to a `let` is a constant for the constant-only `prefab=`.
+        (
+            "a body-local prefab let reaches SpawnPrefab",
+            "in go: exec\non go { let pf = $./foo.brz\n  SpawnPrefab(prefab = pf) }",
+            OK,
+        ),
+        (
+            "a top-level prefab let reaches SpawnPrefab",
+            "let pf = $./foo.brz\nin go: exec\non go { SpawnPrefab(prefab = pf) }",
+            OK,
+        ),
+        // A runtime `var` is never a constant, whatever its initializer.
+        (
+            "a var prefab",
+            "var pf: string = \"x\"\nin go: exec\non go { SpawnPrefab(prefab = pf) }",
+            &[Has("WS028")],
+        ),
+        (
+            "a prefab ref that is neither .brz nor .ws",
+            "in go: exec\non go { SpawnPrefab(prefab = $./x.png) }",
+            &[Has("WS019")],
+        ),
+        // An asset is wired in from its own brick and would be silently
+        // dropped from a constant array initializer.
+        (
+            "an asset in an array initializer",
+            "var songs: entity[] = [$BrickAudioDescriptor/BA_MUS_Component_Basil_CoffeeShop]",
+            &[Warning("WS024")],
+        ),
+        (
+            "a constant array initializer",
+            "var nums: int[] = [1, 2, 3]",
+            &[Lacks("WS024")],
+        ),
+        // An event data slot is ONE wire; a record (or an enum: `__disc` plus
+        // slots) param bound to one `Binding::EventParam` produced no gates,
+        // so the statement vanished.
+        (
+            "a record-typed custom-event param",
+            "type P = { a: int, b: int }\nvar q: P = { a: 0, b: 0 }\non CustomEvent(\"ch\") -> (p: P) { q = p }\n",
+            &[Error("WS068"), FirstMsg("WS068", "p")],
+        ),
+        (
+            "a scalar custom-event param",
+            "var n: int = 0\non CustomEvent(\"ch\") -> (v: int) { n = v }\n",
+            &[Lacks("WS068")],
+        ),
+        // A coercible annotation cannot tell a real type from `any`, so each
+        // GetInputs field is checked against `vector`, which nothing coerces to.
+        (
+            "GetInputs outputs are typed",
+            "in go: exec\nin pl: character\non go {\nlet inp = pl.GetInputs()\nlet axis: vector = inp.Forward\nlet flag: vector = inp.PressedC\n}",
+            &[
+                HasMsg("WS016", "has type float"),
+                HasMsg("WS016", "has type bool"),
+            ],
+        ),
+        (
+            "an unknown GetInputs control",
+            "in go: exec\nin pl: character\non go {\nlet inp = pl.GetInputs()\nlet x = inp.Jump\n}",
+            &[Has("WS010")],
+        ),
+    ];
+    check_rows(rows);
+}
+
+/// Exec-only work in a pure position is WS007: a runtime array/map read, or
+/// a pure call of a mod whose inlined body touches a container (reported at
+/// the call site). A compile-time index into a compile-time container emits
+/// no gate, so it is not WS007.
+#[test]
+fn exec_only_work_in_a_pure_position_is_ws007() {
+    const WS007: &[Want] = &[Has("WS007")];
+    let tag = "mod tag(k: int) -> string { let v = m.get(k); return v.Value }";
+    let rows: &[(&str, String, &[Want])] = &[
+            // An exec gate samples where the chain reaches it; in pure position it
+            // would lower to a placeholder reading a default for every control.
+            ("GetInputs in pure position", "in pl: character\nlet inp = pl.GetInputs()".into(), WS007),
+            ("a map index read outside exec", "var m: Map<int, int>\nlet x = m[1]".into(), WS007),
+            ("a const index into a const array", "const t = [10, 20]\nconst z = t[1]".into(), &[Lacks("WS007")]),
+            // Only the WS007 half: a bare `const`-bound map literal is a separate
+            // WS026 error, so this shape never reaches emit.
+            ("a const index into a const map", "const m = { :k => 5 }\nconst z = m[:k]".into(), &[Lacks("WS007")]),
+            // A `const` receiver does not make a runtime index compile-time.
+            ("a runtime index into a const array", "const t = [10, 20]\nvar someVar: int\nlet x = t[someVar]".into(), WS007),
+            ("a const index into a runtime array", "var runtimeArr: int[]\nlet x = runtimeArr[1]".into(), WS007),
+            // A `const` param's value in its own body is a placeholder zero seeded
+            // before any call site exists; folding `t[m]` with it would suppress
+            // WS007 for an index that is unknown here. The anon `chip {}` puts the
+            // statements in pure context so WS007 is reachable at all.
+            ("a const index from a const param's placeholder", "mod f(m: const int) {\n  chip {\n    const t = [10, 20]\n    const z = t[m]\n  }\n}\nin go: exec\non go { f(1) }".into(), WS007),
+            // Assigning a scalar `let` checked clean and emitted no gate.
+            ("an assignment to a scalar let", "in start: exec\nvar x: int = 3\nlet y = x + 1\non start { y = 5 }".into(), WS007),
+            ("an array let stays writable through its methods", "in start: exec\nvar xs: int[] = []\nlet ys = xs\non start { ys.push(1) }".into(), &[NoErrors]),
+            ("a pure call of a map-reading mod", format!("var m: Map<int, string>\nin go: exec\non go {{ m.set(1, \"x\") }}\n{tag}\nout bad = tag(1)"), WS007),
+            ("the same mod called from a handler", format!("var m: Map<int, string>\nvar res: string\n{tag}\nin go: exec\non go {{ m.set(1, \"x\"); res = tag(1) }}"), &[NoErrors]),
+            ("an uncalled map-reading mod", format!("var m: Map<int, string>\nin go: exec\non go {{ m.set(1, \"x\") }}\n{tag}"), &[NoErrors]),
+            ("a pure arithmetic mod called from pure", "mod dbl(k: int) -> int { return k * 2 }\nout good = dbl(21)".into(), &[NoErrors]),
+            ("a pure call of a transitively map-reading mod", "var m: Map<int, string>\nin go: exec\non go { m.set(1, \"x\") }\nmod inner(k: int) -> string { let v = m.get(k); return v.Value }\nmod outer(k: int) -> string { return inner(k) }\nout bad = outer(1)".into(), WS007),
+            ("a pure call of a subscript-reading mod", "var m: Map<int, string>\nin go: exec\non go { m.set(1, \"x\") }\nmod tag(k: int) -> string { return m[k] }\nout bad = tag(1)".into(), WS007),
+            // `exec = <trigger>` supplies the exec context the pure call lacks.
+            ("a pure call with an `exec =` override", format!("var m: Map<int, string>\nin go: exec\n{tag}\nout bad = tag(1, exec = go)"), &[Lacks("WS007")]),
+            // `sort` is an array method name, but this is a pure self mod on a record.
+            ("a self mod named like a container method", "type Point = { x: int, y: int }\nmod sort(self: Point) -> int { return self.x + self.y }\nlet p: Point = { x: 1, y: 2 }\nout good = p.sort()".into(), &[NoErrors]),
+            // A read on a `const` container is exempt (it should const-fold).
+            ("a pure call of a const-map-reading mod", format!("const m: Map<int, string> = {{ 1 => \"x\" }}\n{tag}\nout ok = tag(1)"), &[NoErrors]),
+            ("`emit` as a value in pure context", "let d: exec = emit".into(), &[Error("WS007")]),
         ];
-        for src in cases {
-            let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
-            assert!(
-                !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
-                "tuple value should match tuple param: {:?}\nsrc:\n{src}",
-                r.diagnostics
-            );
-        }
-    }
+    check_rows(rows);
+}
 
-    #[test]
-    fn tuple_value_length_mismatch_still_errors() {
-        // Ref/representation-insensitivity must not accept a genuine arity or
-        // element-type mismatch.
-        let src = "mod f((a, b): (int, int)) -> int { return a + b }\nout o = f((1, 2, 3))\n";
-        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003" || d.code == "WS022"),
-            "a 3-tuple into a 2-tuple param should error: {:?}",
-            r.diagnostics
-        );
-    }
+/// Container method arguments are checked against the container's types and
+/// the method's arity.
+#[test]
+fn container_method_arguments_are_checked() {
+    let rows: &[(&str, &str, &[Want])] = &[
+        // Storing the map itself where an `entity` value is expected (the
+        // `prefabs.set(id, prefabs)` bug) is a WS003, not a dangling load wire.
+        (
+            "map.set value mismatch",
+            "var m: Map<string, entity>\nin go: exec\non go { m.set(\"x\", m) }",
+            &[Has("WS003")],
+        ),
+        (
+            "map.get key mismatch",
+            "var m: Map<string, int>\nin go: exec\non go { let v = m.get(m) }",
+            &[Has("WS003")],
+        ),
+        (
+            "map set/get with matching types",
+            "var m: Map<string, int>\nin go: exec\non go { m.set(\"x\", 5)\n  let v = m.get(\"x\") }",
+            &[NoErrors],
+        ),
+        // Map methods have fixed params, so a missing arg is arity (WS011): the
+        // old validator coerced only the args present, so `m.set("k")` checked
+        // clean and emitted a dangling wire at load.
+        (
+            "map.set missing value",
+            "var m: Map<string, int>\nin s: exec\non s { m.set(\"k\") }",
+            &[Has("WS011")],
+        ),
+        (
+            "map.get missing key",
+            "var m: Map<string, int>\nin s: exec\non s { let g = m.get() }",
+            &[Has("WS011")],
+        ),
+        (
+            "map.keys missing dest array",
+            "var m: Map<string, int>\nin s: exec\non s { let g = m.keys() }",
+            &[Has("WS011")],
+        ),
+        (
+            "map.set string value into an int map",
+            "var m: Map<string, int>\nin s: exec\non s { m.set(\"k\", \"v\") }",
+            &[Has("WS003")],
+        ),
+        (
+            "map.get with the map as its key",
+            "var m: Map<string, int>\nin s: exec\non s { let g = m.get(m) }",
+            &[Has("WS003")],
+        ),
+        (
+            "map set/get fully supplied",
+            "var m: Map<string, int>\nin s: exec\non s { m.set(\"k\", 1)\n  let g = m.get(\"k\") }",
+            &[NoErrors],
+        ),
+        (
+            "map.keys into a dest array",
+            "var m: Map<string, int>\nvar destArr: string[]\nin s: exec\non s { m.keys(destArr) }",
+            &[NoErrors],
+        ),
+        // A method receiver is typed through the whole field chain, as
+        // lowering resolves it, so `g.ready.sum()` is not `any`.
+        (
+            "an array method through a record field",
+            "type G = { ready: int[] }\nmod f(g: G) { let n = g.ready.sum() * 4 }",
+            &[NoErrors],
+        ),
+        (
+            "a map method through a record field",
+            "type G = { counts: Map<int, int> }\nmod f(g: G) { let n = g.counts.get(1) + 1 }",
+            &[NoErrors],
+        ),
+        (
+            "an array method through a nested record",
+            "type G = { ready: int[] }\ntype O = { g: G }\nmod f(o: O) { let n = o.g.ready.sum() * 2 }",
+            &[NoErrors],
+        ),
+        (
+            "the element type survives the field chain",
+            "type G = { ready: int[] }\nmod f(g: G) { g.ready.push(\"nope\") }",
+            &[Has("WS003")],
+        ),
+        // Array-method args go through `check_args`: a string pushed onto an
+        // `int[]` would emit a mistyped pin.
+        (
+            "arr.push(wrong type)",
+            "var xs: int[]\nin s: exec\non s { xs.push(\"a\") }",
+            &[Has("WS003")],
+        ),
+        (
+            "arr.insert(wrong index type, _)",
+            "var xs: int[]\nin s: exec\non s { xs.insert(\"i\", 1) }",
+            &[Has("WS003")],
+        ),
+        (
+            "array calls with matching types",
+            "var xs: int[]\nin s: exec\non s { xs.push(1)\n  xs.insert(0, 2)\n  let v = xs.get(0) }",
+            &[NoErrors],
+        ),
+        (
+            "arr.pop(extra arg)",
+            "var xs: int[]\nin s: exec\non s { xs.pop(5) }",
+            &[Has("WS011")],
+        ),
+        // `sortMultiple` is a true variadic (empty declared params opt it out of
+        // arity), so parallel arrays must not hit "expects at most 0, got N".
+        (
+            "sortMultiple is variadic",
+            "var xs: int[]\nin s: exec\non s { xs.sortMultiple(xs, xs) }",
+            &[NoErrors],
+        ),
+        (
+            "`exec =` on a pure array read",
+            "var lut: color[]\nin i: int\nout c: color = lut.get(i, exec = i + 1).Value",
+            &[NoErrors],
+        ),
+        // `fillFromZone*`'s zone param is `zone` ONLY: a zone rerouter, never a
+        // plain entity.
+        (
+            "fillFromZonePlayers(zone)",
+            "in z: zone\nvar players: character[]\nin s: exec\non s { players.fillFromZonePlayers(z) }",
+            &[NoErrors],
+        ),
+        (
+            "fillFromZonePlayers(zone, tag)",
+            "in z: zone\nvar players: character[]\nin s: exec\non s { players.fillFromZonePlayers(z, \"red\") }",
+            &[NoErrors],
+        ),
+        (
+            "fillFromZoneEntities(zone, tag)",
+            "in z: zone\nvar ents: entity[]\nin s: exec\non s { ents.fillFromZoneEntities(z, \"tag\") }",
+            &[NoErrors],
+        ),
+        (
+            "an entity in a zone slot",
+            "in e: entity\nvar players: character[]\nin s: exec\non s { players.fillFromZonePlayers(e) }",
+            &[Has("WS003")],
+        ),
+    ];
+    check_rows(rows);
+}
 
-    #[test]
-    fn array_record_field_is_never_ref_wrapped() {
-        // An array is already a reference, so a shorthand `{ arr }` field (and
-        // `&arr`) types as `int[]`, never the redundant, write-dropping `*int[]`.
-        // A mixed record built from vars matches a `{ int[], *int }` type
-        // EXACTLY (plain array field, ref scalar field) — no coercion.
-        let ok = "var regs: int[]\nvar cpsr: int = 0\n\
+/// Values are checked against where they go: annotations, fields, params,
+/// vars and storage.
+#[test]
+fn values_are_checked_against_their_destination() {
+    const WS003: &[Want] = &[Has("WS003")];
+    const OK: &[Want] = &[NoErrors];
+    let foo = "chip Foo(x: int) -> (result: int) {\n out result = x * 2\n}\nlet f = Foo(21)\n";
+    let two = "mod two() -> (a: int, b: string) {\n";
+    let rows: &[(&str, String, &[Want])] = &[
+            // A tuple/record `let` annotation validates its value like `var`, params
+            // and returns. The `let` path checked record field NAMES only and skipped
+            // tuple annotations (a tuple literal is an index-keyed record whose
+            // expected `Type::Tuple` the name check bailed on).
+            ("a tuple element type mismatch", "let t: (int, int) = (\"s\", 5)".into(), WS003),
+            ("a tuple arity mismatch", "let t: (int, int) = (1, 2, 3)".into(), WS003),
+            ("a record in a tuple missing a field", "type Card = { baz: int }\nlet t: (Card, int) = ({}, 5)".into(), WS003),
+            ("a record in a tuple with a wrong field type", "type Card = { baz: int }\nlet t: (Card, int) = ({ baz: \"s\" }, 5)".into(), WS003),
+            ("a record field value type", "type Card = { baz: int }\nlet c: Card = { baz: \"s\" }".into(), WS003),
+            ("a nested record field type", "type C = { bar: { baz: int } }\nlet c: C = { bar: { baz: \"s\" } }".into(), WS003),
+            ("a valid tuple let", "let t: (int, int) = (1, 2)".into(), OK),
+            ("a valid record let", "type Card = { baz: int }\nlet c: Card = { baz: 1 }".into(), OK),
+            // Everything primitive casts to string: a format, not a WS016 type lie.
+            ("a string annotation on a number", "let s: string = 5".into(), OK),
+            // Representation-insensitivity must not accept a real arity mismatch.
+            ("a 3-tuple into a 2-tuple param", "mod f((a, b): (int, int)) -> int { return a + b }\nout o = f((1, 2, 3))\n".into(), &[HasMsg("WS003", "expected (int, int), got (int, int, int)")]),
+            // Ref-insensitivity must not loosen a genuine field value mismatch.
+            ("an int field where a string field is expected", "type A = { x: int }\ntype B = { x: string }\nmod take(b: B) { }\non RoundStart() {\n  let a: A = { x: 5 }\n  take(a)\n}\n".into(), WS003),
+            ("Random(int, int) into a vector var", "var v: vector = Vec(0.0, 0.0, 0.0)\nin go: exec\non go { v = Random(1, 10) }".into(), &[HasMsg("WS003", "expected vector, got int")]),
+            // Inference makes the var `int`, so the vector is a mismatch.
+            ("a vector into an inferred int var", "var n = 0\non RoundStart() { n = Vec(1.0, 1.0, 1.0) }".into(), WS003),
+            ("a vector into an inferred color var", "var tint = Color(1.0, 0.0, 0.0)\non RoundStart() { tint = Vec(1.0, 1.0, 1.0) }".into(), WS003),
+            // A plain `let`'s `...rest` is the record of the unconsumed fields, not
+            // `Type::Any`, which satisfied every parameter and field access.
+            ("a rest where the full record is expected", "type P = { x: int, y: int, z: int }\nmod takesP(p: P) -> int { return p.x }\nlet p: P = { x: 1, y: 2, z: 3 }\nlet { x, ...rest } = p\nlet bad = takesP(rest)".into(), WS003),
+            ("a consumed field read off a rest", "type P = { x: int, y: int }\nlet p: P = { x: 1, y: 2 }\nlet { x, ...rest } = p\nlet bad = rest.x".into(), &[HasMsg("WS010", "no field `x`")]),
+            // A scalar has no fields; typed `any`, lowering would read the whole
+            // base value.
+            ("a field on a scalar", "in go: exec\nvar a: int = 5\nvar b: int = 0\non go {\n  let c = a\n  b = c.whatever\n}".into(), &[Has("WS010")]),
+            // The one exception: a single-output call result projected by its
+            // output name.
+            ("a single-output result projected by name", format!("{foo}let ok = f.result\nout o = ok"), OK),
+            ("a re-bound single-output result projected by name", format!("{foo}let g = f\nlet ok = g.result\nout o = ok"), OK),
+            ("a mis-typed output name", format!("{foo}let bad = f.reslt\nout o = bad"), &[Has("WS010")]),
+            // A `{Vector, Rotation}` record unwraps to outputs[0] (the Vector) into
+            // a rotator sink.
+            ("a record unwrapping to a non-first field", "on CharacterSpawned() -> (c) {\n  let rot: rotator = c.GetVelocity()\n  c.SetRotation(rot)\n}".into(), &[Error("WS003")]),
+            ("a tuple literal as a scalar", "let x: int = (1, \"abc\")\nout o = x".into(), WS003),
+            // Typed from element 0, the odd element was pushed with no check.
+            ("a heterogeneous array literal assigned", "in start: exec\nvar xs: int[] = []\non start { xs = [1, \"hello\", 2] }".into(), WS003),
+            ("a homogeneous array literal assigned", "in start: exec\nvar xs: int[] = []\non start { xs = [1, 2, 3] }".into(), OK),
+            // `==`/`!=` on the certified composite variants; ordering is scalar-only.
+            ("vector equality", "let a = Vec(1.0, 2.0, 3.0)\nlet b = Vec(1.0, 2.0, 3.0)\nout eq = a == b".into(), OK),
+            ("color inequality", "let a = Color(1.0, 0.0, 0.0, 1.0)\nlet b = Color(0.0, 1.0, 0.0, 1.0)\nout ne = a != b".into(), OK),
+            ("vector ordering", "let a = Vec(1.0, 2.0, 3.0)\nlet b = Vec(1.0, 2.0, 3.0)\nout o = a < b".into(), &[Has("WS004")]),
+            ("a concrete array into an `any[]` param", "in start: exec\nmod firstlen(xs: any[]) { BroadcastChatMessage(\"x\") }\nvar ns: int[] = []\non start { firstlen(ns) }".into(), OK),
+            // Distributing `*T` over the fields must not let a record of refs back
+            // a container: a stored record needs a real value per field.
+            ("a ref-field record array", "type T = { a: *float, b: float }\nvar xs: T[]\n".into(), &[Has("WS049")]),
+            ("a ref-field record map", "type T = { a: *float, b: float }\nvar m: Map<int, T>\n".into(), &[Has("WS049")]),
+            // A `*T` param distributes to ref fields; a read is the VALUE.
+            ("a ref record field reads as its value", "type S = { a: float, b: bool }\nchip M(s: *S, f: float) -> (r: float) {\n  var out1: float = s.a\n  out r = if s.b then s.a else f\n}\nvar g: S = { a: 1.0, b: false }\nvar res: float = 0.0\nin go: exec\non go { res = M(g, 2.0) }\n".into(), OK),
+            // A ref field needs storage: a literal of `in` ports has none.
+            ("a port-built literal into a `*T` param", "type S = { a: float }\nchip M(s: *S) { s.a = 1.0 }\nin a: float\nin go: exec\non go { M({ a: a }) }\n".into(), &[Has("WS008")]),
+            ("a var-built literal into a `*T` param", "type S = { a: float }\nchip M(s: *S) { s.a = 1.0 }\nvar v: float = 0.0\nin go: exec\non go { M({ a: v }) }\n".into(), &[Lacks("WS008")]),
+            // A `*T` param is the caller's own gate, with no wire to convert on.
+            ("`*string` bound to an int var", "mod put(v: *string) { v = \"hi\" }\nvar n: int = 0\nin go: exec\non go { put(n) }".into(), &[Error("WS003")]),
+            ("`*int` bound to a float var", "mod inc(v: *int) { v = v + 1 }\nvar y: float = 0.0\nin go: exec\non go { inc(y) }".into(), &[Error("WS003")]),
+            ("a chip's `*int` bound to a float var", "chip C(a: *int, t: exec) { on t { a = a + 1 } }\nvar y: float = 0.0\nin go: exec\nlet c = C(y, go)".into(), &[Error("WS003")]),
+            ("`*int` bound to an int var", "mod inc(v: *int) { v = v + 1 }\nvar n: int = 0\nin go: exec\non go { inc(n) }".into(), OK),
+            ("`*string` bound to a string var", "mod put(v: *string) { v = \"hi\" }\nvar s: string = \"\"\nin go: exec\non go { put(s) }".into(), OK),
+            ("`*vector` bound to a vector var", "mod setv(v: *vector) { v = Vec(1.0, 2.0, 3.0) }\nvar p: vector\nin go: exec\non go { setv(p) }".into(), OK),
+            ("`ref int` bound to an int var", "mod inc(v: ref int) { v = v + 1 }\nvar n: int = 0\nin go: exec\non go { inc(n) }".into(), OK),
+            // An array literal is the widening join of its elements, not element 0:
+            // `[1, 2.5]` read as `int[]` and stored the float in an int gate.
+            ("a float in an int array param", "mod f(xs: int[]) -> (n: int) { return xs.length() }\nin go: exec\non go { let n = f([1, 2.5]) }\n".into(), &[ErrMsg("expected int[], got float[]")]),
+            ("a widening array literal into a float array", "mod g(xs: float[]) -> (n: int) { return xs.length() }\nin go: exec\non go { let n = g([1, 2.5]) }\n".into(), OK),
+            ("an int then a string element", "in go: exec\non go { let a = [1, \"x\"] }\n".into(), &[Msg("array element")]),
+            ("a string then an int element", "in go: exec\non go { let a = [\"x\", 1] }\n".into(), &[Msg("array element")]),
+            // A multi-output `return` is checked per port: a bare `infer` over the
+            // whole value wired the string into the int gate in both forms.
+            ("a swapped record return", format!("{two}  let t = \"x\"\n  let i = 5\n  return {{ a: t, b: i }}\n}}\nin go: exec\non go {{ let r = two() }}\n"), &[ErrMsg("expected int, got string")]),
+            ("a swapped tuple return", format!("{two}  return (\"x\", 2)\n}}\nin go: exec\non go {{ let r = two() }}\n"), &[ErrMsg("expected int, got string")]),
+            ("both return forms written correctly", format!("{two}  let i = 5\n  let t = \"x\"\n  return {{ a: i, b: t }}\n}}\nmod three() -> (a: int, b: string) {{\n  return (1, \"y\")\n}}\nin go: exec\non go {{ let r = two()\n  let q = three() }}\n"), OK),
+        ];
+    check_rows(rows);
+}
+
+#[test]
+fn pure_chip_stmt_records_var_read_as_pure() {
+    // A `let` inside a pure `chip { }` — even one that follows a handler, so
+    // the chip is exec-wrapped — reads its vars continuously. The read must
+    // record as PURE in `var_read_contexts` (false), or the hover shows the
+    // wrong exec context. (Mirrors the lowering's per-statement chip purity.)
+    let r =
+        tc("var v: int = 0\nin go: exec\non go { v = 5 }\nchip { let x = v + 1 }\nout r: int = x");
+    assert!(!r.var_read_contexts.is_empty(), "no var reads recorded");
+    assert!(
+        r.var_read_contexts.values().all(|&is_exec| !is_exec),
+        "a pure chip's var read was recorded as exec: {:?}",
+        r.var_read_contexts
+    );
+}
+
+/// Calls are checked against what they call: arity, argument types, the
+/// receiver form and the names involved.
+#[test]
+fn calls_are_checked_against_their_signature() {
+    let dist = "mod dist(self: vector, o: vector) -> float { return 0.0 }\n";
+    let rows: &[(&str, String, &[Want])] = &[
+            ("an unknown identifier", "on RoundStart() { x = 1 }".into(), &[Has("WS002")]),
+            ("an unknown generic", "mod f(x: Bogus<int>) { }".into(), &[Has("WS002")]),
+            // A namespace call whose base is not in scope (an `import * as card`
+            // removed while `card.drawLobby(..)` calls remain) is reported, not
+            // lowered to an `_Unsupported` gate that does nothing.
+            ("an undefined namespace base", "mod drawLobby(n: int) { }\non RoundStart() { card.drawLobby(1) }".into(), &[HasMsg("WS002", "card")]),
+            // Top-level assigns have no enclosing exec chain.
+            ("an assignment outside exec", "var n: int = 0\nn = 1".into(), &[Has("WS007")]),
+            // User chips/mods have no default params, so too few or too many
+            // positional args leaves a param unbound or an arg dropped.
+            ("too few args to a mod", "mod f(a: int, b: int) -> int { return a + b }\nin z: exec\non z { let x = f(1) }".into(), &[Has("WS022")]),
+            ("too many args to a mod", "mod g(a: int) -> int { return a }\nin z: exec\non z { let x = g(1, 2) }".into(), &[Has("WS022")]),
+            ("matching arity", "mod f(a: int, b: int) -> int { return a + b }\nin z: exec\non z { let x = f(1, 2) }".into(), &[Lacks("WS022")]),
+            // An `exec =` trigger is not a parameter, so it is not counted.
+            ("matching arity plus an `exec =` trigger", "mod f(a: int, b: int) -> int { return a + b }\nin z: exec\non z { let x = f(1, 2, exec = z) }".into(), &[Silent]),
+            // A plain user-mod call's positional args are checked, and arity stays
+            // WS022-only (no WS011 from `check_args`'s own arity check).
+            ("a user-mod arg type mismatch", "mod f(v: vector) { }\nin z: exec\non z { f(5) }".into(), &[Has("WS003"), Lacks("WS011")]),
+            ("a valid user-mod call", "mod f(v: vector) { }\nin p: vector\nin z: exec\non z { f(p) }".into(), &[NoErrors]),
+            ("a valid self-receiver call", format!("{dist}in a: vector\nin b: vector\nin z: exec\non z {{ let d = a.dist(b) }}"), &[NoErrors]),
+            ("a self-receiver call with a mismatched arg", format!("{dist}in a: vector\nin z: exec\non z {{ let d = a.dist(5) }}"), &[Has("WS003")]),
+            // The receiver binds to `self` as positional arg 0.
+            ("a mismatched self receiver", format!("{dist}in n: int\nin b: vector\nin z: exec\non z {{ let d = n.dist(b) }}"), &[Has("WS003")]),
+            ("too many args to a builtin", "on RoundStart() { Random(1, 2, 3, 4, 5) }".into(), &[Has("WS011")]),
+            ("a builtin arg type mismatch", "on RoundStart() { SetLocation(42, Vec(0.0, 0.0, 0.0)) }".into(), &[HasMsg("WS003", "argument")]),
+            // A receiver-method arg mismatch fires the WS003 the plain call does.
+            ("a receiver-method arg mismatch", "in e: entity\non RoundStart() { e.SetLocation(5) }".into(), &[HasMsg("WS003", "argument")]),
+            ("a valid receiver-method call", "in e: entity\non RoundStart() { e.SetLocation(Vec(0.0, 0.0, 0.0)) }".into(), &[NoErrors]),
+            // A `self` mod named like a builtin receiver method on the same receiver
+            // type would be shadowed by the builtin at every call site.
+            ("a self mod shadowing a builtin receiver method", "mod Dot(self: vector, o: vector) -> float { return 0.0 }".into(), &[Has("WS035")]),
+            ("a distinctly named self mod", "mod dist(self: vector, o: vector) -> float { return self.Dot(o) }".into(), &[Lacks("WS035")]),
+            ("the builtin's name on a different receiver type", "mod Dot(self: int) -> int { return self }".into(), &[Lacks("WS035")]),
+            // A non-`self` mod is never a receiver method, so it cannot shadow one.
+            ("a non-self mod with a builtin's name", "mod Dot(a: vector, o: vector) -> float { return a.Dot(o) }".into(), &[Lacks("WS035")]),
+            // With the receiver bound as arg 0, `a.dist()` still lacks `o`.
+            ("a self-mod method call missing an arg", "mod dist(self: vector, o: vector) -> float { return self.Dot(o) }\nin a: vector\nin go: exec\non go { let d = a.dist() }".into(), &[Has("WS022")]),
+            // `Sweep`/`SweepSimple` act on their own brick, so
+            // `body.SweepSimple(..)` takes no receiver.
+            ("a no-receiver builtin called with a receiver", "in body: character\nin go: exec\non go { let hit = body.SweepSimple(500.0, detectPlayers1 = true) }".into(), &[Has("WS036")]),
+            ("a no-receiver builtin called plainly", "in go: exec\non go { let hit = SweepSimple(500.0, detectPlayers1 = true)\n let d = hit.HitDistance }".into(), &[Silent]),
+            // An unknown base is the primary problem and must not be masked by
+            // the non-self-mod WS036 check.
+            ("an unknown base before a known mod name", "mod scale(v: vector, k: float) -> vector { return v * k }\nin go: exec\non go { let s = missing.scale(2.0) }".into(), &[Has("WS002"), Lacks("WS036")]),
+            // A typo'd event config arg matches no slot and silently no-ops.
+            ("an unknown event config arg", "on Clock(intreval = 2.0) { BroadcastChatMessage(\"t\") }".into(), &[Has("WS041")]),
+            ("a real event config arg", "on Clock(enabled = true) { BroadcastChatMessage(\"t\") }".into(), &[Lacks("WS041")]),
+            // A call to a mod declared later cannot resolve during lowering
+            // (decls register in source order).
+            ("use before declaration", "mod caller() { let x = target(1) }\nmod target(n: int) -> int { return n }".into(), &[Has("WS021")]),
+            ("declaration before use", "mod target(n: int) -> int { return n }\nmod caller() { let x = target(1) }".into(), &[Lacks("WS021")]),
+        ];
+    check_rows(rows);
+}
+
+/// Generic calls: inference failures and bound violations are WS033 with no
+/// spurious WS003, and in-bound calls stay clean. Masks (`class_mask`):
+/// Scalar = {int, float}; Numeric = {int, float, vector, rotator, quat,
+/// color}; an unbounded `<T>` admits all 11 wire value variants.
+#[test]
+fn generic_calls_are_checked_against_their_bounds() {
+    const OUT_OF_MASK: Want = HasMsg("WS033", "isn't allowed by its bound");
+    let only_scalar = "mod onlyScalar<T: Scalar>(v: T) -> T { return v }\n";
+    let rows: &[(&str, String, &[Want])] = &[
+        // Two args pin `T` to int and vector, which have no common widening
+        // (InferError::Conflict). The param stays an unresolved `Type::Param`,
+        // which the coerce path must skip rather than emit a WS003 beside it.
+        (
+            "conflicting arg types",
+            "in flag: bool\nin v: vector\n\
+              mod pick<T>(c: bool, a: T, b: T) -> T { return a }\n\
+              let x = pick(flag, 1, v)\n"
+                .into(),
+            &[HasMsg("WS033", "must be the same type"), Lacks("WS003")],
+        ),
+        // `T` only in the return, no explicit type arg (InferError::Unpinnable).
+        (
+            "a return-only type param",
+            "mod zero<T: Numeric>() -> T { static var z: T\n return z }\n\
+              out r: int = zero()\n"
+                .into(),
+            &[HasMsg("WS033", "cannot infer type parameter")],
+        ),
+        (
+            "a string into a Numeric bound",
+            "mod onlyNumeric<T: Numeric>(v: T) -> T { return v }\n\
+              let x = onlyNumeric(\"hi\")\n"
+                .into(),
+            &[OUT_OF_MASK],
+        ),
+        (
+            "conflicting Select args",
+            "in c: bool\nout y = Select(c, 5, \"hello\")".into(),
+            &[Has("WS033")],
+        ),
+        (
+            "Select of two ints",
+            "in c: bool\nout y = Select(c, 1, 2)".into(),
+            &[NoErrors],
+        ),
+        (
+            "Select of int and float joins",
+            "in c: bool\nvar i: int = 0\nvar f: float = 0.0\nout y = Select(c, i, f)".into(),
+            &[NoErrors],
+        ),
+        (
+            "Select of two zones",
+            "in c: bool\nin z: zone\nlet w = Select(c, z, z)".into(),
+            &[NoErrors],
+        ),
+        // Swap's two output fields share `T`; the `resolved` memo reports once.
+        (
+            "a Swap conflict reports once",
+            "in c: bool\nout y = Swap(c, 5, \"hello\")".into(),
+            &[Count("WS033", 1)],
+        ),
+        // Select/Swap/SleepTicks resolve their `Type::Param` output to the
+        // args' type: were it `any`, no annotated-let mismatch would fire.
+        (
+            "Select of ints is an int",
+            "in go: exec\non go { let v: vector = Select(true, 1, 2) }\n".into(),
+            &[HasMsg("WS016", "int")],
+        ),
+        (
+            "Select of strings is a string",
+            "in go: exec\non go { let v: vector = Select(false, \"x\", \"y\") }\n".into(),
+            &[HasMsg("WS016", "string")],
+        ),
+        (
+            "Swap's Output is the arg type",
+            "in go: exec\non go { let s = Swap(true, 1, 2)\n  let v: vector = s.Output }\n".into(),
+            &[HasMsg("WS016", "int")],
+        ),
+        (
+            "SleepTicks passes its value's type",
+            "in go: exec\non go { let v: vector = SleepTicks(5, delay = 1) }\n".into(),
+            &[HasMsg("WS016", "int")],
+        ),
+        // `+` has an operator rule for every Numeric member.
+        (
+            "a Numeric bound accepts every mask member",
+            "mod addT<T: Numeric>(a: T, b: T) -> T { return a + b }\n\
+              in i: int\nin f: float\nin v: vector\nin rot: rotator\nin q: quat\nin c: color\n\
+              out ri: int = addT(i, i)\n\
+              out rf: float = addT(f, f)\n\
+              out rv: vector = addT(v, v)\n\
+              out rr: rotator = addT(rot, rot)\n\
+              out rq: quat = addT(q, q)\n\
+              out rc: color = addT(c, c)\n"
+                .into(),
+            &[NoErrors],
+        ),
+        (
+            "a Scalar bound accepts int and float",
+            "mod addS<T: Scalar>(a: T, b: T) -> T { return a + b }\n\
+              in i: int\nin f: float\n\
+              out ri: int = addS(i, i)\n\
+              out rf: float = addS(f, f)\n"
+                .into(),
+            &[NoErrors],
+        ),
+        // vector is in Numeric but not Scalar. OutOfMask leaves `subst` None,
+        // so `check_args` must skip the still-generic `v: T` param.
+        (
+            "a vector into a Scalar bound",
+            format!("{only_scalar}in vec: vector\nlet x = onlyScalar(vec)\n"),
+            &[OUT_OF_MASK, Lacks("WS003")],
+        ),
+        (
+            "a bool into a Scalar bound",
+            format!("{only_scalar}in b: bool\nlet x = onlyScalar(b)\n"),
+            &[OUT_OF_MASK],
+        ),
+        (
+            "an entity into a Scalar bound",
+            format!("{only_scalar}in e: entity\nlet x = onlyScalar(e)\n"),
+            &[OUT_OF_MASK],
+        ),
+        (
+            "a vector into a Numeric bound",
+            "mod onlyNumeric<T: Numeric>(v: T) -> T { return v }\n\
+              in vec: vector\nlet x = onlyNumeric(vec)\n"
+                .into(),
+            &[NoErrors],
+        ),
+        // `&` has rules only for int/float/bool. The bounded body is checked
+        // once per mask member, called or not; a binary op with no overload is
+        // WS011 (see the `matches!` dispatch in `Expr::BinOp` inference).
+        (
+            "a body op missing for some Numeric members",
+            "mod bitAnd<T: Numeric>(a: T, b: T) { let x = a & b }".into(),
+            &[Has("WS011")],
+        ),
+        (
+            "a body op present for every Numeric member",
+            "mod addT<T: Numeric>(a: T, b: T) -> T { return a + b }".into(),
+            &[NoErrors],
+        ),
+        // An explicit type argument is validated against the bound like inference.
+        (
+            "an explicit type arg outside a Scalar bound",
+            "mod onlyScalarZero<T: Scalar>() -> T { static var z: T\n return z }\n\
+              out r: int = onlyScalarZero<string>()\n"
+                .into(),
+            &[OUT_OF_MASK],
+        ),
+        (
+            "too few explicit type args",
+            "mod pair<A: Scalar, B: Scalar>(a: A, b: B) -> A { return a }\n\
+              in x: int\nin y: float\nout r: int = pair<int>(x, y)\n"
+                .into(),
+            &[HasMsg("WS033", "type argument")],
+        ),
+        (
+            "type args on a non-generic mod",
+            "mod addOne(a: int) -> int { return a + 1 }\nin x: int\nout r: int = addOne<int>(x)\n"
+                .into(),
+            &[HasMsg("WS033", "not generic")],
+        ),
+        // int and vector are both Numeric, but have no common widening.
+        (
+            "a Numeric-bounded conflict",
+            "mod pick2<T: Numeric>(a: T, b: T) -> T { return a }\n\
+              in n: int\nin v: vector\nlet x = pick2(n, v)\n"
+                .into(),
+            &[HasMsg("WS033", "must be the same type")],
+        ),
+        // `T[]` and `Map<string, V>` resolve T and V from the args' shapes. The
+        // key stays concrete: an unbounded `K` as a map key is WS039.
+        (
+            "array and map generic params",
+            "mod combo<T, V>(xs: T[], m: Map<string, V>, fallback: T) -> T { return fallback }\n\
+              var ints: int[] = [1, 2, 3]\nvar strs: Map<string, bool>\n\
+              in go: exec\non go { let r = combo(ints, strs, 5) }\n"
+                .into(),
+            &[NoErrors],
+        ),
+        // `+ 1` only checks if the return was substituted to the call's type.
+        (
+            "a generic return substitutes",
+            "mod identity<T>(v: T) -> T { return v }\n\
+              in n: int\nout r: int = identity(n) + 1\n"
+                .into(),
+            &[NoErrors],
+        ),
+    ];
+    check_rows(rows);
+}
+
+/// A `$```...```` block types as a prefab ref and maps to a
+/// `Literal::NestedPrefab` carrying the raw inner source verbatim, as
+/// `Expr::PrefabRef` maps to `Literal::PrefabRef`.
+#[test]
+fn nested_prefab_types_as_prefab_and_lowers_to_literal() {
+    let src = "in go: exec\non go { SpawnPrefab($```in a: exec```) }\n";
+    let r = tc(src);
+    assert_no_diags(&r);
+    let block = "$```in a: exec```";
+    let at = src.find(block).unwrap();
+    assert_eq!(
+        r.type_of_expr
+            .get(&(std::sync::Arc::from("test"), at, at + block.len())),
+        Some(&Type::PrefabRef),
+        "the block must type as a prefab ref"
+    );
+    let expr = crate::ast::Expr::NestedPrefab {
+        source: "in a: exec".to_string(),
+        range: crate::diagnostic::SourceRange::default(),
+    };
+    assert_eq!(
+        crate::lower::expr_to_literal(&expr),
+        Some(crate::ir::Literal::NestedPrefab {
+            source: "in a: exec".to_string()
+        })
+    );
+}
+
+#[test]
+fn nested_prefab_inner_error_remaps_into_outer_file() {
+    // A syntax error INSIDE the block must surface (not be dropped), remapped
+    // into the block's outer-file span (not left at the inner offset 0).
+    let src = "in go: exec\non go { SpawnPrefab($```on q { let y = }```) }\n";
+    let r = tc(src);
+    let err = r.diagnostics.iter().find(|d| d.severity == Severity::Error);
+    assert!(
+        err.is_some(),
+        "inner error should surface: {:?}",
+        r.diagnostics
+    );
+    let block = src.find("$```").unwrap();
+    let d = err.unwrap();
+    assert!(
+        d.range.start.offset >= block,
+        "diagnostic remapped into the block span (offset {} vs block start {})",
+        d.range.start.offset,
+        block
+    );
+}
+
+#[test]
+fn nested_prefab_custom_event_slot_defaults_to_float_and_warns() {
+    // A self-contained prefab block runs the same two-phase inference the
+    // compile path uses: an unannotated custom-event slot with no in-block
+    // sender defaults to float (WS042) and its typed use surfaces WS003 —
+    // in the editor / `just check`, not just at emit time. Both remap into
+    // the block's outer span.
+    let src = "in go: exec\non go { SpawnPrefab($```on CustomEvent(\"init\") -> p { let n = p.GetUserId() }```) }\n";
+    let r = tc(src);
+    let block = src.find("$```").unwrap();
+    let ws042 = r
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "WS042")
+        .expect("WS042 for the uninferable slot should surface");
+    assert!(
+        ws042.range.start.offset >= block,
+        "WS042 should remap into the block span (offset {} vs block {})",
+        ws042.range.start.offset,
+        block
+    );
+    assert!(
+        r.diagnostics
+            .iter()
+            .any(|d| d.code == "WS003" && d.range.start.offset >= block),
+        "the float slot's typed use should surface WS003 inside the block: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn find_player_returns_controller_not_character() {
+    // FindPlayer emits the found player's persistent PlayerState (modeled as
+    // `controller`), NOT a character — its output was mistyped `Type::Character`
+    // before the PlayerState upgrade. A minimal program's only object-typed
+    // expression is the call, so its inferred type must be Controller.
+    let r = tc("in go: exec\non go { let p = FindPlayer(\"id\") }");
+    assert_no_diags(&r);
+    assert!(
+        r.type_of_expr.values().any(|t| *t == Type::Controller),
+        "FindPlayer must type as controller/PlayerState: {:?}",
+        r.type_of_expr.values().collect::<Vec<_>>()
+    );
+    assert!(
+        !r.type_of_expr.values().any(|t| *t == Type::Character),
+        "FindPlayer must not type as character: {:?}",
+        r.type_of_expr.values().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn array_record_field_is_never_ref_wrapped() {
+    // An array is already a reference, so a shorthand `{ arr }` field (and
+    // `&arr`) types as `int[]`, never the redundant, write-dropping `*int[]`.
+    // A mixed record built from vars matches a `{ int[], *int }` type
+    // EXACTLY (plain array field, ref scalar field) — no coercion.
+    let ok = "var regs: int[]\nvar cpsr: int = 0\n\
                   type Cpu = { regs: int[], cpsr: *int }\n\
                   mod f(c: Cpu) { }\n\
                   on RoundStart() {\n  let cpu = { regs, cpsr }\n  f(cpu)\n}\n";
-        let r = typecheck(&parse(ok, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
-        assert!(
-            !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
-            "shorthand `int[]` + scalar `*int` must match `Cpu` exactly: {:?}",
-            r.diagnostics
-        );
+    let r = tc(ok);
+    assert!(
+        !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "shorthand `int[]` + scalar `*int` must match `Cpu` exactly: {:?}",
+        r.diagnostics
+    );
 
-        // A genuine field mismatch renders the array field as `int[]`, not `*int[]`.
-        let bad = "var regs: int[]\n\
+    // A genuine field mismatch renders the array field as `int[]`, not `*int[]`.
+    let bad = "var regs: int[]\n\
                    type Bad = { regs: string }\n\
                    mod g(b: Bad) { }\n\
                    on RoundStart() {\n  let rr = { regs }\n  g(rr)\n}\n";
-        let rb = typecheck(&parse(bad, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
-        let ws003 = rb
-            .diagnostics
-            .iter()
-            .find(|d| d.code == "WS003")
-            .expect("field mismatch should be WS003");
-        assert!(
-            ws003.message.contains("regs: int[]") && !ws003.message.contains("*int[]"),
-            "array field should render as `int[]`, never `*int[]`: {}",
-            ws003.message
-        );
-    }
-
-    #[test]
-    fn record_field_value_mismatch_still_errors() {
-        // Ref-insensitivity must NOT loosen genuine value-type mismatches: an
-        // `int` field where a `string` field is expected is still WS003.
-        let src = "type A = { x: int }\ntype B = { x: string }\n\
-                   mod take(b: B) { }\n\
-                   on RoundStart() {\n  let a: A = { x: 5 }\n  take(a)\n}\n";
-        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "int-field vs string-field record should still be WS003: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn nested_handler_on_event_param_is_valid() {
-        // A nested handler triggered by the enclosing handler's EVENT data param
-        // — `on CustomEvent("x") -> (p: character) { on p { } }` and the negated
-        // `on !p { }` — must type-check (the param is bound as EventParam).
-        for src in [
-            "on CustomEvent(\"x\") -> (p: character) {\n  on p { }\n}\n",
-            "on CustomEvent(\"x\") -> (p: character) {\n  on !p { }\n}\n",
-        ] {
-            let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
-            assert!(
-                !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
-                "`on (!)p` over an event data param should type-check: {:?}",
-                r.diagnostics
-            );
-        }
-    }
-
-    #[test]
-    fn nested_prefab_lowers_to_nested_literal() {
-        // The predeclare const-literal-of mapping turns Expr::NestedPrefab
-        // into Literal::NestedPrefab, carrying the raw inner source verbatim
-        // — mirroring how Expr::PrefabRef lowers to Literal::PrefabRef.
-        let range = crate::diagnostic::SourceRange::default();
-        let expr = crate::ast::Expr::NestedPrefab {
-            source: "in a: exec".to_string(),
-            range,
-        };
-        assert_eq!(
-            crate::lower::expr_to_literal(&expr),
-            Some(crate::ir::Literal::NestedPrefab {
-                source: "in a: exec".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn random_is_polymorphic_on_prim_math_variant() {
-        // Random rides the PrimMath variant like the math operators: min/max may
-        // be a vector/rotator/quat/color and the result matches, so assigning it
-        // to a same-typed var is clean (no WS003 int-mismatch).
-        let r = tc(
-            "in a: vector\nin b: vector\nin c1: color\nin c2: color\nvar rv: vector = Vec(0.0, 0.0, 0.0)\nvar rc: color = ColorHex(\"#000000\")\nin go: exec\non go {\n  rv = Random(a, b)\n  rc = Random(c1, c2)\n}",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn random_int_stays_int() {
-        // The scalar path is unchanged: Random(int, int) is an int, so it does
-        // NOT assign into a vector var.
-        let ok = tc("var n: int = 0\nin go: exec\non go { n = Random(1, 10) }");
-        assert_no_diags(&ok);
-        let bad =
-            tc("var v: vector = Vec(0.0, 0.0, 0.0)\nin go: exec\non go { v = Random(1, 10) }");
-        assert!(
-            bad.diagnostics
-                .iter()
-                .any(|d| d.severity == Severity::Error),
-            "Random(int, int) is int and must not assign into a vector var; got {:?}",
-            bad.diagnostics
-        );
-    }
-
-    #[test]
-    fn asset_in_array_initializer_warns_ws024() {
-        // Asset/prefab references are object references wired in from their own
-        // brick; they can't bake into a constant array initializer (they'd be
-        // silently dropped), so warn.
-        let r =
-            tc("var songs: entity[] = [$BrickAudioDescriptor/BA_MUS_Component_Basil_CoffeeShop]");
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS024" && d.severity == Severity::Warning),
-            "asset in array initializer should warn WS024; got {:?}",
-            r.diagnostics
-        );
-        // A constant array initializer must NOT warn.
-        let ok = tc("var nums: int[] = [1, 2, 3]");
-        assert!(
-            !ok.diagnostics.iter().any(|d| d.code == "WS024"),
-            "constant array initializer must not warn; got {:?}",
-            ok.diagnostics
-        );
-    }
-
-    #[test]
-    fn wrong_arg_count_is_ws022() {
-        // User chips/mods have no default params, so too few (or too many)
-        // positional args leaves a param unbound / an arg dropped.
-        let too_few =
-            tc("mod f(a: int, b: int) -> int { return a + b }\nin z: exec\non z { let x = f(1) }");
-        assert!(
-            too_few.diagnostics.iter().any(|d| d.code == "WS022"),
-            "too-few args must emit WS022; got {:?}",
-            too_few.diagnostics
-        );
-        let too_many =
-            tc("mod g(a: int) -> int { return a }\nin z: exec\non z { let x = g(1, 2) }");
-        assert!(
-            too_many.diagnostics.iter().any(|d| d.code == "WS022"),
-            "too-many args must emit WS022; got {:?}",
-            too_many.diagnostics
-        );
-    }
-
-    #[test]
-    fn correct_arg_count_no_ws022() {
-        // Matching arity, and an extra `exec =` trigger (not a parameter), are
-        // both fine.
-        let ok = tc(
-            "mod f(a: int, b: int) -> int { return a + b }\nin z: exec\non z { let x = f(1, 2) }",
-        );
-        assert!(
-            !ok.diagnostics.iter().any(|d| d.code == "WS022"),
-            "matching arity must NOT emit WS022; got {:?}",
-            ok.diagnostics
-        );
-    }
-
-    // ---- user mod/chip + self-receiver calls routed through
-    // `check_args` ----
-
-    #[test]
-    fn ucc_non_generic_mod_arg_type_mismatch_is_ws003() {
-        // `f(v: vector)` called with an int literal must still be caught —
-        // proves the (post-swap) `check_args` path still validates a plain
-        // user-mod call's positional args, and that arity stays WS022-only
-        // (no spurious WS011 from `check_args`'s own arity check).
-        let r = tc("mod f(v: vector) { }\nin z: exec\non z { f(5) }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "user-mod arg type mismatch must be WS003; got {:?}",
-            r.diagnostics
-        );
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS011"),
-            "user-mod calls must never emit check_args's own WS011 arity code; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn ucc_non_generic_mod_valid_call_is_clean() {
-        let r = tc("mod f(v: vector) { }\nin p: vector\nin z: exec\non z { f(p) }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn ucc_generic_conflict_still_ws033_not_ws003() {
-        // Same shape as `ws033_conflict_incompatible_arg_types`: inference
-        // fails, so the param's type stays an unresolved `Type::Param`,
-        // which the coerce path must keep skipping rather than coercing
-        // against the raw `T` and emitting a spurious WS003 alongside it.
-        let r = tc(
-            "in flag: bool\nin v: vector\n\
-             mod pick<T>(c: bool, a: T, b: T) -> T { return a }\n\
-             let x = pick(flag, 1, v)\n",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS033"),
-            "expected WS033: {:?}",
-            r.diagnostics
-        );
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "a failed generic inference must not also emit a spurious WS003; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn ucc_self_receiver_arg_type_checked() {
-        let clean = tc(
-            "mod dist(self: vector, o: vector) -> float { return 0.0 }\n\
-             in a: vector\nin b: vector\nin z: exec\non z { let d = a.dist(b) }",
-        );
-        assert_no_diags(&clean);
-
-        let bad = tc(
-            "mod dist(self: vector, o: vector) -> float { return 0.0 }\n\
-             in a: vector\nin z: exec\non z { let d = a.dist(5) }",
-        );
-        assert!(
-            bad.diagnostics.iter().any(|d| d.code == "WS003"),
-            "a self-receiver call with a mismatched arg must be WS003; got {:?}",
-            bad.diagnostics
-        );
-    }
-
-    #[test]
-    fn ucc_self_receiver_mismatched_receiver_is_ws003() {
-        // The receiver binds to `self` as positional arg 0 — a receiver of
-        // the wrong type must be caught too, not just the trailing args.
-        let r = tc(
-            "mod dist(self: vector, o: vector) -> float { return 0.0 }\n\
-             in n: int\nin b: vector\nin z: exec\non z { let d = n.dist(b) }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "a mismatched self-receiver must be WS003; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn empty_script() {
-        let r = tc("");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn var_int_init() {
-        assert_no_diags(&tc("var x: int = 0"));
-    }
-
-    #[test]
-    fn var_float_int_mismatch_coerces() {
-        assert_no_diags(&tc("var x: float = 1"));
-    }
-
-    #[test]
-    fn var_string_annotation_ok() {
-        // Strings can now be stored in vars (`WireValue` supports `Str`).
-        assert_no_diags(&tc("var x: string = \"hi\""));
-    }
-
-    #[test]
-    fn var_string_inferred_ok() {
-        assert_no_diags(&tc("var x = \"hello\""));
-    }
-
-    #[test]
-    fn var_string_inferred_usable_as_string() {
-        // The inferred type must actually be `string`, not `any` — an `any`
-        // operand has no `==` overload and would emit WS004.
-        assert_no_diags(&tc("var s = \"\"\nout r = s == \"ready\""));
-    }
-
-    #[test]
-    fn var_int_inferred_usable_in_math() {
-        assert_no_diags(&tc("var n = 0\nout d = n + 1"));
-    }
-
-    #[test]
-    fn var_float_inferred_usable_in_math() {
-        assert_no_diags(&tc("var f = 1.5\nout d = f * 2.0"));
-    }
-
-    #[test]
-    fn var_bool_inferred_usable_in_logic() {
-        assert_no_diags(&tc("var b = true\nout d = b && false"));
-    }
-
-    #[test]
-    fn var_negative_literal_inferred() {
-        assert_no_diags(&tc("var n = -5\nout d = n + 1"));
-    }
-
-    #[test]
-    fn var_nonliteral_init_refines_type() {
-        // `var v = Vec(…)` has no literal init; the type refines from the
-        // RHS in pass 2 (buffer-style), so vector math resolves.
-        assert_no_diags(&tc(
-            "var v = Vec(1.0, 2.0, 3.0)\nout d = v + Vec(0.0, 0.0, 1.0)",
-        ));
-    }
-
-    #[test]
-    fn handler_local_var_inferred() {
-        assert_no_diags(&tc(
-            "on RoundStart() { var v = Vec(1.0, 2.0, 3.0)\n let w = v + v }",
-        ));
-    }
-
-    #[test]
-    fn var_inferred_type_catches_mismatch() {
-        // Inference makes the var `int`, so assigning a vector is a real
-        // WS003 — under the old `any` placeholder this passed silently.
-        let r = tc("var n = 0\non RoundStart() { n = Vec(1.0, 1.0, 1.0) }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "vector into inferred int var should be WS003, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn let_string_annotation_accepts_numeric() {
-        // Everything primitive casts to string, so a string annotation on a
-        // numeric expression is a format, not a WS016 type lie.
-        assert_no_diags(&tc("let s: string = 5"));
-    }
-
-    #[test]
-    fn let_string_annotation_accepts_entity_family() {
-        assert_no_diags(&tc("in c: controller\nlet msg: string = c"));
-    }
-
-    #[test]
-    fn concat_casts_character_to_string() {
-        assert_no_diags(&tc("in p: character\nout s = \"hi \" .. p"));
-    }
-
-    #[test]
-    fn vector_array_init_elements_are_constants() {
-        // Constant Vec(…) folds to a literal, so it's a legal top-level
-        // array initializer element (previously WS003).
-        assert_no_diags(&tc(
-            "var pts: vector[] = [Vec(0.0, 0.0, 0.0), Vec(1.0, 2.0, 3.0)]",
-        ));
-    }
-
-    #[test]
-    fn var_array_of_vectors_infers_element_type() {
-        // literal_expr_type knows constructor calls, so an unannotated
-        // `var foo = [Vec(…)]` infers vector[] instead of any[].
-        assert_no_diags(&tc("var pts = [Vec(1.0, 1.0, 1.0)]"));
-    }
-
-    #[test]
-    fn color_var_inferred_and_reassignable() {
-        // Color() now returns `color` (was `any`), so the var refines and a
-        // later color assignment typechecks.
-        assert_no_diags(&tc(
-            "var tint = Color(1.0, 0.0, 0.0)\non RoundStart() { tint = Color(0.0, 1.0, 0.0) }",
-        ));
-    }
-
-    #[test]
-    fn color_var_rejects_vector_assignment() {
-        let r = tc("var tint = Color(1.0, 0.0, 0.0)\non RoundStart() { tint = Vec(1.0, 1.0, 1.0) }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "vector into color var should be WS003, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn var_string_in_handler_ok() {
-        assert_no_diags(&tc("on RoundStart() { var x: string = \"hi\" }"));
-    }
-
-    #[test]
-    fn let_string_is_fine() {
-        let r = tc("let x = \"hello\"");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn unknown_event_diag() {
-        let r = tc("on Bogus { }");
-        assert!(r.diagnostics.iter().any(|d| d.code == "WS001"));
-    }
-
-    #[test]
-    fn known_event_no_diag() {
-        let r = tc("on RoundStart() { }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn expr_trigger_bool_and_compiles() {
-        // `on a && b { x = 1 }` is desugared by the parser to
-        //   let _on_expr_0 = a && b
-        //   on _on_expr_0 { x = 1 }
-        // Both steps should typecheck without errors.
-        let src = "in a: bool\nin b: bool\nvar x: int = 0\non a && b { x = 1 }";
-        assert_no_diags(&tc(src));
-    }
-
-    #[test]
-    fn handler_event_param_typed() {
-        let r = tc("on CharacterDied() -> { character: c } { }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn assignment_in_handler_ok() {
-        let r = tc("var n: int = 0\non RoundStart() { n = n + 1 }");
-        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
-    }
-
-    #[test]
-    fn assignment_outside_exec_diag() {
-        // Top-level assigns trip WS007 because there's no enclosing exec chain.
-        let r = tc("var n: int = 0\nn = 1");
-        assert!(r.diagnostics.iter().any(|d| d.code == "WS007"));
-    }
-
-    #[test]
-    fn binop_resolution_recorded() {
-        let r = tc("var x: int = 1\nvar y = x + 2");
-        // We don't care about the *contents* of opResolutions deeply here;
-        // just that something was recorded.
-        assert!(!r.op_resolutions.is_empty());
-    }
-
-    #[test]
-    fn unknown_var_emits_diag() {
-        let r = tc("on RoundStart() { x = 1 }");
-        assert!(r.diagnostics.iter().any(|d| d.code == "WS002"));
-    }
-
-    #[test]
-    fn namespace_call_with_undefined_base_is_ws002() {
-        // A namespace-qualified call whose base identifier isn't in scope — e.g.
-        // an `import * as card` was removed but `card.drawLobby(...)` calls
-        // remain. None of the namespace/array/receiver branches match, so
-        // without an explicit check the call silently lowers to an
-        // `_Unsupported` gate that does nothing at runtime.
-        let r = tc("mod drawLobby(n: int) { }\non RoundStart() { card.drawLobby(1) }");
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS002" && d.message.contains("card")),
-            "undefined namespace base must emit WS002; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn return_in_handler_no_error() {
-        let r = tc("var x: int = 0\non RoundStart() { x = 1\nreturn\nx = 2 }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn return_in_exec_no_error() {
-        let r = tc("var x: int = 0\non RoundStart() { if x > 5 { return } }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn not_on_int_no_error() {
-        let r = tc("var x: int = 0\nlet y = !x");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn interp_ref_var_no_error() {
-        let r = tc("var x: int = 0\nlet s = \"value: ${x}\"");
-        assert_no_diags(&r);
-    }
-
-    // ---- chip single-output auto-unwrap ----
-    #[test]
-    fn chip_single_output_pure() {
-        let r = tc(
-            "chip Foo(x: int) -> (result: int) {\n  out result = x * 2\n}\nlet f = Foo(21)\nlet ok = f == 42",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn chip_single_output_exec() {
-        let r = tc(
-            "chip Foo(x: int) -> (result: int) {\n  out result = x * 2\n}\nlet f = Foo(21)\nvar err: int = 0\non RoundStart() {\n  if f != 42 { err = 1 }\n}",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn chip_single_output_field_access_compat() {
-        // f.result should still work for backwards compatibility
-        let r = tc(
-            "chip Foo(x: int) -> (result: int) {\n  out result = x * 2\n}\nlet f = Foo(21)\nlet ok = f.result",
-        );
-        assert_no_diags(&r);
-    }
-
-    // ---- buffer ----
-    #[test]
-    fn buffer_decl() {
-        let r = tc("var x: int = 0\nbuffer prev: int = x");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn buffer_inferred_type() {
-        let r = tc("var x: int = 0\nbuffer prev = x + 1");
-        assert_no_diags(&r);
-    }
-
-    // ---- mod / inline chip ----
-    #[test]
-    fn mod_decl_no_error() {
-        let r = tc("mod inc(v: *int) { v = v + 1 }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn mod_call_in_exec() {
-        let r = tc("var x: int = 0\nmod inc(v: *int) { v = v + 1 }\non RoundStart() { inc(x) }");
-        assert_no_diags(&r);
-    }
-
-    // ---- anonymous chip ----
-    #[test]
-    fn anon_chip_shares_scope() {
-        let r = tc("var x: int = 0\nchip { var y: int = 0 }\non RoundStart() { x = 1 }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn chip_on_handler() {
-        let r = tc("var x: int = 0\nchip on RoundStart() { x = 1 }");
-        assert_no_diags(&r);
-    }
-
-    // ---- emit ----
-    #[test]
-    fn emit_in_exec() {
-        let r = tc("var x: int = 0\nout result = x\non RoundStart() { emit result }");
-        assert_no_diags(&r);
-    }
-
-    // ---- bool literal ----
-    #[test]
-    fn bool_literal() {
-        let r = tc("var x: bool = true\nvar y: bool = false");
-        assert_no_diags(&r);
-    }
-
-    // ---- chip exec param as trigger ----
-    #[test]
-    fn chip_exec_param_trigger() {
-        let r = tc(
-            "chip Counter(bump: exec, reset: exec) -> (value: int) {\n  var n: int = 0\n  on bump { n = n + 1 }\n  on reset { n = 0 }\n  out value = n.Value\n}",
-        );
-        assert_no_diags(&r);
-    }
-
-    // ---- character to entity coercion ----
-    #[test]
-    fn character_coerces_to_entity() {
-        let r = tc("in ch: character\non RoundStart() { ch.SetLocation(Vec(0.0, 0.0, 0.0)) }");
-        assert_no_diags(&r);
-    }
-
-    // ---- call arg validation ----
-    #[test]
-    fn call_too_many_args() {
-        let r = tc("on RoundStart() { Random(1, 2, 3, 4, 5) }");
-        assert!(r.diagnostics.iter().any(|d| d.code == "WS011"));
-    }
-
-    #[test]
-    fn call_wrong_arg_type() {
-        let r = tc("on RoundStart() { SetLocation(42, Vec(0.0, 0.0, 0.0)) }");
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS003" && d.message.contains("argument"))
-        );
-    }
-
-    // ---- builtin/receiver calls routed through `check_args` ----
-    #[test]
-    fn call_too_few_args() {
-        // Fewer positional args than a builtin requires — the "requires N
-        // args" WS011 branch (call_too_many_args above exercises the
-        // "expects at most" branch).
-        let r = tc("in e: entity\non RoundStart() { SetLocation(e) }");
-        assert!(r.diagnostics.iter().any(|d| d.code == "WS011"));
-    }
-
-    #[test]
-    fn receiver_call_wrong_arg_type() {
-        // A receiver-method arg mismatch (`e.SetLocation(5)` — `pos` expects
-        // a vector) must fire the same WS003 the plain-call form does.
-        let r = tc("in e: entity\non RoundStart() { e.SetLocation(5) }");
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS003" && d.message.contains("argument"))
-        );
-    }
-
-    #[test]
-    fn receiver_call_valid_stays_clean() {
-        let r = tc("in e: entity\non RoundStart() { e.SetLocation(Vec(0.0, 0.0, 0.0)) }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn enum_config_arg_still_validates() {
-        // A bad enum-member name on a config (non-wire) param — `Easing`'s
-        // `function` — must still be rejected as WS028 once the builtin arm
-        // routes through the unified call checker.
-        let r = tc("in t: float\nlet e = Easing(0.0, 1.0, t, function = Bogus)\n");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS028"),
-            "bad enum config member must be WS028: {:?}",
-            r.diagnostics
-        );
-    }
-
-    // ---- namespace import ----
-    #[test]
-    fn namespace_symbol_registered() {
-        use crate::resolve::{MemLoader, resolve};
-        let loader = MemLoader {
-            files: [("lib.ws".into(), "mod foo(v: *int) { v = v + 1 }".into())]
-                .into_iter()
-                .collect(),
-        };
-        let resolved = resolve("import * as lib from \"lib\"", "main.ws", &loader);
-        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
-        assert_no_diags(&r);
-    }
-
-    // ---- namespace call argument checking ----
-    // A namespaced call `ns.f(args)` previously routed straight to the
-    // member's return type with NO argument checking at all — wrong types
-    // and wrong arity were silent miscompiles. These pin `check_args` being
-    // wired into the namespace call arm.
-
-    fn ns_util_loader() -> crate::resolve::MemLoader {
-        crate::resolve::MemLoader {
-            files: [("util.ws".into(), "mod f(v: vector) { }".into())]
-                .into_iter()
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn namespace_call_wrong_arg_type_is_ws003() {
-        use crate::resolve::resolve;
-        let loader = ns_util_loader();
-        let resolved = resolve(
+    let rb = tc(bad);
+    let ws003 = rb
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "WS003")
+        .expect("field mismatch should be WS003");
+    assert!(
+        ws003.message.contains("regs: int[]") && !ws003.message.contains("*int[]"),
+        "array field should render as `int[]`, never `*int[]`: {}",
+        ws003.message
+    );
+}
+
+/// A namespaced call `ns.f(args)` has its arguments' types and arity
+/// checked like a local one.
+#[test]
+fn namespace_calls_are_checked() {
+    use crate::resolve::{MemLoader, resolve};
+    let loader = MemLoader {
+        files: [
+            ("lib.ws", "mod foo(v: *int) { v = v + 1 }"),
+            ("util.ws", "mod f(v: vector) { }"),
+            (
+                "gutil.ws",
+                "mod maxT<T: Numeric>(a: T, b: T) -> T { return a }",
+            ),
+        ]
+        .into_iter()
+        .map(|(name, src)| (name.to_string(), src.to_string()))
+        .collect(),
+    };
+    let rows: &[(&str, &str, &[Want])] = &[
+        (
+            "a namespace import registers its symbols",
+            "import * as lib from \"lib\"",
+            &[NoErrors],
+        ),
+        (
+            "a namespaced call arg type mismatch",
             "import * as u from \"util\"\non RoundStart() { u.f(5) }",
-            "main.ws",
-            &loader,
-        );
-        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "expected WS003 for namespaced call arg type mismatch: {:?}",
-            r.diagnostics
-        );
-    }
-
-    /// A parameter sharing a name with an `import * as` alias makes every
-    /// `ns.f(...)` in that body resolve against the local value, which has no
-    /// such member. That used to type as `any` and lower to an `_Unsupported`
-    /// no-op with NO diagnostic, so `wirescript-check` called the file clean
-    /// and the failure only showed up wherever the `any` was finally consumed,
-    /// pointing at a line that was not the mistake.
-    #[test]
-    fn namespace_call_shadowed_by_a_local_is_ws002() {
-        use crate::resolve::resolve;
-        let loader = ns_util_loader();
-        let resolved = resolve(
+            &[Has("WS003")],
+        ),
+        // A param named like the alias shadows the namespace, so `u.f(..)`
+        // is WS002.
+        (
+            "a local shadowing the namespace",
             "import * as u from \"util\"\nmod g(u: int) { u.f(Vec(0.0, 0.0, 0.0)) }\non RoundStart() { g(1) }",
-            "main.ws",
-            &loader,
-        );
-        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS002"),
-            "a local shadowing a namespace must emit WS002: {:?}",
-            r.diagnostics
-        );
-    }
-
-    /// The guard above must not fire on the ordinary case: same call, no
-    /// shadowing parameter.
-    #[test]
-    fn namespace_call_without_shadowing_is_clean() {
-        use crate::resolve::resolve;
-        let loader = ns_util_loader();
-        let resolved = resolve(
+            &[Has("WS002")],
+        ),
+        (
+            "the same call without the shadowing param",
             "import * as u from \"util\"\nmod g(v: int) { u.f(Vec(0.0, 0.0, 0.0)) }\non RoundStart() { g(1) }",
-            "main.ws",
-            &loader,
-        );
-        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS002"),
-            "an unshadowed namespace call must not emit WS002: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn namespace_call_wrong_arity_is_ws022() {
-        use crate::resolve::resolve;
-        let loader = ns_util_loader();
-        let resolved = resolve(
+            &[Lacks("WS002")],
+        ),
+        // Namespaced user mods use the local positional-arity check (WS022),
+        // not the builtin WS011 path.
+        (
+            "a namespaced call arity mismatch",
             "import * as u from \"util\"\non RoundStart() { u.f() }",
-            "main.ws",
-            &loader,
-        );
-        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
-        // A namespaced user mod/chip call uses the same positional-arity check
-        // as a local call (WS022), not the builtin WS011 path.
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS022"),
-            "expected WS022 for namespaced call arity mismatch: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn namespace_call_valid_stays_clean() {
-        use crate::resolve::resolve;
-        let loader = ns_util_loader();
-        let resolved = resolve(
+            &[Has("WS022")],
+        ),
+        (
+            "a valid namespaced call",
             "import * as u from \"util\"\non RoundStart() { u.f(Vec(0.0, 0.0, 0.0)) }",
-            "main.ws",
-            &loader,
-        );
-        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn namespace_import_of_uncalled_generic_member_is_clean() {
-        // Regression: populating `NsDeclInfo.params` eagerly resolves a
-        // member's param types at import time. A GENERIC member's params
-        // reference its own type params (`a: T`), so the population loop must
-        // push those type params into scope first — otherwise merely
-        // importing the namespace (member never called) wrongly emits WS002
-        // "unknown type 'T'". Assert a bare import compiles clean.
-        use crate::resolve::resolve;
-        let loader = crate::resolve::MemLoader {
-            files: [(
-                "gutil.ws".into(),
-                "mod maxT<T: Numeric>(a: T, b: T) -> T { return a }".into(),
-            )]
-            .into_iter()
-            .collect(),
-        };
-        let resolved = resolve(
+            &[NoErrors],
+        ),
+        // Import resolves each member's param types eagerly, so a generic
+        // member's own type params must be in scope or the bare import emits
+        // WS002 "unknown type 'T'".
+        (
+            "an uncalled generic member",
             "import * as g from \"gutil\"\non RoundStart() { }",
-            "main.ws",
-            &loader,
-        );
-        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS002"),
-            "importing a namespace with an uncalled generic member must not \
-             emit WS002: {:?}",
-            r.diagnostics
-        );
-        assert_no_diags(&r);
-    }
+            &[Lacks("WS002"), NoErrors],
+        ),
+        (
+            "a namespaced no-output mod used as a value",
+            "import * as u from \"util\"\nvar o: int = 0\non RoundStart() { o = u.f(Vec(0.0, 0.0, 0.0)) }",
+            &[HasMsg("WS072", "no value")],
+        ),
+    ];
+    check_rows_with(rows, |src| {
+        let resolved = resolve(src, "main.ws", &loader);
+        Ok(typecheck(&resolved.ast, "main.ws", &CeSlotMap::default()))
+    });
+}
 
-    // ---- chip let ----
-    #[test]
-    fn chip_let_pure_context() {
-        let r = tc("var x: int = 0\nchip let doubled = x * 2");
-        assert_no_diags(&r);
-    }
+#[test]
+fn array_length_returns_int() {
+    let src = "var items: int[]\nin trigger: exec\non trigger { let len = items.length()\nlet ok = len + 1 }";
+    let r = tc(src);
+    assert_no_diags(&r);
+    // `len + 1` would also resolve were `length()` `any`, so check the
+    // call's own type.
+    let call = "items.length()";
+    let at = src.find(call).unwrap();
+    assert_eq!(
+        r.type_of_expr
+            .get(&(std::sync::Arc::from("test"), at, at + call.len())),
+        Some(&Type::Int),
+        "length() should infer as Int"
+    );
+}
 
-    // ---- receiver call ----
-    #[test]
-    fn receiver_call_method() {
-        let r = tc("var ctrl: controller\non RoundStart() { ctrl.DisplayText(\"hi\") }");
-        assert_no_diags(&r);
-    }
+/// What storage, exec signals, triggers and annotated buffers accept.
+#[test]
+fn storage_signals_and_triggers_are_checked() {
+    const OK: &[Want] = &[NoErrors];
+    let buf = "var n: int = 0\nvar x: float = 0.0\nin go: exec\nin v: vector\nin k: int\n";
+    let bad_buf: &[Want] = &[Has("WS003")];
+    let good_buf: &[Want] = &[Lacks("WS003"), NoErrors];
+    let rows: &[(&str, String, &[Want])] = &[
+        // A var holds a `WireValue` already, and an `any` array or map stores
+        // `WireValue` elements (the game's Any Value).
+        ("an `any` var", "var foo: any = 0".into(), OK),
+        ("a static `any` var", "static var foo: any = 0".into(), OK),
+        (
+            "an `any` array",
+            "var arr: any[] = [1, \"two\", 3.5]".into(),
+            OK,
+        ),
+        ("an `any` buffer", "buffer buf: any = 0".into(), OK),
+        (
+            "a handler-local `any` var",
+            "in t: exec\non t { var foo: any = 0 }".into(),
+            OK,
+        ),
+        ("an `any`-valued map", "var m: Map<string, any>".into(), OK),
+        (
+            "an `any` map key",
+            "var m: Map<any, int>".into(),
+            &[Has("WS039")],
+        ),
+        // A map key is an int, a string or an object reference.
+        ("an int map key", "var d: Map<int, int>\n".into(), OK),
+        ("a string map key", "var d: Map<string, int>\n".into(), OK),
+        ("an entity map key", "var d: Map<entity, int>\n".into(), OK),
+        (
+            "a character map key",
+            "var d: Map<character, int>\n".into(),
+            OK,
+        ),
+        (
+            "a float map key",
+            "var d: Map<float, int>\n".into(),
+            &[Error("WS039")],
+        ),
+        (
+            "a bool map key",
+            "var d: Map<bool, int>\n".into(),
+            &[Error("WS039")],
+        ),
+        (
+            "a vector map key",
+            "var d: Map<vector, int>\n".into(),
+            &[Error("WS039")],
+        ),
+        // The placeholder type is `Type::Any`, never `Type::Opaque`.
+        (
+            "an unannotated var",
+            "var foo = 0".into(),
+            &[Lacks("WS025")],
+        ),
+        // A storage gate holds one wire variant; these reach it as whatever
+        // variant it defaults to.
+        (
+            "an exec var",
+            "in go: exec\nvar c: exec\non go { }\n".into(),
+            &[HasMsg("WS025", "control flow")],
+        ),
+        (
+            "an exec array",
+            "in go: exec\nvar c: exec[]\non go { }\n".into(),
+            &[HasMsg("WS025", "control flow")],
+        ),
+        (
+            "a never var",
+            "in go: exec\nvar c: never\non go { }\n".into(),
+            &[HasMsg("WS025", "cannot be stored")],
+        ),
+        (
+            "an int var",
+            "in go: exec\nvar c: int\non go { }\n".into(),
+            &[Lacks("WS025")],
+        ),
+        (
+            "a float array",
+            "in go: exec\nvar c: float[]\non go { }\n".into(),
+            &[Lacks("WS025")],
+        ),
+        (
+            "a map",
+            "in go: exec\nvar c: Map<int, string>\non go { }\n".into(),
+            &[Lacks("WS025")],
+        ),
+        (
+            "a vector var",
+            "in go: exec\nvar c: vector\non go { }\n".into(),
+            &[Lacks("WS025")],
+        ),
+        (
+            "a nested array",
+            "in go: exec\nvar c: int[][]\non go { }\n".into(),
+            &[Lacks("WS025")],
+        ),
+        (
+            "a map of arrays",
+            "in go: exec\nvar c: Map<int, int[]>\non go { }\n".into(),
+            &[Lacks("WS025")],
+        ),
+        // `let s: exec` is a new signal fired by `emit s`; its initializer was
+        // dropped, and with it every `on s` handler's trigger.
+        (
+            "an initializer on a top-level exec signal",
+            "var n: int = 0\nin go: exec\nlet s: exec = go\non s { n = 2 }".into(),
+            &[Has("WS101")],
+        ),
+        (
+            "an initializer on a handler-local exec signal",
+            "var n: int = 0\nin go: exec\non go {\n let s: exec = emit\n n = 1\n}".into(),
+            &[Has("WS101")],
+        ),
+        (
+            "a new exec signal fired by emit",
+            "var n: int = 0\nin go: exec\nlet s: exec\non s { n = 2 }\non go { emit s }".into(),
+            OK,
+        ),
+        (
+            "an unannotated alias of an exec input",
+            "var n: int = 0\nin go: exec\nlet s = go\non s { n = 2 }".into(),
+            OK,
+        ),
+        // `||` with an object is one value true while the object exists, so
+        // the handler fires once. A warning: the code still means something.
+        (
+            "an object in a trigger `||`",
+            "in reset: bool\nvar n: int = 0\non reset || ReadBrickGrid() { n = 0 }".into(),
+            &[Warning("WS116")],
+        ),
+        (
+            "bools in a trigger `||`",
+            "in a: bool\nin b: bool\nvar n: int = 0\non a || b { n = 0 }".into(),
+            &[Lacks("WS116")],
+        ),
+        (
+            "exec pulses in a trigger `||`",
+            "in a: exec\nin b: exec\nvar n: int = 0\non a || b { n = 0 }".into(),
+            &[Lacks("WS116")],
+        ),
+        (
+            "an object in `Union`",
+            "in reset: bool\nvar n: int = 0\non Union(reset, ReadBrickGrid()) { n = 0 }".into(),
+            &[Lacks("WS116")],
+        ),
+        (
+            "an object guarded by `&&`",
+            "in who: character\nin ok: bool\nvar n: int = 0\non who && ok { n = 0 }".into(),
+            &[Lacks("WS116")],
+        ),
+        // A port cannot take a type parameter, so the WS032 advice has nothing
+        // to follow; a mod parameter can be generic.
+        (
+            "`any` on a port",
+            "in probe: any\nout seen: any = probe".into(),
+            &[Lacks("WS032")],
+        ),
+        (
+            "`any` on a mod parameter",
+            "mod pass(x: any) -> any { return x }".into(),
+            &[Has("WS032")],
+        ),
+        // An annotated buffer's initializer was never checked: a string in an
+        // `int` buffer, or a vector in a `float` one, compiled.
+        (
+            "a string into an int buffer",
+            format!("{buf}on go {{ buffer bb: int = \"abc\"\n n = bb }}"),
+            bad_buf,
+        ),
+        (
+            "a vector into a float buffer",
+            format!("{buf}on go {{ buffer bb: float = v\n x = bb }}"),
+            bad_buf,
+        ),
+        (
+            "an int into a string buffer",
+            format!("{buf}buffer bb: string = 5\non go {{ n = bb.Length() }}"),
+            good_buf,
+        ),
+        (
+            "an int into a float buffer",
+            format!("{buf}on go {{ buffer bb: float = 5\n x = bb / 2 }}"),
+            good_buf,
+        ),
+        (
+            "an int expression into a float buffer",
+            format!("{buf}on go {{ buffer bb: float = k + 1\n x = bb / 2 }}"),
+            good_buf,
+        ),
+        (
+            "an int into a bool buffer",
+            format!("{buf}on go {{ buffer bb: bool = k\n n = bb }}"),
+            good_buf,
+        ),
+    ];
+    check_rows(rows);
+}
 
-    #[test]
-    fn entity_receiver_accepts_character_controller_methods() {
-        // An entity wire (e.g. Sweep's HitEntity) can be a player, so
-        // character/controller receiver methods and params accept it.
-        let r = tc("in e: entity\nin t: exec\non t { e.ShowStatusMessage(\"hi\") }");
-        assert_no_diags(&r);
-        let r2 = tc("in e: entity\nin t: exec\non t { ShowStatusMessage(e, \"hi\") }");
-        assert_no_diags(&r2);
-    }
+/// String -> bool is a native coercion (lowering inserts a `!= ""` compare),
+/// and it never chains into numerics: every consumer of `coerce()` applies
+/// exactly ONE rule, and operator resolution never consults coercions.
+#[test]
+fn string_and_bool_coercions() {
+    let rows: &[(&str, &str, &[Want])] = &[
+        // No bool-condition check exists for `if`; lowering inserts the
+        // `CompareNotEqual(s, "")` gate in front of the Branch.
+        (
+            "a string `if` condition",
+            "in s: string\nin t: exec\nvar a: int = 0\non t { if s { a = 1 } }",
+            &[NoErrors],
+        ),
+        // A string coerces to bool (`s != ""`).
+        (
+            "`let b: bool = s`",
+            "in s: string\nlet b: bool = s",
+            &[Silent],
+        ),
+        (
+            "a string assigned into a bool var",
+            "in s: string\nin t: exec\nvar v: bool = false\non t { v = s }",
+            &[NoErrors],
+        ),
+        (
+            "`let n: int = s` still warns",
+            "in s: string\nlet n: int = s",
+            &[Has("WS016")],
+        ),
+        (
+            "a string assigned into an int var",
+            "in s: string\nin t: exec\nvar n: int = 0\non t { n = s }",
+            &[Error("WS003")],
+        ),
+        // The math gates have no string operand rules (`..` concatenates).
+        ("`s + 1`", "in s: string\nlet a = s + 1", &[Has("WS004")]),
+        ("`\"a\" + 1`", "let a = \"a\" + 1", &[Has("WS004")]),
+        // Arg checking does one coerce(String, Int) = Mismatch, with no bool hop.
+        (
+            "a string into an int builtin param",
+            "in s: string\nlet c = ColorSRGB(s, 0, 0, 255)",
+            &[HasMsg("WS003", "expected int")],
+        ),
+        (
+            "bool -> int, annotated and assigned",
+            "in f: bool\nlet n: int = f\nin t: exec\nvar m: int = 0\non t { m = f }",
+            &[NoErrors],
+        ),
+        (
+            "`out y: bool = s`",
+            "in s: string\nout y: bool = s",
+            &[NoErrors],
+        ),
+        // Annotated outs never checked their value, so this emitted a mistyped pin.
+        (
+            "`out y: int = s`",
+            "in s: string\nout y: int = s",
+            &[Error("WS003")],
+        ),
+        // int -> string is `ViaString` (a format gate), not a mismatch.
+        (
+            "`out label: string = n`",
+            "in n: int\nout label: string = n",
+            &[NoErrors],
+        ),
+        // A `*int` port carries a ref: `&x` is x's ref; a bare `x` is its value.
+        (
+            "a ref out given a ref",
+            "var x: int = 0\nout y: *int = &x",
+            &[NoErrors],
+        ),
+        (
+            "a ref out given a var's value",
+            "var x: int = 0\nout y: *int = x",
+            &[Has("WS003")],
+        ),
+        (
+            "a mismatched statement `out` annotation",
+            "chip { out x: int = \"s\" }",
+            &[Has("WS003")],
+        ),
+        (
+            "a matching statement `out` annotation",
+            "chip { out x: int = 5 }",
+            &[NoErrors],
+        ),
+        (
+            "a statement `out` formatting an int as string",
+            "chip { out s: string = 5 }",
+            &[NoErrors],
+        ),
+    ];
+    check_rows(rows);
+}
 
-    // ---- array index ----
-    #[test]
-    fn array_index_returns_element_type() {
-        // Array reads require exec context (compile to Exec_ArrayVar_Get).
-        let r = tc(
-            "var items: int[]\nin trigger: exec\non trigger { let x = items[0]\nlet ok = x + 1 }",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn array_index_outside_exec_is_ws007() {
-        // Array index read in pure context should emit WS007.
-        let r = tc("var items: int[]\nlet x = items[0]");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS007"),
-            "expected WS007 for array index read outside exec context"
-        );
-    }
-
-    #[test]
-    fn array_param_index() {
-        // Array params put the mod in exec context, so arr[idx] is fine.
-        let r = tc("mod process(arr: int[], idx: int) {\n  let old = arr[idx]\n  out r = old\n}");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn array_param_index_dot_value() {
-        // arr[i].value works fine — array params put the mod in exec context.
-        let r =
-            tc("mod process(arr: int[], idx: int) {\n  let old = arr[idx].value\n  out r = old\n}");
-        assert_no_diags(&r);
-    }
-
-    // ---- map index ----
-    #[test]
-    fn map_index_returns_value_type() {
-        // Map subscript reads require exec context (compile to
-        // Exec_MapVar_Get) and type to the map's VALUE type.
-        let r = tc(
-            "var m: Map<int, int>\nin trigger: exec\non trigger { let x: int = m[1]\nlet ok = x + 1 }",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn map_index_outside_exec_is_ws007() {
-        // Map index read in pure context should emit WS007, mirroring arrays.
-        let r = tc("var m: Map<int, int>\nlet x = m[1]");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS007"),
-            "expected WS007 for map index read outside exec context"
-        );
-    }
-
-    // ---- module-level const index (narrows WS007) ----
-    //
-    // A runtime array/map read needs an exec-context gate — an out-of-range
-    // runtime read keeps the gate's stale PREVIOUS value, which is why WS007
-    // is strict about it. A compile-time constant index into a compile-time
-    // constant array/map emits no gate at all, so that reasoning does not
-    // apply and WS007 must not fire. This narrows the rule; it must not
-    // remove it (see the guard-rail tests below).
-
-    #[test]
-    fn a_const_index_into_a_const_array_is_allowed_at_module_level() {
-        let r = tc("const t = [10, 20]\nconst z = t[1]");
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS007"),
-            "a compile-time index into a compile-time array must not raise WS007: {:?}",
-            r.diagnostics
-        );
-    }
-
-    // NOTE: asserts only the ABSENCE OF WS007, not that this program compiles.
-    // A bare `const`/`let`-bound map literal always fails the separate,
-    // pre-existing `WS026 "a map literal must initialize or assign a Map
-    // variable"` (only a `var`/`map` initializer or an assignment RHS reaches
-    // `check_map_literal` and skips that arm), and WS026 is an ERROR — so this
-    // shape never reaches emit at all. This is NOT end-to-end permission for
-    // const map indexing; it pins the WS007 half of the narrowing only.
-    #[test]
-    fn a_const_index_into_a_const_map_is_allowed_at_module_level() {
-        let r = tc("const m = { :k => 5 }\nconst z = m[:k]");
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS007"),
-            "a compile-time index into a compile-time map must not raise WS007: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn a_runtime_index_into_a_const_array_is_still_ws007() {
-        // The RECEIVER being `const` doesn't make the read compile-time — the
-        // whole index expression must fold. A runtime index still needs an
-        // exec-context Array gate, so this must stay WS007.
-        let r = tc("const t = [10, 20]\nvar someVar: int\nlet x = t[someVar]");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS007"),
-            "a runtime index into a const array must still be WS007: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn a_const_index_into_a_runtime_array_is_still_ws007() {
-        let r = tc("var runtimeArr: int[]\nlet x = runtimeArr[1]");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS007"),
-            "a const index into a runtime array must still be WS007: {:?}",
-            r.diagnostics
-        );
-    }
-
-    // A `const` PARAMETER's value inside its own mod body is a type-shaped
-    // PLACEHOLDER (a zero seeded once, before any call site exists — see
-    // `scoped_const_placeholders`), not the real call-site value. Deciding
-    // "is this index compile-time" against a context that still contains the
-    // placeholder would fold `t[m]` using the fictional zero and suppress
-    // WS007 for a read whose real (call-site) index is unknown at this point
-    // in the pass — a silent miscompile in the making. The nested anon
-    // `chip {}` puts these statements in PURE context (mirrors
-    // `a_const_destructure_derived_from_a_placeholder_never_decides_a_branch`)
-    // even though the enclosing mod body itself is exec-checked, so WS007 is
-    // reachable here at all.
-    #[test]
-    fn a_const_index_using_a_placeholder_value_is_still_ws007() {
-        let r = tc(
-            "mod f(m: const int) {\n\
-               chip {\n\
-                 const t = [10, 20]\n\
-                 const z = t[m]\n\
-               }\n\
-             }\n\
-             in go: exec\non go { f(1) }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS007"),
-            "a placeholder-derived index must not silently suppress WS007: {:?}",
-            r.diagnostics
-        );
-    }
-
-    // ---- array methods ----
-    #[test]
-    fn array_push_pop() {
-        let r =
-            tc("var items: int[]\nin trigger: exec\non trigger { items.push(1)\nitems.pop() }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn array_length_returns_int() {
-        let r = tc(
-            "var items: int[]\nin trigger: exec\non trigger { let len = items.length()\nlet ok = len + 1 }",
-        );
-        assert_no_diags(&r);
-        // len should be Int, so len + 1 should resolve without error.
-        // If length() returned Any, the + would still work (Any coerces),
-        // so also check the inferred type directly.
-        let len_type = r.type_of_expr.values().find(|t| **t == Type::Int);
-        assert!(len_type.is_some(), "length() should infer as Int");
-    }
-
-    // ---- if expression (ternary) ----
-    #[test]
-    fn if_expr_ternary() {
-        let r = tc("var x: int = 0\nlet y = if x > 0 then 1 else 0");
-        assert_no_diags(&r);
-    }
-
-    // ---- string interpolation ----
-    #[test]
-    fn string_interp_multiple() {
-        let r = tc("var a: int = 1\nvar b: float = 2.0\nlet s = \"a=${a} b=${b}\"");
-        assert_no_diags(&r);
-    }
-
-    // ---- octal/hex/binary literals ----
-    #[test]
-    fn numeric_literal_bases() {
-        let r = tc("var a: int = 0xFF\nvar b: int = 0b1010\nvar c: int = 0o77");
-        assert_no_diags(&r);
-    }
-
-    // ---- records & type aliases ----
-    #[test]
-    fn type_alias_record() {
-        let r = tc("type Point = { x: int, y: int }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn record_literal_typed() {
-        let r = tc("type Point = { x: int, y: int }\nlet p: Point = { x: 1, y: 2 }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn record_field_access() {
-        let r = tc(
-            "type Point = { x: int, y: int }\nlet p: Point = { x: 1, y: 2 }\nlet sum = p.x + p.y",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn record_shorthand() {
-        let r =
-            tc("type Point = { x: int, y: int }\nlet x = 1\nlet y = 2\nlet p: Point = { x, y }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn record_spread() {
-        let r = tc(
-            "type Point = { x: int, y: int }\nlet a: Point = { x: 1, y: 2 }\nlet b: Point = { ...a, y: 99 }",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn record_destructure() {
-        let r = tc(
-            "type Point = { x: int, y: int }\nlet p: Point = { x: 1, y: 2 }\nlet { x, y } = p\nlet sum = x + y",
-        );
-        assert_no_diags(&r);
-    }
-
-    // `...rest` on a plain (NON-const) `let`. `bind_let` is shared by the
-    // const and runtime paths, and typing `rest` as the record of the
-    // unconsumed fields (rather than the old `Type::Any`) widened BOTH — but
-    // only the const path had coverage, so these pin the runtime surface the
-    // change also serves. Both shapes below were previously silent: `Any`
-    // satisfies every parameter and every field access, so a genuine mistake
-    // type-checked clean and only failed (or silently misbehaved) later.
-    #[test]
-    fn a_runtime_let_rest_carries_the_unconsumed_field_types() {
-        // The positive direction: the remaining fields keep their real types,
-        // so arithmetic on them resolves (under `Type::Any` this produced
-        // "no overload for '+' on Any, Any").
-        assert_no_diags(&tc(
-            "type P = { x: int, y: int, z: int }\n\
-             let p: P = { x: 1, y: 2, z: 3 }\n\
-             let { x, ...rest } = p\n\
-             let sum = rest.y + rest.z",
-        ));
-    }
-
-    #[test]
-    fn a_runtime_let_rest_is_not_the_whole_record() {
-        // Passing a `{y, z}` rest where the FULL `{x, y, z}` record is
-        // expected must be rejected — the rest is missing `x`.
-        let r = tc(
-            "type P = { x: int, y: int, z: int }\n\
-             mod takesP(p: P) -> int { return p.x }\n\
-             let p: P = { x: 1, y: 2, z: 3 }\n\
-             let { x, ...rest } = p\n\
-             let bad = takesP(rest)",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "a rest missing a field must not satisfy the full record type: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn a_runtime_let_rest_rejects_an_unknown_field() {
-        // Reading a field that is not in the rest (here the consumed `x`) is
-        // now a real error instead of silently typing as `any`.
-        let r = tc(
-            "type P = { x: int, y: int }\n\
-             let p: P = { x: 1, y: 2 }\n\
-             let { x, ...rest } = p\n\
-             let bad = rest.x",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS010" || d.code == "WS003"),
-            "reading a consumed/absent field off a rest must error: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn record_as_mod_param() {
-        let r = tc(
-            "type Point = { x: int, y: int }\nmod sum(p: Point) -> (r: int) { return p.x + p.y }\nlet p: Point = { x: 3, y: 4 }\nlet s = sum(p)",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn mod_param_record_destruct() {
-        let r = tc(
-            "type Point = { x: int, y: int }\nmod add({ x, y }: Point) -> int { return x + y }\nlet p: Point = { x: 3, y: 4 }\nlet sum = add(p)",
-        );
-        assert_no_diags(&r);
-    }
-
-    // ---- `any` type annotation ----
-
-    #[test]
-    fn any_in_port_wildcard_operators_typecheck() {
-        // `any` on a port must resolve real operator overloads (the wildcard
-        // behavior `Type::Opaque` gives it), not fall back to the generic
-        // `Type::Any` error type that WS004 rejects for operators.
-        let r = tc("in t: any\nlet a = t & 1\nlet b = t + 1\nlet c = t == \"x\"");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn any_let_annotation_no_error() {
-        let r = tc("let x: any = 5\nlet y = x + 1");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn any_mod_param_no_error() {
-        let r = tc("mod f(v: any) { let inner = v + 1 }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn any_chip_param_and_output_no_error() {
-        let r = tc("chip C(v: any) -> (z: any) { out z = v }\nlet c = C(1)\nlet y = c + 1");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn any_out_annotation_no_error() {
-        let r = tc("in t: any\nout y: any = t");
-        assert_no_diags(&r);
-    }
-
-    /// `any` is storable: a var holds a `WireValue` already, and an `any`
-    /// array or map stores `WireValue` elements (the game's Any Value). Only a
-    /// map key must still be a concrete kind (WS039).
-    #[test]
-    fn any_is_storable() {
-        for src in [
-            "var foo: any = 0",
-            "static var foo: any = 0",
-            "var arr: any[] = [1, \"two\", 3.5]",
-            "buffer buf: any = 0",
-            "in t: exec
-on t { var foo: any = 0 }",
-            "var m: Map<string, any>",
-        ] {
-            assert_no_diags(&tc(src));
-        }
-        let r = tc("var m: Map<any, int>");
-        assert!(r.diagnostics.iter().any(|d| d.code == "WS039"), "an any key: {:?}", r.diagnostics);
-    }
-
-    #[test]
-    fn var_unannotated_is_not_ws025() {
-        // An unannotated var's placeholder type is `Type::Any` (the
-        // generic fallback), never `Type::Opaque` — it must not trip the
-        // `any`-storage rejection.
-        let r = tc("var foo = 0");
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS025"),
-            "unannotated var must not emit WS025, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    // ---- string -> bool coercion (lowers to an inserted `!= ""` compare) ----
-
-    #[test]
-    fn if_string_condition_compiles() {
-        // No dedicated bool-condition check exists for `if` — a string
-        // condition typechecks cleanly, and lowering inserts the
-        // `CompareNotEqual(s, "")` coercion gate in front of the Branch.
-        let r = tc("in s: string\nin t: exec\nvar a: int = 0\non t { if s { a = 1 } }");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn let_bool_annotation_from_string_no_warning() {
-        // Before the `String -> Bool` coercion rule this hit the generic
-        // "let annotated as X, but expression has type Y" WS016 warning
-        // (a mismatch is a legitimate re-annotation warning elsewhere, but
-        // here it's a certified native coercion, not a type lie).
-        let r = tc("in s: string\nlet b: bool = s");
-        assert!(
-            r.diagnostics.is_empty(),
-            "`let b: bool = s` must not warn or error, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn var_bool_assign_from_string_no_error() {
-        // Assigning a string-typed value into a declared-bool var previously
-        // hit a hard WS003 "expected Bool, got String" mismatch.
-        let r = tc("in s: string\nin t: exec\nvar v: bool = false\non t { v = s }");
-        assert_no_diags(&r);
-    }
-
-    // ---- string -> bool must NOT chain transitively into numerics ----
-    //
-    // Every consumer of `coerce()` (infer::coerce_or_emit, sig::check_args,
-    // check_let_type_annotation) applies exactly ONE rule between
-    // a source and a destination type — nothing composes String -> Bool with
-    // Bool -> Int — and operator resolution (`resolve_op`) never consults
-    // coercions at all. These pins keep it that way.
-
-    #[test]
-    fn string_does_not_coerce_to_int_destination() {
-        // `let n: int = s` stays flagged (WS016 — the annotated-let mismatch
-        // warning, the same diagnostic any non-coercing annotation gets)...
-        let r = tc("in s: string\nlet n: int = s");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS016"),
-            "`let n: int = s` must still warn WS016, got {:?}",
-            r.diagnostics
-        );
-        // ...and assigning a string into a declared-int var stays a hard
-        // WS003 error (the exec-assign path).
-        let r = tc("in s: string\nin t: exec\nvar n: int = 0\non t { n = s }");
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS003" && d.severity == Severity::Error),
-            "`n = s` into an int var must stay a WS003 error, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn string_math_operand_still_ws004() {
-        // Operator resolution matches explicit rule lists only (no coercion
-        // consult), and the math gates have no string operand rules — a
-        // string on either side of `+` must keep erroring, not sneak in as
-        // String -> Bool -> Int. (`..` is the string concat operator.)
-        let r = tc("in s: string\nlet a = s + 1");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS004"),
-            "`s + 1` must stay WS004, got {:?}",
-            r.diagnostics
-        );
-        let r = tc("let a = \"a\" + 1");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS004"),
-            "`\"a\" + 1` must stay WS004, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn string_into_int_builtin_param_still_errors() {
-        // A string argument into an int-typed builtin port stays WS003 —
-        // arg checking does one coerce(String, Int) = Mismatch, with no
-        // bool hop available.
-        let r = tc("in s: string\nlet c = ColorSRGB(s, 0, 0, 255)");
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS003" && d.message.contains("expected int")),
-            "string into ColorSRGB's int param must stay WS003, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn bool_to_int_coercion_still_works() {
-        // Regression pin: the neighboring bool -> int coercion (and the
-        // annotated-let form) must be unaffected by the string-truthiness
-        // rule sitting next to it in coerce().
-        let r = tc("in f: bool\nlet n: int = f\nin t: exec\nvar m: int = 0\non t { m = f }");
-        assert_no_diags(&r);
-    }
-
-    // ---- annotated `out` value/annotation agreement ----
-
-    #[test]
-    fn annotated_out_bool_from_string_coerces() {
-        // `out y: bool = s` is the string -> bool coercion (the `!= ""`
-        // compare inserts at lowering) — no diagnostic.
-        let r = tc("in s: string\nout y: bool = s");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn annotated_out_int_from_string_is_ws003() {
-        // Pre-existing hole: annotated outs never checked their value
-        // against the annotation, so `out y: int = s` passed silently and
-        // emitted a mistyped pin. Now WS003.
-        let r = tc("in s: string\nout y: int = s");
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS003" && d.severity == Severity::Error),
-            "`out y: int = s` must be a WS003 error, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn annotated_out_string_from_int_formats() {
-        // Per the coercion table, int -> string is `ViaString` (format
-        // gate), not a mismatch — an annotated string out accepts a
-        // numeric value without diagnostics.
-        let r = tc("in n: int\nout label: string = n");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn annotated_ref_out_takes_a_ref_not_a_var() {
-        // A `*int` port carries a ref: `&x` is x's ref, while a bare `x` is
-        // its value, which no conversion turns into a ref.
-        let r = tc("var x: int = 0\nout y: *int = &x");
-        let errors: Vec<_> = r
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(errors.is_empty(), "ref out must not error: {:?}", errors);
-        let r = tc("var x: int = 0\nout y: *int = x");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "a var's value is not a ref: {:?}",
-            r.diagnostics
-        );
-    }
-
-    // ---------- `self`-receiver (UFCS) ----------
-
-    #[test]
-    fn self_mod_shadowing_builtin_receiver_is_ws035() {
-        // A user `self`-mod named exactly like a builtin receiver-method on the
-        // same receiver type (`Dot` on vector) would be silently shadowed by the
-        // builtin at every call site — a footgun, so it is rejected at the
-        // declaration.
-        let r = tc("mod Dot(self: vector, o: vector) -> float { return 0.0 }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS035"),
-            "a self-mod shadowing a builtin receiver-method must emit WS035; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn self_mod_distinct_name_no_shadow() {
-        // A distinctly-named self-mod does not collide with any builtin.
-        let r = tc("mod dist(self: vector, o: vector) -> float { return self.Dot(o) }");
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS035"),
-            "a distinct-named self-mod must not be flagged as shadowing; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn self_mod_same_name_different_receiver_no_shadow() {
-        // `Dot` is a builtin receiver-method on `vector`; a self-mod named `Dot`
-        // whose receiver is a DIFFERENT type (int) does not overlap it, so the
-        // builtin never shadows it and there is no error.
-        let r = tc("mod Dot(self: int) -> int { return self }");
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS035"),
-            "the same name on a different receiver type must not shadow; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn a_string_method_on_a_value_that_is_not_a_string_is_ws003() {
-        // `vv.Length()` on a vector read the length of the text the vector
-        // formats to; each string method on each value that is not a string
-        // is WS003, with the right spelling for a length.
-        let head = "var vv: vector = Vec(3.0, 4.0, 0.0)\nvar n: int = 3\nvar fl: float = 1.5\n\
+#[test]
+fn a_string_method_on_a_value_that_is_not_a_string_is_ws003() {
+    // `vv.Length()` on a vector read the length of the text the vector
+    // formats to; each string method on each value that is not a string
+    // is WS003, with the right spelling for a length.
+    let head = "var vv: vector = Vec(3.0, 4.0, 0.0)\nvar n: int = 3\nvar fl: float = 1.5\n\
                     var b: bool = true\nvar cl: color = Color(1.0, 0.0, 0.0)\nvar rt: rotator = Rotation(0.0, 0.0, 0.0)\n\
                     var xs: int[] = [1]\nvar m: Map<string, int> = {}\nvar s: string = \"abc\"\n\
                     var r: int = 0\nvar rs: string = \"\"\nvar rb: bool = false\nin go: exec\nin who: entity\n";
-        let string_methods: Vec<&str> = crate::catalog::calls::calls()
-            .values()
-            .filter(|c| c.receiver == Some(Type::String) && c.receiver_target_param().is_none())
-            .map(|c| c.name)
-            .collect();
-        assert!(string_methods.contains(&"Length"), "{string_methods:?}");
-        for recv in ["vv", "n", "fl", "b", "cl", "rt", "xs", "m", "who"] {
-            for method in &string_methods {
-                let r = tc(&format!("{head}on go {{ let q = {recv}.{method}() }}"));
-                let d = r.diagnostics.iter().find(|d| d.code == "WS003");
-                assert!(
-                    d.is_some_and(|d| d.message.contains(&format!("`.{method}()` is a string method"))),
-                    "`{recv}.{method}()`: {:?}",
-                    r.diagnostics
-                );
-            }
-        }
-        let hint = |src: &str| {
-            let r = tc(&format!("{head}on go {{ {src} }}"));
-            r.diagnostics.iter().find(|d| d.code == "WS003").map(|d| d.message.clone()).unwrap_or_default()
-        };
-        assert!(hint("r = vv.Length()").contains("`Magnitude(vv)`"));
-        assert!(hint("r = xs.Length()").contains("`xs.length()`"));
-        assert!(hint("r = m.Length()").contains("`m.length()`"));
-        assert!(hint("rs = n.ToUpper()").contains("(`ToUpper(n)`)"));
-        // A literal receiver is spelled as written, with the article its type
-        // takes.
-        let lit = hint("r = 5.Length()");
-        assert!(lit.contains("and `5` is an `int`") && lit.contains("(`Length(5)`)"), "{lit}");
-        // The receiver's own errors are reported, once.
-        for src in ["r = (nosuch).Length() - 1", "r = (if b then nosuch else 2).Length()", "r = nosuch.Length()"] {
-            let r = tc(&format!("{head}on go {{ {src} }}"));
-            let unknown = r.diagnostics.iter().filter(|d| d.code == "WS002").count();
-            assert_eq!(unknown, 1, "`{src}`: {:?}", r.diagnostics);
-        }
-        assert!(hint("r = true.Length()").contains("and `true` is a `bool`"));
-        // A string receiver, and the argument form, still work.
-        let ok = tc(&format!("{head}on go {{ r = s.Length()\n r = Length(vv) }}"));
-        assert!(ok.diagnostics.iter().all(|d| d.severity != Severity::Error), "{:?}", ok.diagnostics);
-    }
-
-    #[test]
-    fn a_method_on_an_unbounded_type_parameter_names_the_parameter() {
-        // The body is checked for every type `T` may be, so the message says
-        // `T` is unbounded and which bound to add, through a `let` too, and for
-        // a `self` mod as for a string method. A bounded `T` compiles.
-        let head = "var n: int = 0\nvar s: string = \"abc\"\nvar f2: float = 0.0\n\
-                    var vv: vector = Vec(1.0, 2.0, 3.0)\nin go: exec\n";
-        for (body, want) in [
-            ("mod g<T>(v: T) -> int { return v.Length() }\non go { n = g(s) }", "`T` is unbounded, so `v` may be a `bool`; bound it: `<T: string>`"),
-            ("mod g<T>(v: T) -> int { let w = v\n return w.Length() }\non go { n = g(s) }", "so `w` may be a `bool`"),
-            ("mod g<U>(v: U) -> bool { return v.StartsWith(\"a\") }\non go { let q = g(s) }", "`U` is unbounded"),
-            (
-                "mod Length(self: vector) -> float { return 777.0 }\nmod g<T>(v: T) -> float { return v.Length() }\non go { f2 = g(vv) }",
-                "`.Length()` calls `Length(self: vector)`, and `T` is unbounded, so `v` may be a `bool`; bound it: `<T: string | vector>`",
-            ),
-            ("mod g<T>(v: T) -> int { let w: T = v\n return w.Length() }\non go { n = g(s) }", "so `w` may be a `bool`"),
-            // A receiver that reads an element or a field of a value declared
-            // with `T`, or a name taken from one, is `T` too.
-            ("mod g<T>(v: T[]) -> int { return v[0].Length() }\non go { n = g([s]) }", "`T` is unbounded, so `v[0]` may be a `bool`; bound it: `<T: string>`"),
-            (
-                "mod g<T>(v: T[]) -> int { var t: int = 0\n for x in v { t = t + x.Length() }\n return t }\non go { n = g([s]) }",
-                "`T` is unbounded, so `x` may be a `bool`; bound it: `<T: string>`",
-            ),
-            (
-                "type B<T> = { v: T }\nmod g<T>(b: B<T>) -> int { return b.v.Length() }\non go { n = g({ v: s }) }",
-                "`T` is unbounded, so `b.v` may be a `bool`; bound it: `<T: string>`",
-            ),
-            ("mod g<T>(v: T[]) -> int { let w = v[0]\n return w.Length() }\non go { n = g([s]) }", "so `w` may be a `bool`"),
-            // A call's result bound to `T`, and an element read with a
-            // string key, which is spelled.
-            (
-                "mod id<A>(v: A) -> A { return v }\nmod g<T>(v: T) -> int { return id(v).Length() }\non go { n = g(s) }",
-                "`T` is unbounded, so the receiver may be a `bool`; bound it: `<T: string>`",
-            ),
-            (
-                "mod g<T>(m: Map<string, T>) -> int { return m[\"a\"].Length() }\nvar ms: Map<string, string> = {}\non go { n = g(ms) }",
-                "`T` is unbounded, so `m[\"a\"]` may be a `bool`; bound it: `<T: string>`",
-            ),
-        ] {
-            let r = tc(&format!("{head}{body}"));
+    let string_methods: Vec<&str> = crate::catalog::calls::calls()
+        .values()
+        .filter(|c| c.receiver == Some(Type::String) && c.receiver_target_param().is_none())
+        .map(|c| c.name)
+        .collect();
+    assert!(string_methods.contains(&"Length"), "{string_methods:?}");
+    for recv in ["vv", "n", "fl", "b", "cl", "rt", "xs", "m", "who"] {
+        for method in &string_methods {
+            let r = tc(&format!("{head}on go {{ let q = {recv}.{method}() }}"));
             let d = r.diagnostics.iter().find(|d| d.code == "WS003");
-            assert!(d.is_some_and(|d| d.message.contains(want)), "`{body}`: {:?}", r.diagnostics);
-            // The bound it suggests compiles.
-            let bounded = format!("{head}{}", body.replacen("<T>(", "<T: string>(", 1).replacen("<U>(", "<U: string>(", 1));
-            if !body.contains("self: vector") {
-                let ok = tc(&bounded);
-                assert!(ok.diagnostics.iter().all(|d| d.severity != Severity::Error), "`{bounded}`: {:?}", ok.diagnostics);
-            }
+            assert!(
+                d.is_some_and(|d| d
+                    .message
+                    .contains(&format!("`.{method}()` is a string method"))),
+                "`{recv}.{method}()`: {:?}",
+                r.diagnostics
+            );
         }
-        let ok = tc(&format!("{head}mod g<T: string>(v: T) -> int {{ return v.Length() }}\non go {{ n = g(s) }}"));
-        assert!(ok.diagnostics.iter().all(|d| d.severity != Severity::Error), "{:?}", ok.diagnostics);
-        // The bound the `self` mod form suggests admits a string too, so the
-        // program's own string call still compiles.
-        let both = "mod Length(self: vector) -> float { return 777.0 }\n\
+    }
+    let hint = |src: &str| {
+        let r = tc(&format!("{head}on go {{ {src} }}"));
+        r.diagnostics
+            .iter()
+            .find(|d| d.code == "WS003")
+            .map(|d| d.message.clone())
+            .unwrap_or_default()
+    };
+    assert!(hint("r = vv.Length()").contains("`Magnitude(vv)`"));
+    assert!(hint("r = xs.Length()").contains("`xs.length()`"));
+    assert!(hint("r = m.Length()").contains("`m.length()`"));
+    assert!(hint("rs = n.ToUpper()").contains("(`ToUpper(n)`)"));
+    // A literal receiver is spelled as written, with the article its type
+    // takes.
+    let lit = hint("r = 5.Length()");
+    assert!(
+        lit.contains("and `5` is an `int`") && lit.contains("(`Length(5)`)"),
+        "{lit}"
+    );
+    // The receiver's own errors are reported, once.
+    for src in [
+        "r = (nosuch).Length() - 1",
+        "r = (if b then nosuch else 2).Length()",
+        "r = nosuch.Length()",
+    ] {
+        let r = tc(&format!("{head}on go {{ {src} }}"));
+        let unknown = r.diagnostics.iter().filter(|d| d.code == "WS002").count();
+        assert_eq!(unknown, 1, "`{src}`: {:?}", r.diagnostics);
+    }
+    assert!(hint("r = true.Length()").contains("and `true` is a `bool`"));
+    // A string receiver, and the argument form, still work.
+    let ok = tc(&format!(
+        "{head}on go {{ r = s.Length()\n r = Length(vv) }}"
+    ));
+    assert!(
+        ok.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "{:?}",
+        ok.diagnostics
+    );
+}
+
+#[test]
+fn a_method_on_an_unbounded_type_parameter_names_the_parameter() {
+    // The body is checked for every type `T` may be, so the message says
+    // `T` is unbounded and which bound to add, through a `let` too, and for
+    // a `self` mod as for a string method. A bounded `T` compiles.
+    let head = "var n: int = 0\nvar s: string = \"abc\"\nvar f2: float = 0.0\n\
+                    var vv: vector = Vec(1.0, 2.0, 3.0)\nin go: exec\n";
+    for (body, want) in [
+        (
+            "mod g<T>(v: T) -> int { return v.Length() }\non go { n = g(s) }",
+            "`T` is unbounded, so `v` may be a `bool`; bound it: `<T: string>`",
+        ),
+        (
+            "mod g<T>(v: T) -> int { let w = v\n return w.Length() }\non go { n = g(s) }",
+            "so `w` may be a `bool`",
+        ),
+        (
+            "mod g<U>(v: U) -> bool { return v.StartsWith(\"a\") }\non go { let q = g(s) }",
+            "`U` is unbounded",
+        ),
+        (
+            "mod Length(self: vector) -> float { return 777.0 }\nmod g<T>(v: T) -> float { return v.Length() }\non go { f2 = g(vv) }",
+            "`.Length()` calls `Length(self: vector)`, and `T` is unbounded, so `v` may be a `bool`; bound it: `<T: string | vector>`",
+        ),
+        (
+            "mod g<T>(v: T) -> int { let w: T = v\n return w.Length() }\non go { n = g(s) }",
+            "so `w` may be a `bool`",
+        ),
+        // A receiver that reads an element or a field of a value declared
+        // with `T`, or a name taken from one, is `T` too.
+        (
+            "mod g<T>(v: T[]) -> int { return v[0].Length() }\non go { n = g([s]) }",
+            "`T` is unbounded, so `v[0]` may be a `bool`; bound it: `<T: string>`",
+        ),
+        (
+            "mod g<T>(v: T[]) -> int { var t: int = 0\n for x in v { t = t + x.Length() }\n return t }\non go { n = g([s]) }",
+            "`T` is unbounded, so `x` may be a `bool`; bound it: `<T: string>`",
+        ),
+        (
+            "type B<T> = { v: T }\nmod g<T>(b: B<T>) -> int { return b.v.Length() }\non go { n = g({ v: s }) }",
+            "`T` is unbounded, so `b.v` may be a `bool`; bound it: `<T: string>`",
+        ),
+        (
+            "mod g<T>(v: T[]) -> int { let w = v[0]\n return w.Length() }\non go { n = g([s]) }",
+            "so `w` may be a `bool`",
+        ),
+        // A call's result bound to `T`, and an element read with a
+        // string key, which is spelled.
+        (
+            "mod id<A>(v: A) -> A { return v }\nmod g<T>(v: T) -> int { return id(v).Length() }\non go { n = g(s) }",
+            "`T` is unbounded, so the receiver may be a `bool`; bound it: `<T: string>`",
+        ),
+        (
+            "mod g<T>(m: Map<string, T>) -> int { return m[\"a\"].Length() }\nvar ms: Map<string, string> = {}\non go { n = g(ms) }",
+            "`T` is unbounded, so `m[\"a\"]` may be a `bool`; bound it: `<T: string>`",
+        ),
+    ] {
+        let r = tc(&format!("{head}{body}"));
+        let d = r.diagnostics.iter().find(|d| d.code == "WS003");
+        assert!(
+            d.is_some_and(|d| d.message.contains(want)),
+            "`{body}`: {:?}",
+            r.diagnostics
+        );
+        // The bound it suggests compiles.
+        let bounded = format!(
+            "{head}{}",
+            body.replacen("<T>(", "<T: string>(", 1)
+                .replacen("<U>(", "<U: string>(", 1)
+        );
+        if !body.contains("self: vector") {
+            let ok = tc(&bounded);
+            assert!(
+                ok.diagnostics.iter().all(|d| d.severity != Severity::Error),
+                "`{bounded}`: {:?}",
+                ok.diagnostics
+            );
+        }
+    }
+    let ok = tc(&format!(
+        "{head}mod g<T: string>(v: T) -> int {{ return v.Length() }}\non go {{ n = g(s) }}"
+    ));
+    assert!(
+        ok.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "{:?}",
+        ok.diagnostics
+    );
+    // The bound the `self` mod form suggests admits a string too, so the
+    // program's own string call still compiles.
+    let both = "mod Length(self: vector) -> float { return 777.0 }\n\
                     mod g<T: string | vector>(v: T) -> float { return v.Length() }\non go { f2 = g(vv)\n f2 = g(s) }";
-        let ok = tc(&format!("{head}{both}"));
-        assert!(ok.diagnostics.iter().all(|d| d.severity != Severity::Error), "{:?}", ok.diagnostics);
-        // A non-generic receiver keeps naming its own type, also beside a
-        // type parameter bound to the same type.
-        for body in [
-            "mod g(v: bool) -> int { return v.Length() }",
-            "mod g<T>(v: T, b: bool) -> int { return b.Length() }\non go { n = g(s, true) }",
-        ] {
-            let r = tc(&format!("{head}{body}"));
-            let d = r.diagnostics.iter().find(|d| d.code == "WS003").unwrap();
-            assert!(!d.message.contains("unbounded") && d.message.contains("is a `bool`"), "{}", d.message);
+    let ok = tc(&format!("{head}{both}"));
+    assert!(
+        ok.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "{:?}",
+        ok.diagnostics
+    );
+    // A non-generic receiver keeps naming its own type, also beside a
+    // type parameter bound to the same type.
+    for body in [
+        "mod g(v: bool) -> int { return v.Length() }",
+        "mod g<T>(v: T, b: bool) -> int { return b.Length() }\non go { n = g(s, true) }",
+    ] {
+        let r = tc(&format!("{head}{body}"));
+        let d = r.diagnostics.iter().find(|d| d.code == "WS003").unwrap();
+        assert!(
+            !d.message.contains("unbounded") && d.message.contains("is a `bool`"),
+            "{}",
+            d.message
+        );
+    }
+}
+
+#[test]
+fn ws_source_prefab_ref_surfaces_inner_errors_on_span() {
+    // `$./child.ws` is a SOURCE prefab: the type-checker reads + checks the
+    // referenced file and surfaces its diagnostics on the reference span, so
+    // a broken child underlines `$./child.ws` in the parent (not a silent
+    // failure discovered only at emit).
+    // The check reads the child from disk, so it gets a directory of its own
+    // beside the test binary, removed again on drop.
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+    let exe = std::env::current_exe().expect("test binary path");
+    let dir = Dir(exe.parent().expect("test binary directory").join(format!(
+        "ws_source_prefab_ref_surfaces_inner_errors_on_span_{}",
+        std::process::id()
+    )));
+    std::fs::create_dir_all(&dir.0).unwrap();
+    std::fs::write(
+        dir.0.join("broken_child.ws"),
+        "in go: exec\non go { let x = undefinedThing + 1 }",
+    )
+    .unwrap();
+    let parent_path = dir.0.join("parent.ws").to_string_lossy().into_owned();
+    let src = "in go: exec\non go { SpawnPrefab(prefab = $./broken_child.ws) }";
+    let p = parse(src, &parent_path);
+    let result = crate::typecheck::typecheck_with_inference(&p.ast, &parent_path).0;
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "WS002" && d.message.contains("in prefab")),
+        "a broken $./child.ws must surface its WS002 on the reference span; got {:?}",
+        result.diagnostics
+    );
+}
 
-    #[test]
-    fn non_self_mod_receiver_type_still_not_shadow() {
-        // A normal (non-`self`) mod is never a receiver method, so it can never
-        // shadow a builtin receiver-method even if it shares the name.
-        let r = tc("mod Dot(a: vector, o: vector) -> float { return a.Dot(o) }");
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS035"),
-            "a non-self mod must never be flagged as shadowing; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn self_mod_method_call_wrong_arg_count_is_ws022() {
-        // `a.dist()` is missing the `o` argument: with the receiver bound as
-        // arg 0 the call still has too few args for `dist(self, o)`. Proves the
-        // method call is resolved to the user mod (before the feature it typed
-        // as `any` and no arg-count check fired).
-        let r = tc(
-            "mod dist(self: vector, o: vector) -> float { return self.Dot(o) }\n\
-             in a: vector\nin go: exec\non go { let d = a.dist() }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS022"),
-            "a receiver method call with too few args must emit WS022; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn non_self_mod_method_call_is_ws036() {
-        // `f`'s first param is not named `self`, so `v.f(w)` is NOT a valid
-        // method call — only `self` opts in. Rather than silently typing as
-        // `any` and lowering to an `_Unsupported` no-op, it is a hard error.
-        let r = tc(
-            "mod f(a: vector, o: vector) -> float { return a.Dot(o) }\n\
-             in v: vector\nin w: vector\nin go: exec\non go { let d = v.f(w) }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS036"),
-            "a non-self mod called with method syntax must emit WS036; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn no_receiver_builtin_called_with_receiver_is_ws036() {
-        // `Sweep`/`SweepSimple` take no receiver — they act on their own brick.
-        // `body.SweepSimple(...)` has nowhere to bind `body`, so before this it
-        // silently typed as `any` and lowered to an `_Unsupported` placeholder.
-        // It must be a hard WS036 error instead.
-        let r = tc(
-            "in body: character\nin go: exec\n\
-             on go { let hit = body.SweepSimple(500.0, detectPlayers1 = true) }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS036"),
-            "a no-receiver builtin called with method syntax must emit WS036; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn no_receiver_builtin_plain_call_stays_clean() {
-        // The correct form — no receiver, positional distance — type-checks and
-        // yields the hit record (so WS036 above isn't over-firing on the gate).
-        let r = tc(
-            "in go: exec\n\
-             on go { let hit = SweepSimple(500.0, detectPlayers1 = true)\n let d = hit.HitDistance }",
-        );
-        assert!(
-            r.diagnostics.is_empty(),
-            "plain SweepSimple(...) must type-check clean; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn prefab_ref_wrong_extension_is_ws019() {
-        // A `$./…` prefab reference must be a `.brz` archive or a `.ws` source;
-        // anything else is WS019.
-        let r = tc("in go: exec\non go { SpawnPrefab(prefab = $./x.png) }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS019"),
-            "a non-.brz/.ws prefab reference must be WS019; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn ws_source_prefab_ref_surfaces_inner_errors_on_span() {
-        // `$./child.ws` is a SOURCE prefab: the type-checker reads + checks the
-        // referenced file and surfaces its diagnostics on the reference span, so
-        // a broken child underlines `$./child.ws` in the parent (not a silent
-        // failure discovered only at emit).
-        let dir = std::env::temp_dir().join(format!("ws_prefab_ref_span_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("broken_child.ws"),
-            "in go: exec\non go { let x = undefinedThing + 1 }",
-        )
-        .unwrap();
-        let parent_path = dir.join("parent.ws").to_string_lossy().into_owned();
-        let src = "in go: exec\non go { SpawnPrefab(prefab = $./broken_child.ws) }";
-        let p = parse(src, &parent_path);
-        let result = crate::typecheck::typecheck_with_inference(&p.ast, &parent_path).0;
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(
-            result
-                .diagnostics
-                .iter()
-                .any(|d| d.code == "WS002" && d.message.contains("in prefab")),
-            "a broken $./child.ws must surface its WS002 on the reference span; got {:?}",
-            result.diagnostics
-        );
-    }
-
-    #[test]
-    fn unknown_base_method_call_stays_ws002_not_ws036() {
-        // An unknown receiver base is the primary problem — it stays WS002 and
-        // must NOT be masked by the non-self-mod WS036 check, even when the
-        // method name happens to be a known non-self mod.
-        let r = tc(
-            "mod scale(v: vector, k: float) -> vector { return v * k }\n\
-             in go: exec\non go { let s = missing.scale(2.0) }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS002"),
-            "an unknown base must emit WS002; got {:?}",
-            r.diagnostics
-        );
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS036"),
-            "WS036 must not double-report over an unknown base; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn non_constant_label_expr_is_rejected() {
-        // A runtime `@label` on a PORT (`out`) can't be a dynamic label — a
-        // rerouter pin has no text component to wire — so it stays a hard
-        // WS040. (Top-level `var`s DO support dynamic labels; see below.)
-        let r = tc("in x: int\n@label(x) out v: int = 0");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS040"),
-            "a non-constant @label expression must emit WS040; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn runtime_label_on_top_level_var_is_accepted() {
-        // A non-constant `@label` on a top-level `var` is a DYNAMIC label — the
-        // value is wired into the label's Text port at emit — so it is valid and
-        // must NOT emit WS040. Both a self-reference and another var work.
-        assert_no_diags(&tc("@label(hp) var hp: int = 0"));
-        assert_no_diags(&tc(
-            "var hp: int = 0\n@label(hp * 2) var shown: int = 0",
-        ));
-    }
-
-    #[test]
-    fn undefined_ref_in_var_label_errors() {
-        // The runtime label is still type-checked: an undefined symbol surfaces
-        // (it isn't silently swallowed just because WS040 no longer fires).
-        let r = tc("@label(nope) var v: int = 0");
-        assert!(
-            r.diagnostics.iter().any(|d| d.severity == Severity::Error),
-            "an undefined ref inside a var @label must error; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn constant_label_expr_is_accepted() {
-        // A folded constant expression (a literal, or a constant `let`) is
-        // valid and must not emit WS040.
-        assert_no_diags(&tc("@label(1 + 2) chip { }"));
-        assert_no_diags(&tc("let title = \"Score\"\n@label(title) out v: int = 0"));
-    }
-
-    #[test]
-    fn non_constant_label_expr_inside_handler_is_rejected() {
-        // A decl inside a top-level `on Event { ... }` handler (the standard
-        // Wirescript pattern) must still be visited — a non-constant `@label`
-        // there is an error, not a silent fall-back to the name.
-        let r = tc(
-            "in x: int\n\
-             on ControllerJoined() -> { controller: c, userId: id, userName: name } {\n\
-             @label(x) var y: int = 0\n\
-             }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS040"),
-            "a non-constant @label inside a handler must emit WS040; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn non_constant_label_expr_inside_top_level_if_is_rejected() {
-        // A decl inside a top-level `if` block is likewise visited.
-        let r = tc(
-            "in go: exec\nin x: int\n\
-             on go {\n\
-             if x > 0 {\n\
-             @label(x) var y: int = 0\n\
-             }\n\
-             }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS040"),
-            "a non-constant @label inside an if must emit WS040; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    // ---- comprehensive generic test coverage (bounded masks +
-    // max type params). Mask membership (`types::classes::class_mask`):
-    // Scalar = {int, float}; Numeric = {int, float, vector, rotator, quat,
-    // color}; Variant (unbounded `<T>`) = all 11 wire value variants.
-    // `ws033_out_of_mask_arg_violates_bound` above already covers the plain
-    // `<T: Numeric>` + `string` case; these add the Scalar/Numeric BOUNDARY
-    // and the other machinery (check_args routing, body-checking, explicit
-    // type args, multi-param/nested resolution). ----
-
-    #[test]
-    fn numeric_bound_call_site_accepts_every_mask_member() {
-        // <T: Numeric> = {int, float, vector, rotator, quat, color} — `+` has
-        // an operator rule for every one of them (`catalog::operators::
-        // math_binary`'s vec=true rule set), so a call at each in-mask type
-        // must stay fully clean.
-        assert_no_diags(&tc(
-            "mod addT<T: Numeric>(a: T, b: T) -> T { return a + b }\n\
-             in i: int\nin f: float\nin v: vector\nin rot: rotator\nin q: quat\nin c: color\n\
-             out ri: int = addT(i, i)\n\
-             out rf: float = addT(f, f)\n\
-             out rv: vector = addT(v, v)\n\
-             out rr: rotator = addT(rot, rot)\n\
-             out rq: quat = addT(q, q)\n\
-             out rc: color = addT(c, c)\n",
-        ));
-    }
-
-    #[test]
-    fn scalar_bound_call_site_accepts_int_and_float() {
-        assert_no_diags(&tc(
-            "mod addS<T: Scalar>(a: T, b: T) -> T { return a + b }\n\
-             in i: int\nin f: float\n\
-             out ri: int = addS(i, i)\n\
-             out rf: float = addS(f, f)\n",
-        ));
-    }
-
-    #[test]
-    fn scalar_bound_rejects_vector_precise_boundary() {
-        // vector IS a member of Numeric but NOT of Scalar — the precise
-        // boundary between the two masks.
-        let r = tc(
-            "mod onlyScalar<T: Scalar>(v: T) -> T { return v }\n\
-             in vec: vector\nlet x = onlyScalar(vec)\n",
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS033" && d.message.contains("isn't allowed by its bound")),
-            "vector is in Numeric but not Scalar — a <T: Scalar> call with a \
-             vector arg must fire WS033 OutOfMask; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn scalar_bound_rejects_bool() {
-        let r = tc(
-            "mod onlyScalar<T: Scalar>(v: T) -> T { return v }\n\
-             in b: bool\nlet x = onlyScalar(b)\n",
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS033" && d.message.contains("isn't allowed by its bound")),
-            "bool is not in Scalar; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn scalar_bound_rejects_entity() {
-        let r = tc(
-            "mod onlyScalar<T: Scalar>(v: T) -> T { return v }\n\
-             in e: entity\nlet x = onlyScalar(e)\n",
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS033" && d.message.contains("isn't allowed by its bound")),
-            "entity is not in Scalar; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn ucc_bounded_out_of_mask_is_ws033_not_ws003() {
-        // Vector is Numeric but not Scalar, so a <T: Scalar> call with a
-        // vector arg fails OutOfMask inference (`subst` stays `None`). The
-        // recent `check_args` routing of user mod/chip calls must keep
-        // skipping the still-generic (`Type::Param`-carrying) `v: T` param
-        // via its `type_has_param` guard, rather than coercing the concrete
-        // vector arg against the raw unresolved `T` and emitting a spurious
-        // WS003 alongside the WS033.
-        let r = tc(
-            "mod onlyScalar<T: Scalar>(v: T) -> T { return v }\n\
-             in vec: vector\nlet x = onlyScalar(vec)\n",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS033"),
-            "expected WS033: {:?}",
-            r.diagnostics
-        );
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "a bounded-generic OutOfMask failure must not also emit a spurious \
-             WS003; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn ucc_bounded_in_mask_call_is_fully_clean() {
-        let r = tc(
-            "mod onlyNumeric<T: Numeric>(v: T) -> T { return v }\n\
-             in vec: vector\nlet x = onlyNumeric(vec)\n",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn numeric_bound_body_op_invalid_for_a_member_is_rejected() {
-        // `&` (bitwise AND) only has operator rules for int/float/bool
-        // operands (`catalog::operators::bitwise_binary`) — it has NO rule
-        // for vector/rotator/quat/color, four of the six `Numeric` mask
-        // members. The bounded body-check runs the body once per mask
-        // member (not once per call site), so this must be rejected even
-        // though the mod below is never called. A binary `&` with no
-        // resolved overload emits WS011 (not WS004 — see the `matches!`
-        // dispatch in `Expr::BinOp` inference).
-        let r = tc("mod bitAnd<T: Numeric>(a: T, b: T) { let x = a & b }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS011"),
-            "'&' has no overload for vector/rotator/quat/color, so the \
-             Numeric body check must reject it as WS011; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn numeric_bound_body_op_valid_for_every_member_is_clean() {
-        // Sanity converse: `+` DOES have a rule for every Numeric member, so
-        // the same per-mask-member body check must stay clean.
-        assert_no_diags(&tc(
-            "mod addT<T: Numeric>(a: T, b: T) -> T { return a + b }",
-        ));
-    }
-
-    #[test]
-    fn explicit_type_arg_scalar_out_of_mask_is_ws033() {
-        // `f<string>(...)` on a `<T: Scalar>` mod: string isn't in the
-        // Scalar mask (int/float) — an explicit type argument is validated
-        // against the bound exactly like inference is.
-        let r = tc(
-            "mod onlyScalarZero<T: Scalar>() -> T { static var z: T\n return z }\n\
-             out r: int = onlyScalarZero<string>()\n",
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS033" && d.message.contains("isn't allowed by its bound")),
-            "explicit type arg out of the Scalar bound must be WS033; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn explicit_type_arg_wrong_arity_is_ws033() {
-        let r = tc(
-            "mod pair<A: Scalar, B: Scalar>(a: A, b: B) -> A { return a }\n\
-             in x: int\nin y: float\nout r: int = pair<int>(x, y)\n",
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS033" && d.message.contains("type argument")),
-            "one type arg given but 2 type params declared must be WS033; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn explicit_type_arg_on_non_generic_is_ws033() {
-        let r = tc("mod addOne(a: int) -> int { return a + 1 }\nin x: int\nout r: int = addOne<int>(x)\n");
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS033" && d.message.contains("not generic")),
-            "type args on a non-generic mod must be WS033; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn numeric_bound_conflict_int_vector_no_common_widening() {
-        // Two `<T: Numeric>` args pin the shared T to int and vector — both
-        // individually valid Numeric members, but with no common widening
-        // between them, so this is a genuine Conflict (not OutOfMask).
-        let r = tc(
-            "mod pick2<T: Numeric>(a: T, b: T) -> T { return a }\n\
-             in n: int\nin v: vector\nlet x = pick2(n, v)\n",
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS033" && d.message.contains("must be the same type")),
-            "int/vector conflict on a Numeric-bounded T must fire WS033 \
-             Conflict; got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn array_and_map_generic_params_resolve_and_check() {
-        // `T[]` (Array<T> sugar) and `Map<K, V>` params both resolve their
-        // type params structurally from the argument's shape — T from the
-        // array's element type, V from the map's value type. The map's key
-        // param is left concrete (`string`), not generic: an unbounded `K`
-        // used as a map key is itself invalid (its Variant mask includes
-        // `bool`/`vector`/etc., none of which are legal map-key types —
-        // `WS039 "map key type must be int, string, or an object"` — and the
-        // bounded body-check correctly rejects that per-combo; that's a
-        // separate, orthogonal constraint from what this test targets).
-        let r = tc(
-            "mod combo<T, V>(xs: T[], m: Map<string, V>, fallback: T) -> T { return fallback }\n\
-             var ints: int[] = [1, 2, 3]\nvar strs: Map<string, bool>\n\
-             in go: exec\non go { let r = combo(ints, strs, 5) }\n",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn generic_return_type_substitutes_correctly() {
-        // `identity<T>`'s return must resolve to the CONCRETE call-site type
-        // (int here), not stay `Type::Param` — `+ 1` only type-checks if the
-        // substitution actually happened.
-        assert_no_diags(&tc(
-            "mod identity<T>(v: T) -> T { return v }\n\
-             in n: int\nout r: int = identity(n) + 1\n",
-        ));
-    }
-
-    #[test]
-    fn infer_ce_slots_adopts_sender_type_and_warns_when_absent() {
-        // A receiver with unannotated `amount`; an in-unit send of an int -> amount:int.
-        let src = "static var last: int = 0\n\
+#[test]
+fn infer_ce_slots_adopts_sender_type_and_warns_when_absent() {
+    // A receiver with unannotated `amount`; an in-unit send of an int -> amount:int.
+    let src = "static var last: int = 0\n\
                    in go: exec\n\
                    on CustomEvent(\"dmg\") -> (amount) {\n  last = last + 1\n}\n\
                    on go {\n  SendCustomEvent(\"dmg\", 42)\n}\n";
-        let p = parse(src, "test");
-        assert!(p.diagnostics.is_empty(), "parse: {:?}", p.diagnostics);
-        let pass1 = typecheck(&p.ast, "test", &CeSlotMap::default());
-        let (map, diags) = infer_custom_event_slots(&p.ast, &pass1.type_of_expr);
-        // The single receiver's slot 0 resolved to int.
-        let slots = map.values().next().expect("one custom-event receiver");
-        assert_eq!(slots.get(0).cloned().flatten(), Some(Type::Int));
-        assert!(diags.is_empty(), "no WS042 when a sender exists: {:?}", diags);
+    let p = parse(src, "test");
+    assert!(p.diagnostics.is_empty(), "parse: {:?}", p.diagnostics);
+    let pass1 = typecheck(&p.ast, "test", &CeSlotMap::default());
+    let (map, diags) = infer_custom_event_slots(&p.ast, &pass1.type_of_expr);
+    // The single receiver's slot 0 resolved to int.
+    let slots = map.values().next().expect("one custom-event receiver");
+    assert_eq!(slots.get(0).cloned().flatten(), Some(Type::Int));
+    assert!(
+        diags.is_empty(),
+        "no WS042 when a sender exists: {:?}",
+        diags
+    );
 
-        // No in-unit sender -> float + WS042.
-        let src2 = "static var last: int = 0\n\
+    // No in-unit sender -> float + WS042.
+    let src2 = "static var last: int = 0\n\
                     on CustomEvent(\"ext\") -> (amount) {\n  last = last + 1\n}\n";
-        let p2 = parse(src2, "test");
-        let pass1b = typecheck(&p2.ast, "test", &CeSlotMap::default());
-        let (map2, diags2) = infer_custom_event_slots(&p2.ast, &pass1b.type_of_expr);
-        let slots2 = map2.values().next().expect("one receiver");
-        assert_eq!(slots2.get(0).cloned().flatten(), Some(Type::Float));
-        assert!(diags2.iter().any(|d| d.code == "WS042"), "expected WS042: {:?}", diags2);
-    }
+    let p2 = parse(src2, "test");
+    let pass1b = typecheck(&p2.ast, "test", &CeSlotMap::default());
+    let (map2, diags2) = infer_custom_event_slots(&p2.ast, &pass1b.type_of_expr);
+    let slots2 = map2.values().next().expect("one receiver");
+    assert_eq!(slots2.get(0).cloned().flatten(), Some(Type::Float));
+    crate::test_support::assert_code(&diags2, "WS042");
+}
 
-    #[test]
-    fn inferred_ce_slot_type_is_enforced_in_body() {
-        // `amount` inferred as int from the sender; using it where a vector is
-        // required is a WS003 (type error) — proving the body sees `int`, not
-        // `any` (which coerces to everything, including vector — `int` doesn't:
-        // numeric-to-vector has no coercion rule, see `types::coerce::coerce`).
-        let src = "static var v: vector = Vec(0.0, 0.0, 0.0)\n\
+#[test]
+fn inferred_ce_slot_type_is_enforced_in_body() {
+    // `amount` inferred as int from the sender; using it where a vector is
+    // required is a WS003 (type error) — proving the body sees `int`, not
+    // `any` (which coerces to everything, including vector — `int` doesn't:
+    // numeric-to-vector has no coercion rule, see `types::coerce::coerce`).
+    let src = "static var v: vector = Vec(0.0, 0.0, 0.0)\n\
                    in go: exec\n\
                    on CustomEvent(\"dmg\") -> (amount) {\n  v = amount\n}\n\
                    on go {\n  SendCustomEvent(\"dmg\", 42)\n}\n";
-        let p = parse(src, "test");
-        let (r, _map) = typecheck_with_inference(&p.ast, "test");
-        assert!(r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "assigning int `amount` to vector var must be WS003: {:?}", r.diagnostics);
-        // And WS029 is gone entirely.
-        assert!(!r.diagnostics.iter().any(|d| d.code == "WS029"),
-            "WS029 is removed: {:?}", r.diagnostics);
-    }
+    let p = parse(src, "test");
+    let (r, _map) = typecheck_with_inference(&p.ast, "test");
+    crate::test_support::assert_code(&r.diagnostics, "WS003");
+}
 
-    #[test]
-    fn uninferable_ce_slot_warns_ws042_not_ws029() {
-        let src = "static var n: int = 0\non CustomEvent(\"ext\") -> (amount) {\n  n = n + 1\n}\n";
-        let p = parse(src, "test");
-        let (r, _map) = typecheck_with_inference(&p.ast, "test");
-        assert!(r.diagnostics.iter().any(|d| d.code == "WS042"), "{:?}", r.diagnostics);
-        assert!(!r.diagnostics.iter().any(|d| d.code == "WS029"), "{:?}", r.diagnostics);
-    }
+/// `return`, `emit` and an unannotated `out` are checked against the output
+/// they drive.
+#[test]
+fn writes_are_checked_against_the_declared_output() {
+    let flag = "out o: int\nin go: exec\nvar flag: bool = false\n";
+    let rows: &[(&str, String, &[Want])] = &[
+            ("a mismatched return", "mod f() -> (r: int) { return \"hello\" }\nout y = f()".into(), &[Has("WS003")]),
+            ("a matching return", "mod f() -> (r: int) { return 7 }\nout y = f()".into(), &[NoErrors]),
+            ("a mismatched emit payload", "out o: int\nin go: exec\non go { emit o = \"nope\" }".into(), &[Has("WS003")]),
+            ("a matching emit payload", "out o: int\nin go: exec\non go { emit o = 7 }".into(), &[NoErrors]),
+            // A local exec signal is not an output.
+            ("an emit into a local exec signal", "in go: exec\non go { let s: exec\n emit s = 7 }".into(), &[NoErrors]),
+            ("a mismatched unannotated out in a chip", "chip Foo() -> (r: int) { out r = \"s\" }".into(), &[Has("WS003")]),
+            ("a matching unannotated out in a chip", "chip Foo() -> (r: int) { out r = 5 }".into(), &[NoErrors]),
+            // A value return in a top-level handler drove the one module output
+            // from load time, or was dropped with several: neither is what it says.
+            ("a string return in a top-level handler", format!("{flag}on go {{ if flag {{ return \"bail\" }} }}"), &[Has("WS099")]),
+            ("an int return in a top-level handler", format!("{flag}on go {{ if flag {{ return 3 }} }}"), &[Has("WS099")]),
+            ("a return beside two module outputs", "out o: int\nout y = 5\nin go: exec\nvar flag: bool = false\non go { if flag { return 3 } }".into(), &[Has("WS099")]),
+            ("a return beside an unannotated output", "in go: exec\nvar n: int = 0\non go { n = 2\n return 1 }\nout o = n.Value".into(), &[Has("WS099")]),
+            ("a bare return in a top-level handler", format!("{flag}on go {{ if flag {{ return }} }}"), &[NoErrors]),
+            ("a value return in a chip's handler", "in go: exec\nchip C(t: exec) -> (r: int) { on t { return 4 } }\nvar n: int = 0\non go { n = C(go).r }".into(), &[NoErrors]),
+            // A same-named local does NOT shadow the output: `lookup_output` is a
+            // disjoint namespace, so the wrong value still wires into the output.
+            ("an out to an output shadowed by a local", "chip Foo() -> (r: int) { var r: int = 0\n out r = \"bad\" }".into(), &[Has("WS003")]),
+            ("`out r = r` with a same-named local", "chip Foo() -> (r: int) { var r: int = 0\n out r = r }".into(), &[NoErrors]),
+            ("an emit to an output shadowed by a local", "out o: int\nin go: exec\non go { let o: exec\n emit o = go }".into(), &[Has("WS003")]),
+            // The module `out_ctx` frame build resolves the annotation the
+            // `TopDecl::Out` check already reports, so it discards its own.
+            ("a bad module output type reports once", "out o: BadType = 0".into(), &[Count("WS002", 1)]),
+            // The per-combo chip output frame likewise defers to `register_decl`.
+            ("a bad chip output type reports once", "chip Foo() -> (r: BadType) {\n out r = 0\n}\nlet z = Foo()".into(), &[Count("WS002", 1)]),
+        ];
+    check_rows(rows);
+}
 
-    #[test]
-    fn statement_out_annotation_is_type_checked() {
-        let r = tc("chip { out x: int = \"s\" }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "annotated out value must be checked: {:?}",
-            r.diagnostics
-        );
-        assert_no_diags(&tc("chip { out x: int = 5 }"));
-        assert_no_diags(&tc("chip { out s: string = 5 }")); // ViaString coercion
-    }
+/// `const` is a guarantee: an unevaluable `const` binding or parameter is
+/// WS046 while a `let` stays opportunistic, and only a name declared `const`
+/// decides an `if` (dropping its untaken block). Each destructured form is
+/// proven through a consumer of const-ness, never by an absence of errors.
+#[test]
+fn const_bindings_and_branch_elision() {
+    let send = "in go: exec\non go { f() }";
+    let rows: &[(&str, String, &[Want])] = &[
+            ("a const shift in a mod body", "mod f() { const n = 1 << 4 }".into(), &[NoErrors]),
+            ("a top-level const product", "const TOP = 2 * 21".into(), &[NoErrors]),
+            ("a const from a runtime value names it", "in live: int\nmod f() { const n = live + 1 }".into(), &[FirstMsg("WS046", "live")]),
+            ("a let that cannot fold is fine", "in live: int\nmod f() { let n = live + 1 }".into(), &[NoErrors]),
+            // `someRecord` is undefined: `ConstReason::NotConstant`.
+            ("a destructure of a runtime value", "mod f() { const { a, b } = someRecord }".into(), &[Has("WS046")]),
+            // Swapped bindings would flip both conditions, keep the ill-typed
+            // `else` blocks, and fire WS003.
+            ("a top-level const destructure by name", "const p = { x: 111, y: 222 }\nconst { x, y } = p\nvar flag: int = 0\nin go: exec\non go {\nif x == 111 { flag = 1 } else { flag = \"wrong x\" }\nif y == 222 { flag = 2 } else { flag = \"wrong y\" }\n}".into(), &[NoErrors, Dropped(2)]),
+            ("a top-level const destructure with an alias", "const p = { x: 111, y: 222 }\nconst { x: a, y: b } = p\nvar flag: int = 0\nin go: exec\non go {\nif a == 111 { flag = 1 } else { flag = \"wrong a\" }\nif b == 222 { flag = 2 } else { flag = \"wrong b\" }\n}".into(), &[NoErrors, Dropped(2)]),
+            ("a top-level const destructure with a rest", "const p = { x: 111, y: 222, z: 333 }\nconst { x, ...rest } = p\nvar flag: int = 0\nin go: exec\non go {\nif x == 111 { flag = 1 } else { flag = \"wrong x\" }\nif rest.y == 222 { flag = 2 } else { flag = \"wrong rest.y\" }\nif rest.z == 333 { flag = 3 } else { flag = \"wrong rest.z\" }\n}".into(), &[NoErrors, Dropped(3)]),
+            // `build_const_env` skipped non-`Ident` bindings, so `x` reached
+            // neither it nor `build_const_declared_names`. A swap gives 222111.
+            ("a later const reads destructured names", "const p = { x: 111, y: 222 }\nconst { x, y } = p\nconst combined = x * 1000 + y\nvar flag: int = 0\nin go: exec\non go { if combined == 111222 { flag = 1 } else { flag = \"wrong\" } }".into(), &[NoErrors, Dropped(1)]),
+            ("destructured names as event config", "const cfg = { rate: 1.0, chan: \"evt_died\" }\nconst { rate, chan } = cfg\nvar n: int = 0\non Clock(interval = rate, enabled = true) { n = n + 1 }".into(), &[NoErrors]),
+            ("a destructured name as a channel", "const cfg = { chan: \"evt_died\" }\nconst { chan } = cfg\nmod ping(v: int) { SendCustomEvent(chan, v) }".into(), &[NoErrors]),
+            ("a block-scope destructure with an alias", format!("mod f() {{\nconst p = {{ x: 111, y: 222 }}\nconst {{ x: a, y: b }} = p\nconst combined = a * 1000 + b\nSendCustomEvent(\"evt\", combined)\n}}\n{send}"), &[NoErrors]),
+            // Had the alias not rebound, `x` would still be in scope.
+            ("an alias binds only the alias", format!("mod f() {{\nconst p = {{ x: 111, y: 222 }}\nconst {{ x: a, y: b }} = p\nconst bad = x + a + b\n}}\n{send}"), &[HasMsg("WS002", "'x'")]),
+            ("a block-scope destructure with a rest", format!("mod f() {{\nconst p = {{ x: 111, y: 222, z: 333 }}\nconst {{ x, ...rest }} = p\nconst combined = x * 1000000 + rest.y * 1000 + rest.z\nSendCustomEvent(\"evt\", combined)\n}}\n{send}"), &[NoErrors]),
+            ("a rest excludes the consumed field", format!("mod f() {{\nconst p = {{ x: 111, y: 222 }}\nconst {{ x, ...rest }} = p\nconst bad = rest.x\n}}\n{send}"), &[HasMsg("WS046", "no field named 'x'")]),
+            // `typecheck::stmt`'s block-scope site in a `const mod` body, and
+            // `const_eval::interp`'s own site through the top-level call.
+            ("a destructure in a const mod body", "const mod f() -> int {\nconst p = { x: 3, y: 4 }\nconst { x, y } = p\nreturn x * 100 + y\n}\nconst total = f()".into(), &[NoErrors]),
+            ("a destructure naming a missing field", "const p = { x: 1 }\nconst { x, missing } = p".into(), &[FirstMsg("WS046", "missing")]),
+            ("a destructure of a non-record", "const { x } = 1".into(), &[Has("WS046")]),
+            // stmt.rs's site without the const-mod machinery.
+            ("a block-scope destructure in an ordinary mod body", format!("mod f() {{\nconst p = {{ x: 111, y: 222 }}\nconst {{ x, y }} = p\nconst combined = x * 1000 + y\nSendCustomEvent(\"evt\", combined)\n}}\n{send}"), &[NoErrors]),
+            // A plain `let`'s destructured names are not constants: recording them
+            // as such let lowering's narrow evaluator drop the value and ship a
+            // `SendCustomEvent` with an EMPTY channel name. The `const` spellings
+            // are asserted to bake in `lower::tests::const_params`.
+            ("a non-const destructure in a mod body", "mod f(v: int) {\nlet { chan } = { chan: \"evt\" }\nSendCustomEvent(chan, v)\n}\nin go: exec\non go { f(1) }".into(), &[Has("WS028")]),
+            ("a non-const destructure, alias form", "mod f(v: int) {\nlet { chan: c2 } = { chan: \"evt\" }\nSendCustomEvent(c2, v)\n}\nin go: exec\non go { f(1) }".into(), &[Has("WS028")]),
+            ("a non-const destructure in a handler", "in go: exec\nvar hp: int = 0\non go {\nlet { chan } = { chan: \"evt\" }\nSendCustomEvent(chan, hp)\n}".into(), &[Has("WS028")]),
+            ("a non-const destructure, rest form", "mod f(v: int) {\nlet { other, ...rest } = { other: 1, chan: \"evt\" }\nSendCustomEvent(rest.chan, v)\n}\nin go: exec\non go { f(1) }".into(), &[Has("WS028")]),
+            // One named output types as a bare `string` (`typecheck::call`), so it
+            // is scalar config; wrapping it in a record gave a contradictory WS028.
+            ("a single-named-output const mod is scalar config", "const mod chan(p: const string) -> (r: string) { out r = p .. \"_evt\" }\nconst NAME = chan(\"hit\")\nvar hp: int = 0\nin go: exec\non go { SendCustomEvent(NAME, hp) }".into(), &[Lacks("WS028"), NoErrors]),
+            ("a multi-output const mod is a record", "const mod chan(p: const string) -> (r: string, extra: int) { out r = p\n out extra = 1 }\nconst NAME = chan(\"hit\")\nvar hp: int = 0\nin go: exec\non go { SendCustomEvent(NAME, hp) }".into(), &[Has("WS028")]),
+            ("a non-const destructured name into a const param", "mod send(name: const string, v: int) { SendCustomEvent(name, v) }\nmod f(v: int) {\nlet { chan } = { chan: \"evt\" }\nsend(chan, v)\n}\nin go: exec\non go { f(1) }".into(), &[Has("WS046")]),
+            // Only the untaken block is skipped, never both.
+            ("the kept branch is still checked", "var flag: int = 0\nmod f() {\nconst p = { x: 111, y: 222 }\nconst { x, y } = p\nif x == 111 { flag = \"ill typed, and this branch SHIPS\" } else { flag = 1 }\n}\nin go: exec\non go { f() }".into(), &[Has("WS003")]),
+            // A field destructured from a const param's placeholder is as
+            // fictional as the placeholder.
+            ("a placeholder-derived destructure decides no branch", "var x: int = 0\nmod f(m: const int) {\nconst rec = { a: m }\nconst { a } = rec\nif a == 1 { x = \"wrong\" } else { x = 2 }\n}\nin go: exec\non go { f(1) }".into(), &[Has("WS003"), Dropped(0)]),
+            ("a literal into a const param", "mod g(name: const string, v: int) { }\nmod caller(x: int) { g(\"lit\", x) }".into(), &[NoErrors]),
+            ("a runtime value into a const param", "in live: string\nmod g(name: const string) { }\nmod caller() { g(live) }".into(), &[Has("WS046")]),
+            ("a const param still type-checks its argument", "mod g(n: const int) { }\nmod caller() { g(\"not an int\") }".into(), &[Has("WS003")]),
+            ("a named constant into a const param", "const N = 4\nmod g(n: const int) { }\nmod caller() { g(N * 2) }".into(), &[NoErrors]),
+            // The receiver side used the environment-free `expr_to_literal`, so a
+            // computed channel could be sent but never received.
+            ("a named constant as a handler channel", "const CH = \"evt_\" .. \"died\"\nvar n: int = 0\non CustomEvent(CH) -> (v: int) { n = v }".into(), &[NoErrors]),
+            ("a computed constant as a handler channel", "const PREFIX = \"evt_\"\nvar n: int = 0\non CustomEvent(PREFIX .. \"died\") -> (v: int) { n = v }".into(), &[NoErrors]),
+            // A bare identifier is an enum MEMBER first, a constant only otherwise.
+            ("an enum member as enum config", "mod f(a: float, b: float, t: float) { Easing(a, b, t, function = Bounce) }".into(), &[NoErrors]),
+            ("a constant as enum config", "const EASE = \"Bounce\"\nmod f(a: float, b: float, t: float) { Easing(a, b, t, function = EASE) }".into(), &[NoErrors]),
+            ("a non-const callee keeps its message", "mod double(n: int) -> int { return n * 2 }\nmod f() { const total = double(3) + 1 }".into(), &[FirstMsg("WS046", "'double' is not declared `const mod`")]),
+            ("a non-const mod in a const position", "mod evtName(kind: string) -> string { return \"evt_\" .. kind }\nmod ping(v: int) { SendCustomEvent(evtName(\"died\"), v) }".into(), &[Has("WS028")]),
+            // The taken block lowers into the parent scope with no Branch gate, so
+            // it still pushes and pops its own frame.
+            ("a branch-local const does not leak past the `if`", "const A = 1\nvar x: int = 0\nin go: exec\non go { if A == 1 { const b = 5\n x = b } else { x = 0 }\n x = b }".into(), &[Has("WS002")]),
+            // A program with no `const` must compile as before `const` existed:
+            // a plain `let` that folds keeps its Branch and both blocks are checked.
+            ("a plain let condition keeps both blocks", "let A = 1\nvar x: int = 0\nin go: exec\non go { if A == 1 { x = 1 } else { x = totallyUndefinedThing() } }".into(), &[Dropped(0), HasMsg("WS002", "totallyUndefinedThing")]),
+            ("a const condition drops the untaken block", "const A = 1\nvar x: int = 0\nin go: exec\non go { if A == 1 { x = 1 } else { x = totallyUndefinedThing() } }".into(), &[NoErrors, Dropped(1)]),
+            // Lowering keeps the Branch and emits both blocks under `@nofold`, so
+            // the "untaken" one is real code that ships.
+            ("@nofold keeps checking both blocks", "const MODE = 1\nvar x: int = 0\nin go: exec\n\n@nofold\non go { if MODE == 1 { x = 1 } else { x = \"definitely not an int\" } }".into(), &[Has("WS003"), Dropped(0)]),
+            // A const param's placeholder is a zero seeded before any call site, so
+            // `m == 1` reads false here while lowering, inlining the real 1, takes
+            // the THEN; selecting from it would never check the branch that ships.
+            ("a const param placeholder decides no branch", "var x: int = 0\nmod f(m: const int) { if m == 1 { x = \"wrong\" } else { x = 2 } }\nin go: exec\non go { f(1) }".into(), &[Has("WS003"), Dropped(0)]),
+            ("a const derived from a placeholder decides no branch", "var x: int = 0\nmod f(m: const int) { const t = m + 1\n if t == 2 { x = \"wrong\" } else { x = 2 } }\nin go: exec\non go { f(1) }".into(), &[Has("WS003")]),
+            ("a real constant still elides inside a mod body", "const MODE = 1\nvar x: int = 0\nmod f(n: int) { if MODE == 1 { x = n } else { x = totallyUndefinedThing() } }\nin go: exec\non go { f(1) }".into(), &[NoErrors]),
+            // A constant collection has no single scalar to bake: an array baked a
+            // wrong default and a record aborted the compile with `unreachable!`.
+            ("a record constant in a named scalar config slot", "const cfg = { rooms: 2, timer: 60 }\nvar x: int = 0\non ChatCommand(\"greet\", description = cfg) { x = x + 1 }".into(), &[FirstMsg("WS028", "a record")]),
+            ("a record constant in a positional config slot", "const cfg = { rooms: 2, timer: 60 }\nvar x: int = 0\non ChatCommand(cfg) { x = x + 1 }".into(), &[FirstMsg("WS028", "a record")]),
+            ("an array constant in a scalar config slot", "const arr = [1, 2, 3]\nvar x: int = 0\non ChatCommand(\"greet\", description = arr) { x = x + 1 }".into(), &[FirstMsg("WS028", "an array")]),
+            ("a scalar constant in a scalar config slot", "const T = \"help text\"\nvar x: int = 0\non ChatCommand(\"greet\", description = T) { x = x + 1 }".into(), &[NoErrors]),
+        ];
+    check_rows(rows);
+}
 
-    // ---- return / emit / unannotated out checked against declared outputs ----
-
-    #[test]
-    fn return_value_checked_against_declared_output() {
-        let r = tc("mod f() -> (r: int) { return \"hello\" }\nout y = f()");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "return must be checked vs declared output: {:?}",
-            r.diagnostics
-        );
-        assert_no_diags(&tc("mod f() -> (r: int) { return 7 }\nout y = f()"));
-    }
-
-    #[test]
-    fn emit_payload_checked_against_output() {
-        let r = tc("out o: int\nin go: exec\non go { emit o = \"nope\" }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "emit payload must be checked vs output type: {:?}",
-            r.diagnostics
-        );
-        assert_no_diags(&tc("out o: int\nin go: exec\non go { emit o = 7 }"));
-        // A local exec signal (not an output) must NOT be checked/rejected:
-        assert_no_diags(&tc("in go: exec\non go { let s: exec\n emit s = 7 }"));
-    }
-
-    #[test]
-    fn unannotated_out_checked_against_declared_output() {
-        // named chip whose signature declares `r: int`; body does `out r = "s"`.
-        let r = tc("chip Foo() -> (r: int) { out r = \"s\" }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "unannotated out must be checked vs declared output: {:?}",
-            r.diagnostics
-        );
-        assert_no_diags(&tc("chip Foo() -> (r: int) { out r = 5 }"));
-    }
-
-    #[test]
-    fn a_return_value_in_a_top_level_handler_is_ws099() {
-        // With one module output it drove that output from load time, and
-        // with several the value was dropped: neither is what it says.
-        for src in [
-            "out o: int\nin go: exec\nvar flag: bool = false\non go { if flag { return \"bail\" } }",
-            "out o: int\nin go: exec\nvar flag: bool = false\non go { if flag { return 3 } }",
-            "out o: int\nout y = 5\nin go: exec\nvar flag: bool = false\non go { if flag { return 3 } }",
-            "in go: exec\nvar n: int = 0\non go { n = 2\n return 1 }\nout o = n.Value",
-        ] {
-            let r = tc(src);
-            assert!(r.diagnostics.iter().any(|d| d.code == "WS099"), "{src}: {:?}", r.diagnostics);
-        }
-        // A bare `return` there, and a value `return` inside a mod or a chip's
-        // handler, are fine.
-        assert_no_diags(&tc("out o: int\nin go: exec\nvar flag: bool = false\non go { if flag { return } }"));
-        assert_no_diags(&tc(
-            "in go: exec\nchip C(t: exec) -> (r: int) { on t { return 4 } }\nvar n: int = 0\non go { n = C(go).r }",
-        ));
-    }
-
-    #[test]
-    fn out_to_output_shadowed_by_same_named_local_is_checked() {
-        // A local `var r` sharing the output's name does NOT shadow the output:
-        // `out r = v` lowering resolves the output via `lookup_output` (a
-        // disjoint namespace), so a wrong-typed value still wires into the
-        // int output and must error. (Guards against a bogus "local shadows
-        // output -> skip check" rule.)
-        let r = tc("chip Foo() -> (r: int) { var r: int = 0\n out r = \"bad\" }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "out to an output shadowed by a same-named local must still be checked: {:?}",
-            r.diagnostics
-        );
-        // ...and the idiomatic same-type case (`out r = r`) stays clean.
-        assert_no_diags(&tc("chip Foo() -> (r: int) { var r: int = 0\n out r = r }"));
-    }
-
-    #[test]
-    fn emit_to_output_shadowed_by_same_named_local_is_checked() {
-        // Same disjoint-namespace rule for `emit`: `emit o = go` (go is exec)
-        // wires into the int output `o` even with a same-named `let o: exec`,
-        // so the type mismatch must error.
-        let r = tc("out o: int\nin go: exec\non go { let o: exec\n emit o = go }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "emit to an output shadowed by a same-named local must still be checked: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn module_output_frame_build_does_not_double_report_unknown_type() {
-        // Building the module-level `out_ctx` frame calls `resolve_type_expr`,
-        // which emits WS002 for an unknown type — but that annotation is ALSO
-        // resolved+reported by the canonical `TopDecl::Out` check, so the frame
-        // build must discard its own diagnostics. Exactly ONE WS002.
-        let r = tc("out o: BadType = 0");
-        assert_eq!(
-            r.diagnostics.iter().filter(|d| d.code == "WS002").count(),
-            1,
-            "bad module output type must be reported exactly once: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn chip_output_frame_build_does_not_double_report_unknown_type() {
-        // Same for the per-combo chip output frame: `register_decl` already
-        // resolves+reports the chip's output annotations, so the frame build in
-        // the body-check loop must discard its own. Exactly ONE WS002.
-        let r = tc("chip Foo() -> (r: BadType) {\n out r = 0\n}\nlet z = Foo()");
-        assert_eq!(
-            r.diagnostics.iter().filter(|d| d.code == "WS002").count(),
-            1,
-            "bad chip output type must be reported exactly once: {:?}",
-            r.diagnostics
-        );
-    }
-
-    // A scalar has no fields, so a field access on one is a typo — it
-    // used to type `any` and lowering read the whole base value. The single
-    // exception is projecting a single-output call result by its output name.
-    #[test]
-    fn unknown_field_on_a_scalar_is_ws010() {
-        let r = tc("in go: exec\nvar a: int = 5\nvar b: int = 0\non go {\n  let c = a\n  b = c.whatever\n}");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS010"),
-            "a field on an int must be WS010, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn single_output_projection_and_its_typo() {
-        // Projecting by the declared output name stays legal...
-        assert_no_diags(&tc(
-            "chip Foo(x: int) -> (result: int) {\n out result = x * 2\n}\nlet f = Foo(21)\nlet ok = f.result\nout o = ok",
-        ));
-        // ...and so does an aliased re-binding of that result.
-        assert_no_diags(&tc(
-            "chip Foo(x: int) -> (result: int) {\n out result = x * 2\n}\nlet f = Foo(21)\nlet g = f\nlet ok = g.result\nout o = ok",
-        ));
-        // But a mis-typed output name is caught.
-        let bad = tc(
-            "chip Foo(x: int) -> (result: int) {\n out result = x * 2\n}\nlet f = Foo(21)\nlet bad = f.reslt\nout o = bad",
-        );
-        assert!(
-            bad.diagnostics.iter().any(|d| d.code == "WS010"),
-            "a mis-typed output name must be WS010, got {:?}",
-            bad.diagnostics
-        );
-    }
-
-    // A typo'd event config/input arg matches no slot and silently no-ops
-    // at lowering — flag it WS041 (`on Clock(intreval = 2.0)`).
-    #[test]
-    fn unknown_event_config_arg_is_ws041() {
-        let r = tc("on Clock(intreval = 2.0) { BroadcastChatMessage(\"t\") }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS041"),
-            "an unknown event config arg must be WS041, got {:?}",
-            r.diagnostics
-        );
-        // The real config name still validates without WS041.
-        let ok = tc("on Clock(enabled = true) { BroadcastChatMessage(\"t\") }");
-        assert!(
-            !ok.diagnostics.iter().any(|d| d.code == "WS041"),
-            "a real config name must not be flagged unknown, got {:?}",
-            ok.diagnostics
-        );
-    }
-
-    // `let r: rotator = c.GetVelocity()` unwraps a `{Vector, Rotation}`
-    // record — lowering wires outputs[0] (Vector) into a rotator sink, so it must
-    // be rejected, not silently miscompiled.
-    #[test]
-    fn record_unwrap_to_wrong_scalar_is_rejected() {
-        let r = tc(
-            "on CharacterSpawned() -> (c) {\n  let rot: rotator = c.GetVelocity()\n  c.SetRotation(rot)\n}",
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.severity == Severity::Error),
-            "a record unwrapping to a non-first field must error, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    // Assigning to a scalar `let` binding type-checked clean then emitted
-    // no gate (the write vanished) — flag it WS007.
-    #[test]
-    fn assign_to_scalar_let_is_ws007() {
-        let r = tc("in start: exec\nvar x: int = 3\nlet y = x + 1\non start { y = 5 }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS007"),
-            "assigning a scalar `let` must be WS007, got {:?}",
-            r.diagnostics
-        );
-        // An array `let` (reference-backed) stays writable through its methods.
-        let ok = tc("in start: exec\nvar xs: int[] = []\nlet ys = xs\non start { ys.push(1) }");
-        assert!(
-            !ok.diagnostics.iter().any(|d| d.severity == Severity::Error),
-            "an array `let` must stay usable, got {:?}",
-            ok.diagnostics
-        );
-    }
-
-    // A tuple literal must never scalar-unwrap (`let x: int = (1, "abc")`).
-    #[test]
-    fn tuple_literal_as_scalar_is_ws003() {
-        let r = tc("let x: int = (1, \"abc\")\nout o = x");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "a tuple used as a scalar must be WS003, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    // A heterogeneous array literal in an exec-context assignment was
-    // typed from element 0 and pushed the odd element with no check.
-    #[test]
-    fn heterogeneous_array_literal_is_ws003() {
-        let r = tc("in start: exec\nvar xs: int[] = []\non start { xs = [1, \"hello\", 2] }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "a heterogeneous array literal must be WS003, got {:?}",
-            r.diagnostics
-        );
-        // A homogeneous (numeric-coercible) literal still passes.
-        let ok = tc("in start: exec\nvar xs: int[] = []\non start { xs = [1, 2, 3] }");
-        assert!(
-            !ok.diagnostics.iter().any(|d| d.severity == Severity::Error),
-            "a homogeneous array literal must pass, got {:?}",
-            ok.diagnostics
-        );
-    }
-
-    // `==`/`!=` on the certified composite value variants
-    // (vector/rotator/quat/color) must be accepted; ordering stays scalar-only.
-    #[test]
-    fn composite_equality_is_accepted_ordering_is_not() {
-        assert_no_diags(&tc(
-            "let a = Vec(1.0, 2.0, 3.0)\nlet b = Vec(1.0, 2.0, 3.0)\nout eq = a == b",
-        ));
-        assert_no_diags(&tc(
-            "let a = Color(1.0, 0.0, 0.0, 1.0)\nlet b = Color(0.0, 1.0, 0.0, 1.0)\nout ne = a != b",
-        ));
-        // Ordering on vectors has no certified gate — still WS004.
-        let lt = tc("let a = Vec(1.0, 2.0, 3.0)\nlet b = Vec(1.0, 2.0, 3.0)\nout o = a < b");
-        assert!(
-            lt.diagnostics.iter().any(|d| d.code == "WS004"),
-            "vector ordering must stay rejected, got {:?}",
-            lt.diagnostics
-        );
-    }
-
-    // An `any[]` parameter must accept a concrete array argument.
-    #[test]
-    fn any_array_param_accepts_concrete_array() {
-        let r = tc(
-            "in start: exec\nmod firstlen(xs: any[]) { BroadcastChatMessage(\"x\") }\nvar ns: int[] = []\non start { firstlen(ns) }",
-        );
-        assert!(
-            !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
-            "an any[] param must accept a concrete int[] arg, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    // `const` is a GUARANTEE — a `const` binding whose initializer
-    // cannot be evaluated at compile time is WS046. A `let` stays opportunistic.
-    #[test]
-    fn a_const_binding_must_evaluate_at_compile_time() {
-        assert_no_diags(&tc("mod f() { const n = 1 << 4 }"));
-        assert_no_diags(&tc("const TOP = 2 * 21"));
-
-        let r = tc("in live: int\nmod f() { const n = live + 1 }");
-        let d = r
-            .diagnostics
-            .iter()
-            .find(|d| d.code == "WS046")
-            .unwrap_or_else(|| panic!("expected WS046, got {:?}", r.diagnostics));
-        assert!(d.message.contains("live"), "must name the runtime value: {}", d.message);
-    }
-
-    #[test]
-    fn a_let_binding_that_cannot_fold_is_still_fine() {
-        // `let` stays opportunistic — this is the whole difference from `const`.
-        assert_no_diags(&tc("in live: int\nmod f() { let n = live + 1 }"));
-    }
-
-    #[test]
-    fn a_destructuring_const_binding_is_rejected() {
-        // `someRecord` is undefined, so this is WS046 via
-        // `ConstReason::NotConstant` (a runtime value). See the tests below
-        // for a destructure of a value that genuinely IS constant.
-        let r = tc("mod f() { const { a, b } = someRecord }");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS046"),
-            "expected WS046, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    // Compile-time record destructuring. `typecheck::decl`'s top-level
-    // `const` and `typecheck::stmt`'s block-scope `const` are separate call
-    // sites into `const_eval::bind_destructured`, each covered separately
-    // below.
-    //
-    // A top-level destructured name must be a compile-time constant
-    // EVERYWHERE a plain `const x = 1` is — which means it has to reach
-    // `ctx.const_env`/`ctx.const_declared`, built before pass 2 by
-    // `lower::predeclare::build_const_env`/`build_const_declared_names`.
-    // Accepting the source without that (compiling clean while silently
-    // producing non-const bindings) is the exact "looks supported but isn't"
-    // failure this wave exists to remove, so each form below is proven
-    // through a CONSUMER of const-ness, not just through absence of errors.
-
-    #[test]
-    fn a_const_record_binding_destructures_by_name() {
-        // Distinguishable per-field values, each checked against its OWN
-        // expected number: if x and y were bound to each other's fields both
-        // conditions flip, the ill-typed `else` branches survive instead of
-        // being elided, and WS003 fires.
-        let r = tc(
-            "const p = { x: 111, y: 222 }\n\
-             const { x, y } = p\n\
-             var flag: int = 0\n\
-             in go: exec\n\
-             on go {\n\
-               if x == 111 { flag = 1 } else { flag = \"wrong x\" }\n\
-               if y == 222 { flag = 2 } else { flag = \"wrong y\" }\n\
-             }",
-        );
-        assert_no_diags(&r);
-        assert_eq!(
-            r.dropped_ranges.len(), 2,
-            "a top-level destructured const must tree-shake a const `if` like \
-             any other const: {:?}", r.dropped_ranges
-        );
-    }
-
-    #[test]
-    fn a_const_record_binding_destructures_with_an_alias() {
-        let r = tc(
-            "const p = { x: 111, y: 222 }\n\
-             const { x: a, y: b } = p\n\
-             var flag: int = 0\n\
-             in go: exec\n\
-             on go {\n\
-               if a == 111 { flag = 1 } else { flag = \"wrong a\" }\n\
-               if b == 222 { flag = 2 } else { flag = \"wrong b\" }\n\
-             }",
-        );
-        assert_no_diags(&r);
-        assert_eq!(r.dropped_ranges.len(), 2, "{:?}", r.dropped_ranges);
-    }
-
-    #[test]
-    fn a_const_record_binding_destructures_with_a_rest() {
-        let r = tc(
-            "const p = { x: 111, y: 222, z: 333 }\n\
-             const { x, ...rest } = p\n\
-             var flag: int = 0\n\
-             in go: exec\n\
-             on go {\n\
-               if x == 111 { flag = 1 } else { flag = \"wrong x\" }\n\
-               if rest.y == 222 { flag = 2 } else { flag = \"wrong rest.y\" }\n\
-               if rest.z == 333 { flag = 3 } else { flag = \"wrong rest.z\" }\n\
-             }",
-        );
-        assert_no_diags(&r);
-        assert_eq!(r.dropped_ranges.len(), 3, "{:?}", r.dropped_ranges);
-    }
-
-    // The two cases the fix round called out by name. Both were BROKEN before
-    // it: `build_const_env`/`build_const_declared_names` skipped every
-    // non-`Ident` binding, so `x` reached neither, and a top-level
-    // `const { x, y } = p` compiled clean while producing bindings that were
-    // not compile-time constants at all.
-    #[test]
-    fn a_later_top_level_const_can_read_a_destructured_const_name() {
-        // Per-field distinguishable values AND a distinguishable combination
-        // (111*1000 + 222): a swapped binding yields 222111, a dropped one
-        // fails to evaluate at all.
-        let r = tc(
-            "const p = { x: 111, y: 222 }\n\
-             const { x, y } = p\n\
-             const combined = x * 1000 + y\n\
-             var flag: int = 0\n\
-             in go: exec\n\
-             on go { if combined == 111222 { flag = 1 } else { flag = \"wrong\" } }",
-        );
-        assert_no_diags(&r);
-        assert_eq!(
-            r.dropped_ranges.len(), 1,
-            "`combined` must itself be const (it is built from two \
-             destructured const names): {:?}", r.dropped_ranges
-        );
-    }
-
-    // Declaration-ORDER independence of the destructuring fixpoint is proven
-    // where the crate's existing fixpoint tests live —
-    // `lower::tests::const_init::a_destructured_constant_chain_resolves_regardless_of_order`
-    // — via the baked-value path, not here: a top-level FORWARD reference is
-    // WS002 ("unknown identifier") in typecheck regardless of destructuring
-    // (a plain `const p = …` read before its own declaration is rejected the
-    // same way), because scope registration walks decls in source order while
-    // `build_const_env` is order-independent. That split predates this task
-    // and is unchanged by it.
-
-    // A destructured const name in a constant-only GATE CONFIG slot (the
-    // WS028 surface) and as a custom-event CHANNEL NAME — the other two
-    // places the fix round named. A non-const binding is rejected in both.
-    #[test]
-    fn a_destructured_const_name_satisfies_constant_only_positions() {
-        assert_no_diags(&tc(
-            "const cfg = { rate: 1.0, chan: \"evt_died\" }\n\
-             const { rate, chan } = cfg\n\
-             var n: int = 0\n\
-             on Clock(interval = rate, enabled = true) { n = n + 1 }",
-        ));
-        assert_no_diags(&tc(
-            "const cfg = { chan: \"evt_died\" }\n\
-             const { chan } = cfg\n\
-             mod ping(v: int) { SendCustomEvent(chan, v) }",
-        ));
-    }
-
-    // The block-scope equivalents, INSIDE an ordinary mod body.
-    //
-    // These deliberately do NOT prove the binding via an ill-typed `else` on
-    // a const `if`. That idiom is circular here: a correct const binding
-    // ELIDES the `else`, so "no WS003" is equally consistent with the branch
-    // being correctly skipped and with it being wrongly skipped while
-    // lowering still emits it — which is exactly the silent miscompile fix
-    // round 2 found (an earlier version of these three tests passed only
-    // because typecheck under-checked a block lowering then emitted).
-    //
-    // Instead each destructured name is fed to a CONSTANT-ONLY position
-    // (`SendCustomEvent`'s channel name, WS028/WS046 if it is not a genuine
-    // compile-time constant) and compared against a distinguishable expected
-    // value with `==` on a `const`, so a wrong-field binding changes the
-    // computed value rather than merely changing which branch is skipped.
-    // Branch-elision parity itself is proven separately and structurally by
-    // `typecheck_and_lowering_drop_exactly_the_same_ranges`.
-
-    #[test]
-    fn a_block_scope_const_destructure_with_an_alias_binds_to_the_alias() {
-        // `a * 1000 + b` is 111222 only if the alias `a` took field `x` and
-        // `b` took `y`; a swap yields 222111, and either way the value must
-        // be a real constant or the `const` binding itself is WS046.
-        assert_no_diags(&tc(
-            "mod f() {\n\
-               const p = { x: 111, y: 222 }\n\
-               const { x: a, y: b } = p\n\
-               const combined = a * 1000 + b\n\
-               SendCustomEvent(\"evt\", combined)\n\
-             }\n\
-             in go: exec\non go { f() }",
-        ));
-        // The negative half: if the alias did NOT rebind, `x` would still be
-        // in scope and this would compile.
-        let stale = tc(
-            "mod f() {\n\
-               const p = { x: 111, y: 222 }\n\
-               const { x: a, y: b } = p\n\
-               const bad = x + a + b\n\
-             }\n\
-             in go: exec\non go { f() }",
-        );
-        assert!(
-            stale.diagnostics.iter().any(|d| d.code == "WS002" || d.code == "WS046"),
-            "an alias must bind ONLY the alias name, leaving `x` unbound: {:?}",
-            stale.diagnostics
-        );
-    }
-
-    #[test]
-    fn a_block_scope_const_destructure_with_a_rest_collects_remaining_fields() {
-        // `rest` must carry y and z with their own values, and must be a
-        // genuine constant (the `const` bindings below are WS046 otherwise).
-        assert_no_diags(&tc(
-            "mod f() {\n\
-               const p = { x: 111, y: 222, z: 333 }\n\
-               const { x, ...rest } = p\n\
-               const combined = x * 1000000 + rest.y * 1000 + rest.z\n\
-               SendCustomEvent(\"evt\", combined)\n\
-             }\n\
-             in go: exec\non go { f() }",
-        ));
-
-        // `rest` must NOT include the field `x` already consumed by its own
-        // `Named` binding.
-        let excluded = tc(
-            "mod f() {\n\
-               const p = { x: 111, y: 222 }\n\
-               const { x, ...rest } = p\n\
-               const bad = rest.x\n\
-             }\n\
-             in go: exec\non go { f() }",
-        );
-        assert!(
-            excluded
-                .diagnostics
-                .iter()
-                .any(|d| d.code == "WS046" || d.code == "WS010"),
-            "rest must not include the already-consumed field x: {:?}",
-            excluded.diagnostics
-        );
-    }
-
-    #[test]
-    fn a_const_destructure_inside_a_const_mod_body_binds() {
-        // `typecheck::stmt`'s block-scope site (a DIFFERENT code path from
-        // `typecheck::decl`'s top-level site above) type-checks a
-        // destructuring `const` inside a `const mod`'s BODY clean, and
-        // calling the mod from a top-level `const` also forces
-        // `const_eval::interp`'s own destructuring site to run.
-        assert_no_diags(&tc(
-            "const mod f() -> int {\n\
-               const p = { x: 3, y: 4 }\n\
-               const { x, y } = p\n\
-               return x * 100 + y\n\
-             }\n\
-             const total = f()",
-        ));
-    }
-
-    #[test]
-    fn a_const_destructure_naming_a_missing_field_is_ws046() {
-        let r = tc("const p = { x: 1 }\nconst { x, missing } = p");
-        let d = r
-            .diagnostics
-            .iter()
-            .find(|d| d.code == "WS046")
-            .unwrap_or_else(|| panic!("expected WS046, got {:?}", r.diagnostics));
-        assert!(
-            d.message.contains("missing"),
-            "must name the missing field: {}", d.message
-        );
-    }
-
-    #[test]
-    fn a_const_destructure_of_a_non_record_is_ws046() {
-        let r = tc("const { x } = 1");
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS046"),
-            "expected WS046, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    // stmt.rs's block-scope site, exercised WITHOUT the const-mod machinery
-    // interp.rs also touches — proves stmt.rs's own wiring independently of
-    // the top-level and const-mod-body sites above. Same non-circular idiom
-    // as the alias/rest tests just above (see their header comment): the
-    // bound values are compared through a constant-only position, not through
-    // an ill-typed `else` that a correct binding would elide anyway.
-    #[test]
-    fn a_block_scope_const_destructure_binds_inside_an_ordinary_mod_body() {
-        assert_no_diags(&tc(
-            "mod f() {\n\
-               const p = { x: 111, y: 222 }\n\
-               const { x, y } = p\n\
-               const combined = x * 1000 + y\n\
-               SendCustomEvent(\"evt\", combined)\n\
-             }\n\
-             in go: exec\non go { f() }",
-        ));
-    }
-
-    /// A **non-`const`** destructuring `let` must NOT be treated as a
-    /// compile-time constant, in any of the shapes that reach a
-    /// constant-only config slot.
-    ///
-    /// This is the WS028 that correctly rejected these programs before
-    /// destructuring `const` existed. Recording a plain `let`'s destructured
-    /// names as constants made typecheck accept them while lowering — whose
-    /// non-`const` path is the narrow evaluator, which cannot fold the record
-    /// literal being destructured — silently dropped the value, shipping a
-    /// `SendCustomEvent` gate with an EMPTY channel name and no diagnostic.
-    ///
-    /// The positive counterparts (the same programs spelled `const`, asserted
-    /// to actually BAKE) live in `lower::tests::const_params`, because the bug
-    /// is invisible in typecheck output and in the IR dump alike — only the
-    /// baked component data distinguishes them.
-    #[test]
-    fn a_non_const_destructuring_let_is_not_constant_config() {
-        for (label, src) in [
-            (
-                "plain destructure in a mod body",
-                "mod f(v: int) {\n\
-                   let { chan } = { chan: \"evt\" }\n\
-                   SendCustomEvent(chan, v)\n\
-                 }\n\
-                 in go: exec\non go { f(1) }",
-            ),
-            (
-                "alias form",
-                "mod f(v: int) {\n\
-                   let { chan: c2 } = { chan: \"evt\" }\n\
-                   SendCustomEvent(c2, v)\n\
-                 }\n\
-                 in go: exec\non go { f(1) }",
-            ),
-            (
-                "handler body",
-                "in go: exec\nvar hp: int = 0\n\
-                 on go {\n\
-                   let { chan } = { chan: \"evt\" }\n\
-                   SendCustomEvent(chan, hp)\n\
-                 }",
-            ),
-            (
-                "rest form",
-                "mod f(v: int) {\n\
-                   let { other, ...rest } = { other: 1, chan: \"evt\" }\n\
-                   SendCustomEvent(rest.chan, v)\n\
-                 }\n\
-                 in go: exec\non go { f(1) }",
-            ),
-        ] {
-            let r = tc(src);
-            assert!(
-                r.diagnostics.iter().any(|d| d.code == "WS028"),
-                "a non-const destructured name must not satisfy constant-only \
-                 gate config — {label}: {:?}",
-                r.diagnostics
-            );
-        }
-    }
-
-    /// The mirror of the tests above, and the second manifestation of the
-    /// single-named-output wrapping bug: a `const mod` with ONE named output
-    /// (`-> (r: string)`) types as a bare `string` per `typecheck::call`, so
-    /// its result IS a legal scalar for a constant-only config slot. Wrapping
-    /// it in a 1-field record made const evaluation disagree with the type
-    /// system and produced a WS028 that reads as a flat contradiction:
-    /// `'eventName' … takes a single scalar value, not a record` about a value
-    /// typecheck itself calls `string`.
-    ///
-    /// A two-output `const mod` genuinely IS a record and must still be
-    /// rejected here, so both directions are asserted — a fix that simply
-    /// stopped wrapping everything would pass the first case and fail the
-    /// second.
-    #[test]
-    fn a_single_named_output_const_mod_result_is_scalar_config_not_a_record() {
-        let one = tc(
-            "const mod chan(p: const string) -> (r: string) { out r = p .. \"_evt\" }\n\
-             const NAME = chan(\"hit\")\n\
-             var hp: int = 0\n\
-             in go: exec\non go { SendCustomEvent(NAME, hp) }",
-        );
-        assert!(
-            !one.diagnostics.iter().any(|d| d.code == "WS028"),
-            "a single named output is a scalar, not a record — it must satisfy \
-             a constant-only scalar config slot: {:?}",
-            one.diagnostics
-        );
-        assert_no_diags(&one);
-
-        let two = tc(
-            "const mod chan(p: const string) -> (r: string, extra: int) { out r = p\n out extra = 1 }\n\
-             const NAME = chan(\"hit\")\n\
-             var hp: int = 0\n\
-             in go: exec\non go { SendCustomEvent(NAME, hp) }",
-        );
-        assert!(
-            two.diagnostics.iter().any(|d| d.code == "WS028"),
-            "a MULTI-output const mod's result really is a record and must \
-             still be rejected in a scalar config slot: {:?}",
-            two.diagnostics
-        );
-    }
-
-    /// The same hole reached through a `const` PARAMETER: `const string`
-    /// promises the callee a compile-time value, so passing a non-`const`
-    /// destructured name must be rejected rather than silently dropped inside
-    /// the callee.
-    #[test]
-    fn a_non_const_destructured_name_cannot_satisfy_a_const_parameter() {
-        let r = tc(
-            "mod send(name: const string, v: int) { SendCustomEvent(name, v) }\n\
-             mod f(v: int) {\n\
-               let { chan } = { chan: \"evt\" }\n\
-               send(chan, v)\n\
-             }\n\
-             in go: exec\non go { f(1) }",
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS028" || d.code == "WS046"),
-            "a non-const destructured name must not satisfy a `const` param: {:?}",
-            r.diagnostics
-        );
-    }
-
-    /// The branch a const `if` KEEPS is still fully type-checked — only the
-    /// untaken one is skipped (`if constexpr` semantics). Without this, "the
-    /// untaken block isn't checked" could silently widen into "neither block
-    /// is checked", and a destructured const would stop catching real errors
-    /// in the code it actually ships.
-    #[test]
-    fn a_const_destructure_still_type_checks_the_branch_it_keeps() {
-        let r = tc(
-            "var flag: int = 0\n\
-             mod f() {\n\
-               const p = { x: 111, y: 222 }\n\
-               const { x, y } = p\n\
-               if x == 111 { flag = \"ill typed, and this branch SHIPS\" } else { flag = 1 }\n\
-             }\n\
-             in go: exec\non go { f() }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "the TAKEN branch must be type-checked: {:?}",
-            r.diagnostics
-        );
-    }
-
-    // A destructured field derived from a `const` PARAMETER's placeholder is
-    // just as fictional as a scalar one (see
-    // `a_const_param_placeholder_never_decides_a_branch`) — it must not be
-    // allowed to decide a branch either, now that a destructuring `const`
-    // inside a mod body is actually evaluated instead of being rejected
-    // outright.
-    #[test]
-    fn a_const_destructure_derived_from_a_placeholder_never_decides_a_branch() {
-        let r = tc(
-            "var x: int = 0\n\
-             mod f(m: const int) {\n\
-               const rec = { a: m }\n\
-               const { a } = rec\n\
-               if a == 1 { x = \"wrong\" } else { x = 2 }\n\
-             }\n\
-             in go: exec\non go { f(1) }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "a field destructured from a placeholder-derived record must not \
-             decide a branch: {:?}", r.diagnostics
-        );
-        assert!(
-            r.dropped_ranges.is_empty(),
-            "a placeholder must not drive an elision via a destructure: {:?}",
-            r.dropped_ranges
-        );
-    }
-
-    // `const` PARAMETERS are enforced the same way `const` bindings
-    // are — the argument must evaluate at compile time (WS046 if it can't).
-    #[test]
-    fn a_const_parameter_rejects_a_runtime_argument() {
-        assert_no_diags(&tc(
-            "mod g(name: const string, v: int) { }\nmod caller(x: int) { g(\"lit\", x) }",
-        ));
-
-        let r = tc("in live: string\nmod g(name: const string) { }\nmod caller() { g(live) }");
-        assert!(r.diagnostics.iter().any(|d| d.code == "WS046"),
-            "expected WS046, got {:?}", r.diagnostics);
-    }
-
-    #[test]
-    fn a_const_parameter_still_type_checks_its_argument() {
-        let r = tc("mod g(n: const int) { }\nmod caller() { g(\"not an int\") }");
-        assert!(r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "expected WS003, got {:?}", r.diagnostics);
-    }
-
-    #[test]
-    fn a_named_constant_satisfies_a_const_parameter() {
-        assert_no_diags(&tc("const N = 4\nmod g(n: const int) { }\nmod caller() { g(N * 2) }"));
-    }
-
-    // The sender side (`SendCustomEvent(CH, v)`) has always accepted a
-    // named constant as its channel name; the receiver side (`on
-    // CustomEvent(CH)`) used the environment-free `expr_to_literal` and rejected
-    // it, so a computed channel name could be sent but never received.
-    #[test]
-    fn an_event_handler_channel_accepts_a_named_constant() {
-        assert_no_diags(&tc(
-            "const CH = \"evt_\" .. \"died\"\n\
-             var n: int = 0\n\
-             on CustomEvent(CH) -> (v: int) { n = v }",
-        ));
-        // The same through a computed expression, not just a bare name.
-        assert_no_diags(&tc(
-            "const PREFIX = \"evt_\"\n\
-             var n: int = 0\n\
-             on CustomEvent(PREFIX .. \"died\") -> (v: int) { n = v }",
-        ));
-    }
-
-    // A bare identifier in enum config is an enum MEMBER name first —
-    // that must keep working. Only when it names no member does it fall
-    // back to resolving through the constant environment.
-    #[test]
-    fn an_enum_config_argument_may_name_a_constant() {
-        assert_no_diags(&tc(
-            "mod f(a: float, b: float, t: float) { Easing(a, b, t, function = Bounce) }",
-        ));
-        assert_no_diags(&tc(
-            "const EASE = \"Bounce\"\n\
-             mod f(a: float, b: float, t: float) { Easing(a, b, t, function = EASE) }",
-        ));
-    }
-
-    // A call to a `const mod` is itself compile-time-evaluable — the
-    // callee's body runs through `const_eval::interp::eval_call`, resolved
-    // via `ConstCtx::lookup_mod`.
-    //
-    // This is only the TYPECHECK half. Accepting the program proves nothing
-    // about the value reaching the gate — the first version of this feature
-    // passed this exact assertion while lowering baked no channel name at all.
-    // The real acceptance test inspects the emitted gate:
-    // `lower::tests::const_params::a_const_mod_call_bakes_as_a_custom_event_channel_name`.
-    #[test]
-    fn a_const_mod_call_satisfies_a_literal_position() {
-        assert_no_diags(&tc(
-            "const mod evtName(kind: string) -> string { return \"evt_\" .. kind }\n\
-             mod ping(v: int) { SendCustomEvent(evtName(\"died\"), v) }",
-        ));
-    }
-
-    // Wiring `lookup_mod` made `NotAConstMod` capable of lying: a `const mod`
-    // call that const evaluation does not descend to isn't evaluated, and the
-    // failure used to be reported as "'double' is not declared `const mod`"
-    // about a mod that plainly IS one. Leaving a position unevaluated is
-    // fine; stating something false about the user's code is not.
-    #[test]
-    fn a_nested_const_mod_call_is_not_blamed_for_being_non_const() {
-        // `double(3) + 1` (this test's ORIGINAL trigger) is no longer nested
-        // in the sense this test is about: `eval_expr` now resolves a `const
-        // mod` call standing as a `BinOp`/`UnOp`/constructor-argument operand
-        // directly (see `const_eval::expr`'s
-        // `a_const_mod_call_nested_in_a_binary_operator_evaluates`), so that
-        // expression just evaluates to `7` and never reaches this
-        // diagnostic. Nest one level deeper instead — as an argument to a
-        // call whose OWN callee (`scaleUp`) is an ordinary, non-const `mod` —
-        // which `eval_expr`'s `Expr::Call` arm still declines to evaluate,
-        // falling back to `reason_for`'s walk and landing on the exact
-        // `NestedConstModCall` case this test exists to prove.
-        let r = tc(
-            "const mod double(n: int) -> int { return n * 2 }\n\
+// Wiring `lookup_mod` made `NotAConstMod` capable of lying: a `const mod`
+// call that const evaluation does not descend to isn't evaluated, and the
+// failure used to be reported as "'double' is not declared `const mod`"
+// about a mod that plainly IS one. Leaving a position unevaluated is
+// fine; stating something false about the user's code is not.
+#[test]
+fn a_nested_const_mod_call_is_not_blamed_for_being_non_const() {
+    // `double(3) + 1` (this test's ORIGINAL trigger) is no longer nested
+    // in the sense this test is about: `eval_expr` now resolves a `const
+    // mod` call standing as a `BinOp`/`UnOp`/constructor-argument operand
+    // directly (see `const_eval::expr`'s
+    // `a_const_mod_call_nested_in_a_binary_operator_evaluates`), so that
+    // expression just evaluates to `7` and never reaches this
+    // diagnostic. Nest one level deeper instead — as an argument to a
+    // call whose OWN callee (`scaleUp`) is an ordinary, non-const `mod` —
+    // which `eval_expr`'s `Expr::Call` arm still declines to evaluate,
+    // falling back to `reason_for`'s walk and landing on the exact
+    // `NestedConstModCall` case this test exists to prove.
+    let r = tc("const mod double(n: int) -> int { return n * 2 }\n\
              mod scaleUp(n: int) -> int { return n }\n\
-             mod f() { const total = scaleUp(double(3)) }",
-        );
-        let d = r
-            .diagnostics
-            .iter()
-            .find(|d| d.code == "WS046")
-            .unwrap_or_else(|| panic!("expected WS046, got {:?}", r.diagnostics));
-        assert!(
-            !d.message.contains("is not declared `const mod`"),
-            "must not claim a `const mod` isn't one: {}",
-            d.message
-        );
-        assert!(
-            d.message.contains("is a `const mod`")
-                && d.message.contains("surrounding expression")
-                && d.message.contains("never reaches it"),
-            "must name the real limitation (the enclosing call, not the callee): {}",
-            d.message
-        );
-    }
+             mod f() { const total = scaleUp(double(3)) }");
+    let d = r
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "WS046")
+        .unwrap_or_else(|| panic!("expected WS046, got {:?}", r.diagnostics));
+    assert!(
+        !d.message.contains("is not declared `const mod`"),
+        "must not claim a `const mod` isn't one: {}",
+        d.message
+    );
+    assert!(
+        d.message.contains("is a `const mod`")
+            && d.message.contains("surrounding expression")
+            && d.message.contains("never reaches it"),
+        "must name the real limitation (the enclosing call, not the callee): {}",
+        d.message
+    );
+}
 
-    // The other side of that branch: a callee that genuinely is NOT a `const
-    // mod` must keep the original, accurate message.
-    #[test]
-    fn a_nested_non_const_mod_call_still_says_it_is_not_a_const_mod() {
-        let r = tc(
-            "mod double(n: int) -> int { return n * 2 }\n\
-             mod f() { const total = double(3) + 1 }",
-        );
-        let d = r
-            .diagnostics
-            .iter()
-            .find(|d| d.code == "WS046")
-            .unwrap_or_else(|| panic!("expected WS046, got {:?}", r.diagnostics));
-        assert!(
-            d.message.contains("'double' is not declared `const mod`"),
-            "a genuinely non-const callee keeps the original message: {}",
-            d.message
-        );
-    }
-
-    #[test]
-    fn calling_a_non_const_mod_in_a_const_position_is_an_error() {
-        let r = tc(
-            "mod evtName(kind: string) -> string { return \"evt_\" .. kind }\n\
-             mod ping(v: int) { SendCustomEvent(evtName(\"died\"), v) }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS028" || d.code == "WS046"),
-            "expected a constant-required error, got {:?}",
-            r.diagnostics
-        );
-    }
-
-    // CRITICAL, PROVEN MISCOMPILE: `TypeCheckCtx::mod_decls` used to be a
-    // FLAT map — registered by `register_decl`, never scoped, never popped —
-    // while lowering resolves a `const mod` CALL through `ctx.scope`, a
-    // properly scope-managed stack. A NESTED `const mod` permanently
-    // overwrote the flat entry for its name, so a call made from a totally
-    // separate, LATER sibling decl resolved the wrong body.
-    //
-    // Here `A`'s nested `size` (-> 100) is checked first (chips are checked
-    // in source order) and, under the flat-map bug, clobbers the top-level
-    // `size` (-> 10) for good. `B`'s `const s = size()` then resolved to
-    // 100, took the THEN branch (`s == 100`), and dropped the ELSE — never
-    // type-checking the `string` assigned into the `int` var `b`. Lowering,
-    // resolving `size` correctly through `ctx.scope` (scoped, not flat),
-    // sees the TOP-LEVEL `size` (10), takes the ELSE, and emits a live
-    // `Exec_Var_Set b = "definitely not an int"` into an `int` var — code
-    // that was NEVER type-checked. Before the `mod_decls` scoping fix this
-    // program type-checked with NO diagnostics at all.
-    #[test]
-    fn a_nested_const_mod_does_not_leak_into_a_sibling_chips_resolution() {
-        let r = tc(
-            "var b: int = 0\n\
-             const mod size() -> int { return 10 }\n\
-             mod A() { const mod size() -> int { return 100 } }\n\
-             mod B() {\n  const s = size()\n  if s == 100 { b = 2 } else { b = \"definitely not an int\" }\n}",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "B must resolve the TOP-LEVEL `size` (10) — same as lowering — take \
-             the else branch, and report the type error in it: got {:?}",
-            r.diagnostics
-        );
-    }
-
-    // The scoping is symmetric: once `A`'s body has finished checking (its
-    // `mod_decls` frame popped), a call AFTER it in a totally unrelated decl
-    // must not see `A`'s nested override either. Pins the exact mechanism —
-    // WHICH range gets dropped — rather than just "no error": under the
-    // flat-map bug `B` would resolve `size` to `A`'s leaked 999, so
-    // `size() == 10` reads false and the THEN block (not the ELSE) would be
-    // the one dropped.
-    #[test]
-    fn a_nested_const_mod_frame_is_dropped_once_its_scope_closes() {
-        let src = "const mod size() -> int { return 10 }\n\
+// The scoping is symmetric: once `A`'s body has finished checking (its
+// `mod_decls` frame popped), a call AFTER it in a totally unrelated decl
+// must not see `A`'s nested override either. Pins the exact mechanism —
+// WHICH range gets dropped — rather than just "no error": under the
+// flat-map bug `B` would resolve `size` to `A`'s leaked 999, so
+// `size() == 10` reads false and the THEN block (not the ELSE) would be
+// the one dropped.
+#[test]
+fn a_nested_const_mod_frame_is_dropped_once_its_scope_closes() {
+    let src = "const mod size() -> int { return 10 }\n\
              var ok: int = 0\n\
              mod A() { const mod size() -> int { return 999 } }\n\
              mod B() { const s = size()\n if s == 10 { ok = 1 } else { ok = 2 } }";
-        let r = tc(src);
-        assert!(
-            r.diagnostics.iter().all(|d| d.severity != Severity::Error),
-            "resolving the top-level `size` after A's scope has closed must not error: {:?}",
-            r.diagnostics
-        );
-        assert_eq!(r.dropped_ranges.len(), 1, "exactly one branch must be dropped: {:?}", r.dropped_ranges);
-        let dropped_src = &src[r.dropped_ranges[0].0.start.offset..r.dropped_ranges[0].0.end.offset];
-        assert!(
-            dropped_src.contains("ok = 2"),
-            "B must resolve the TOP-LEVEL `size` (10, not A's leaked 999), so the \
+    let r = tc(src);
+    assert!(
+        r.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "resolving the top-level `size` after A's scope has closed must not error: {:?}",
+        r.diagnostics
+    );
+    assert_eq!(
+        r.dropped_ranges.len(),
+        1,
+        "exactly one branch must be dropped: {:?}",
+        r.dropped_ranges
+    );
+    let dropped_src = &src[r.dropped_ranges[0].0.start.offset..r.dropped_ranges[0].0.end.offset];
+    assert!(
+        dropped_src.contains("ok = 2"),
+        "B must resolve the TOP-LEVEL `size` (10, not A's leaked 999), so the \
              ELSE block is the one dropped — got dropped range {dropped_src:?}"
-        );
-    }
+    );
+}
 
-    // A self-referential `const mod` reaches `interp::eval_call` through
-    // `ConstCtx::lookup_mod`, NOT through `lower_chip_call`'s WS020 guard
-    // (that guard only fires during lowering's wire-expansion of an ORDINARY
-    // call). This path's own backstop is `interp::Budget`'s depth counter —
-    // this test proves it actually fires (a WS048, not a stack overflow) when
-    // a mod calls itself.
-    #[test]
-    fn a_self_referential_const_mod_call_fails_via_budget_not_a_stack_overflow() {
-        let r = tc(
-            "const mod f(n: int) -> string { return f(n) }\n\
-             mod ping(v: int) { SendCustomEvent(f(1), v) }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS048"),
-            "expected WS048 (budget exceeded), got {:?}",
-            r.diagnostics
-        );
-    }
+/// Sorted ranges of every block a `tc`/`lower` run dropped, for comparing
+/// the two sides directly.
+fn typecheck_dropped(src: &str) -> Vec<crate::diagnostic::SourceRange> {
+    let mut ranges: Vec<crate::diagnostic::SourceRange> = tc(src)
+        .dropped_ranges
+        .into_iter()
+        .map(|(range, _reason)| range)
+        .collect();
+    ranges.sort_by_key(|r| (r.start.offset, r.end.offset));
+    ranges
+}
 
-    // `if constexpr` semantics: a const-evaluable condition drops the
-    // untaken block from type-checking entirely, so a branch that wouldn't
-    // even compile for THIS const value never gets checked — that's what
-    // lets one mod serve cases that share no API. The matching work happens
-    // on the lowering side (`lower_if`'s generalised elision).
+fn lowering_dropped(src: &str) -> Vec<crate::diagnostic::SourceRange> {
+    let crate::compile::FrontEnd {
+        resolved: p,
+        typecheck: tc_result,
+        lowered: out,
+        ..
+    } = crate::compile::front_end(
+        src,
+        "test",
+        None,
+        crate::lower::FoldMode::ForceOff,
+        &crate::resolve::FsLoader,
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "parse diagnostics: {:?}",
+        p.diagnostics
+    );
+    assert!(
+        tc_result
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "typecheck errors: {:?}",
+        tc_result.diagnostics
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "lower errors: {:?}",
+        out.diagnostics
+    );
+    let mut ranges = out.dropped_ranges;
+    ranges.sort_by_key(|r| (r.start.offset, r.end.offset));
+    ranges
+}
 
-    #[test]
-    fn a_dropped_branch_is_not_type_checked() {
-        assert_no_diags(&tc(
-            "const MODE = 1\nvar x: int = 0\nin go: exec\n\
-             on go { if MODE == 1 { x = 1 } else { x = totallyUndefinedThing() } }",
-        ));
-    }
-
-    // MINOR: a body-local `const` declared inside a TAKEN, const-elided
-    // branch must not leak past the `if` — `lower_if`'s elision lowers the
-    // taken block STRAIGHT INTO THE PARENT SCOPE (no Branch gate), so it
-    // still pushes/pops its own scope frame around that block (see
-    // `lower_if`'s doc comment) rather than skipping scoping altogether.
-    // This property was verified by hand twice during development but never
-    // pinned by a test — do so here on the typecheck side (mirrors
-    // `ctx.scope`/`scoped_consts`/`scoped_const_declared`/`mod_decls`, all of
-    // which are frame stacks pushed/popped 1:1 with `ctx.scope` via
-    // `push_scope`/`pop_scope`, so this single check exercises all four).
-    #[test]
-    fn a_branch_local_const_does_not_leak_past_the_if() {
-        let r = tc(
-            "const A = 1\nvar x: int = 0\nin go: exec\n\
-             on go { if A == 1 { const b = 5\n x = b } else { x = 0 }\n x = b }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS002"),
-            "a `const` declared inside a taken (const-elided) branch must not be \
-             visible after the `if` — got {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn typecheck_records_which_ranges_it_dropped() {
-        let r = tc(
-            "const MODE = 1\nvar x: int = 0\nin go: exec\non go { if MODE == 1 { x = 1 } else { x = 2 } }",
-        );
-        assert_eq!(r.dropped_ranges.len(), 1, "the else block must be recorded as dropped");
-    }
-
-    // IMPORTANT: the widened elision (any const-eval-decidable condition, not
-    // just a bare `true`/`false`) must fire ONLY for a condition built from
-    // names actually DECLARED `const` — never a plain `let` that merely
-    // happens to fold. The feature's own first design principle is that a
-    // program using no `const` keyword compiles identically to before it
-    // existed; before this restriction, `let A = 1` + `if A == 1 {...} else
-    // {...}` newly emitted 3 nodes instead of a Branch plus both blocks, and
-    // a type error in the untaken block silently stopped being reported —
-    // a behavior change for a program containing no `const` at all.
-    #[test]
-    fn a_plain_let_condition_keeps_its_branch_and_checks_both_blocks() {
-        let r = tc(
-            "let A = 1\nvar x: int = 0\nin go: exec\n\
-             on go { if A == 1 { x = 1 } else { x = totallyUndefinedThing() } }",
-        );
-        assert!(
-            r.dropped_ranges.is_empty(),
-            "a plain `let` (no `const` keyword anywhere in the program) must NOT \
-             gain the widened elision — pre-feature behavior for a program using no \
-             `const` at all: {:?}",
-            r.dropped_ranges
-        );
-        assert!(
-            !r.diagnostics.is_empty(),
-            "the else block, calling an undefined function, must still be \
-             type-checked (a real Branch was built, both blocks checked): {:?}",
-            r.diagnostics
-        );
-    }
-
-    // The same shape, but with `const` instead of `let`, must still
-    // tree-shake exactly as the feature intends — proving the restriction
-    // above is keyed on the `const` keyword, not on some accidental
-    // difference between the two programs.
-    #[test]
-    fn a_const_condition_with_the_same_shape_still_tree_shakes() {
-        let r = tc(
-            "const A = 1\nvar x: int = 0\nin go: exec\n\
-             on go { if A == 1 { x = 1 } else { x = totallyUndefinedThing() } }",
-        );
-        assert_no_diags(&r);
-        assert_eq!(
-            r.dropped_ranges.len(),
-            1,
-            "a real `const` must still elide the untaken (else) block: {:?}",
-            r.dropped_ranges
-        );
-    }
-
-    /// Sorted ranges of every block a `tc`/`lower` run dropped, for comparing
-    /// the two sides directly.
-    fn typecheck_dropped(src: &str) -> Vec<crate::diagnostic::SourceRange> {
-        let mut ranges: Vec<crate::diagnostic::SourceRange> =
-            tc(src).dropped_ranges.into_iter().map(|(range, _reason)| range).collect();
-        ranges.sort_by_key(|r| (r.start.offset, r.end.offset));
-        ranges
-    }
-
-    fn lowering_dropped(src: &str) -> Vec<crate::diagnostic::SourceRange> {
-        let crate::compile::FrontEnd { resolved: p, typecheck: tc_result, lowered: out, .. } =
-            crate::compile::front_end(src, "test", None, crate::lower::FoldMode::ForceOff, &crate::resolve::FsLoader);
-        assert!(p.diagnostics.is_empty(), "parse diagnostics: {:?}", p.diagnostics);
-        assert!(
-            tc_result.diagnostics.iter().all(|d| d.severity != Severity::Error),
-            "typecheck errors: {:?}",
-            tc_result.diagnostics
-        );
-        assert!(
-            out.diagnostics.iter().all(|d| d.severity != Severity::Error),
-            "lower errors: {:?}",
-            out.diagnostics
-        );
-        let mut ranges = out.dropped_ranges;
-        ranges.sort_by_key(|r| (r.start.offset, r.end.offset));
-        ranges
-    }
-
-    /// A port is readable by name only when it carries a single wire. A record-
-    /// or tuple-shaped one does not: the annotated form dissolves into one pin
-    /// per field, and the unannotated form leaves its own pin unwired because
-    /// the value goes to `pending_out_records` (or has no single port at all).
-    /// The registry must claim neither, in every spelling that reaches the name.
-    #[test]
-    fn a_record_typed_port_is_not_readable_by_name() {
-        let annotated = "type Point = { x: int, y: int }\n\
+/// A port is readable by name only when it carries a single wire. A record-
+/// or tuple-shaped one does not: the annotated form dissolves into one pin
+/// per field, and the unannotated form leaves its own pin unwired because
+/// the value goes to `pending_out_records` (or has no single port at all).
+/// The registry must claim neither, in every spelling that reaches the name.
+#[test]
+fn a_record_typed_port_is_not_readable_by_name() {
+    let annotated = "type Point = { x: int, y: int }\n\
                          in a: int\nout p: Point = { x: a, y: 2 }\n";
-        for (label, tail) in [
-            ("a bare read in a handler", "in go: exec\non go { var v: Point = p }"),
-            ("an annotated port initialized from it", "out q: Point = p"),
-            ("a field projection", "in go: exec\non go { var v: int = p.x }"),
-            ("an unannotated port initialized from it", "out q = p"),
-        ] {
-            let r = tc(&format!("{annotated}{tail}"));
-            assert!(
-                r.diagnostics
-                    .iter()
-                    .any(|d| d.code == "WS002" && d.message.contains("'p'")),
-                "reading a record port must be WS002 - {label}: {:?}",
-                r.diagnostics
-            );
-        }
-        // The same rule keyed on the VALUE, for a site with no annotation. A
-        // tuple literal parses as a record literal, so both spellings land here.
-        for (label, src) in [
-            (
-                "an unannotated record-valued port",
-                "in a: int\nout p = { x: a, y: 2 }\nout q: int = p",
-            ),
-            ("an unannotated tuple-valued port", "in a: int\nout p = (a, 2)\nout q: int = p"),
-        ] {
-            let r = tc(src);
-            assert!(
-                r.diagnostics
-                    .iter()
-                    .any(|d| d.code == "WS002" && d.message.contains("'p'")),
-                "reading an unannotated record-valued port must be WS002 - {label}: {:?}",
-                r.diagnostics
-            );
-        }
-        // Ports nobody reads by name still compile, in every one of these forms.
-        assert_no_diags(&tc(annotated));
-        assert_no_diags(&tc("in a: int\nout t: (int, int) = (a, 2)"));
-        assert_no_diags(&tc("in a: int\nout p = { x: a, y: 2 }"));
-        let r = tc("in a: int\nout t: (int, int) = (a, 2)\nout u: (int, int) = t");
+    for (label, tail) in [
+        (
+            "a bare read in a handler",
+            "in go: exec\non go { var v: Point = p }",
+        ),
+        ("an annotated port initialized from it", "out q: Point = p"),
+        (
+            "a field projection",
+            "in go: exec\non go { var v: int = p.x }",
+        ),
+        ("an unannotated port initialized from it", "out q = p"),
+    ] {
+        let r = tc(&format!("{annotated}{tail}"));
         assert!(
             r.diagnostics
                 .iter()
-                .any(|d| d.code == "WS002" && d.message.contains("'t'")),
-            "reading a tuple port must be WS002: {:?}",
+                .any(|d| d.code == "WS002" && d.message.contains("'p'")),
+            "reading a record port must be WS002 - {label}: {:?}",
             r.diagnostics
         );
-        // An annotated record port keeps every per-field pin, and each one is
-        // driven: refusing the bare read must not cost the port its wiring.
-        let lowered = lower_for_ports(annotated);
-        let pins: Vec<crate::ir::NodeId> = top_level_ports(&lowered)
-            .filter(|(_, label)| label == "p_x" || label == "p_y")
-            .map(|(id, _)| id)
-            .collect();
-        assert_eq!(pins.len(), 2, "both field pins must exist: {:?}", lowered.module.nodes);
-        for pin in pins {
-            assert!(
-                lowered.module.wires.iter().any(|w| w.target.node_id == pin),
-                "every field pin must be driven; wires: {:?}",
-                lowered.module.wires
-            );
-        }
     }
-
-    /// Every module-boundary port name typecheck's registry claimed for `src`.
-    fn typecheck_port_sites(src: &str) -> std::collections::BTreeSet<String> {
-        tc(src).port_sites.into_iter().collect()
+    // The same rule keyed on the VALUE, for a site with no annotation. A
+    // tuple literal parses as a record literal, so both spellings land here.
+    for (label, src) in [
+        (
+            "an unannotated record-valued port",
+            "in a: int\nout p = { x: a, y: 2 }\nout q: int = p",
+        ),
+        (
+            "an unannotated tuple-valued port",
+            "in a: int\nout p = (a, 2)\nout q: int = p",
+        ),
+    ] {
+        let r = tc(src);
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS002" && d.message.contains("'p'")),
+            "reading an unannotated record-valued port must be WS002 - {label}: {:?}",
+            r.diagnostics
+        );
     }
-
-    /// Lower `src` with folding off. Neither this nor `typecheck_port_sites`
-    /// asserts the program is diagnostic-free: several cases in the corpus below
-    /// are deliberately rejected shapes whose whole point is that NEITHER side
-    /// claims a port.
-    fn lower_for_ports(src: &str) -> crate::lower::LowerResult {
-        let crate::compile::FrontEnd { resolved: p, lowered, .. } =
-            crate::compile::front_end(src, "test", None, crate::lower::FoldMode::ForceOff, &crate::resolve::FsLoader);
-        assert!(p.diagnostics.is_empty(), "parse diagnostics: {:?}", p.diagnostics);
-        lowered
+    // Ports nobody reads by name still compile, in every one of these forms.
+    assert_no_diags(&tc(annotated));
+    assert_no_diags(&tc("in a: int\nout t: (int, int) = (a, 2)"));
+    assert_no_diags(&tc("in a: int\nout p = { x: a, y: 2 }"));
+    let r = tc("in a: int\nout t: (int, int) = (a, 2)\nout u: (int, int) = t");
+    assert!(
+        r.diagnostics
+            .iter()
+            .any(|d| d.code == "WS002" && d.message.contains("'t'")),
+        "reading a tuple port must be WS002: {:?}",
+        r.diagnostics
+    );
+    // An annotated record port keeps every per-field pin, and each one is
+    // driven: refusing the bare read must not cost the port its wiring.
+    let lowered = lower_for_ports(annotated);
+    let pins: Vec<crate::ir::NodeId> = top_level_ports(&lowered)
+        .filter(|(_, label)| label == "p_x" || label == "p_y")
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(
+        pins.len(),
+        2,
+        "both field pins must exist: {:?}",
+        lowered.module.nodes
+    );
+    for pin in pins {
+        assert!(
+            lowered.module.wires.iter().any(|w| w.target.node_id == pin),
+            "every field pin must be driven; wires: {:?}",
+            lowered.module.wires
+        );
     }
+}
 
-    /// The `PortLabel` of every top-level (non-chip) `Output` node in `src`'s
-    /// module. Read off the emitted module rather than from instrumentation: a
-    /// boundary port IS such a node. A record- or tuple-typed port never appears
-    /// under its own name, because `record_output_pins` labels its pins
-    /// `<name>_<field>` instead.
-    fn lowering_boundary_ports(src: &str) -> std::collections::BTreeSet<String> {
-        top_level_ports(&lower_for_ports(src))
-            .map(|(_, label)| label)
-            .collect()
-    }
+/// Every module-boundary port name typecheck's registry claimed for `src`.
+fn typecheck_port_sites(src: &str) -> std::collections::BTreeSet<String> {
+    tc(src).port_sites.into_iter().collect()
+}
 
-    fn top_level_ports(
-        r: &crate::lower::LowerResult,
-    ) -> impl Iterator<Item = (crate::ir::NodeId, String)> + '_ {
-        r.module
-            .nodes
-            .values()
-            .filter(|n| n.kind == crate::ir::NodeKind::Output && n.chip_id.is_none())
-            .filter_map(|n| match n.properties.get(&*crate::intern::sym::PORT_LABEL) {
+/// Lower `src` with folding off. Neither this nor `typecheck_port_sites`
+/// asserts the program is diagnostic-free: several cases in the corpus below
+/// are deliberately rejected shapes whose whole point is that NEITHER side
+/// claims a port.
+fn lower_for_ports(src: &str) -> crate::lower::LowerResult {
+    let crate::compile::FrontEnd {
+        resolved: p,
+        lowered,
+        ..
+    } = crate::compile::front_end(
+        src,
+        "test",
+        None,
+        crate::lower::FoldMode::ForceOff,
+        &crate::resolve::FsLoader,
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "parse diagnostics: {:?}",
+        p.diagnostics
+    );
+    lowered
+}
+
+/// The `PortLabel` of every top-level (non-chip) `Output` node in `src`'s
+/// module. Read off the emitted module rather than from instrumentation: a
+/// boundary port IS such a node. A record- or tuple-typed port never appears
+/// under its own name, because `record_output_pins` labels its pins
+/// `<name>_<field>` instead.
+fn lowering_boundary_ports(src: &str) -> std::collections::BTreeSet<String> {
+    top_level_ports(&lower_for_ports(src))
+        .map(|(_, label)| label)
+        .collect()
+}
+
+fn top_level_ports(
+    r: &crate::lower::LowerResult,
+) -> impl Iterator<Item = (crate::ir::NodeId, String)> + '_ {
+    r.module
+        .nodes
+        .values()
+        .filter(|n| n.kind == crate::ir::NodeKind::Output && n.chip_id.is_none())
+        .filter_map(
+            |n| match n.properties.get(&*crate::intern::sym::PORT_LABEL) {
                 Some(crate::ir::Literal::String(name)) => Some((n.id, name.to_string())),
                 _ => None,
-            })
-    }
+            },
+        )
+}
 
-    /// THE structural invariant behind readable outputs: every port typecheck's
-    /// registry hands out as readable must be a port lowering actually emits,
-    /// and each phase must claim exactly the set this corpus pins for it.
-    ///
-    /// A name only typecheck claims is a silent miscompile: the read
-    /// type-checks and lowers to nothing, so the read and the write both
-    /// disappear with no diagnostic. The reverse is slack, and the safe
-    /// direction: lowering emits a pin the source cannot name (a record port's
-    /// per-field pins, or an unannotated record-valued port's dead single pin),
-    /// which at worst leaves a port nobody can read.
-    ///
-    /// Five hand-written traversals decide this between them
-    /// (`lower::predeclare::pre_declare_handler_outputs` and
-    /// `pre_declare_anon_chip`, `typecheck::register::register_handler_outputs`
-    /// and `register_anon_chip_outputs`, and
-    /// `analysis::scoped_refs::widen_hoisted_out_bindings`). The site set inside
-    /// a body comes from the shared `ast::handler_port_sites` /
-    /// `ast::anon_chip_port_sites` enumerators, but WHICH bodies each traversal
-    /// feeds them is decided per pass, which is what this corpus pins
-    /// down. Both the annotated and the unannotated axis are covered: a rule
-    /// keyed on one of them alone passes every row of the other.
-    #[test]
-    fn port_registry_matches_lowerings_boundary_ports() {
-        // (label, source, ports typecheck registers, port labels lowering emits)
-        let cases: &[(&str, &str, &[&str], &[&str])] = &[
-            ("a top-level out", "in a: int\nout y: int = a", &["y"], &["y"]),
-            (
-                "an unannotated top-level out, read by another",
-                "in a: int\nout y = a + 1\nout z: int = y",
-                &["y", "z"],
-                &["y", "z"],
-            ),
-            (
-                "a top-level handler body",
-                "on Clock(interval = 0.2) {\n@top out flash: bool = Toggle()\n}",
-                &["flash"],
-                &["flash"],
-            ),
-            (
-                "a handler body's nested if / if let / let else",
-                "in go: exec\nin n: int\non go {\nif n > 0 { out a: int = 1 } else { out b: int = 2 }\nif let Some(v) = Option.Some(n) { out c: int = v }\nlet Some(w) = Option.Some(n) else { out d: int = 4\nreturn }\n}",
-                &["a", "b", "c", "d"],
-                &["a", "b", "c", "d"],
-            ),
-            (
-                "a handler nested in a handler body",
-                "in go: exec\non go {\non Clock(interval = 0.2) { out inner: int = 1 }\n}",
-                &["inner"],
-                &["inner"],
-            ),
-            (
-                "a captured event's body",
-                "let e = on Clock(interval = 0.2) {\nout flash: bool = Toggle()\n}",
-                &["flash"],
-                &["flash"],
-            ),
-            (
-                "a file-scope anon chip",
-                "chip { out shared: int = 1 }",
-                &["shared"],
-                &["shared"],
-            ),
-            (
-                "a statement-level anon chip inside a handler",
-                "in go: exec\non go {\nchip { out shared: int = 1 }\nvar v: int = shared\n}",
-                &["shared"],
-                &["shared"],
-            ),
-            (
-                "an anon chip nested in an anon chip",
-                "chip { chip { out shared: int = 1 } }",
-                &["shared"],
-                &["shared"],
-            ),
-            (
-                // A named chip's own body `out` is that CHIP's port, declared
-                // through its signature frame, not a module-boundary one. Its
-                // node carries a `chip_id`, so it is not a top-level port
-                // either.
-                "a named chip body",
-                "out ok: int = 1\nchip Named(t: exec) -> (r: int) { out r = 2 }\nin go: exec\nlet q = Named(go)",
-                &["ok"],
-                &["ok"],
-            ),
-            (
-                // WS073: a handler inside a chip is not hoisted, so `flash` has
-                // no port on either side.
-                "a handler inside a named chip",
-                "out ok: int = 1\nchip Named(t: exec) { on t { out flash: int = 2 } }\nin go: exec\nlet q = Named(go)",
-                &["ok"],
-                &["ok"],
-            ),
-            (
-                // WS023: `@side` is only legal on a root-level `out`, so an anon
-                // chip's `@side out` never becomes a port.
-                "an @side-annotated anon chip out",
-                "out ok: int = 1\nchip { @top out sided: int = 2 }",
-                &["ok"],
-                &["ok"],
-            ),
-            (
-                // A record-typed boundary port dissolves into one pin per field,
-                // so there is no single wire for a bare read: typecheck must not
-                // claim it, while lowering emits (and drives) the per-field pins
-                // under their own labels.
-                "a record-typed port",
-                "type Point = { x: int, y: int }\nin a: int\nout ok: int = a\nout p: Point = { x: a, y: 2 }",
-                &["ok"],
-                &["ok", "p_x", "p_y"],
-            ),
-            (
-                "a tuple-typed port",
-                "in a: int\nout ok: int = a\nout t: (int, int) = (a, 2)",
-                &["ok"],
-                &["ok", "t_0", "t_1"],
-            ),
-            (
-                // With no annotation the VALUE decides. A record literal (and a
-                // tuple literal, which parses as one) has no single wire, and
-                // lowering leaves the port's own pin unwired, so a read would
-                // resolve to a permanent zero. Typecheck must not claim it even
-                // though lowering still emits the pin.
-                "an unannotated record-valued port",
-                "in a: int\nout ok: int = a\nout p = { x: a, y: 2 }",
-                &["ok"],
-                &["ok", "p"],
-            ),
-            (
-                "an unannotated tuple-valued port",
-                "in a: int\nout ok: int = a\nout p = (a, 2)",
-                &["ok"],
-                &["ok", "p"],
-            ),
-        ];
-        let set = |names: &[&str]| -> std::collections::BTreeSet<String> {
-            names.iter().map(|s| (*s).to_string()).collect()
-        };
-        let mut saw_a_port = false;
-        for (label, src, tc_expected, lo_expected) in cases {
-            let tc_expected = set(tc_expected);
-            let lo_expected = set(lo_expected);
-            let tc_ports = typecheck_port_sites(src);
-            let lo_ports = lowering_boundary_ports(src);
-            assert_eq!(
-                tc_ports, tc_expected,
-                "typecheck's port registry claimed the wrong set - {label}"
-            );
-            assert_eq!(
-                lo_ports, lo_expected,
-                "lowering emitted the wrong boundary ports - {label}"
-            );
-            // The soundness direction, restated as its own assert so a future
-            // row cannot satisfy both tables above while still handing out a
-            // readable name that lowers to nothing.
-            assert!(
-                tc_ports.is_subset(&lo_ports),
-                "every readable port must exist in the module - {label}\n  \
+/// THE structural invariant behind readable outputs: every port typecheck's
+/// registry hands out as readable must be a port lowering actually emits,
+/// and each phase must claim exactly the set this corpus pins for it.
+///
+/// A name only typecheck claims is a silent miscompile: the read
+/// type-checks and lowers to nothing, so the read and the write both
+/// disappear with no diagnostic. The reverse is slack, and the safe
+/// direction: lowering emits a pin the source cannot name (a record port's
+/// per-field pins, or an unannotated record-valued port's dead single pin),
+/// which at worst leaves a port nobody can read.
+///
+/// Five hand-written traversals decide this between them
+/// (`lower::predeclare::pre_declare_handler_outputs` and
+/// `pre_declare_anon_chip`, `typecheck::register::register_handler_outputs`
+/// and `register_anon_chip_outputs`, and
+/// `analysis::scoped_refs::widen_hoisted_out_bindings`). The site set inside
+/// a body comes from the shared `ast::handler_port_sites` /
+/// `ast::anon_chip_port_sites` enumerators, but WHICH bodies each traversal
+/// feeds them is decided per pass, which is what this corpus pins
+/// down. Both the annotated and the unannotated axis are covered: a rule
+/// keyed on one of them alone passes every row of the other.
+#[test]
+fn port_registry_matches_lowerings_boundary_ports() {
+    // (label, source, ports typecheck registers, port labels lowering emits)
+    let cases: &[(&str, &str, &[&str], &[&str])] = &[
+        (
+            "a top-level out",
+            "in a: int\nout y: int = a",
+            &["y"],
+            &["y"],
+        ),
+        (
+            "an unannotated top-level out, read by another",
+            "in a: int\nout y = a + 1\nout z: int = y",
+            &["y", "z"],
+            &["y", "z"],
+        ),
+        (
+            "a top-level handler body",
+            "on Clock(interval = 0.2) {\n@top out flash: bool = Toggle()\n}",
+            &["flash"],
+            &["flash"],
+        ),
+        (
+            "a handler body's nested if / if let / let else",
+            "in go: exec\nin n: int\non go {\nif n > 0 { out a: int = 1 } else { out b: int = 2 }\nif let Some(v) = Option.Some(n) { out c: int = v }\nlet Some(w) = Option.Some(n) else { out d: int = 4\nreturn }\n}",
+            &["a", "b", "c", "d"],
+            &["a", "b", "c", "d"],
+        ),
+        (
+            "a handler nested in a handler body",
+            "in go: exec\non go {\non Clock(interval = 0.2) { out inner: int = 1 }\n}",
+            &["inner"],
+            &["inner"],
+        ),
+        (
+            "a captured event's body",
+            "let e = on Clock(interval = 0.2) {\nout flash: bool = Toggle()\n}",
+            &["flash"],
+            &["flash"],
+        ),
+        (
+            "a file-scope anon chip",
+            "chip { out shared: int = 1 }",
+            &["shared"],
+            &["shared"],
+        ),
+        (
+            "a statement-level anon chip inside a handler",
+            "in go: exec\non go {\nchip { out shared: int = 1 }\nvar v: int = shared\n}",
+            &["shared"],
+            &["shared"],
+        ),
+        (
+            "an anon chip nested in an anon chip",
+            "chip { chip { out shared: int = 1 } }",
+            &["shared"],
+            &["shared"],
+        ),
+        (
+            // A named chip's own body `out` is that CHIP's port, declared
+            // through its signature frame, not a module-boundary one. Its
+            // node carries a `chip_id`, so it is not a top-level port
+            // either.
+            "a named chip body",
+            "out ok: int = 1\nchip Named(t: exec) -> (r: int) { out r = 2 }\nin go: exec\nlet q = Named(go)",
+            &["ok"],
+            &["ok"],
+        ),
+        (
+            // WS073: a handler inside a chip is not hoisted, so `flash` has
+            // no port on either side.
+            "a handler inside a named chip",
+            "out ok: int = 1\nchip Named(t: exec) { on t { out flash: int = 2 } }\nin go: exec\nlet q = Named(go)",
+            &["ok"],
+            &["ok"],
+        ),
+        (
+            // WS023: `@side` is only legal on a root-level `out`, so an anon
+            // chip's `@side out` never becomes a port.
+            "an @side-annotated anon chip out",
+            "out ok: int = 1\nchip { @top out sided: int = 2 }",
+            &["ok"],
+            &["ok"],
+        ),
+        (
+            // A record-typed boundary port dissolves into one pin per field,
+            // so there is no single wire for a bare read: typecheck must not
+            // claim it, while lowering emits (and drives) the per-field pins
+            // under their own labels.
+            "a record-typed port",
+            "type Point = { x: int, y: int }\nin a: int\nout ok: int = a\nout p: Point = { x: a, y: 2 }",
+            &["ok"],
+            &["ok", "p_x", "p_y"],
+        ),
+        (
+            "a tuple-typed port",
+            "in a: int\nout ok: int = a\nout t: (int, int) = (a, 2)",
+            &["ok"],
+            &["ok", "t_0", "t_1"],
+        ),
+        (
+            // With no annotation the VALUE decides. A record literal (and a
+            // tuple literal, which parses as one) has no single wire, and
+            // lowering leaves the port's own pin unwired, so a read would
+            // resolve to a permanent zero. Typecheck must not claim it even
+            // though lowering still emits the pin.
+            "an unannotated record-valued port",
+            "in a: int\nout ok: int = a\nout p = { x: a, y: 2 }",
+            &["ok"],
+            &["ok", "p"],
+        ),
+        (
+            "an unannotated tuple-valued port",
+            "in a: int\nout ok: int = a\nout p = (a, 2)",
+            &["ok"],
+            &["ok", "p"],
+        ),
+    ];
+    let set = |names: &[&str]| -> std::collections::BTreeSet<String> {
+        names.iter().map(|s| (*s).to_string()).collect()
+    };
+    let mut saw_a_port = false;
+    for (label, src, tc_expected, lo_expected) in cases {
+        let tc_expected = set(tc_expected);
+        let lo_expected = set(lo_expected);
+        let tc_ports = typecheck_port_sites(src);
+        let lo_ports = lowering_boundary_ports(src);
+        assert_eq!(
+            tc_ports, tc_expected,
+            "typecheck's port registry claimed the wrong set - {label}"
+        );
+        assert_eq!(
+            lo_ports, lo_expected,
+            "lowering emitted the wrong boundary ports - {label}"
+        );
+        // The soundness direction, restated as its own assert so a future
+        // row cannot satisfy both tables above while still handing out a
+        // readable name that lowers to nothing.
+        assert!(
+            tc_ports.is_subset(&lo_ports),
+            "every readable port must exist in the module - {label}\n  \
                  typecheck claimed: {tc_ports:?}\n  lowering emitted:  {lo_ports:?}"
-            );
-            saw_a_port |= !tc_expected.is_empty();
-        }
-        // A corpus that claimed nothing anywhere would satisfy every equality
-        // vacuously.
-        assert!(saw_a_port, "the corpus must claim at least one real port");
+        );
+        saw_a_port |= !tc_expected.is_empty();
     }
+    // A corpus that claimed nothing anywhere would satisfy every equality
+    // vacuously.
+    assert!(saw_a_port, "the corpus must claim at least one real port");
+}
 
-    /// The EXACT-PARITY invariant that `lower::context`, `lower::stmt`,
-    /// `lower::decl` and `typecheck::ctx` all cite by name. It was cited by
-    /// four doc comments for a long time without ever being written, and that
-    /// is precisely how a real divergence shipped: block-scope `const`
-    /// recording used the FULL evaluator in `typecheck::stmt` but the NARROW
-    /// `expr_to_literal_in` in `lower::decl`, so a `const` bound to a record —
-    /// `const p = { x: 1 }` with `if p.x == 1`, and every destructuring
-    /// `const` — was compile-time-decidable to typecheck and not to lowering.
-    /// Typecheck skipped the untaken block; lowering emitted it. Ill-typed
-    /// code reached the graph with no diagnostic at all.
-    ///
-    /// The weaker containment property
-    /// (`typecheck_never_drops_a_block_that_lowering_still_emits`, below) does
-    /// NOT catch that: dropping LESS on the typecheck side is the safe
-    /// direction for containment, yet it is exactly what under-checking looks
-    /// like when it is lowering that drops less. Equality catches both
-    /// directions at once.
-    ///
-    /// Corpus covers a plain `const`, a record-valued `const` read by field, a
-    /// block-scope destructure (plain / alias / rest) and a top-level
-    /// destructure — every shape whose recording differs between the two
-    /// sides. Cases where the two stages genuinely hold DIFFERENT information
-    /// (a `const` param's placeholder, `ident_literal_bool`) are excluded by
-    /// construction and live in the containment test instead.
-    #[test]
-    fn typecheck_and_lowering_drop_exactly_the_same_ranges() {
-        let cases: &[(&str, &str)] = &[
-            (
-                "a plain block-scope const",
-                "var x: int = 0\n\
+/// The EXACT-PARITY invariant that `lower::context`, `lower::stmt`,
+/// `lower::decl` and `typecheck::ctx` all cite by name. It was cited by
+/// four doc comments for a long time without ever being written, and that
+/// is precisely how a real divergence shipped: block-scope `const`
+/// recording used the FULL evaluator in `typecheck::stmt` but the NARROW
+/// `expr_to_literal_in` in `lower::decl`, so a `const` bound to a record —
+/// `const p = { x: 1 }` with `if p.x == 1`, and every destructuring
+/// `const` — was compile-time-decidable to typecheck and not to lowering.
+/// Typecheck skipped the untaken block; lowering emitted it. Ill-typed
+/// code reached the graph with no diagnostic at all.
+///
+/// The weaker containment property
+/// (`typecheck_never_drops_a_block_that_lowering_still_emits`, below) does
+/// NOT catch that: dropping LESS on the typecheck side is the safe
+/// direction for containment, yet it is exactly what under-checking looks
+/// like when it is lowering that drops less. Equality catches both
+/// directions at once.
+///
+/// Corpus covers a plain `const`, a record-valued `const` read by field, a
+/// block-scope destructure (plain / alias / rest) and a top-level
+/// destructure — every shape whose recording differs between the two
+/// sides. Cases where the two stages genuinely hold DIFFERENT information
+/// (a `const` param's placeholder, `ident_literal_bool`) are excluded by
+/// construction and live in the containment test instead.
+#[test]
+fn typecheck_and_lowering_drop_exactly_the_same_ranges() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "a plain block-scope const",
+            "var x: int = 0\n\
                  mod f() { const A = 1\n if A == 1 { x = 1 } else { x = 2 } }\n\
                  in go: exec\non go { f() }",
-            ),
-            (
-                // The shape that shipped broken with no destructuring at all:
-                // `expr_to_literal_in` cannot fold a record literal.
-                "a record-valued block-scope const read by field",
-                "var x: int = 0\n\
+        ),
+        (
+            // The shape that shipped broken with no destructuring at all:
+            // `expr_to_literal_in` cannot fold a record literal.
+            "a record-valued block-scope const read by field",
+            "var x: int = 0\n\
                  mod f() { const p = { a: 1 }\n if p.a == 1 { x = 1 } else { x = 2 } }\n\
                  in go: exec\non go { f() }",
-            ),
-            (
-                "a block-scope destructure",
-                "var x: int = 0\n\
+        ),
+        (
+            "a block-scope destructure",
+            "var x: int = 0\n\
                  mod f() { const p = { a: 1, b: 2 }\n const { a, b } = p\n\
                    if a == 1 { x = 1 } else { x = 2 }\n\
                    if b == 2 { x = 3 } else { x = 4 } }\n\
                  in go: exec\non go { f() }",
-            ),
-            (
-                "a block-scope destructure with an alias",
-                "var x: int = 0\n\
+        ),
+        (
+            "a block-scope destructure with an alias",
+            "var x: int = 0\n\
                  mod f() { const p = { a: 1, b: 2 }\n const { a: q, b: r } = p\n\
                    if q == 1 { x = 1 } else { x = 2 }\n\
                    if r == 2 { x = 3 } else { x = 4 } }\n\
                  in go: exec\non go { f() }",
-            ),
-            (
-                "a block-scope destructure with a rest",
-                "var x: int = 0\n\
+        ),
+        (
+            "a block-scope destructure with a rest",
+            "var x: int = 0\n\
                  mod f() { const p = { a: 1, b: 2, c: 3 }\n const { a, ...rest } = p\n\
                    if a == 1 { x = 1 } else { x = 2 }\n\
                    if rest.c == 3 { x = 3 } else { x = 4 } }\n\
                  in go: exec\non go { f() }",
-            ),
-            (
-                "a top-level destructure",
-                "const p = { a: 1, b: 2 }\nconst { a, b } = p\n\
+        ),
+        (
+            "a top-level destructure",
+            "const p = { a: 1, b: 2 }\nconst { a, b } = p\n\
                  var x: int = 0\nin go: exec\n\
                  on go { if a == 1 { x = 1 } else { x = 2 }\n\
                          if b == 9 { x = 3 } else { x = 4 } }",
-            ),
-            (
-                "a destructure inside a nested block",
-                "var x: int = 0\n\
+        ),
+        (
+            "a destructure inside a nested block",
+            "var x: int = 0\n\
                  mod f(n: int) { if n > 0 { const p = { a: 1 }\n const { a } = p\n\
                    if a == 1 { x = 1 } else { x = 2 } } }\n\
                  in go: exec\non go { f(1) }",
-            ),
-            // SHADOWING — the other half of keeping the two environments in
-            // step, and the half that had no coverage at all. Recording the
-            // same constants is only sound if RE-BINDING one clears it on both
-            // sides too, and lowering's clearing handled a single spelling
-            // (`Ident`, narrow evaluator) where typecheck's handled every one.
-            // Each case shadows ONE const and leaves a sibling alone, so the
-            // still-const half keeps the corpus's non-vacuity assert honest
-            // while the shadowed half is what actually has to agree.
-            (
-                // `let { a } = …` cleared `a`'s const mark in typecheck and
-                // not in lowering: typecheck emitted a real Branch for
-                // `if a == 1` while lowering tree-shook it on the STALE value,
-                // shipping only the `x = 1` arm and no Branch gate at all.
-                "a destructuring let shadowing a destructuring const",
-                "var x: int = 0\n\
+        ),
+        // SHADOWING — the other half of keeping the two environments in
+        // step, and the half that had no coverage at all. Recording the
+        // same constants is only sound if RE-BINDING one clears it on both
+        // sides too, and lowering's clearing handled a single spelling
+        // (`Ident`, narrow evaluator) where typecheck's handled every one.
+        // Each case shadows ONE const and leaves a sibling alone, so the
+        // still-const half keeps the corpus's non-vacuity assert honest
+        // while the shadowed half is what actually has to agree.
+        (
+            // `let { a } = …` cleared `a`'s const mark in typecheck and
+            // not in lowering: typecheck emitted a real Branch for
+            // `if a == 1` while lowering tree-shook it on the STALE value,
+            // shipping only the `x = 1` arm and no Branch gate at all.
+            "a destructuring let shadowing a destructuring const",
+            "var x: int = 0\n\
                  mod f() { const { a, b } = { a: 1, b: 2 }\n let { a } = { a: 9 }\n\
                    if a == 1 { x = 1 } else { x = 2 }\n\
                    if b == 2 { x = 3 } else { x = 4 } }\n\
                  in go: exec\non go { f() }",
-            ),
-            (
-                // The same divergence reachable with NO destructuring: an
-                // `Ident` `let` whose value only the FULL evaluator folds
-                // (an `if` expression) never reached lowering's narrow
-                // clearing path either.
-                "a let shadowing a const with a value only the full evaluator folds",
-                "var x: int = 0\n\
+        ),
+        (
+            // The same divergence reachable with NO destructuring: an
+            // `Ident` `let` whose value only the FULL evaluator folds
+            // (an `if` expression) never reached lowering's narrow
+            // clearing path either.
+            "a let shadowing a const with a value only the full evaluator folds",
+            "var x: int = 0\n\
                  mod f() { const a = 1\n const b = 2\n let a = if true then 9 else 0\n\
                    if a == 1 { x = 1 } else { x = 2 }\n\
                    if b == 2 { x = 3 } else { x = 4 } }\n\
                  in go: exec\non go { f() }",
-            ),
-            (
-                // The same shadow with the `const` at the TOP level, which is
-                // a different mechanism rather than a rephrasing: eviction in
-                // `const_lookup_declared_only` fires on a name being PRESENT
-                // in a `scoped_consts` frame and ABSENT from that frame's
-                // marks, so a top-level constant is only evicted once the
-                // inner `let` RECORDS its own value there. Clearing the mark
-                // alone left the top-level value resolving straight through.
-                "a block-scope let shadowing a top-level const",
-                "const a = 1\nconst b = 2\nvar x: int = 0\n\
+        ),
+        (
+            // The same shadow with the `const` at the TOP level, which is
+            // a different mechanism rather than a rephrasing: eviction in
+            // `const_lookup_declared_only` fires on a name being PRESENT
+            // in a `scoped_consts` frame and ABSENT from that frame's
+            // marks, so a top-level constant is only evicted once the
+            // inner `let` RECORDS its own value there. Clearing the mark
+            // alone left the top-level value resolving straight through.
+            "a block-scope let shadowing a top-level const",
+            "const a = 1\nconst b = 2\nvar x: int = 0\n\
                  in go: exec\n\
                  on go { let a = if true then 9 else 0\n\
                    if a == 1 { x = 1 } else { x = 2 }\n\
                    if b == 2 { x = 3 } else { x = 4 } }",
-            ),
-            // NAMED-CHIP BOUNDARY. A chip body is a `Block` of statements, so
-            // its own `const`s never reach `build_const_env` (which takes
-            // `TopDecl`s) — they are recorded by `lower_let_decl` into
-            // `scoped_consts.last_mut()`, and `instance_body` used to hand the
-            // child ctx NO frame at all, so every one was silently discarded.
-            // Typecheck has always had a frame here, so the two stages read
-            // different constants inside the same body.
-            (
-                // The sharpest form: lowering decided on the OUTER constant
-                // and typecheck on the INNER one, so they emitted and checked
-                // OPPOSITE arms — a wrong-branch miscompile AND an unchecked
-                // block reaching the graph, from one program.
-                "a named chip's own const shadowing a top-level one",
-                "const a = 1\nvar x: int = 0\n\
+        ),
+        // NAMED-CHIP BOUNDARY. A chip body is a `Block` of statements, so
+        // its own `const`s never reach `build_const_env` (which takes
+        // `TopDecl`s) — they are recorded by `lower_let_decl` into
+        // `scoped_consts.last_mut()`, and `instance_body` used to hand the
+        // child ctx NO frame at all, so every one was silently discarded.
+        // Typecheck has always had a frame here, so the two stages read
+        // different constants inside the same body.
+        (
+            // The sharpest form: lowering decided on the OUTER constant
+            // and typecheck on the INNER one, so they emitted and checked
+            // OPPOSITE arms — a wrong-branch miscompile AND an unchecked
+            // block reaching the graph, from one program.
+            "a named chip's own const shadowing a top-level one",
+            "const a = 1\nvar x: int = 0\n\
                  chip Named(t: exec) { const a = 9\n\
                    on t { if a == 1 { x = 1 } else { x = 2 }\n\
                           if a == 9 { x = 3 } else { x = 4 } } }\n\
                  in go: exec\nlet r = Named(go)",
-            ),
-            (
-                // The same gap with nothing shadowed: typecheck decided the
-                // condition on the chip-body `const` while lowering, holding
-                // no value for it, emitted a runtime Branch over both arms —
-                // typecheck dropping a block lowering still emits.
-                "a named chip's own const with no outer binding",
-                "var x: int = 0\n\
+        ),
+        (
+            // The same gap with nothing shadowed: typecheck decided the
+            // condition on the chip-body `const` while lowering, holding
+            // no value for it, emitted a runtime Branch over both arms —
+            // typecheck dropping a block lowering still emits.
+            "a named chip's own const with no outer binding",
+            "var x: int = 0\n\
                  chip Named(t: exec) { const a = 7\n\
                    on t { if a == 9 { x = 1 } else { x = 2 } } }\n\
                  in go: exec\nlet r = Named(go)",
-            ),
-            (
-                // INLINED-CALLEE BOUNDARY. A `mod` body is lowered into the
-                // CALLER's ctx with the caller's block scopes still open, and
-                // the const lookups walk every open frame — so a caller-local
-                // shadow evicted the top-level constant INSIDE the callee.
-                // Typecheck checks a `mod` body once, at its declaration,
-                // where no call site's scope exists, so it kept resolving the
-                // top-level one and elided an arm lowering then emitted.
-                "a caller-local shadow must not reach into an inlined callee",
-                "const a = 1\nvar x: int = 0\n\
+        ),
+        (
+            // INLINED-CALLEE BOUNDARY. A `mod` body is lowered into the
+            // CALLER's ctx with the caller's block scopes still open, and
+            // the const lookups walk every open frame — so a caller-local
+            // shadow evicted the top-level constant INSIDE the callee.
+            // Typecheck checks a `mod` body once, at its declaration,
+            // where no call site's scope exists, so it kept resolving the
+            // top-level one and elided an arm lowering then emitted.
+            "a caller-local shadow must not reach into an inlined callee",
+            "const a = 1\nvar x: int = 0\n\
                  mod inner() { if a == 1 { x = 1 } else { x = 2 } }\n\
                  in go: exec\n\
                  on go { let a = if true then 9 else 0\n  inner() }",
-            ),
-            (
-                "a caller-local var must not reach into an inlined callee",
-                "const a = 1\nvar x: int = 0\nvar k: int = 3\n\
+        ),
+        (
+            "a caller-local var must not reach into an inlined callee",
+            "const a = 1\nvar x: int = 0\nvar k: int = 3\n\
                  mod inner() { if a == 1 { x = 1 } else { x = 2 } }\n\
                  in go: exec\n\
                  on go { var a: int = k\n  inner() }",
-            ),
-            // A parameter, `var`, loop variable or destructured name shadowing
-            // a top-level const is that binding: neither side decides on it.
-            (
-                "a mod parameter shadowing a top-level const",
-                "const a = 1\nconst b = 2\nvar x: int = 0\nvar k: int = 3\n\
+        ),
+        // A parameter, `var`, loop variable or destructured name shadowing
+        // a top-level const is that binding: neither side decides on it.
+        (
+            "a mod parameter shadowing a top-level const",
+            "const a = 1\nconst b = 2\nvar x: int = 0\nvar k: int = 3\n\
                  mod f(a: int) { if a == 1 { x = 1 } else { x = 2 }\n\
                    if b == 2 { x = 3 } else { x = 4 } }\n\
                  in go: exec\non go { f(k) }",
-            ),
-            (
-                "a var, a loop variable and a destructured name shadowing top-level consts",
-                "const a = 1\nconst b = 2\nconst c = 3\nconst d = 4\nvar x: int = 0\nvar k: int = 3\n\
+        ),
+        (
+            "a var, a loop variable and a destructured name shadowing top-level consts",
+            "const a = 1\nconst b = 2\nconst c = 3\nconst d = 4\nvar x: int = 0\nvar k: int = 3\n\
                  type P = { c: int }\nvar pv: P = { c: 3 }\n\
                  in go: exec\n\
                  on go { var a: int = k\n if a == 1 { x = 1 } else { x = 2 }\n\
                    for b in 0..k { if b == 2 { x = 3 } }\n\
                    let { c } = pv\n if c == 3 { x = 5 } else { x = 6 }\n\
                    if d == 4 { x = 7 } else { x = 8 } }",
-            ),
-            (
-                "a const record parameter shadowing a top-level const",
-                "const a = { v: 1 }\nconst b = 2\nvar x: int = 0\n\
+        ),
+        (
+            "a const record parameter shadowing a top-level const",
+            "const a = { v: 1 }\nconst b = 2\nvar x: int = 0\n\
                  type P = { v: int }\n\
                  mod f(a: const P) { if a.v == 1 { x = 1 } else { x = 2 }\n\
                    if b == 2 { x = 3 } else { x = 4 } }\n\
                  in go: exec\non go { f({ v: 5 }) }",
-            ),
-        ];
-        for (label, src) in cases {
-            let tc_dropped = typecheck_dropped(src);
-            let lo_dropped = lowering_dropped(src);
-            assert_eq!(
-                tc_dropped, lo_dropped,
-                "typecheck and lowering must elide EXACTLY the same blocks — {label}\n  \
+        ),
+    ];
+    for (label, src) in cases {
+        let tc_dropped = typecheck_dropped(src);
+        let lo_dropped = lowering_dropped(src);
+        assert_eq!(
+            tc_dropped, lo_dropped,
+            "typecheck and lowering must elide EXACTLY the same blocks — {label}\n  \
                  typecheck dropped: {tc_dropped:?}\n  lowering dropped:  {lo_dropped:?}"
-            );
-            // A corpus entry that elides nothing on both sides would satisfy
-            // the equality vacuously and silently stop testing anything.
-            assert!(
-                !tc_dropped.is_empty(),
-                "case must actually exercise an elision — {label}"
-            );
-        }
+        );
+        // A corpus entry that elides nothing on both sides would satisfy
+        // the equality vacuously and silently stop testing anything.
+        assert!(
+            !tc_dropped.is_empty(),
+            "case must actually exercise an elision — {label}"
+        );
     }
+}
 
-    /// THE soundness property of this feature, stated exactly:
-    /// **everything LOWERED must have been CHECKED.** A block is lowered iff
-    /// it is not in lowering's dropped set; checked iff it is not in
-    /// typecheck's. So the requirement is the containment
-    ///
-    /// ```text
-    /// typecheck_dropped  ⊆  lowering_dropped
-    /// ```
-    ///
-    /// — typecheck may skip a block only if lowering also skips it. The
-    /// reverse slack is deliberately allowed and is the SAFE direction:
-    /// lowering knows things typecheck cannot (a call site's real argument, a
-    /// literal bound to a gate), so it may drop MORE. That merely means a
-    /// block was checked and then not emitted — at worst a diagnostic about
-    /// absent code, never shipped-unchecked code.
-    ///
-    /// Every case below is a shape that genuinely diverged at some point, so
-    /// this is a regression net rather than a smoke test. Cases 1-3 also
-    /// satisfy exact EQUALITY (both stages hold the same information), which
-    /// is asserted separately and more tightly; case 4-5 are the intentional
-    /// strict-subset ones.
-    #[test]
-    fn typecheck_never_drops_a_block_that_lowering_still_emits() {
-        // (label, source, both stages have equal information)
-        let cases: &[(&str, &str, bool)] = &[
-            (
-                "a plain top-level const elides on both sides",
-                "const A = 1\nvar x: int = 0\nin go: exec\n\
+/// THE soundness property of this feature, stated exactly:
+/// **everything LOWERED must have been CHECKED.** A block is lowered iff
+/// it is not in lowering's dropped set; checked iff it is not in
+/// typecheck's. So the requirement is the containment
+///
+/// ```text
+/// typecheck_dropped  ⊆  lowering_dropped
+/// ```
+///
+/// — typecheck may skip a block only if lowering also skips it. The
+/// reverse slack is deliberately allowed and is the SAFE direction:
+/// lowering knows things typecheck cannot (a call site's real argument, a
+/// literal bound to a gate), so it may drop MORE. That merely means a
+/// block was checked and then not emitted — at worst a diagnostic about
+/// absent code, never shipped-unchecked code.
+///
+/// Every case below is a shape that genuinely diverged at some point, so
+/// this is a regression net rather than a smoke test. Cases 1-3 also
+/// satisfy exact EQUALITY (both stages hold the same information), which
+/// is asserted separately and more tightly; case 4-5 are the intentional
+/// strict-subset ones.
+#[test]
+fn typecheck_never_drops_a_block_that_lowering_still_emits() {
+    // (label, source, both stages have equal information)
+    let cases: &[(&str, &str, bool)] = &[
+        (
+            "a plain top-level const elides on both sides",
+            "const A = 1\nvar x: int = 0\nin go: exec\n\
                  on go { if A == 1 { x = 1 } else { x = 2 } if A == 9 { x = 3 } }",
-                true,
-            ),
-            (
-                "@nofold on the handler keeps BOTH blocks on both sides",
-                "const A = 1\nvar x: int = 0\nin go: exec\n\n\
+            true,
+        ),
+        (
+            "@nofold on the handler keeps BOTH blocks on both sides",
+            "const A = 1\nvar x: int = 0\nin go: exec\n\n\
                  @nofold\non go { if A == 1 { x = 1 } else { x = 2 } }",
-                true,
-            ),
-            (
-                "a module-level @nofold keeps both blocks on both sides",
-                "@nofold\n\nconst A = 1\nvar x: int = 0\nin go: exec\n\
+            true,
+        ),
+        (
+            "a module-level @nofold keeps both blocks on both sides",
+            "@nofold\n\nconst A = 1\nvar x: int = 0\nin go: exec\n\
                  on go { if A == 1 { x = 1 } else { x = 2 } }",
-                true,
-            ),
-            (
-                // CRITICAL regression: `mod_decls` used to be a flat map, so
-                // `A`'s NESTED `const mod size` (checked first, in source
-                // order) permanently overwrote the top-level `size` for
-                // every later reader — typecheck resolved `B`'s call to
-                // `size` to A's leaked 100 (dropping the ELSE), while
-                // lowering (already scope-correct through `ctx.scope`)
-                // resolved the top-level 10 (dropping the THEN). Disjoint
-                // dropped sets — exactly the containment violation this test
-                // exists to catch. Scoping `mod_decls` like `scoped_consts`
-                // (mirroring `lower::LowerCtx::pass1_chips`) makes both
-                // stages resolve `size` identically once `A`'s body (and its
-                // frame) has closed.
-                "a nested const mod does not leak into a later sibling's resolution",
-                "const mod size() -> int { return 10 }\nvar x: int = 0\n\
+            true,
+        ),
+        (
+            // CRITICAL regression: `mod_decls` used to be a flat map, so
+            // `A`'s NESTED `const mod size` (checked first, in source
+            // order) permanently overwrote the top-level `size` for
+            // every later reader — typecheck resolved `B`'s call to
+            // `size` to A's leaked 100 (dropping the ELSE), while
+            // lowering (already scope-correct through `ctx.scope`)
+            // resolved the top-level 10 (dropping the THEN). Disjoint
+            // dropped sets — exactly the containment violation this test
+            // exists to catch. Scoping `mod_decls` like `scoped_consts`
+            // (mirroring `lower::LowerCtx::pass1_chips`) makes both
+            // stages resolve `size` identically once `A`'s body (and its
+            // frame) has closed.
+            "a nested const mod does not leak into a later sibling's resolution",
+            "const mod size() -> int { return 10 }\nvar x: int = 0\n\
                  mod A() { const mod size() -> int { return 100 } }\n\
                  mod B() { const s = size()\n if s == 100 { x = 1 } else { x = 2 } }\n\
                  in go: exec\non go { B() }",
-                true,
-            ),
-            (
-                // Typecheck sees a placeholder ZERO and must decline to elide
-                // at all; lowering inlines the REAL `1` and elides the ELSE.
-                // Opposite selections — which is precisely why typecheck must
-                // not elide. Strict subset: {} ⊂ {else}.
-                "a const PARAM's placeholder must not decide a branch",
-                "var x: int = 0\nmod f(m: const int) { if m == 1 { x = 1 } else { x = 2 } }\n\
+            true,
+        ),
+        (
+            // Typecheck sees a placeholder ZERO and must decline to elide
+            // at all; lowering inlines the REAL `1` and elides the ELSE.
+            // Opposite selections — which is precisely why typecheck must
+            // not elide. Strict subset: {} ⊂ {else}.
+            "a const PARAM's placeholder must not decide a branch",
+            "var x: int = 0\nmod f(m: const int) { if m == 1 { x = 1 } else { x = 2 } }\n\
                  in go: exec\non go { f(1) }",
-                false,
-            ),
-            (
-                "a const derived FROM a const param is just as fictional",
-                "var x: int = 0\n\
+            false,
+        ),
+        (
+            "a const derived FROM a const param is just as fictional",
+            "var x: int = 0\n\
                  mod f(m: const int) { const t = m + 1\n if t == 2 { x = 1 } else { x = 2 } }\n\
                  in go: exec\non go { f(1) }",
-                false,
-            ),
-        ];
-        for (label, src, equal_information) in cases {
-            let tc_dropped = typecheck_dropped(src);
-            let lo_dropped = lowering_dropped(src);
-            for range in &tc_dropped {
-                assert!(
-                    lo_dropped.contains(range),
-                    "typecheck skipped a block lowering still EMITS (unchecked code ships) \
+            false,
+        ),
+    ];
+    for (label, src, equal_information) in cases {
+        let tc_dropped = typecheck_dropped(src);
+        let lo_dropped = lowering_dropped(src);
+        for range in &tc_dropped {
+            assert!(
+                lo_dropped.contains(range),
+                "typecheck skipped a block lowering still EMITS (unchecked code ships) \
                      — {label}\n  typecheck dropped: {tc_dropped:?}\n  lowering dropped:  {lo_dropped:?}"
-                );
-            }
-            if *equal_information {
-                assert_eq!(
-                    tc_dropped, lo_dropped,
-                    "both stages have the same information here, so their dropped sets must \
-                     match exactly — {label}"
-                );
-            } else {
-                assert!(
-                    tc_dropped.len() < lo_dropped.len(),
-                    "expected typecheck to be strictly more conservative here — {label}\n  \
-                     typecheck dropped: {tc_dropped:?}\n  lowering dropped:  {lo_dropped:?}"
-                );
-            }
-        }
-    }
-
-    /// The `@nofold` half of the agreement above, stated as the miscompile it
-    /// prevents: lowering keeps the `Branch` and emits BOTH blocks, so a type
-    /// error in the "untaken" one is real code that ships. Before typecheck
-    /// mirrored `nofold_depth`, this compiled with no diagnostic at all and
-    /// emitted a live `Var_Set x = "definitely not an int"` into an int var.
-    #[test]
-    fn a_nofold_if_still_type_checks_both_blocks() {
-        let r = tc(
-            "const MODE = 1\nvar x: int = 0\nin go: exec\n\n\
-             @nofold\non go { if MODE == 1 { x = 1 } else { x = \"definitely not an int\" } }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "@nofold must keep checking the block it still lowers: {:?}",
-            r.diagnostics
-        );
-        assert!(
-            r.dropped_ranges.is_empty(),
-            "@nofold must drop nothing: {:?}",
-            r.dropped_ranges
-        );
-    }
-
-    /// A `const` parameter's placeholder is a type-shaped ZERO seeded once,
-    /// before any call site exists — so `m == 1` evaluates to FALSE here while
-    /// lowering, inlining the real `1`, takes the THEN. Selecting a branch
-    /// from it means the branch that actually ships is never checked: this
-    /// program used to compile clean and emit a lone `Var_Set x = "wrong"`
-    /// into an int var. Both blocks must be checked instead.
-    #[test]
-    fn a_const_param_placeholder_never_decides_a_branch() {
-        let r = tc(
-            "var x: int = 0\nmod f(m: const int) { if m == 1 { x = \"wrong\" } else { x = 2 } }\n\
-             in go: exec\non go { f(1) }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "the branch the real argument selects must be type-checked: {:?}",
-            r.diagnostics
-        );
-        assert!(
-            r.dropped_ranges.is_empty(),
-            "a placeholder must not drive an elision: {:?}",
-            r.dropped_ranges
-        );
-        // Transitively, too: a `const` derived from the placeholder carries
-        // exactly the same fiction.
-        let derived = tc(
-            "var x: int = 0\n\
-             mod f(m: const int) { const t = m + 1\n if t == 2 { x = \"wrong\" } else { x = 2 } }\n\
-             in go: exec\non go { f(1) }",
-        );
-        assert!(
-            derived.diagnostics.iter().any(|d| d.code == "WS003"),
-            "placeholder-ness must propagate through a derived const: {:?}",
-            derived.diagnostics
-        );
-    }
-
-    /// The guard above must not over-fire: a REAL top-level constant read
-    /// inside the same mod body still elides normally, so tightening the
-    /// placeholder rule didn't just switch the feature off inside mods.
-    #[test]
-    fn a_real_constant_still_elides_inside_a_mod_body() {
-        assert_no_diags(&tc(
-            "const MODE = 1\nvar x: int = 0\n\
-             mod f(n: int) { if MODE == 1 { x = n } else { x = totallyUndefinedThing() } }\n\
-             in go: exec\non go { f(1) }",
-        ));
-    }
-
-    /// A constant-only SCALAR config slot must reject a constant COLLECTION.
-    ///
-    /// Being constant is necessary but not sufficient: a record/array/map has
-    /// no single scalar to bake into the gate's data field. Unchecked, these
-    /// reached emit and were resolved there by literal kind, two wrong ways —
-    /// an array silently defaulted to an empty/zero value (a clean-typechecking
-    /// program baking config the author never wrote), and a record hit a
-    /// converter with no way to decline, aborting the whole compile with an
-    /// `unreachable!` instead of producing a diagnostic.
-    #[test]
-    fn a_non_scalar_constant_in_a_scalar_config_slot_is_ws028() {
-        for (src, what) in [
-            // named config field, record
-            (
-                "const cfg = { rooms: 2, timer: 60 }\n\
-                 var x: int = 0\n\
-                 on ChatCommand(\"greet\", description = cfg) { x = x + 1 }",
-                "a record",
-            ),
-            // POSITIONAL config field, record — a separate slot from the above
-            (
-                "const cfg = { rooms: 2, timer: 60 }\n\
-                 var x: int = 0\n\
-                 on ChatCommand(cfg) { x = x + 1 }",
-                "a record",
-            ),
-            // the pre-existing array case this subsumes: it used to typecheck
-            // clean and silently bake a wrong default
-            (
-                "const arr = [1, 2, 3]\n\
-                 var x: int = 0\n\
-                 on ChatCommand(\"greet\", description = arr) { x = x + 1 }",
-                "an array",
-            ),
-        ] {
-            let r = tc(src);
-            let hit = r
-                .diagnostics
-                .iter()
-                .find(|d| d.code == "WS028")
-                .unwrap_or_else(|| panic!("expected WS028 for {what} in a scalar config slot: {:?}", r.diagnostics));
-            assert!(
-                hit.message.contains(what),
-                "the diagnostic must name the offending kind ({what}), got {:?}",
-                hit.message
             );
         }
-    }
-
-    /// The guard above must not over-fire: an ordinary SCALAR constant in the
-    /// same slot stays accepted, so this is a shape check, not a blanket ban.
-    #[test]
-    fn a_scalar_constant_in_a_scalar_config_slot_is_still_accepted() {
-        assert_no_diags(&tc(
-            "const T = \"help text\"\n\
-             var x: int = 0\n\
-             on ChatCommand(\"greet\", description = T) { x = x + 1 }",
-        ));
-    }
-
-    // ---- exec-requiring mod called from a pure position (WS007) ----
-    //
-    // A mod whose inlined body reads/writes a container is exec-requiring; the
-    // per-op WS007 is deferred inside the body (checked in exec mode), so a
-    // pure call of it silently inlined a container read into pure context and
-    // miscompiled (the read yielded the map REFERENCE, not a value). The
-    // call-site check turns that into a loud WS007.
-
-    fn has_ws007(r: &TypeCheckResult) -> bool {
-        r.diagnostics.iter().any(|d| d.code == "WS007")
-    }
-
-    #[test]
-    fn pure_call_of_a_container_reading_mod_is_ws007() {
-        let r = tc(
-            "var m: Map<int, string>\n\
-             in go: exec\n\
-             on go { m.set(1, \"x\") }\n\
-             mod tag(k: int) -> string { let v = m.get(k); return v.Value }\n\
-             out bad = tag(1)",
-        );
-        assert!(
-            has_ws007(&r),
-            "a pure call of a map-reading mod must be WS007: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn exec_call_of_a_container_reading_mod_is_clean() {
-        // The SAME mod called from an exec handler must stay legal.
-        assert_no_diags(&tc(
-            "var m: Map<int, string>\n\
-             var res: string\n\
-             mod tag(k: int) -> string { let v = m.get(k); return v.Value }\n\
-             in go: exec\n\
-             on go { m.set(1, \"x\"); res = tag(1) }",
-        ));
-    }
-
-    #[test]
-    fn an_uncalled_container_reading_mod_is_clean() {
-        // A map-reading mod that is never called must not fire on its own.
-        assert_no_diags(&tc(
-            "var m: Map<int, string>\n\
-             in go: exec\n\
-             on go { m.set(1, \"x\") }\n\
-             mod tag(k: int) -> string { let v = m.get(k); return v.Value }",
-        ));
-    }
-
-    #[test]
-    fn a_pure_arithmetic_mod_called_from_pure_is_clean() {
-        // No container op, no exec builtin: a pure mod stays pure-callable.
-        assert_no_diags(&tc(
-            "mod dbl(k: int) -> int { return k * 2 }\n\
-             out good = dbl(21)",
-        ));
-    }
-
-    #[test]
-    fn a_transitively_container_reading_mod_pure_call_is_ws007() {
-        // `outer` reads no container directly but calls `inner`, which does.
-        let r = tc(
-            "var m: Map<int, string>\n\
-             in go: exec\n\
-             on go { m.set(1, \"x\") }\n\
-             mod inner(k: int) -> string { let v = m.get(k); return v.Value }\n\
-             mod outer(k: int) -> string { return inner(k) }\n\
-             out bad = outer(1)",
-        );
-        assert!(
-            has_ws007(&r),
-            "a pure call of a transitively map-reading mod must be WS007: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn a_subscript_reading_mod_pure_call_is_ws007() {
-        // The `m[k]` subscript form is exec-requiring the same as `m.get(k)`.
-        let r = tc(
-            "var m: Map<int, string>\n\
-             in go: exec\n\
-             on go { m.set(1, \"x\") }\n\
-             mod tag(k: int) -> string { return m[k] }\n\
-             out bad = tag(1)",
-        );
-        assert!(
-            has_ws007(&r),
-            "a pure call of a subscript-reading mod must be WS007: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn a_pure_call_with_an_exec_arg_override_is_clean() {
-        // Passing `exec = <trigger>` supplies the exec context the pure call
-        // otherwise lacks, so the override must silence WS007 (mirrors the
-        // builtin exec-call and container-method exemptions).
-        let r = tc(
-            "var m: Map<int, string>\n\
-             in go: exec\n\
-             mod tag(k: int) -> string { let v = m.get(k); return v.Value }\n\
-             out bad = tag(1, exec = go)",
-        );
-        assert!(
-            !has_ws007(&r),
-            "an `exec =` override must suppress the exec-call WS007: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn a_self_mod_named_like_a_container_method_is_not_over_fired() {
-        // `sort` is a catalog array method name, but here it is a pure user
-        // self-mod on a record: the receiver is not a container, so the call
-        // must NOT be mistaken for an exec-requiring container op.
-        assert_no_diags(&tc(
-            "type Point = { x: int, y: int }\n\
-             mod sort(self: Point) -> int { return self.x + self.y }\n\
-             let p: Point = { x: 1, y: 2 }\n\
-             out good = p.sort()",
-        ));
-    }
-
-    #[test]
-    fn a_const_receiver_read_mod_pure_call_is_clean() {
-        // A read on a `const`-declared container is exempt from the exec rule
-        // (it should const-fold), so a pure call of a mod that only does that
-        // must stay clean.
-        assert_no_diags(&tc(
-            "const m: Map<int, string> = { 1 => \"x\" }\n\
-             mod tag(k: int) -> string { let v = m.get(k); return v.Value }\n\
-             out ok = tag(1)",
-        ));
-    }
-
-    #[test]
-    fn enum_payload_captures_are_writable_from_a_var_scrutinee() {
-        // Mutating a payload goes THROUGH the destructure: `if let`/`match`/
-        // `let else` bind each capture to the scrutinee's `__{Variant}_{field}`
-        // storage slot, so writing the capture writes that slot. Lowering has
-        // always emitted the `Var_Set` for this; the captures were registered
-        // as `LetBinding`, so the write was rejected before it got there.
-        let pre = "enum E { A, B { s: string, b: bool } }\n\
-                   var e: E = E.B { s: \"hi\", b: false }\n\
-                   in go: exec\n";
-        assert_no_diags(&tc(&format!(
-            "{pre}on go {{ if let B {{ s, b }} = e {{ b = true\ns = \"x\" }} }}"
-        )));
-        assert_no_diags(&tc(&format!(
-            "{pre}on go {{ match e {{ B {{ s, b }} => {{ b = true }}, A => {{}} }} }}"
-        )));
-        assert_no_diags(&tc(&format!(
-            "{pre}on go {{ let B {{ s, b }} = e else {{ return }}\nb = true }}"
-        )));
-        // Positional payloads bind the same way.
-        assert_no_diags(&tc(
-            "enum Opt { Some(int), None }\n\
-             var o: Opt = Opt.Some(5)\n\
-             in go: exec\n\
-             on go { if let Some(x) = o { x = 9 } }",
-        ));
-    }
-
-    #[test]
-    fn enum_payload_captures_stay_read_only_from_an_immutable_scrutinee() {
-        // A `let`-bound scrutinee has no storage behind its slots, so a capture
-        // write would emit no gate. It must stay an error rather than become a
-        // silent no-op now that the var-backed form is writable.
-        let r = tc(
-            "enum E { A, B { s: string, b: bool } }\n\
-             let e: E = E.B { s: \"hi\", b: false }\n\
-             in go: exec\n\
-             on go { if let B { s, b } = e { b = true } }",
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS007" && d.severity == Severity::Error),
-            "expected WS007 on an immutable scrutinee's capture: {:?}",
-            r.diagnostics
-        );
-    }
-
-
-    #[test]
-    fn enum_payload_captures_stay_read_only_from_a_container_element() {
-        // A container ELEMENT scrutinee (`arr[i]`, `m[k]`) reads the element
-        // into a value, and lowering emits no write-back for a capture off it, so
-        // the capture must not register as writable. `is_ref_able` says yes
-        // here (it recurses to the container, which is right for `&arr[i]`),
-        // which would turn every such write into a silent no-op.
-        let arr = tc(
-            "enum E { A, B { n: int } }\n\
-             var es: E[]\n\
-             in go: exec\n\
-             on go { if let B { n } = es[0] { n = 42 } }",
-        );
-        let d = arr
-            .diagnostics
-            .iter()
-            .find(|d| d.code == "WS007" && d.severity == Severity::Error)
-            .unwrap_or_else(|| panic!("array element capture must not be writable: {:?}", arr.diagnostics));
-        // Reported as a capture, not as a `let` the user could redeclare `var`.
-        assert!(
-            d.message.contains("read-only capture") && d.message.contains("arr[i]"),
-            "message must explain the capture, not advise `var`: {}",
-            d.message
-        );
-        let map = tc(
-            "enum E { A, B { n: int } }\n\
-             var m: Map<string, E>\n\
-             in go: exec\n\
-             on go { if let B { n } = m[\"k\"] { n = 42 } }",
-        );
-        assert!(
-            map.diagnostics
-                .iter()
-                .any(|d| d.code == "WS007" && d.severity == Severity::Error),
-            "map element capture must not be writable: {:?}",
-            map.diagnostics
-        );
-        // A field reached THROUGH an element is the same read (`hs[0].e`).
-        let via_field = tc(
-            "enum E { A, B { n: int } }\n\
-             type H = { e: E }\n\
-             var hs: H[]\n\
-             in go: exec\n\
-             on go { if let B { n } = hs[0].e { n = 42 } }",
-        );
-        assert!(
-            via_field
-                .diagnostics
-                .iter()
-                .any(|d| d.code == "WS007" && d.severity == Severity::Error),
-            "field-of-element capture must not be writable: {:?}",
-            via_field.diagnostics
-        );
-    }
-
-    #[test]
-    fn enum_payload_captures_are_writable_through_a_var_record_field() {
-        // The field chain that DOES write back: a `var` record's enum-typed
-        // field is its own storage, so its payload slots are real gates.
-        assert_no_diags(&tc(
-            "enum E { A, B { n: int } }\n\
-             type H = { e: E, tag: int }\n\
-             var h: H = { e: E.B { n: 1 }, tag: 0 }\n\
-             in go: exec\n\
-             on go { if let B { n } = h.e { n = 42 } }",
-        ));
-        // And a `*T` parameter, whose slots are the caller's gates.
-        assert_no_diags(&tc(
-            "enum E { A, B { n: int } }\n\
-             var e: E = E.B { n: 1 }\n\
-             in go: exec\n\
-             mod bump(v: *E) { if let B { n } = v { n = 42 } }\n\
-             on go { bump(&e) }",
-        ));
-    }
-
-    #[test]
-    fn an_enum_payload_field_may_not_be_an_array_or_map() {
-        // A payload slot is one storage gate written by the variant's
-        // construction, and there is no construction path that fills a
-        // container: a declaration initializer bakes nothing, and a runtime
-        // `E.B { xs: [1,2,3] }` copies from an empty temporary. The slot
-        // allocates an ArrayVar/MapVar all the same, so `push`/`set` on a
-        // capture appear to work against storage nothing ever fills. Reject the
-        // declaration instead of letting the value silently come out empty.
-        let has = |src: &str| {
-            let r = tc(src);
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS069" && d.severity == Severity::Error)
-        };
-        assert!(has("enum E { A, B { xs: int[] } }\nout n = 1"), "named array field");
-        assert!(has("enum E { A, B(int[]) }\nout n = 1"), "positional array field");
-        assert!(
-            has("enum E { A, B { m: Map<string, int> } }\nout n = 1"),
-            "map field"
-        );
-        // Through a record, directly and behind an alias.
-        assert!(
-            has("enum E { A, B { r: { xs: int[] } } }\nout n = 1"),
-            "array inside an inline record field"
-        );
-        assert!(
-            has("type R = { xs: int[], n: int }\nenum E { A, B { r: R } }\nout n = 1"),
-            "array inside a record reached through an alias"
-        );
-    }
-
-    #[test]
-    fn an_enum_payload_field_of_scalars_and_records_still_checks() {
-        // The shapes that DO have a working slot per leaf must stay clean.
-        assert_no_diags(&tc(
-            "type P = { x: int, y: int }\n\
-             enum E { A, B { p: P, s: string, v: vector }, C(int, float) }\n\
-             var e: E = E.B { p: { x: 1, y: 2 }, s: \"hi\", v: Vec(0.0, 0.0, 0.0) }\n\
-             out n = 1",
-        ));
-        // A nested enum payload is fine too - it is tag plus slots, all scalars.
-        assert_no_diags(&tc(
-            "enum Inner { P { n: int }, Q }\n\
-             enum Outer { W { i: Inner }, Z }\n\
-             var o: Outer = Outer.W { i: Inner.P { n: 1 } }\n\
-             out n = 1",
-        ));
-    }
-
-    #[test]
-    fn a_generic_enum_may_not_be_instantiated_with_a_container() {
-        // The declaration check cannot see this: `Some(T)`'s field is the bare
-        // parameter. The instantiation is where the container type is picked,
-        // so that is where it is rejected.
-        let r = tc("var o: Option<int[]> = Option.None\nout n = 1");
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS069" && d.severity == Severity::Error),
-            "expected WS069 for Option<int[]>: {:?}",
-            r.diagnostics
-        );
-        assert_eq!(
-            r.diagnostics.iter().filter(|d| d.code == "WS069").count(),
-            1,
-            "one report per annotation, not one per resolution: {:?}",
-            r.diagnostics
-        );
-        assert!(
-            tc("enum Tag<T> { A, B }\nvar t: Tag<int[]> = Tag.A\nout n = 1")
-                .diagnostics
-                .iter()
-                .all(|d| d.code != "WS069"),
-            "a parameter no variant stores is not a payload slot"
-        );
-        assert_no_diags(&tc("var o: Option<int> = Option.Some(5)\nout n = 1"));
-    }
-
-    #[test]
-    fn unsafe_payload_access_types_the_named_variants_field() {
-        // `unsafe v.Variant.field` asserts the tag instead of testing it, so it
-        // types as that variant's payload field in both read and write
-        // position.
-        let pre = "enum E { A, B { s: string, n: int } }\n\
-                   var e: E = E.B { s: \"hi\", n: 1 }\n\
-                   var got: string = \"\"\n\
-                   in go: exec\n";
-        assert_no_diags(&tc(&format!("{pre}on go {{ got = unsafe e.B.s }}")));
-        assert_no_diags(&tc(&format!("{pre}on go {{ unsafe e.B.s = \"x\" }}")));
-        // The field's type is the payload's, so a wrong-typed write is caught.
-        let bad = tc(&format!("{pre}on go {{ unsafe e.B.n = \"x\" }}"));
-        assert!(
-            bad.diagnostics.iter().any(|d| d.code == "WS003"),
-            "expected a type mismatch on the slot: {:?}",
-            bad.diagnostics
-        );
-        // A record-typed payload keeps projecting past the slot.
-        assert_no_diags(&tc(
-            "type P = { x: int }\n\
-             enum E2 { A, B { p: P } }\n\
-             var e: E2 = E2.B { p: { x: 1 } }\n\
-             var got: int = 0\n\
-             in go: exec\n\
-             on go { unsafe e.B.p.x = 5\ngot = unsafe e.B.p.x }",
-        ));
-    }
-
-    #[test]
-    fn unsafe_payload_access_rejects_a_bad_variant_or_field() {
-        let pre = "enum E { A, B { s: string } }\n\
-                   var e: E = E.B { s: \"hi\" }\n\
-                   in go: exec\n";
-        let bad_variant = tc(&format!("{pre}on go {{ unsafe e.Nope.s = \"x\" }}"));
-        assert!(
-            bad_variant.diagnostics.iter().any(|d| d.code == "WS060"),
-            "expected WS060 for an unknown variant: {:?}",
-            bad_variant.diagnostics
-        );
-        let bad_field = tc(&format!("{pre}on go {{ unsafe e.B.nope = \"x\" }}"));
-        assert!(
-            bad_field.diagnostics.iter().any(|d| d.code == "WS010"),
-            "expected WS010 for an unknown payload field: {:?}",
-            bad_field.diagnostics
-        );
-        let not_enum = tc("var n: int = 0\nin go: exec\non go { n = unsafe n.B.s }");
-        assert!(
-            not_enum.diagnostics.iter().any(|d| d.code == "WS066"),
-            "expected WS066 for a non-enum base: {:?}",
-            not_enum.diagnostics
-        );
-    }
-
-    #[test]
-    fn unsafe_is_still_usable_as_an_identifier() {
-        // A contextual keyword, like `enum`: only `unsafe <ident>` opens the
-        // access, so the bare name stays available.
-        assert_no_diags(&tc(
-            "var unsafe: int = 1\nout n = unsafe + 1",
-        ));
-    }
-
-    #[test]
-    fn reading_an_enum_payload_field_directly_points_at_the_alternatives() {
-        // `e.s` reaches no slot (they are keyed by variant), so it used to type
-        // as `any` and lower to a placeholder. Name both spellings that work.
-        let r = tc(
-            "enum E { A, B { s: string } }\n\
-             var e: E = E.B { s: \"hi\" }\n\
-             var got: string = \"\"\n\
-             in go: exec\n\
-             on go { got = e.s }",
-        );
-        let d = r
-            .diagnostics
-            .iter()
-            .find(|d| d.code == "WS010")
-            .unwrap_or_else(|| panic!("expected WS010: {:?}", r.diagnostics));
-        assert!(
-            d.message.contains("if let") && d.message.contains("unsafe"),
-            "message must name the destructure and the unchecked form: {}",
-            d.message
-        );
-    }
-
-    /// Distributing `*T` over a record's fields must not open the door the
-    /// storage rule closes: a record whose fields are references still cannot
-    /// back an array or a map, since a stored record needs a real value per
-    /// field.
-    #[test]
-    fn a_record_with_ref_fields_still_cannot_be_stored_in_a_container() {
-        for decl in ["var xs: T[]", "var m: Map<int, T>"] {
-            let r = tc(&format!("type T = {{ a: *float, b: float }}\n{decl}\n"));
-            assert!(
-                r.diagnostics.iter().any(|d| d.code == "WS049"),
-                "{decl} must still be WS049: {:?}",
-                r.diagnostics
-            );
-        }
-    }
-
-    /// A record parameter behind a `*` is accepted and its fields are writable:
-    /// the ref distributes over the fields rather than naming the record, which
-    /// has no single wire of its own.
-    #[test]
-    fn a_record_ref_param_makes_its_fields_assignable() {
-        let r = tc(
-            "type T = { a: float, b: float }\n\
-             chip M(s: *T, x: float) { s.a = x }\n\
-             var g: T = { a: 1.0, b: 2.0 }\n\
-             var src: float = 0.0\n\
-             in go: exec\n\
-             on go { M(g, src) }\n",
-        );
-        assert!(
-            !r.diagnostics
-                .iter()
-                .any(|d| d.severity == crate::diagnostic::Severity::Error),
-            "a `*Record` param must accept field writes: {:?}",
-            r.diagnostics
-        );
-    }
-
-    /// Reading a ref-typed record field yields the VALUE, like reading a `var`.
-    /// A `*T` param distributes to ref fields, so leaving the `Ref` on a read
-    /// made annotations and if-then-else reject it as `*float` vs `float`.
-    #[test]
-    fn a_ref_record_field_reads_as_its_value() {
-        let r = tc(
-            "type S = { a: float, b: bool }\n\
-             chip M(s: *S, f: float) -> (r: float) {\n\
-               var out1: float = s.a\n\
-               out r = if s.b then s.a else f\n\
-             }\n\
-             var g: S = { a: 1.0, b: false }\n\
-             var res: float = 0.0\n\
-             in go: exec\n\
-             on go { res = M(g, 2.0) }\n",
-        );
-        assert!(
-            !r.diagnostics
-                .iter()
-                .any(|d| d.severity == crate::diagnostic::Severity::Error),
-            "a ref field must read as its value: {:?}",
-            r.diagnostics
-        );
-    }
-
-    /// A ref field needs storage behind it. A record LITERAL built from `in`
-    /// ports has none, so it cannot satisfy a `*T` parameter - the same rule a
-    /// scalar `*T` argument already followed.
-    #[test]
-    fn a_record_literal_cannot_satisfy_a_ref_param_without_storage() {
-        let bad = tc(
-            "type S = { a: float }\n\
-             chip M(s: *S) { s.a = 1.0 }\n\
-             in a: float\nin go: exec\n\
-             on go { M({ a: a }) }\n",
-        );
-        assert!(
-            bad.diagnostics.iter().any(|d| d.code == "WS008"),
-            "an `in`-port field must be WS008: {:?}",
-            bad.diagnostics
-        );
-
-        // A real var behind the field is fine.
-        let good = tc(
-            "type S = { a: float }\n\
-             chip M(s: *S) { s.a = 1.0 }\n\
-             var v: float = 0.0\nin go: exec\n\
-             on go { M({ a: v }) }\n",
-        );
-        assert!(
-            !good.diagnostics.iter().any(|d| d.code == "WS008"),
-            "a var-backed field must be accepted: {:?}",
-            good.diagnostics
-        );
-    }
-
-    // `is` variant test
-
-    #[test]
-    fn is_types_as_a_bool() {
-        assert_no_diags(&tc(
-            "enum Shape { Empty, Circle(float) }\n\
-             var s: Shape = Shape.Empty\n\
-             out hit: bool = s is Shape.Circle",
-        ));
-        // A variant path on the left is an enum value too, so it tests fine.
-        assert_no_diags(&tc(
-            "enum Shape { Empty, Circle(float) }\n\
-             out hit: bool = Shape.Empty is Shape.Circle",
-        ));
-    }
-
-    #[test]
-    fn is_on_a_non_enum_value_is_ws066() {
-        let r = tc(
-            "enum Shape { Empty, Circle(float) }\n\
-             var n: int = 0\n\
-             out hit = n is Shape.Circle",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS066"),
-            "expected WS066 for a non-enum left side: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn is_without_a_variant_on_the_right_is_ws066() {
-        // An enum value on the right names no variant, so it is not a test.
-        let r = tc(
-            "enum Shape { Empty, Circle(float) }\n\
-             var s: Shape = Shape.Empty\n\
-             var other: Shape = Shape.Circle(1.0)\n\
-             out hit = s is other",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS066"),
-            "expected WS066 for a right side that is not a variant: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn is_rejects_an_unknown_variant() {
-        let r = tc(
-            "enum Shape { Empty, Circle(float) }\n\
-             var s: Shape = Shape.Empty\n\
-             out hit = s is Shape.Nope",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS060"),
-            "expected WS060 for an unknown variant: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn is_stays_usable_as_an_identifier() {
-        // Contextual, like `unsafe`: only `is <name>` is the operator.
-        assert_no_diags(&tc("var is: int = 1\nout n = is + 1"));
-    }
-
-    #[test]
-    fn an_output_port_is_readable_as_a_value() {
-        // A port lowers to its rerouter output, so it reads as a value like
-        // any other.
-        let r = tc("in a: int\nout y: int = a + 1\nout z: int = y * 2");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn a_same_named_var_wins_over_the_output_port() {
-        // `var count` alongside `out count = count` is a shipping idiom in 12
-        // files of the corpus. The right-hand side has always meant the var and
-        // must keep meaning it, so ports resolve only after the ordinary tier
-        // misses.
-        let r = tc("var count: int = 0\nin go: bool\nout count: int = count");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn an_unannotated_output_port_reads_as_any() {
-        // Registration runs in pass 1, before any value is inferred, so an
-        // unannotated port carries `any`. This matches what the namespaced
-        // `NsDeclInfo` path already reports for the same declaration.
-        let r = tc("in a: int\nout y = a + 1\nout z: int = y");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn a_handler_declared_port_is_readable_from_inside_its_own_handler() {
-        // A port declared inside an `on` handler body is registered here as
-        // well as by `pre_declare_handler_outputs`, or a later read of its
-        // name in the SAME block reports WS002 while lowering wires it.
-        let r = tc(
-            "static var ticks: int = 0\n\
-             on Clock(interval = 0.2) {\n\
-             ticks = ticks + 1\n\
-             out counted: int = ticks\n\
-             var seen: int = counted\n\
-             }",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn a_handler_declared_port_is_readable_from_outside_its_handler() {
-        // The same name, read from a different top-level handler entirely -
-        // registration must land at file scope, not inside a frame the
-        // declaring handler pushes and pops.
-        let r = tc(
-            "in go: exec\n\
-             static var ticks: int = 0\n\
-             on Clock(interval = 0.2) {\n\
-             ticks = ticks + 1\n\
-             out counted: int = ticks\n\
-             }\n\
-             on go {\n\
-             var seen: int = counted\n\
-             }",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn a_port_type_conflict_reports_the_same_way_regardless_of_file_order() {
-        // A top-level `out` and a handler-declared `out` of the same name but
-        // disagreeing types: registration is first-wins, so whichever site
-        // pass 1 reaches first sets the port's type and the other one
-        // conflicts against it. Swapping which site comes first in the file
-        // must not change whether the file checks clean - both orders are a
-        // genuine conflict and both must report WS003, not just one of them.
-        let out_first = tc(
-            "out counted: int = 5\n\
-             on Clock(interval = 0.2) {\n\
-             out counted: string = \"hi\"\n\
-             }\n\
-             let x: int = counted + 1",
-        );
-        assert!(
-            out_first.diagnostics.iter().any(|d| d.code == "WS003"),
-            "out-before-handler order should report WS003; diagnostics: {:?}",
-            out_first.diagnostics
-        );
-        let handler_first = tc(
-            "on Clock(interval = 0.2) {\n\
-             out counted: string = \"hi\"\n\
-             }\n\
-             out counted: int = 5\n\
-             let x: int = counted + 1",
-        );
-        assert!(
-            handler_first.diagnostics.iter().any(|d| d.code == "WS003"),
-            "handler-before-out order should report WS003 too; diagnostics: {:?}",
-            handler_first.diagnostics
-        );
-        // An unannotated site beside an annotated one is not a declaration
-        // conflict: the annotation states the port's type and the unannotated
-        // site states nothing, so the port ends up typed either way and the
-        // unannotated site's value is judged against it in both orders.
-        let ws003 = |r: &TypeCheckResult| {
-            r.diagnostics.iter().filter(|d| d.code == "WS003").count()
-        };
-        let unannotated_first = tc(
-            "in go: exec
-             out shared = \"x\"
-             on go {
-             out shared: int = 1
-             }",
-        );
-        let annotated_first = tc(
-            "in go: exec
-             on go {
-             out shared: int = 1
-             }
-             out shared = \"x\"",
-        );
-        assert_eq!(
-            (ws003(&unannotated_first), ws003(&annotated_first)),
-            (1, 1),
-            "an unannotated site and an annotated one must report identically in \
-             both orders; unannotated first: {:?}, annotated first: {:?}",
-            unannotated_first.diagnostics,
-            annotated_first.diagnostics
-        );
-    }
-
-    #[test]
-    fn conflicting_branch_sites_report_ws003_instead_of_silently_wiring() {
-        // Two conditional sites for the same handler-declared port,
-        // disagreeing on type. Lowering wires both branches into ONE typed
-        // backing var with no cross-site conversion, so the disagreement has
-        // to be reported here: the fixture guard cannot catch it, since it
-        // only checks for placeholders and an empty diagnostics list.
-        let r = tc(
-            "in go: exec\n\
-             in cond: bool\n\
-             on go {\n\
-             if cond {\n\
-             out branch: int = 1\n\
-             } else {\n\
-             out branch: string = \"x\"\n\
-             }\n\
-             }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "disagreeing branch types for one port must report WS003; diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn an_unannotated_update_site_is_checked_against_the_registered_port_type() {
-        // A site with no annotation at all is the natural way to write an
-        // update, and it reaches the same port the annotated site typed. The
-        // signature frame knows nothing about a module-boundary port, so the
-        // port registry is what this value answers to.
-        let r = tc(
-            "in go1: exec\n\
-             in go2: exec\n\
-             on go1 {\n\
-             out shared: int = 1\n\
-             }\n\
-             on go2 {\n\
-             out shared = \"x\"\n\
-             }\n\
-             let x: int = shared + 1",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "an unannotated update site with a mismatched value must report WS003; \
-             diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn an_emit_into_a_handler_declared_port_is_checked_against_it() {
-        // `emit` drives a port's backing variable the same way an `out`
-        // binding does, so its payload answers to the port's declared type.
-        let r = tc(
-            "in go1: exec\n\
-             in go2: exec\n\
-             on go1 {\n\
-             out shared: int = 1\n\
-             }\n\
-             on go2 {\n\
-             emit shared = \"x\"\n\
-             }\n\
-             let x: int = shared + 1",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "an emit payload that does not fit the port must report WS003; \
-             diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn an_emit_into_a_handler_declared_port_with_a_matching_value_stays_clean() {
-        let r = tc(
-            "in go1: exec\n\
-             in go2: exec\n\
-             on go1 {\n\
-             out shared: int = 1\n\
-             }\n\
-             on go2 {\n\
-             emit shared = 2\n\
-             }\n\
-             let x: int = shared + 1",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn an_unannotated_top_level_out_is_checked_against_the_registered_port_type() {
-        // A top-level `out` with no annotation is an update site for a port an
-        // earlier handler already typed, and its value has to fit that type.
-        let r = tc(
-            "in go1: exec\n\
-             on go1 {\n\
-             out shared: int = 1\n\
-             }\n\
-             out shared = \"x\"\n\
-             let x: int = shared + 1",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "an unannotated top-level out with a mismatched value must report \
-             WS003; diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn an_unannotated_top_level_out_with_a_matching_value_stays_clean() {
-        let r = tc(
-            "in go1: exec\n\
-             on go1 {\n\
-             out shared: int = 1\n\
-             }\n\
-             out shared = 2\n\
-             let x: int = shared + 1",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn a_return_value_beside_an_anon_chip_port_is_ws099() {
-        // Outside every mod and chip a `return <value>` has no output: the
-        // port an anon chip declares is written by name, as any `out` is.
-        for value in ["s", "n"] {
-            let r = tc(&format!(
-                "in go: exec\n\
-                 in s: string\n\
-                 in n: int\n\
-                 on go {{\n\
-                 chip {{ out shared: int }}\n\
-                 return {value}\n\
-                 }}"
-            ));
-            assert!(
-                r.diagnostics.iter().any(|d| d.code == "WS099"),
-                "`return {value}`: {:?}",
-                r.diagnostics
-            );
-        }
-    }
-
-    #[test]
-    fn an_anon_chip_out_is_a_module_boundary_port_for_writes() {
-        // An anon chip shares its parent's scope rather than opening one, so a
-        // plain `out` in its body is a module-boundary port and a write to
-        // that name from anywhere else in the file lands in it.
-        let r = tc(
-            "in go: exec\n\
-             chip {\n\
-             out shared: int = 1\n\
-             }\n\
-             on go {\n\
-             out shared = \"x\"\n\
-             }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "a write that does not fit an anon-chip-declared port must report \
-             WS003; diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
-
-    /// Two ALWAYS-LIVE sites with values drive one port at once, so the value
-    /// it reads is undefined whenever they disagree, and a pure read
-    /// (`uptime % 2 > 1`) disagrees on its own schedule. Emit produced two
-    /// output bricks carrying the same `PortLabel`, one wired to nothing.
-    /// Exec-derived sites are unaffected: only one fires per tick.
-    #[test]
-    fn two_always_live_out_sites_with_values_conflict() {
-        let dup = |r: &TypeCheckResult| {
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS013" && d.message.contains("drive it continuously"))
-        };
-        assert!(
-            dup(&tc("var v: float = 1.0\nout v6: float = v\nout v6: float = v")),
-            "two top-level initializers must conflict"
-        );
-        // Every exec-derived or single-driver shape stays legal.
-        assert_no_diags(&tc("in go: exec\nout r: int = 0\non go { emit r = 5 }"));
-        assert_no_diags(&tc(
-            "in a: exec\nin b: exec\non a { out s: int = 1 }\non b { out s: int = 2 }",
-        ));
-        assert_no_diags(&tc("var v: float = 1.0\nout v6: float = v\nout v6: float"));
-    }
-
-    #[test]
-    fn an_anon_chip_out_written_with_a_matching_value_stays_clean() {
-        let r = tc(
-            "in go: exec\n\
-             chip {\n\
-             out shared: int = 1\n\
-             }\n\
-             on go {\n\
-             out shared = 2\n\
-             }",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn an_anon_chip_out_is_readable_by_name() {
-        // The read side of the same port. Lowering resolves this through its
-        // output scope key, so a name it wires must not report WS002 here.
-        let r = tc(
-            "chip {\n\
-             out shared: int = 1\n\
-             }\n\
-             out other: int = shared",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn a_side_annotated_anon_chip_out_is_not_claimed_as_a_port() {
-        // A side annotation is only valid on a top-level port, so lowering
-        // pre-declares nothing for this site and reports it instead. Claiming
-        // it here would type a port lowering never creates, and would make a
-        // read of the name resolve to something that is not there.
-        let r = tc(
-            "chip {\n\
-             @bottom out shared: int = 1\n\
-             }\n\
-             out other: int = shared",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS002"),
-            "a side-annotated anon-chip out is not a port, so reading its name \
-             must report WS002; diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn an_annotated_out_reports_a_mismatched_value_exactly_once() {
-        // The value is checked against the annotation, and the annotation
-        // against the port. When those are the same type the port adds
-        // nothing, so one mismatch has to produce one report.
-        for src in [
-            "in s: string\n\
-             out y: int = s",
-            "in go: exec\n\
-             in s: string\n\
-             on go { out y: int = s }",
-            "chip Foo(v: string) -> (r: int) {\n\
-             out r: int = v\n\
-             }\n\
-             in a: string\n\
-             out z: int = Foo(a)",
-        ] {
-            let r = tc(src);
+        if *equal_information {
             assert_eq!(
-                r.diagnostics.iter().filter(|d| d.code == "WS003").count(),
-                1,
-                "one mismatch must report once; src {:?}, diagnostics: {:?}",
-                src,
-                r.diagnostics
+                tc_dropped, lo_dropped,
+                "both stages have the same information here, so their dropped sets must \
+                     match exactly — {label}"
             );
-        }
-    }
-
-    #[test]
-    fn an_annotation_the_port_does_not_share_still_checks_the_value() {
-        // Coercion is not transitive, so the value fitting the annotation
-        // and the annotation fitting the port do not add up to the value
-        // fitting the port. A string reaches a `bool` annotation and a
-        // `bool` reaches an `int` port, but a string does not reach an `int`.
-        let r = tc(
-            "in go: exec\n\
-             in s: string\n\
-             on go { out shared: int = 1 }\n\
-             on go { out shared: bool = s }",
-        );
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS003" && d.message == "expected int, got string"),
-            "the value must still be checked against the port when the \
-             annotation differs from it; diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn a_bad_value_expression_does_not_swallow_the_port_write_error() {
-        // Inferring the value reports its own WS003 for the mismatched `if`
-        // branches, at the whole expression's range. The port write is a
-        // separate problem with a separate fix and must be reported too, so
-        // the author is not left to discover it one round later.
-        let r = tc(
-            "in go1: exec\n\
-             in go2: exec\n\
-             in c: bool\n\
-             on go1 {\n\
-             out shared: int = 1\n\
-             }\n\
-             on go2 {\n\
-             out shared = if c then Vec(0.0, 0.0, 0.0) else \"s\"\n\
-             }",
-        );
-        let value_range_reports = r
-            .diagnostics
-            .iter()
-            .filter(|d| d.code == "WS003" && d.message.contains("expected int"))
-            .count();
-        assert!(
-            value_range_reports > 0,
-            "the port write must be reported alongside the branch mismatch; \
-             diagnostics: {:?}",
-            r.diagnostics
-        );
-        assert_eq!(
-            r.diagnostics.iter().filter(|d| d.code == "WS003").count(),
-            2,
-            "exactly the branch mismatch and the port write must report; \
-             diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn a_return_value_beside_a_handler_declared_port_is_ws099() {
-        // A handler-declared `out` is a module port like a top-level one, and
-        // a top-level handler's `return <value>` gives it nothing.
-        for value in ["\"x\"", "5"] {
-            let r = tc(&format!(
-                "in go: exec
-                 in go2: exec
-                 on go {{
-                 out shared: int
-                 }}
-                 on go2 {{
-                 return {value}
-                 }}"
-            ));
+        } else {
             assert!(
-                r.diagnostics.iter().any(|d| d.code == "WS099"),
-                "`return {value}`: {:?}",
-                r.diagnostics
+                tc_dropped.len() < lo_dropped.len(),
+                "expected typecheck to be strictly more conservative here — {label}\n  \
+                     typecheck dropped: {tc_dropped:?}\n  lowering dropped:  {lo_dropped:?}"
             );
         }
     }
+}
 
-    #[test]
-    fn an_out_sites_annotation_is_checked_against_the_signature_output() {
-        // The value fits the annotation (an int coerces to a string) and it
-        // fits the port (int into int), so only comparing what the site CLAIMS
-        // to deliver against the signature catches this. Nothing registers a
-        // port inside a chip body, so this site has no other guard.
-        let r = tc(
-            "chip Foo(v: int) -> (r: int) {
-             out r: string = v
-             }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "an out site declaring a type its signature output cannot accept \
-             must report WS003; diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
+/// Enum payload captures, payload storage, `unsafe` access, `is` tests and
+/// patterns.
+#[test]
+fn enum_payloads_and_variant_tests() {
+    const OK: &[Want] = &[NoErrors];
+    let var_e = "enum E { A, B { s: string, b: bool } }\nvar e: E = E.B { s: \"hi\", b: false }\nin go: exec\n";
+    let unsafe_e = "enum E { A, B { s: string, n: int } }\nvar e: E = E.B { s: \"hi\", n: 1 }\nvar got: string = \"\"\nin go: exec\n";
+    let bad_e = "enum E { A, B { s: string } }\nvar e: E = E.B { s: \"hi\" }\nin go: exec\n";
+    let shape = "enum Shape { Empty, Circle(float) }\nin go: exec\nvar s: Shape\nvar n: float\n";
+    let kick = "enum E { A, B(int) }\nin go: exec\nvar s: E\nout jump: exec\nvar r: int\non go {\n  s = E.A\n";
+    let rows: &[(&str, String, &[Want])] = &[
+            // Each capture binds the scrutinee's `__{Variant}_{field}` slot, so a
+            // write goes through it. Lowering always emitted the `Var_Set`; the
+            // captures were registered as `LetBinding` and the write was rejected.
+            ("an `if let` capture of a var is writable", format!("{var_e}on go {{ if let B {{ s, b }} = e {{ b = true\ns = \"x\" }} }}"), OK),
+            ("a `match` capture of a var is writable", format!("{var_e}on go {{ match e {{ B {{ s, b }} => {{ b = true }}, A => {{}} }} }}"), OK),
+            ("a `let else` capture of a var is writable", format!("{var_e}on go {{ let B {{ s, b }} = e else {{ return }}\nb = true }}"), OK),
+            ("a positional capture of a var is writable", "enum Opt { Some(int), None }\nvar o: Opt = Opt.Some(5)\nin go: exec\non go { if let Some(x) = o { x = 9 } }".into(), OK),
+            // A `let` scrutinee has no storage, so the write would emit no gate.
+            ("a capture of an immutable scrutinee", "enum E { A, B { s: string, b: bool } }\nlet e: E = E.B { s: \"hi\", b: false }\nin go: exec\non go { if let B { s, b } = e { b = true } }".into(), &[Error("WS007")]),
+            // An element scrutinee reads into a value with no write-back.
+            // `is_ref_able` says yes here (right for `&arr[i]`), which would make
+            // every such write a silent no-op. Reported as a capture, not a `let`.
+            ("a capture of an array element", "enum E { A, B { n: int } }\nvar es: E[]\nin go: exec\non go { if let B { n } = es[0] { n = 42 } }".into(), &[Error("WS007"), FirstMsg("WS007", "read-only capture"), FirstMsg("WS007", "arr[i]")]),
+            ("a capture of a map element", "enum E { A, B { n: int } }\nvar m: Map<string, E>\nin go: exec\non go { if let B { n } = m[\"k\"] { n = 42 } }".into(), &[Error("WS007")]),
+            ("a capture of a field of an element", "enum E { A, B { n: int } }\ntype H = { e: E }\nvar hs: H[]\nin go: exec\non go { if let B { n } = hs[0].e { n = 42 } }".into(), &[Error("WS007")]),
+            // A `var` record's enum field is its own storage.
+            ("a capture through a var record field", "enum E { A, B { n: int } }\ntype H = { e: E, tag: int }\nvar h: H = { e: E.B { n: 1 }, tag: 0 }\nin go: exec\non go { if let B { n } = h.e { n = 42 } }".into(), OK),
+            // A `*T` parameter's slots are the caller's gates.
+            ("a capture through a `*E` param", "enum E { A, B { n: int } }\nvar e: E = E.B { n: 1 }\nin go: exec\nmod bump(v: *E) { if let B { n } = v { n = 42 } }\non go { bump(&e) }".into(), OK),
+            // A payload slot is one gate written at construction, and nothing
+            // fills a container there: `push`/`set` on a capture would act on
+            // storage nothing ever fills.
+            ("a named array payload field", "enum E { A, B { xs: int[] } }\nout n = 1".into(), &[Error("WS069")]),
+            ("a positional array payload field", "enum E { A, B(int[]) }\nout n = 1".into(), &[Error("WS069")]),
+            ("a map payload field", "enum E { A, B { m: Map<string, int> } }\nout n = 1".into(), &[Error("WS069")]),
+            ("an array inside an inline record payload field", "enum E { A, B { r: { xs: int[] } } }\nout n = 1".into(), &[Error("WS069")]),
+            ("an array inside an aliased record payload field", "type R = { xs: int[], n: int }\nenum E { A, B { r: R } }\nout n = 1".into(), &[Error("WS069")]),
+            ("scalar and record payload fields", "type P = { x: int, y: int }\nenum E { A, B { p: P, s: string, v: vector }, C(int, float) }\nvar e: E = E.B { p: { x: 1, y: 2 }, s: \"hi\", v: Vec(0.0, 0.0, 0.0) }\nout n = 1".into(), OK),
+            ("a nested enum payload field", "enum Inner { P { n: int }, Q }\nenum Outer { W { i: Inner }, Z }\nvar o: Outer = Outer.W { i: Inner.P { n: 1 } }\nout n = 1".into(), OK),
+            // `Some(T)`'s field is the bare param, so the instantiation is where
+            // the container is picked; one report per annotation.
+            ("a generic enum instantiated with a container", "var o: Option<int[]> = Option.None\nout n = 1".into(), &[Error("WS069"), Count("WS069", 1)]),
+            ("a param no variant stores is not a payload slot", "enum Tag<T> { A, B }\nvar t: Tag<int[]> = Tag.A\nout n = 1".into(), &[Lacks("WS069")]),
+            ("a generic enum instantiated with a scalar", "var o: Option<int> = Option.Some(5)\nout n = 1".into(), OK),
+            // `unsafe v.Variant.field` asserts the tag instead of testing it.
+            ("an unsafe payload read", format!("{unsafe_e}on go {{ got = unsafe e.B.s }}"), OK),
+            ("an unsafe payload write", format!("{unsafe_e}on go {{ unsafe e.B.s = \"x\" }}"), OK),
+            ("an unsafe payload write of the wrong type", format!("{unsafe_e}on go {{ unsafe e.B.n = \"x\" }}"), &[Has("WS003")]),
+            ("an unsafe record payload keeps projecting", "type P = { x: int }\nenum E2 { A, B { p: P } }\nvar e: E2 = E2.B { p: { x: 1 } }\nvar got: int = 0\nin go: exec\non go { unsafe e.B.p.x = 5\ngot = unsafe e.B.p.x }".into(), OK),
+            ("an unsafe access to an unknown variant", format!("{bad_e}on go {{ unsafe e.Nope.s = \"x\" }}"), &[Has("WS060")]),
+            ("an unsafe access to an unknown payload field", format!("{bad_e}on go {{ unsafe e.B.nope = \"x\" }}"), &[Has("WS010")]),
+            ("an unsafe access on a non-enum", "var n: int = 0\nin go: exec\non go { n = unsafe n.B.s }".into(), &[Has("WS066")]),
+            // `e.s` reaches no slot (they are keyed by variant); it typed `any` and
+            // lowered to a placeholder.
+            ("a payload field read directly", "enum E { A, B { s: string } }\nvar e: E = E.B { s: \"hi\" }\nvar got: string = \"\"\nin go: exec\non go { got = e.s }".into(), &[FirstMsg("WS010", "if let"), FirstMsg("WS010", "unsafe")]),
+            ("`is` types as a bool", "enum Shape { Empty, Circle(float) }\nvar s: Shape = Shape.Empty\nout hit: bool = s is Shape.Circle".into(), OK),
+            ("`is` on a variant path", "enum Shape { Empty, Circle(float) }\nout hit: bool = Shape.Empty is Shape.Circle".into(), OK),
+            ("`is` on a non-enum value", "enum Shape { Empty, Circle(float) }\nvar n: int = 0\nout hit = n is Shape.Circle".into(), &[Has("WS066")]),
+            // An enum value on the right names no variant.
+            ("`is` with a value on the right", "enum Shape { Empty, Circle(float) }\nvar s: Shape = Shape.Empty\nvar other: Shape = Shape.Circle(1.0)\nout hit = s is other".into(), &[Has("WS066")]),
+            ("`is` with an unknown variant", "enum Shape { Empty, Circle(float) }\nvar s: Shape = Shape.Empty\nout hit = s is Shape.Nope".into(), &[Has("WS060")]),
+            // Construction and `is` require the qualifier, so a pattern accepts it.
+            ("a qualified `match` pattern", format!("{shape}on go {{\n  s = Shape.Circle(2.0)\n  n = match s {{\n    Shape.Empty => 0.0,\n    Shape.Circle(r) => r,\n  }}\n}}\n"), OK),
+            ("a qualified `if let` pattern", format!("{shape}on go {{\n  s = Shape.Circle(2.0)\n  if let Shape.Circle(r) = s {{ n = r }}\n}}\n"), OK),
+            ("an unqualified `match` pattern", format!("{shape}on go {{\n  s = Shape.Circle(2.0)\n  n = match s {{\n    Empty => 0.0,\n    Circle(r) => r,\n  }}\n}}\n"), OK),
+            // A variant name alone can belong to several enums.
+            ("a qualifier naming another enum", format!("enum Other {{ Empty }}\n{shape}on go {{\n  s = Shape.Circle(2.0)\n  n = match s {{\n    Other.Empty => 0.0,\n    Shape.Circle(r) => r,\n  }}\n}}\n"), &[HasMsg("WS060", "names enum `Other`")]),
+            // WS053 is the only guard against a permanently parked exec chain, so
+            // its walker descends into `if let` and `match` arms as well as `if`.
+            ("a parked kick in an `if`", format!("{kick}  if s is E.A {{ emit jump\n    await jump\n  }}\n}}\n"), &[Has("WS053")]),
+            ("a parked kick in an `if let`", format!("{kick}  if let E.B(v) = s {{ emit jump\n    await jump\n  }}\n}}\n"), &[Has("WS053")]),
+            ("a parked kick in a `match` arm", format!("{kick}  r = match s {{\n    E.A => {{ emit jump\n      await jump\n      1 }}\n    E.B(v) => 0,\n  }}\n}}\n"), &[Has("WS053")]),
+        ];
+    check_rows(rows);
+}
 
-    #[test]
-    fn an_unresolvable_signature_output_is_not_judged_by_a_same_named_port() {
-        // The chip's output annotation does not resolve, so its type is
-        // unknown. Unknown is not an invitation for an unrelated top-level
-        // port to answer for the chip's body: the only thing wrong here is the
-        // unknown type name.
-        let r = tc(
-            "in a: int
-             out shared: int = a
-             chip Foo(v: string) -> (shared: Nope) {
-             out shared = v
-             }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS002"),
-            "the unknown type must still report WS002; diagnostics: {:?}",
-            r.diagnostics
-        );
-        assert!(
-            !r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "the top-level port must not judge the chip's own output; \
-             diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
+/// Every site that writes a module-boundary port (a top-level `out`, a
+/// handler-declared one, an anon chip's) answers to the port's registered
+/// type, and a port reads by name like any value.
+#[test]
+fn port_sites_are_checked_against_the_port_type() {
+    const OK: &[Want] = &[NoErrors];
+    const WS003: &[Want] = &[Has("WS003")];
+    let two = "in go1: exec\nin go2: exec\non go1 {\nout shared: int = 1\n}\n";
+    let rows: &[(&str, String, &[Want])] = &[
+            // Registration runs in pass 1, before inference, so the port is `any`,
+            // as the namespaced `NsDeclInfo` path reports it.
+            ("an unannotated port reads as any", "in a: int\nout y = a + 1\nout z: int = y".into(), OK),
+            // Registered here as well as by `pre_declare_handler_outputs`, or a
+            // later read in the same block is WS002 while lowering wires it.
+            ("a handler-declared port read in its handler", "static var ticks: int = 0\non Clock(interval = 0.2) {\nticks = ticks + 1\nout counted: int = ticks\nvar seen: int = counted\n}".into(), OK),
+            // Registration lands at file scope, not in the handler's frame.
+            ("a handler-declared port read from another handler", "in go: exec\nstatic var ticks: int = 0\non Clock(interval = 0.2) {\nticks = ticks + 1\nout counted: int = ticks\n}\non go {\nvar seen: int = counted\n}".into(), OK),
+            // Registration is first-wins; either file order is a genuine conflict.
+            ("a port type conflict, top-level out first", "out counted: int = 5\non Clock(interval = 0.2) {\nout counted: string = \"hi\"\n}\nlet x: int = counted + 1".into(), WS003),
+            ("a port type conflict, handler first", "on Clock(interval = 0.2) {\nout counted: string = \"hi\"\n}\nout counted: int = 5\nlet x: int = counted + 1".into(), WS003),
+            // An unannotated site states no type, so it is judged against the
+            // annotated one identically in both orders.
+            ("an unannotated site first", "in go: exec\nout shared = \"x\"\non go {\nout shared: int = 1\n}".into(), &[Count("WS003", 1)]),
+            ("an annotated site first", "in go: exec\non go {\nout shared: int = 1\n}\nout shared = \"x\"".into(), &[Count("WS003", 1)]),
+            // Lowering wires both branches into ONE typed backing var with no
+            // conversion; the fixture guard only checks placeholders and diagnostics.
+            ("disagreeing branch sites", "in go: exec\nin cond: bool\non go {\nif cond {\nout branch: int = 1\n} else {\nout branch: string = \"x\"\n}\n}".into(), WS003),
+            // The signature frame knows nothing about module ports; the registry does.
+            ("a mismatched unannotated update site", format!("{two}on go2 {{\nout shared = \"x\"\n}}\nlet x: int = shared + 1"), WS003),
+            ("a matching unannotated update site", format!("{two}on go2 {{\nout shared = 2\n}}\nlet x: int = shared + 1"), OK),
+            // `emit` drives the backing variable as an `out` binding does.
+            ("a mismatched emit into a handler-declared port", format!("{two}on go2 {{\nemit shared = \"x\"\n}}\nlet x: int = shared + 1"), WS003),
+            ("a matching emit into a handler-declared port", format!("{two}on go2 {{\nemit shared = 2\n}}\nlet x: int = shared + 1"), OK),
+            ("a mismatched unannotated top-level out", "in go1: exec\non go1 {\nout shared: int = 1\n}\nout shared = \"x\"\nlet x: int = shared + 1".into(), WS003),
+            ("a matching unannotated top-level out", "in go1: exec\non go1 {\nout shared: int = 1\n}\nout shared = 2\nlet x: int = shared + 1".into(), OK),
+            // Outside every mod and chip a value return has no output; an anon
+            // chip's port is written by name like any `out`.
+            ("`return s` beside an anon chip port", "in go: exec\nin s: string\nin n: int\non go {\nchip { out shared: int }\nreturn s\n}".into(), &[Has("WS099")]),
+            ("`return n` beside an anon chip port", "in go: exec\nin s: string\nin n: int\non go {\nchip { out shared: int }\nreturn n\n}".into(), &[Has("WS099")]),
+            // An anon chip opens no scope, so its plain `out` is a module port.
+            ("a mismatched write to an anon chip's port", "in go: exec\nchip {\nout shared: int = 1\n}\non go {\nout shared = \"x\"\n}".into(), WS003),
+            ("a matching write to an anon chip's port", "in go: exec\nchip {\nout shared: int = 1\n}\non go {\nout shared = 2\n}".into(), OK),
+            ("an anon chip's port read by name", "chip {\nout shared: int = 1\n}\nout other: int = shared".into(), OK),
+            // A side annotation is only valid on a top-level port, so lowering
+            // pre-declares nothing; claiming it would type a port never created.
+            ("a side-annotated anon chip out is not a port", "chip {\n@bottom out shared: int = 1\n}\nout other: int = shared".into(), &[Has("WS002")]),
+            // Two always-live sites with values drive one port at once (emit made
+            // two bricks with one `PortLabel`, one wired to nothing); exec-derived
+            // sites fire one per tick.
+            ("two top-level initializers", "var v: float = 1.0\nout v6: float = v\nout v6: float = v".into(), &[HasMsg("WS013", "drive it continuously")]),
+            ("an initializer and an emit", "in go: exec\nout r: int = 0\non go { emit r = 5 }".into(), OK),
+            ("two handler sites", "in a: exec\nin b: exec\non a { out s: int = 1 }\non b { out s: int = 2 }".into(), OK),
+            ("an initializer and a bare declaration", "var v: float = 1.0\nout v6: float = v\nout v6: float".into(), OK),
+            // When the annotation and the port share a type, one mismatch is one report.
+            ("a mismatched annotated top-level out", "in s: string\nout y: int = s".into(), &[Count("WS003", 1)]),
+            ("a mismatched annotated handler out", "in go: exec\nin s: string\non go { out y: int = s }".into(), &[Count("WS003", 1)]),
+            ("a mismatched annotated chip out", "chip Foo(v: string) -> (r: int) {\nout r: int = v\n}\nin a: string\nout z: int = Foo(a)".into(), &[Count("WS003", 1)]),
+            // Coercion is not transitive: string reaches bool and bool reaches
+            // int, but string does not reach int.
+            ("an annotation the port does not share", "in go: exec\nin s: string\non go { out shared: int = 1 }\non go { out shared: bool = s }".into(), &[HasExact("WS003", "expected int, got string")]),
+            // The `if` branch mismatch and the port write are separate problems.
+            ("a bad value expression and a bad port write", "in go1: exec\nin go2: exec\nin c: bool\non go1 {\nout shared: int = 1\n}\non go2 {\nout shared = if c then Vec(0.0, 0.0, 0.0) else \"s\"\n}".into(), &[HasMsg("WS003", "expected int"), Count("WS003", 2)]),
+            // A handler-declared `out` is a module port; a top-level handler's
+            // value return gives it nothing.
+            ("`return \"x\"` beside a handler-declared port", "in go: exec\nin go2: exec\non go {\nout shared: int\n}\non go2 {\nreturn \"x\"\n}".into(), &[Has("WS099")]),
+            ("`return 5` beside a handler-declared port", "in go: exec\nin go2: exec\non go {\nout shared: int\n}\non go2 {\nreturn 5\n}".into(), &[Has("WS099")]),
+            // The value fits the annotation and the port; only comparing the
+            // site's claim against the signature catches it.
+            ("an out annotation the signature output rejects", "chip Foo(v: int) -> (r: int) {\nout r: string = v\n}".into(), WS003),
+            // An unresolved output type does not hand the body to a same-named port.
+            ("an unresolvable signature output", "in a: int\nout shared: int = a\nchip Foo(v: string) -> (shared: Nope) {\nout shared = v\n}".into(), &[Has("WS002"), Lacks("WS003")]),
+            ("an emit judged by a type a later site states", "in go: exec\nin go2: exec\nout shared = 1\non go {\nout shared: int = 1\n}\non go2 {\nemit shared = \"x\"\n}".into(), WS003),
+            // Inside a mod body its signature output wins over a same-named port.
+            ("a mod output wins over a top-level port", "out shared: string = \"hi\"\nmod pick(v: int) -> (shared: int) {\nout shared = v\n}".into(), OK),
+            ("a mod body is checked against its own output", "out shared: string = \"hi\"\nmod pick(v: string) -> (shared: int) {\nout shared = v\n}".into(), WS003),
+            // `any` is a declared type, so the port is never consulted.
+            ("an `any` mod output wins over a top-level port", "out shared: int = 1\nmod pick(v: string) -> (shared: any) {\nout shared = v\n}".into(), OK),
+        ];
+    check_rows(rows);
+}
 
-    #[test]
-    fn an_emit_is_checked_once_a_later_site_states_the_ports_type() {
-        // The first site registered leaves the port's type unstated; a later
-        // annotated site states it, and every site is then judged against it.
-        let r = tc(
-            "in go: exec
-             in go2: exec
-             out shared = 1
-             on go {
-             out shared: int = 1
-             }
-             on go2 {
-             emit shared = \"x\"
-             }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "an emit payload must be checked against a type stated by a later \
-             site; diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
+#[test]
+fn emit_as_a_value_types_as_exec() {
+    let src = "in go: exec\non go {\n  let d = emit\n}";
+    let r = tc(src);
+    assert_no_diags(&r);
+    let at = src.find("emit").unwrap();
+    let ty = r
+        .type_of_expr
+        .get(&(std::sync::Arc::from("test"), at, at + "emit".len()))
+        .expect("the `emit` value must be typed");
+    assert_eq!(*ty, Type::Exec);
+}
 
-    #[test]
-    fn a_mod_signature_output_wins_over_a_same_named_top_level_port() {
-        // Two authorities can type the name `shared` here: the mod's own
-        // signature output and the top-level port. Inside the mod body the
-        // signature wins, so an int value is accepted even though the port is
-        // a string.
-        let r = tc(
-            "out shared: string = \"hi\"\n\
-             mod pick(v: int) -> (shared: int) {\n\
-             out shared = v\n\
-             }",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn a_mod_signature_output_is_what_its_body_is_checked_against() {
-        // The other half of the ordering guard: a value that fits the
-        // same-named top-level port but not the mod's own output still
-        // reports, so the signature is genuinely the authority in the body
-        // rather than the check being skipped there.
-        let r = tc(
-            "out shared: string = \"hi\"\n\
-             mod pick(v: string) -> (shared: int) {\n\
-             out shared = v\n\
-             }",
-        );
-        assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS003"),
-            "a mod body value that does not fit the mod's own output must \
-             report WS003; diagnostics: {:?}",
-            r.diagnostics
-        );
-    }
-
-    #[test]
-    fn an_any_typed_mod_output_still_wins_over_a_same_named_top_level_port() {
-        // The `any` keyword is a declared type, so a signature output carrying
-        // it answers for its own body and the same-named top-level port is
-        // never reached. Only an output nothing typed at all hands the
-        // question on.
-        let r = tc(
-            "out shared: int = 1\n\
-             mod pick(v: string) -> (shared: any) {\n\
-             out shared = v\n\
-             }",
-        );
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn an_unannotated_update_site_with_a_matching_value_stays_clean() {
-        // Guard for the fallback added above: a value that DOES match the
-        // registered port type must not start reporting a spurious mismatch.
-        let r = tc(
-            "in go1: exec\n\
-             in go2: exec\n\
-             on go1 {\n\
-             out shared: int = 1\n\
-             }\n\
-             on go2 {\n\
-             out shared = 2\n\
-             }\n\
-             let x: int = shared + 1",
-        );
-        assert_no_diags(&r);
-    }
-
-    // ---- `emit` as a value, and `.exec` on a call ----
-
-    #[test]
-    fn emit_as_a_value_types_as_exec() {
-        let r = tc("in go: exec\non go {\n  let d = emit\n}");
-        assert_no_diags(&r);
-    }
-
-    #[test]
-    fn an_initializer_on_a_new_exec_signal_is_ws101() {
-        // `let s: exec` is a new signal fired by `emit s`; the initializer was
-        // dropped, and with it every `on s` handler's trigger.
-        for src in [
-            "var n: int = 0\nin go: exec\nlet s: exec = go\non s { n = 2 }",
-            "var n: int = 0\nin go: exec\non go {\n let s: exec = emit\n n = 1\n}",
-        ] {
-            let r = tc(src);
-            assert!(r.diagnostics.iter().any(|d| d.code == "WS101"), "{src}: {:?}", r.diagnostics);
-        }
-        assert_no_diags(&tc("var n: int = 0\nin go: exec\nlet s: exec\non s { n = 2 }\non go { emit s }"));
-        assert_no_diags(&tc("var n: int = 0\nin go: exec\nlet s = go\non s { n = 2 }"));
-    }
-
-    #[test]
-    fn a_record_type_read_as_a_value_is_ws100() {
-        // `Box { v: n }` reads as `Box` and a separate `{ v: n }`.
-        for decl in ["type Box = { v: int }", "type Box<T> = { v: T }"] {
-            let r = tc(&format!(
-                "{decl}\nin go: exec\nvar n: int = 3\nvar r: int = 0\non go {{\n let c = Box {{ v: n }}\n r = c.v\n}}"
-            ));
-            assert!(
-                r.diagnostics.iter().any(|d| d.code == "WS100" && d.message.contains("a record type has no")),
-                "{decl}: {:?}",
-                r.diagnostics
-            );
-        }
-        // A scalar alias is worded as one.
-        let r = tc("type Score = int\nvar n: int = 0\nin go: exec\non go {\n let s = Score\n}");
-        let d = r.diagnostics.iter().find(|d| d.code == "WS100").expect("WS100");
-        assert!(d.message.contains("another name for `int`") && !d.message.contains("record"), "{}", d.message);
-        assert_no_diags(&tc(
-            "type Box = { v: int }\nin go: exec\nvar n: int = 3\nvar r: int = 0\non go {\n let c: Box = { v: n }\n r = c.v\n}",
+#[test]
+fn a_record_type_read_as_a_value_is_ws100() {
+    // `Box { v: n }` reads as `Box` and a separate `{ v: n }`.
+    for decl in ["type Box = { v: int }", "type Box<T> = { v: T }"] {
+        let r = tc(&format!(
+            "{decl}\nin go: exec\nvar n: int = 3\nvar r: int = 0\non go {{\n let c = Box {{ v: n }}\n r = c.v\n}}"
         ));
-        // An enum's name still reaches its variants.
-        assert_no_diags(&tc("enum Hue { Red, Green }\nvar h: Hue = Hue.Red\nin go: exec\non go { h = Hue.Green }"));
-    }
-
-    #[test]
-    fn emit_as_a_value_outside_an_exec_context_is_ws007() {
-        let r = tc("let d: exec = emit");
         assert!(
             r.diagnostics
                 .iter()
-                .any(|d| d.code == "WS007" && d.severity == Severity::Error),
-            "`emit` in pure context must be a WS007 error, not a silent nothing: {:?}",
+                .any(|d| d.code == "WS100" && d.message.contains("a record type has no")),
+            "{decl}: {:?}",
             r.diagnostics
         );
     }
+    // A scalar alias is worded as one.
+    let r = tc("type Score = int\nvar n: int = 0\nin go: exec\non go {\n let s = Score\n}");
+    let d = r
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "WS100")
+        .expect("WS100");
+    assert!(
+        d.message.contains("another name for `int`") && !d.message.contains("record"),
+        "{}",
+        d.message
+    );
+    assert_no_diags(&tc(
+        "type Box = { v: int }\nin go: exec\nvar n: int = 3\nvar r: int = 0\non go {\n let c: Box = { v: n }\n r = c.v\n}",
+    ));
+    // An enum's name still reaches its variants.
+    assert_no_diags(&tc(
+        "enum Hue { Red, Green }\nvar h: Hue = Hue.Red\nin go: exec\non go { h = Hue.Green }",
+    ));
+}
 
-    #[test]
-    fn call_dot_exec_types_as_exec() {
-        // `.exec` names the call's own exec output, so it types as `exec`
-        // rather than falling through to `any`, which coerces to everything
-        // and would let a real mistype past unremarked.
-        let src = "var m: int = 0\n\
+#[test]
+fn call_dot_exec_types_as_exec() {
+    // `.exec` names the call's own exec output, so it types as `exec`
+    // rather than falling through to `any`, which coerces to everything
+    // and would let a real mistype past unremarked.
+    let src = "var m: int = 0\n\
                    chip Later() -> (count: int) {\n\
                    m = 7\n\
                    out count = m.Value\n\
@@ -5957,469 +3143,191 @@ on t { var foo: any = 0 }",
                    let d = Later().exec\n\
                    await d\n\
                    }";
-        let r = tc(src);
-        assert_no_diags(&r);
-        let access = "Later().exec";
-        let start = src.find(access).expect("call site");
-        let ty = r
-            .type_of_expr
-            .get(&(std::sync::Arc::from("test"), start, start + access.len()))
-            .expect("the `.exec` access must be typed");
-        assert_eq!(*ty, Type::Exec, "`.exec` on a call is an exec value");
-    }
+    let r = tc(src);
+    assert_no_diags(&r);
+    let access = "Later().exec";
+    let start = src.find(access).expect("call site");
+    let ty = r
+        .type_of_expr
+        .get(&(std::sync::Arc::from("test"), start, start + access.len()))
+        .expect("the `.exec` access must be typed");
+    assert_eq!(*ty, Type::Exec, "`.exec` on a call is an exec value");
+}
 
-    // ---- `*T` parameters alias storage, so they are invariant ----
-
-    #[test]
-    fn a_ref_param_bound_to_a_differently_typed_var_is_ws003() {
-        // A `*T` parameter is the caller's own variable gate, not a value on a
-        // wire. There is no wire to convert on, so the callee writes its type
-        // straight into that gate: `*string` bound to an `int` var puts a
-        // string in int storage.
-        for src in [
-            "mod put(v: *string) { v = \"hi\" }\nvar n: int = 0\nin go: exec\non go { put(n) }",
-            "mod inc(v: *int) { v = v + 1 }\nvar y: float = 0.0\nin go: exec\non go { inc(y) }",
-            "chip C(a: *int, t: exec) { on t { a = a + 1 } }\nvar y: float = 0.0\nin go: exec\nlet c = C(y, go)",
-        ] {
-            let r = tc(src);
-            assert!(
-                r.diagnostics
-                    .iter()
-                    .any(|d| d.code == "WS003" && d.severity == Severity::Error),
-                "a ref param bound to a differently-typed var must be WS003:\n{src}\ngot: {:?}",
-                r.diagnostics
-            );
-        }
-    }
-
-    #[test]
-    fn a_ref_param_bound_to_a_matching_var_stays_clean() {
-        // The guard above must not fire on the ordinary, correct spelling.
-        for src in [
-            "mod inc(v: *int) { v = v + 1 }\nvar n: int = 0\nin go: exec\non go { inc(n) }",
-            "mod put(v: *string) { v = \"hi\" }\nvar s: string = \"\"\nin go: exec\non go { put(s) }",
-            "mod setv(v: *vector) { v = Vec(1.0, 2.0, 3.0) }\nvar p: vector\nin go: exec\non go { setv(p) }",
-            "mod inc(v: ref int) { v = v + 1 }\nvar n: int = 0\nin go: exec\non go { inc(n) }",
-        ] {
-            assert_no_diags(&tc(src));
-        }
-    }
-
-    /// An array literal's element type is the widening join of its elements,
-    /// not element 0's.
-    ///
-    /// Element 0's type only asks the rest to coerce INTO it, which is silent
-    /// in the dangerous direction: `[1, 2.5]` reads as `int[]` and stores the
-    /// float in an int-variant gate, while `["a", 1]` reads as `string[]` and
-    /// `[1, "a"]` errors. The join answers all three the same way, and only
-    /// refuses a pair with no common widening.
-    #[test]
-    fn array_literal_element_type_is_the_join_not_element_zero() {
-        let r = tc("mod f(xs: int[]) -> (n: int) { return xs.length() }\n\
-                    in go: exec\n\
-                    on go { let n = f([1, 2.5]) }\n");
-        let errs: Vec<_> = r
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(
-            errs.iter().any(|d| d.message.contains("expected int[], got float[]")),
-            "a float in an int array should be reported: {errs:?}"
-        );
-
-        // A homogeneous literal is unaffected, and a widening one is accepted
-        // at its widened type rather than the first element's.
-        assert_no_diags(&tc("mod g(xs: float[]) -> (n: int) { return xs.length() }\n\
-                             in go: exec\n\
-                             on go { let n = g([1, 2.5]) }\n"));
-
-        // Both orderings of a genuinely incompatible pair report.
-        for src in [
-            "in go: exec\non go { let a = [1, \"x\"] }\n",
-            "in go: exec\non go { let a = [\"x\", 1] }\n",
-        ] {
-            let r = tc(src);
-            assert!(
-                r.diagnostics.iter().any(|d| d.message.contains("array element")),
-                "mixed literal should report regardless of order: {src} -> {:?}",
-                r.diagnostics
-            );
-        }
-    }
-
-    /// A storage gate holds one wire variant, so the element/value type of a
-    /// var, array or map has to be one. An exec edge, a `never` and a
-    /// container nested inside another are not, and reach the gate as whatever
-    /// variant it defaults to.
-    #[test]
-    fn unstorable_types_are_rejected_in_storage_positions() {
-        for (ty, want) in [
-            ("exec", "control flow"),
-            ("exec[]", "control flow"),
-            ("never", "cannot be stored"),
-        ] {
-            let r = tc(&format!("in go: exec\nvar c: {ty}\non go {{ }}\n"));
-            assert!(
-                r.diagnostics
-                    .iter()
-                    .any(|d| d.code == "WS025" && d.message.contains(want)),
-                "`var c: {ty}` should be WS025 ({want}): {:?}",
-                r.diagnostics
-            );
-        }
-        // The storable shapes stay storable.
-        for ty in ["int", "float[]", "Map<int, string>", "vector", "int[][]", "Map<int, int[]>"] {
-            let r = tc(&format!("in go: exec\nvar c: {ty}\non go {{ }}\n"));
-            assert!(
-                !r.diagnostics.iter().any(|d| d.code == "WS025"),
-                "`var c: {ty}` is storable: {:?}",
-                r.diagnostics
-            );
-        }
-    }
-
-    /// A multi-output `mod`'s `return` is checked against the outputs it wires
-    /// into, in both its forms.
-    ///
-    /// A bare `infer` over the whole value checks neither: the name-keyed
-    /// record form wires the `string` into the `int` Variable gate, and the
-    /// positional tuple form, which lowering wires per element, goes the same
-    /// way. The single-output form catches the identical mistake.
-    #[test]
-    fn a_multi_output_return_is_checked_per_port() {
-        let errs = |src: &str| {
-            tc(src)
-                .diagnostics
-                .into_iter()
-                .filter(|d| d.severity == Severity::Error)
-                .collect::<Vec<_>>()
-        };
-
-        // Name-keyed: the fields are wired by name, so `a` gets the string.
-        let e = errs(
-            "mod two() -> (a: int, b: string) {\n  let t = \"x\"\n  let i = 5\n\
-             \x20 return { a: t, b: i }\n}\nin go: exec\non go { let r = two() }\n",
-        );
-        assert!(
-            e.iter().any(|d| d.message.contains("expected int, got string")),
-            "the swapped record field should report: {e:?}"
-        );
-
-        // Positional: wired per element, in declaration order.
-        let e = errs(
-            "mod two() -> (a: int, b: string) {\n  return (\"x\", 2)\n}\n\
-             in go: exec\non go { let r = two() }\n",
-        );
-        assert!(
-            e.iter().any(|d| d.message.contains("expected int, got string")),
-            "the swapped tuple element should report: {e:?}"
-        );
-
-        // Both spellings written correctly stay clean.
-        assert_no_diags(&tc(
-            "mod two() -> (a: int, b: string) {\n  let i = 5\n  let t = \"x\"\n\
-             \x20 return { a: i, b: t }\n}\n\
-             mod three() -> (a: int, b: string) {\n  return (1, \"y\")\n}\n\
-             in go: exec\non go { let r = two()\n  let q = three() }\n",
-        ));
-    }
-
-    /// A `match` / `if let` pattern accepts the enum-qualified spelling.
-    ///
-    /// Construction (`Shape.Circle(2.0)`) and `is` (`s is Shape.Circle`) both
-    /// REQUIRE the qualifier, so writing one in a pattern is the natural next
-    /// guess. Naming a different enum than the scrutinee is the mistake the
-    /// qualifier can actually make, so that reports.
-    #[test]
-    fn a_pattern_accepts_the_enum_qualified_form() {
-        let head = "enum Shape { Empty, Circle(float) }\nin go: exec\nvar s: Shape\nvar n: float\n";
-        assert_no_diags(&tc(&format!(
-            "{head}on go {{\n  s = Shape.Circle(2.0)\n  n = match s {{\n\
-             \x20   Shape.Empty => 0.0,\n    Shape.Circle(r) => r,\n  }}\n}}\n"
-        )));
-        assert_no_diags(&tc(&format!(
-            "{head}on go {{\n  s = Shape.Circle(2.0)\n  if let Shape.Circle(r) = s {{ n = r }}\n}}\n"
-        )));
-        // The unqualified spelling keeps working.
-        assert_no_diags(&tc(&format!(
-            "{head}on go {{\n  s = Shape.Circle(2.0)\n  n = match s {{\n\
-             \x20   Empty => 0.0,\n    Circle(r) => r,\n  }}\n}}\n"
-        )));
-        // A qualifier naming a different enum is reported: the variant name
-        // alone can belong to several enums, so this is the check the
-        // qualifier buys.
-        let r = tc(&format!(
-            "enum Other {{ Empty }}\n{head}on go {{\n  s = Shape.Circle(2.0)\n  n = match s {{\n\
-             \x20   Other.Empty => 0.0,\n    Shape.Circle(r) => r,\n  }}\n}}\n"
-        ));
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS060" && d.message.contains("names enum `Other`")),
-            "a mismatched qualifier should report: {:?}",
-            r.diagnostics
-        );
-    }
-
-    /// WS053, the only guard against a permanently parked exec chain, reaches
-    /// every branch form.
-    ///
-    /// The walker descended into `if` alone, so the same `emit`/`await` pair
-    /// inside an `if let`, a `let ... else` or a `match` arm went unreported.
-    #[test]
-    fn a_parked_kick_is_reported_in_every_branch_form() {
-        let head = "enum E { A, B(int) }\nin go: exec\nvar s: E\nout jump: exec\nvar r: int\n";
-        let bodies = [
-            "  if s is E.A { emit jump\n    await jump\n  }\n",
-            "  if let E.B(v) = s { emit jump\n    await jump\n  }\n",
-            "  r = match s {\n    E.A => { emit jump\n      await jump\n      1 }\n    E.B(v) => 0,\n  }\n",
-        ];
-        for body in bodies {
-            let r = tc(&format!("{head}on go {{\n  s = E.A\n{body}}}\n"));
-            assert!(
-                r.diagnostics.iter().any(|d| d.code == "WS053"),
-                "a parked kick here should be reported: {body} -> {:?}",
-                r.diagnostics
-            );
-        }
-    }
-
-    /// Typecheck `src` and return the diagnostic codes it reports.
-    fn codes(src: &str) -> Vec<String> {
-        tc(src).diagnostics.into_iter().map(|d| d.code).collect()
-    }
-
-    #[test]
-    fn for_outside_exec_is_ws074() {
-        // `for` has no top-level grammar of its own (it's a statement, not a
-        // `TopDecl`), so reach a PURE `for` the way any other statement does:
-        // a top-level `if`'s block runs in the module's ambient (pure)
-        // context, same as the `for` nested inside it.
-        let c = codes("var arr: int[]\nif true { for v in arr { } }");
-        assert!(c.iter().any(|c| c == "WS074"), "expected WS074, got {c:?}");
-    }
-
-    #[test]
-    fn for_over_a_call_is_ws075() {
-        let c = codes("mod make() -> int[] { }\nin go: exec\non go { for v in make() { } }");
-        assert!(c.iter().any(|c| c == "WS075"), "expected WS075, got {c:?}");
-    }
-
-    #[test]
-    fn too_many_bindings_is_ws076() {
-        let c = codes("var arr: int[]\nin go: exec\non go { for a, b, c in arr { } }");
-        assert!(c.iter().any(|c| c == "WS076"), "expected WS076, got {c:?}");
-    }
-
-    #[test]
-    fn zero_step_is_ws077() {
-        let c = codes("in go: exec\non go { for i in (0..10).step(0) { } }");
-        assert!(c.iter().any(|c| c == "WS077"), "expected WS077, got {c:?}");
-    }
-
-    #[test]
-    fn break_outside_a_loop_is_ws078() {
-        let c = codes("in go: exec\non go { break }");
-        assert!(c.iter().any(|c| c == "WS078"), "expected WS078, got {c:?}");
-    }
-
-    #[test]
-    fn return_inside_a_loop_body_is_ws078() {
-        let c = codes("mod f() { for i in 0..3 { return } }");
-        assert!(c.iter().any(|c| c == "WS078"), "expected WS078, got {c:?}");
-    }
-
-    #[test]
-    fn await_in_a_loop_body_is_ws079() {
-        let c = codes("let done: exec\nin go: exec\non go { for i in 0..3 { await done } }");
-        assert!(c.iter().any(|c| c == "WS079"), "expected WS079, got {c:?}");
-    }
-
-    #[test]
-    fn sleep_in_a_loop_body_is_ws079() {
-        let c = codes("in go: exec\non go { for i in 0..3 { await Sleep(_, delay = 1.0) } }");
-        assert!(c.iter().any(|c| c == "WS079"), "expected WS079, got {c:?}");
-    }
-
-    #[test]
-    fn await_outside_a_loop_is_not_ws079() {
-        // The same construct one scope up must stay clean: WS079 is keyed on
-        // `loop_depth`, not on `await` itself.
-        let c = codes("let done: exec\nin go: exec\non go { await done }");
-        assert!(!c.iter().any(|c| c == "WS079"), "unexpected WS079, got {c:?}");
-    }
-
-    #[test]
-    fn await_after_a_loop_body_is_not_ws079() {
-        // `loop_depth` must drop back to zero once the loop's body is done
-        // being checked, not stay latched for the rest of the handler.
-        let c = codes(
+/// `for` loop placement and body rules.
+#[test]
+fn for_loop_codes() {
+    let rows: &[(&str, &str, &[Want])] = &[
+        // `for` is a statement, not a `TopDecl`; a top-level `if` block runs in
+        // the module's ambient (pure) context, as the `for` inside it does.
+        (
+            "a pure `for`",
+            "var arr: int[]\nif true { for v in arr { } }",
+            &[Has("WS074")],
+        ),
+        (
+            "a `for` over a call",
+            "mod make() -> int[] { }\nin go: exec\non go { for v in make() { } }",
+            &[Has("WS075")],
+        ),
+        (
+            "three bindings",
+            "var arr: int[]\nin go: exec\non go { for a, b, c in arr { } }",
+            &[Has("WS076")],
+        ),
+        (
+            "a zero step",
+            "in go: exec\non go { for i in (0..10).step(0) { } }",
+            &[Has("WS077")],
+        ),
+        (
+            "`break` outside a loop",
+            "in go: exec\non go { break }",
+            &[Has("WS078")],
+        ),
+        (
+            "`return` inside a loop body",
+            "mod f() { for i in 0..3 { return } }",
+            &[Has("WS078")],
+        ),
+        (
+            "a sleep in a loop body",
+            "in go: exec\non go { for i in 0..3 { await Sleep(_, delay = 1.0) } }",
+            &[Has("WS079")],
+        ),
+        // WS079 is keyed on `loop_depth`, not on `await` itself.
+        (
+            "an await outside a loop",
+            "let done: exec\nin go: exec\non go { await done }",
+            &[Lacks("WS079")],
+        ),
+        // `loop_depth` drops back to zero once the body is checked.
+        (
+            "an await after a loop body",
             "let done: exec\nin go: exec\non go { for i in 0..3 { } await done }",
-        );
-        assert!(!c.iter().any(|c| c == "WS079"), "unexpected WS079, got {c:?}");
-    }
-
-    #[test]
-    fn continue_in_a_loop_is_accepted() {
-        let c = codes("var t: int = 0\nin go: exec\non go { for i in 0..3 { if i == 1 { continue } t += i } }");
-        assert!(c.is_empty(), "expected a clean typecheck, got {c:?}");
-    }
-
-    #[test]
-    fn continue_outside_a_loop_is_ws078() {
-        let c = codes("in go: exec\non go { continue }");
-        assert_eq!(c, vec!["WS078"]);
-    }
-
-    #[test]
-    fn continue_in_a_mod_called_from_a_loop_is_ws078() {
-        // A mod body is checked where it is declared, outside any loop, so
-        // its `continue` has no loop of its own to end.
-        let c = codes("mod skip() { continue }\nin go: exec\non go { for i in 0..3 { skip() } }");
-        assert!(c.iter().any(|c| c == "WS078"), "expected WS078, got {c:?}");
-    }
-
-    #[test]
-    fn array_single_binding_is_the_value() {
-        // `v` must typecheck as int (the element), not as the index. Adding it
-        // to a string would be a type error if it were bound to the wrong
-        // slot; here it must be accepted as an int.
-        let c = codes(
+            &[Lacks("WS079")],
+        ),
+        (
+            "`continue` in a loop",
+            "var t: int = 0\nin go: exec\non go { for i in 0..3 { if i == 1 { continue } t += i } }",
+            &[Silent],
+        ),
+        (
+            "`continue` outside a loop",
+            "in go: exec\non go { continue }",
+            &[Codes(&["WS078"])],
+        ),
+        // A mod body is checked where it is declared, outside any loop.
+        (
+            "`continue` in a mod called from a loop",
+            "mod skip() { continue }\nin go: exec\non go { for i in 0..3 { skip() } }",
+            &[Has("WS078")],
+        ),
+        // `v` is the element (int), not the index; adding it to an int checks.
+        (
+            "an array's single binding is the value",
             "var arr: int[]\nvar t: int = 0\nin go: exec\non go { for v in arr { t += v } }",
-        );
-        assert!(c.is_empty(), "expected a clean typecheck, got {c:?}");
-    }
-
-    #[test]
-    fn map_single_binding_is_the_key() {
-        let c = codes(
+            &[Silent],
+        ),
+        (
+            "a map's single binding is the key",
             "var scores: Map<string, int>\nvar s: string = \"\"\nin go: exec\non go { for k in scores { s = k } }",
-        );
-        assert!(c.is_empty(), "expected a clean typecheck, got {c:?}");
-    }
+            &[Silent],
+        ),
+        (
+            "a well-formed range loop",
+            "var t: int = 0\nin go: exec\non go { for i in 0..10 { t += i } }",
+            &[Silent],
+        ),
+    ];
+    check_rows(rows);
+}
 
-    #[test]
-    fn well_formed_loops_typecheck_clean() {
-        let c = codes("var t: int = 0\nin go: exec\non go { for i in 0..10 { t += i } }");
-        assert!(c.is_empty(), "expected a clean typecheck, got {c:?}");
-    }
+#[test]
+fn a_namespace_in_an_assignment_target_keeps_its_type() {
+    // `u.xs[1] = 2` types `u` as a read of `u.xs` does, so hover shows it.
+    use crate::resolve::{MemLoader, resolve};
+    let loader = MemLoader {
+        files: [("lib.ws".to_string(), "var xs: int[] = [1, 2]".to_string())]
+            .into_iter()
+            .collect(),
+    };
+    let src = "import * as u from \"lib\"\nin go: exec\non go { u.xs[1] = 2 }";
+    let resolved = resolve(src, "main", &loader);
+    let r = typecheck(
+        &resolved.ast,
+        "main",
+        &crate::typecheck::CeSlotMap::default(),
+    );
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    let at = src.find("u.xs").unwrap();
+    assert!(
+        r.type_of_expr
+            .keys()
+            .any(|(f, s, e)| &**f == "main" && *s == at && *e == at + 1),
+        "no type recorded for `u`"
+    );
+}
 
-    #[test]
-    fn a_namespace_in_an_assignment_target_keeps_its_type() {
-        // `u.xs[1] = 2` types `u` as a read of `u.xs` does, so hover shows it.
-        use crate::resolve::{MemLoader, resolve};
-        let loader = MemLoader {
-            files: [("lib.ws".to_string(), "var xs: int[] = [1, 2]".to_string())].into_iter().collect(),
-        };
-        let src = "import * as u from \"lib\"\nin go: exec\non go { u.xs[1] = 2 }";
-        let resolved = resolve(src, "main", &loader);
-        let r = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
-        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
-        let at = src.find("u.xs").unwrap();
-        assert!(
-            r.type_of_expr.keys().any(|(f, s, e)| &**f == "main" && *s == at && *e == at + 1),
-            "no type recorded for `u`"
-        );
-    }
-
-    #[test]
-    fn an_annotated_buffer_initializer_is_checked_against_its_type() {
-        // It was never checked: a string buffered in an `int` buffer, or a
-        // vector in a `float` one, compiled.
-        let head = "var n: int = 0\nvar x: float = 0.0\nin go: exec\nin v: vector\nin k: int\n";
-        for (body, wrong) in [
-            ("on go { buffer bb: int = \"abc\"\n n = bb }", true),
-            ("on go { buffer bb: float = v\n x = bb }", true),
-            ("buffer bb: string = 5\non go { n = bb.Length() }", false),
-            ("on go { buffer bb: float = 5\n x = bb / 2 }", false),
-            ("on go { buffer bb: float = k + 1\n x = bb / 2 }", false),
-            ("on go { buffer bb: bool = k\n n = bb }", false),
-        ] {
-            let r = tc(&format!("{head}{body}"));
-            let ws003 = r.diagnostics.iter().any(|d| d.code == "WS003");
-            assert_eq!(ws003, wrong, "`{body}`: {:?}", r.diagnostics);
-            assert!(wrong || r.diagnostics.iter().all(|d| d.severity != Severity::Error), "`{body}`: {:?}", r.diagnostics);
-        }
-    }
-
-    #[test]
-    fn object_in_a_trigger_or_is_ws116() {
-        // `||` with an object makes one value that is true while the object
-        // exists, so the handler fires once and never on the other side.
-        // A warning, not an error: the code still means something.
-        let r = tc("in reset: bool\nvar n: int = 0\non reset || ReadBrickGrid() { n = 0 }");
-        assert!(
-            r.diagnostics
-                .iter()
-                .any(|d| d.code == "WS116" && d.severity == crate::diagnostic::Severity::Warning),
-            "expected a WS116 warning, got {:?}",
-            r.diagnostics
-        );
-        // Bools, exec pulses, the `&&` guard and `Union` are all fine.
-        for src in [
-            "in a: bool\nin b: bool\nvar n: int = 0\non a || b { n = 0 }",
-            "in a: exec\nin b: exec\nvar n: int = 0\non a || b { n = 0 }",
-            "in reset: bool\nvar n: int = 0\non Union(reset, ReadBrickGrid()) { n = 0 }",
-            "in who: character\nin ok: bool\nvar n: int = 0\non who && ok { n = 0 }",
-        ] {
-            let c = codes(src);
-            assert!(!c.iter().any(|c| c == "WS116"), "{src}: {c:?}");
-        }
-    }
-
-    #[test]
-    fn any_on_a_port_is_not_ws032() {
-        // A port cannot take a type parameter, so the advice has nothing to follow.
-        let c = codes("in probe: any\nout seen: any = probe");
-        assert!(!c.iter().any(|c| c == "WS032"), "a port's `any` is not WS032: {c:?}");
-        // A mod parameter can be generic, so it still is.
-        let c = codes("mod pass(x: any) -> any { return x }");
-        assert!(c.iter().any(|c| c == "WS032"), "a parameter's `any` is still WS032: {c:?}");
-    }
-
-    /// A `getType()` test narrows the `any` it tests: in a `match` arm and in
-    /// an `if ... is Type.X` block it reads as that kind; outside, and in the
-    /// `_` arm, it is still `any`.
-    #[test]
-    fn get_type_narrows_the_tested_any() {
-        let src = "in e: entity\nin go: exec\nvar n: int = 0\nvar f: float = 0.0\nvar s: string = \"\"\non go {\n  \
+/// A `getType()` test narrows the `any` it tests: in a `match` arm and in
+/// an `if ... is Type.X` block it reads as that kind; outside, and in the
+/// `_` arm, it is still `any`.
+#[test]
+fn get_type_narrows_the_tested_any() {
+    let src = "in e: entity\nin go: exec\nvar n: int = 0\nvar f: float = 0.0\nvar s: string = \"\"\non go {\n  \
                    let p = e.GetCustomProperty(\"k\")\n  match p.Value.getType() {\n    Int => { n += p.Value }\n    \
                    String => { s = p.Value }\n    _ => { s = p.Value }\n  }\n  \
                    if p.Value.getType() is Type.Float {\n    f = p.Value\n  }\n  s = p.Value\n}";
-        let r = tc(src);
-        assert_no_diags(&r);
-        let reads: Vec<Type> = src
-            .match_indices("p.Value")
-            .filter(|(at, _)| !src[at + "p.Value".len()..].starts_with(".getType"))
-            .map(|(at, m)| {
-                r.type_of_expr
-                    .iter()
-                    .find(|((_, s, e), _)| *s == at && *e == at + m.len())
-                    .map(|(_, t)| t.clone())
-                    .expect("p.Value is typed")
-            })
-            .collect();
-        assert_eq!(reads, [Type::Int, Type::String, Type::Opaque, Type::Float, Type::Opaque]);
-    }
-
-    /// An `if ... then ... else` value narrows its `then` branch, and a `let`
-    /// that shadows the tested name inside an arm is its own, unnarrowed value.
-    #[test]
-    fn get_type_narrowing_covers_if_values_and_skips_shadows() {
-        let src = "in a: any\nin b: any\nin go: exec\nvar n: int = 0\nvar s: string = \"\"\non go {\n  \
-                   n = if a.getType() is Type.Int then a else 0\n  match a.getType() {\n    \
-                   String => {\n      let a = b\n      s = a\n    }\n    _ => {}\n  }\n}";
-        let r = tc(src);
-        assert_no_diags(&r);
-        let type_at = |needle: &str| {
-            let at = src.find(needle).unwrap() + needle.len() - 1;
+    let r = tc(src);
+    assert_no_diags(&r);
+    let reads: Vec<Type> = src
+        .match_indices("p.Value")
+        .filter(|(at, _)| !src[at + "p.Value".len()..].starts_with(".getType"))
+        .map(|(at, m)| {
             r.type_of_expr
                 .iter()
-                .find(|((_, s, e), _)| *s == at && *e == at + 1)
+                .find(|((_, s, e), _)| *s == at && *e == at + m.len())
                 .map(|(_, t)| t.clone())
-                .unwrap_or_else(|| panic!("{needle:?} is typed"))
-        };
-        assert_eq!(type_at("then a"), Type::Int, "the then-branch reads `a` as the kind tested");
-        assert_eq!(type_at("s = a"), Type::Opaque, "the shadowing `let a` is not the tested `a`");
-    }
+                .expect("p.Value is typed")
+        })
+        .collect();
+    assert_eq!(
+        reads,
+        [
+            Type::Int,
+            Type::String,
+            Type::Opaque,
+            Type::Float,
+            Type::Opaque
+        ]
+    );
+}
+
+/// An `if ... then ... else` value narrows its `then` branch, and a `let`
+/// that shadows the tested name inside an arm is its own, unnarrowed value.
+#[test]
+fn get_type_narrowing_covers_if_values_and_skips_shadows() {
+    let src = "in a: any\nin b: any\nin go: exec\nvar n: int = 0\nvar s: string = \"\"\non go {\n  \
+                   n = if a.getType() is Type.Int then a else 0\n  match a.getType() {\n    \
+                   String => {\n      let a = b\n      s = a\n    }\n    _ => {}\n  }\n}";
+    let r = tc(src);
+    assert_no_diags(&r);
+    let type_at = |needle: &str| {
+        let at = src.find(needle).unwrap() + needle.len() - 1;
+        r.type_of_expr
+            .iter()
+            .find(|((_, s, e), _)| *s == at && *e == at + 1)
+            .map(|(_, t)| t.clone())
+            .unwrap_or_else(|| panic!("{needle:?} is typed"))
+    };
+    assert_eq!(
+        type_at("then a"),
+        Type::Int,
+        "the then-branch reads `a` as the kind tested"
+    );
+    assert_eq!(
+        type_at("s = a"),
+        Type::Opaque,
+        "the shadowing `let a` is not the tested `a`"
+    );
+}

@@ -731,6 +731,17 @@ impl FileLoader for OpenDocLoader {
 }
 
 impl Backend {
+    /// A server for `client` with no documents open.
+    fn new(client: Client) -> Self {
+        Backend {
+            client,
+            docs: Mutex::new(HashMap::new()),
+            foreign_diags: Mutex::new(HashMap::new()),
+            watch_files: std::sync::atomic::AtomicBool::new(false),
+            changes: Mutex::new(HashMap::new()),
+        }
+    }
+
     /// Typecheck-only analysis for one document, publishing its diagnostics.
     ///
     /// Resource estimates (the gate counts hover shows) are recomputed here on
@@ -2084,13 +2095,7 @@ async fn serve() {
     #[cfg(target_family = "wasm")]
     let (stdin, stdout) = (wasi_stdio::stdin(), wasi_stdio::Stdout);
 
-    let (service, socket) = LspService::new(|client| Backend {
-        client,
-        docs: Mutex::new(HashMap::new()),
-        foreign_diags: Mutex::new(HashMap::new()),
-        watch_files: std::sync::atomic::AtomicBool::new(false),
-        changes: Mutex::new(HashMap::new()),
-    });
+    let (service, socket) = LspService::new(Backend::new);
     // Above tower-lsp's default of 4. A debounced `did_change` holds its slot
     // while it waits (see `DEBOUNCE`), so with the default a burst of five
     // keystrokes would leave a hover queued behind them, the opposite of what
@@ -2275,9 +2280,6 @@ fn completion_item(ruler: &Ruler, line: usize, col: usize, c: wirescript::analys
         ..Default::default()
     }
 }
-
-#[cfg(test)]
-use wirescript::analysis::match_arm_head_scrutinee_at;
 
 #[cfg(target_family = "wasm")]
 mod wasi_stdio;

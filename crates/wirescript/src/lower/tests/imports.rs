@@ -1,56 +1,26 @@
 //! Import-shape regressions.
 
 use super::*;
+use crate::collections::HashSet;
 use crate::ir::NodeKind;
-use std::collections::HashSet;
 
 fn is_pure(gate_class: &str) -> bool {
-    gate_class == "_Literal" || gate_class.starts_with("BrickComponentType_Expr_")
+    gate_class == crate::ir::gate_class::LITERAL
+        || gate_class.starts_with("BrickComponentType_Expr_")
 }
 
-/// Node ids that appear in any wire, as source or target.
-fn wired_nodes(r: &LowerResult) -> HashSet<crate::ir::NodeId> {
-    let mut set = HashSet::default();
-    fn walk(m: &crate::ir::Module, set: &mut HashSet<crate::ir::NodeId>) {
-        for w in &m.wires {
-            set.insert(w.source.node_id);
-            set.insert(w.target.node_id);
-        }
-        for c in m.chips.values() {
-            walk(c, set);
-        }
-    }
-    walk(&r.module, &mut set);
-    set
-}
-
+/// The pure gates, anywhere in the module tree, that no wire touches.
 fn orphan_pure_gates(r: &LowerResult) -> Vec<&'static str> {
-    let wired = wired_nodes(r);
-    fn walk<'a>(
-        m: &'a crate::ir::Module,
-        wired: &HashSet<crate::ir::NodeId>,
-        out: &mut Vec<&'static str>,
-    ) {
-        for n in m.nodes.values() {
-            if n.kind == NodeKind::Gate && is_pure(n.gate_class) && !wired.contains(&n.id) {
-                out.push(n.gate_class);
-            }
-        }
-        for c in m.chips.values() {
-            walk(c, wired, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(&r.module, &wired, &mut out);
-    out
-}
-
-/// True if any module in the tree contains a gate of `class`.
-fn has_gate_class(r: &LowerResult, class: &str) -> bool {
-    fn walk(m: &crate::ir::Module, class: &str) -> bool {
-        m.nodes.values().any(|n| n.gate_class == class) || m.chips.values().any(|c| walk(c, class))
-    }
-    walk(&r.module, class)
+    let wired: HashSet<crate::ir::NodeId> = r
+        .module
+        .wires_deep()
+        .flat_map(|w| [w.source.node_id, w.target.node_id])
+        .collect();
+    r.module
+        .nodes_deep()
+        .filter(|n| n.kind == NodeKind::Gate && is_pure(n.gate_class) && !wired.contains(&n.id))
+        .map(|n| n.gate_class)
+        .collect()
 }
 
 /// An imported namespace member whose bare name matches a LOCAL exec-input
@@ -71,7 +41,7 @@ on start { hit = hit + 1 }";
     let r = compile_multi(main, &[("lib", lib)]);
     assert_no_errors(&r);
     assert!(
-        has_gate_class(&r, "BrickComponentType_Exec_Var_Increment"),
+        has_gate_deep(&r, crate::ir::gate_class::VAR_INCREMENT),
         "the `on start` handler body was dropped: an imported `let start` clobbered \
          the local `in start: exec`, so the trigger resolved to the imported value"
     );
@@ -110,16 +80,14 @@ out g = lib.greet()";
 /// orphan and must survive (the prune only removes fully-disconnected gates).
 #[test]
 fn unused_let_computation_is_kept() {
-    let r = compile(
+    let r = compile_ok(
         "\
 var x: int = 5
 in player: character
 on player { let y = x * 2 + 1 }",
     );
-    assert_no_errors(&r);
-    let has = |cls: &str| r.module.nodes.values().any(|n| n.gate_class == cls);
     assert!(
-        has("BrickComponentType_Expr_MathMultiply"),
+        has_gate(&r, "BrickComponentType_Expr_MathMultiply"),
         "unused `let y = x * 2 + 1` should keep its MathMultiply (not DCE'd)"
     );
 }
@@ -149,7 +117,7 @@ fn namespace_import_travels_two_modules_deep() {
     );
     assert_no_errors(&r);
     assert!(
-        !has_gate(&r, "_Unsupported"),
+        !has_unsupported(&r.module),
         "the nested namespace call must resolve; gates: {:?}",
         r.module
             .nodes
@@ -159,52 +127,19 @@ fn namespace_import_travels_two_modules_deep() {
     );
     // `n * 2` from the third module and the `+ 1` from the second must both
     // survive — a dropped namespace loses the multiply entirely.
-    assert!(
-        has_gate(&r, "BrickComponentType_Expr_MathMultiply"),
+    assert_eq!(
+        count_class(&r.module, "BrickComponentType_Expr_MathMultiply"),
+        1,
         "the third module's body must be inlined"
     );
-    assert!(
-        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
+    assert_eq!(
+        count_class(&r.module, "BrickComponentType_Expr_MathAdd"),
+        1,
         "the second module's arithmetic must survive"
     );
 }
 
-/// A namespaced `mod` must expose its declared return type. Typing the call as
-/// `Any` made any arithmetic on the result fail operator resolution, dropping
-/// the whole expression to an unsupported gate.
-#[test]
-fn namespaced_mod_call_keeps_its_return_type() {
-    let r = compile_multi(
-        "import * as Foo from \"third\"\nout result = Foo.blah(5) + 1",
-        &[("third", "mod blah(n: int) -> int {\n  return n * 2\n}")],
-    );
-    assert_no_errors(&r);
-    assert!(
-        !has_gate(&r, "_Unsupported"),
-        "a namespaced mod's return type must resolve the '+' overload"
-    );
-    assert!(has_gate(&r, "BrickComponentType_Expr_MathAdd"));
-}
-
 // ---------- `const` across files ----------
-
-/// The `InitialValue` baked into the first array gate of a cross-file program,
-/// child chip modules included.
-fn baked_array_multi(entry: &str, deps: &[(&str, &str)]) -> Vec<crate::ir::Literal> {
-    let r = compile_multi(entry, deps);
-    assert_no_errors(&r);
-    fn find(m: &crate::ir::Module) -> Option<Vec<crate::ir::Literal>> {
-        for n in m.nodes.values() {
-            if let Some(crate::ir::Literal::Array(items)) =
-                n.properties.get(&crate::intern::intern_static("InitialValue"))
-            {
-                return Some(items.clone());
-            }
-        }
-        m.chips.values().find_map(find)
-    }
-    find(&r.module).expect("no array gate with a baked InitialValue")
-}
 
 /// The library every `const`-across-files test below imports from. `12345` is
 /// the control literal in each baked array: it proves the array itself really
@@ -217,82 +152,81 @@ const mod triple(n: const int) -> int { return n * 3 }
 const P = { x: 11, y: 22 }
 const { x: PX, y: PY } = P";
 
-/// A named import of a top-level `const` is compile-time in the importer.
+/// The `InitialValue` of every array gate with one, anywhere in the tree.
+fn baked_arrays(r: &LowerResult) -> Vec<Vec<crate::ir::Literal>> {
+    r.module
+        .nodes_deep()
+        .filter_map(
+            |n| match n.properties.get(&crate::intern::sym::INITIAL_VALUE) {
+                Some(crate::ir::Literal::Array(items)) => Some(items.clone()),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+/// An imported constant is compile-time in the importer: every row's array
+/// initializer bakes the constants it names, beside the `12345` control.
 #[test]
-fn a_named_imported_const_is_compile_time() {
-    assert_eq!(
-        baked_array_multi(
+fn an_imported_constant_bakes_into_an_initializer() {
+    let rows: &[(&str, &str, &[i64])] = &[
+        (
+            "a named import of a top-level `const`",
             "import { SLOTS } from \"lib\"\nvar m: int[] = [SLOTS, 12345]",
-            &[("lib", CONST_LIB)]
+            &[4, 12345],
         ),
-        vec![crate::ir::Literal::Int(4), crate::ir::Literal::Int(12345)]
-    );
-}
-
-/// An imported `const mod` answers a call made from a constant-only position,
-/// rather than lowering as ordinary gates.
-#[test]
-fn an_imported_const_mod_answers_a_const_position_call() {
-    assert_eq!(
-        baked_array_multi(
+        (
+            "an imported `const mod` answers a call from a constant-only position, not as gates",
             "import { triple } from \"lib\"\nvar m: int[] = [triple(5), 12345]",
-            &[("lib", CONST_LIB)]
+            &[15, 12345],
         ),
-        vec![crate::ir::Literal::Int(15), crate::ir::Literal::Int(12345)]
-    );
-}
-
-/// A DESTRUCTURED top-level `const` crossing a named import. This could not be
-/// imported at all: `resolve::decl_name` answers "what is this declaration
-/// CALLED", which is `None` for every destructuring binding form, so the named
-/// import's lookup found nothing and reported WS012 "'PX' not found in 'lib'".
-/// `resolve::decl_names` answers the right question — every name it INTRODUCES
-/// — via the same `const_eval::bound_names` the constant environment uses.
-#[test]
-fn a_destructured_const_survives_a_named_import() {
-    assert_eq!(
-        baked_array_multi(
+        (
+            "a DESTRUCTURED `const` crossing a named import: `resolve::decl_name` is `None` for \
+             every destructuring form, so the lookup was WS012 \"'PX' not found in 'lib'\"; \
+             `resolve::decl_names` answers every name a declaration introduces",
             "import { PX, PY } from \"lib\"\nvar m: int[] = [PX, PY, 12345]",
-            &[("lib", CONST_LIB)]
+            &[11, 22, 12345],
         ),
-        vec![
-            crate::ir::Literal::Int(11),
-            crate::ir::Literal::Int(22),
-            crate::ir::Literal::Int(12345)
-        ]
-    );
-}
-
-/// Aliasing one name out of a destructured `const` renames THAT name only and
-/// keeps it bound to its own field — an alias that renamed the wrong position
-/// would silently import the sibling's value.
-#[test]
-fn a_destructured_const_may_be_imported_under_an_alias() {
-    assert_eq!(
-        baked_array_multi(
+        (
+            "an alias of one destructured name renames THAT name and keeps its own field",
             "import { PX as QX } from \"lib\"\nvar m: int[] = [QX, 12345]",
-            &[("lib", CONST_LIB)]
+            &[11, 12345],
         ),
-        vec![crate::ir::Literal::Int(11), crate::ir::Literal::Int(12345)]
-    );
-}
-
-/// `import "lib"` (import-all) pushes every importable declaration and only
-/// consults `decl_name` to skip duplicates, sharing the multi-name duplicate
-/// check pinned below.
-#[test]
-fn a_destructured_const_survives_an_import_all() {
-    assert_eq!(
-        baked_array_multi(
+        (
+            "import-all pushes every importable declaration, sharing the multi-name duplicate check",
             "import \"lib\"\nvar m: int[] = [PX, PY, 12345]",
-            &[("lib", CONST_LIB)]
+            &[11, 22, 12345],
         ),
-        vec![
-            crate::ir::Literal::Int(11),
-            crate::ir::Literal::Int(22),
-            crate::ir::Literal::Int(12345)
-        ]
+        (
+            "`ns.NAME`: `build_const_env` seeds each namespace's constants under `ns.NAME` keys and \
+             `const_eval`'s FieldAccess arm resolves them",
+            "import * as lib from \"lib\"\nvar m: int[] = [lib.SLOTS, 12345]",
+            &[4, 12345],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, entry, want) in rows {
+        let r = compile_multi(entry, &[("lib", CONST_LIB)]);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        if !errors.is_empty() {
+            failures.push(format!("{label}: errors {errors:?}"));
+            continue;
+        }
+        let want: Vec<crate::ir::Literal> =
+            want.iter().map(|&v| crate::ir::Literal::Int(v)).collect();
+        let got = baked_arrays(&r);
+        if got != [want.clone()] {
+            failures.push(format!("{label}: baked {got:?}, want [{want:?}]"));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
+    // The same namespaced constant used as a runtime value lowers to real gates.
+    let r = compile_multi(
+        "import * as lib from \"lib\"\nout r = lib.SLOTS + 1",
+        &[("lib", CONST_LIB)],
     );
+    assert_no_errors(&r);
+    assert!(!has_unsupported(&r.module));
 }
 
 /// A constant-only slot (a custom-event channel name) fed by an imported
@@ -309,10 +243,12 @@ fn an_imported_const_bakes_into_a_constant_only_slot() {
         .module
         .nodes
         .values()
-        .filter_map(|n| match n.properties.get(&crate::intern::intern_static("EventName")) {
-            Some(crate::ir::Literal::String(s)) => Some(s.clone()),
-            _ => None,
-        })
+        .filter_map(
+            |n| match n.properties.get(&crate::intern::intern_static("EventName")) {
+                Some(crate::ir::Literal::String(s)) => Some(s.clone()),
+                _ => None,
+            },
+        )
         .collect();
     assert_eq!(baked, vec!["libchan".to_string()]);
 }
@@ -336,38 +272,20 @@ import { MID_N, midTriple, LEAF_N, LEAF_CH } from \"mid\"
 var m: int[] = [LEAF_N, MID_N, midTriple(4), 12345]
 in go: exec
 on go { SendCustomEvent(LEAF_CH, 1) }";
-    let deps = [("leaf", leaf), ("mid", mid)];
-    assert_eq!(
-        baked_array_multi(entry, &deps),
-        vec![
-            crate::ir::Literal::Int(6),
-            crate::ir::Literal::Int(7),
-            crate::ir::Literal::Int(12),
-            crate::ir::Literal::Int(12345)
-        ]
-    );
-    let r = compile_multi(entry, &deps);
+    let r = compile_multi(entry, &[("leaf", leaf), ("mid", mid)]);
+    assert_no_errors(&r);
+    let ints = |v: &[i64]| {
+        v.iter()
+            .map(|&i| crate::ir::Literal::Int(i))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(baked_arrays(&r), [ints(&[6, 7, 12, 12345])]);
     assert!(
         r.module.nodes.values().any(|n| matches!(
             n.properties.get(&crate::intern::intern_static("EventName")),
             Some(crate::ir::Literal::String(s)) if s == "leafchan"
         )),
         "a const two imports away must still bake into a constant-only slot"
-    );
-}
-
-/// NAMESPACE access to an imported constant (`import * as ns` then `ns.NAME`)
-/// is compile-time: `build_const_env` evaluates each imported namespace's
-/// constants in isolation and seeds them under `"ns.NAME"` keys, and
-/// `const_eval`'s `FieldAccess` arm resolves a namespaced member from those, so
-/// a namespaced const bakes into a constant-only slot exactly like a named
-/// import. (It also still works as a runtime value — see below.)
-#[test]
-fn a_namespaced_const_folds_at_compile_time() {
-    let entry = "import * as lib from \"lib\"\nvar m: int[] = [lib.SLOTS, 12345]";
-    assert_eq!(
-        baked_array_multi(entry, &[("lib", CONST_LIB)]),
-        vec![crate::ir::Literal::Int(4), crate::ir::Literal::Int(12345)]
     );
 }
 
@@ -383,96 +301,91 @@ fn a_namespaced_record_value_folds_in_a_record_array_init() {
         &[("test2", lib)],
     );
     assert_no_errors(&r);
-    assert!(!has_gate_class(&r, "_Unsupported"));
-}
-
-/// The same namespaced constant used as a RUNTIME value is fine, which is what
-/// makes the limit above a missing const-eval feature rather than a broken
-/// import.
-#[test]
-fn a_namespaced_const_still_works_as_a_runtime_value() {
-    let r = compile_multi(
-        "import * as lib from \"lib\"\nout r = lib.SLOTS + 1",
-        &[("lib", CONST_LIB)],
-    );
-    assert_no_errors(&r);
-    assert!(!has_gate(&r, "_Unsupported"));
-}
-
-/// Two DIFFERENT modules declaring the same top-level name, merged via plain
-/// `import`, collide with WS013 rather than silently dropping one and
-/// aliasing both onto a single storage gate. A DIAMOND import (the same module
-/// reached via two paths) still dedups without a false duplicate.
-#[test]
-fn plain_import_same_name_from_two_modules_is_ws013() {
-    use crate::resolve::{MemLoader, resolve};
-    let loader = MemLoader {
-        files: [
-            ("m1.ws".to_string(), "var g: int = 1".to_string()),
-            ("m2.ws".to_string(), "var g: int = 2".to_string()),
+    assert!(!has_unsupported(&r.module));
+    // One array per field, each baked with that field's value.
+    let mut columns: Vec<(String, Option<crate::ir::Literal>)> =
+        nodes_of(&r.module, crate::ir::gate_class::ARRAY_VAR)
+            .into_iter()
+            .map(|n| {
+                let label = match n.properties.get(&crate::intern::sym::NAME_LABEL) {
+                    Some(crate::ir::Literal::String(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                (
+                    label,
+                    n.properties
+                        .get(&crate::intern::sym::INITIAL_VALUE)
+                        .cloned(),
+                )
+            })
+            .collect();
+    columns.sort_by(|a, b| a.0.cmp(&b.0));
+    let column = |v: i64| Some(crate::ir::Literal::Array(vec![crate::ir::Literal::Int(v)]));
+    assert_eq!(
+        columns,
+        [
+            ("arr.a".to_string(), column(10)),
+            ("arr.b".to_string(), column(20))
         ]
-        .into_iter()
-        .collect(),
-    };
-    let resolved = resolve("import \"m1\"\nimport \"m2\"", "main", &loader);
-    let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
-    let codes: Vec<&str> = tc.diagnostics.iter().map(|d| d.code.as_ref()).collect();
-    assert!(
-        codes.contains(&"WS013"),
-        "cross-module name collision must be WS013, got {codes:?}"
     );
 }
 
+/// Two DIFFERENT modules declaring the same top-level name, merged by plain or
+/// named import, collide with WS013 rather than silently dropping one and
+/// aliasing both onto a single storage gate. A DIAMOND import (one module
+/// reached through two others) stays a single shared declaration.
 #[test]
-fn named_import_same_name_from_two_modules_is_ws013() {
+fn a_name_from_two_modules_is_ws013_and_a_diamond_is_not() {
     use crate::resolve::{MemLoader, resolve};
-    let loader = MemLoader {
-        files: [
-            ("m1.ws".to_string(), "var dat: int = 1".to_string()),
-            ("m3.ws".to_string(), "var dat: int = 2".to_string()),
-        ]
-        .into_iter()
-        .collect(),
-    };
-    let resolved = resolve(
-        "import { dat } from \"m1\"\nimport { dat } from \"m3\"",
-        "main",
-        &loader,
-    );
-    let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
-    let codes: Vec<&str> = tc.diagnostics.iter().map(|d| d.code.as_ref()).collect();
-    assert!(
-        codes.contains(&"WS013"),
-        "cross-module named-import collision must be WS013, got {codes:?}"
-    );
-}
-
-/// A genuine diamond import (one module reached through two others) must NOT
-/// trip the collision check: `util` stays a single shared declaration.
-#[test]
-fn diamond_import_of_one_module_does_not_collide() {
-    use crate::resolve::{MemLoader, resolve};
-    let loader = MemLoader {
-        files: [
-            ("util.ws".to_string(), "var shared: int = 5".to_string()),
-            ("dm1.ws".to_string(), "import \"util\"".to_string()),
-            ("dm2.ws".to_string(), "import \"util\"".to_string()),
-        ]
-        .into_iter()
-        .collect(),
-    };
-    let resolved = resolve("import \"dm1\"\nimport \"dm2\"", "main", &loader);
-    let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
-    let errors: Vec<&str> = tc
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-        .map(|d| d.code.as_ref())
-        .collect();
-    assert!(
-        !errors.contains(&"WS013"),
-        "diamond import must not false-collide, got {errors:?}"
-    );
+    let rows: &[(&str, &[(&str, &str)], &str, bool)] = &[
+        (
+            "plain imports",
+            &[("m1.ws", "var g: int = 1"), ("m2.ws", "var g: int = 2")],
+            "import \"m1\"\nimport \"m2\"",
+            true,
+        ),
+        (
+            "named imports",
+            &[("m1.ws", "var dat: int = 1"), ("m3.ws", "var dat: int = 2")],
+            "import { dat } from \"m1\"\nimport { dat } from \"m3\"",
+            true,
+        ),
+        (
+            "a diamond",
+            &[
+                ("util.ws", "var shared: int = 5"),
+                ("dm1.ws", "import \"util\""),
+                ("dm2.ws", "import \"util\""),
+            ],
+            "import \"dm1\"\nimport \"dm2\"",
+            false,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, files, entry, collides) in rows {
+        let loader = MemLoader {
+            files: files
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        };
+        let resolved = resolve(entry, "main", &loader);
+        let tc = typecheck(
+            &resolved.ast,
+            "main",
+            &crate::typecheck::CeSlotMap::default(),
+        );
+        // A collision reports WS013 at any severity; a diamond has no WS013 error.
+        let found = if *collides {
+            crate::test_support::codes(&tc.diagnostics)
+        } else {
+            crate::test_support::error_codes(&tc.diagnostics)
+        };
+        if found.contains(&"WS013") != *collides {
+            failures.push(format!("{label}: WS013 expected {collides}, got {found:?}"));
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 /// A generic mod called through a namespace import infers its type parameters
@@ -486,10 +399,13 @@ fn a_generic_mod_called_through_a_namespace_infers_its_type_params() {
                 on go {\n  n = u.id(a) + 1\n  t = u.id(s)\n  g = u.pick(c, f, 2.5)\n}";
     let r = compile_multi(main, &[("lib", lib)]);
     assert_no_errors(&r);
-    assert!(!has_gate(&r, "_Unsupported"));
+    assert!(!has_unsupported(&r.module));
     let m = &r.module;
     let source = |id: crate::ir::NodeId, port: WirePort| {
-        m.wires.iter().find(|w| w.target.node_id == id && w.target.port == port).map(|w| w.source.node_id)
+        m.wires
+            .iter()
+            .find(|w| w.target.node_id == id && w.target.port == port)
+            .map(|w| w.source.node_id)
     };
     let input = |name: &str| {
         *m.nodes
@@ -502,7 +418,12 @@ fn a_generic_mod_called_through_a_namespace_infers_its_type_params() {
             .expect("input")
     };
     let port_ty = |n: &crate::ir::Node, port: WirePort| {
-        n.ports.inputs.iter().chain(&n.ports.outputs).find(|p| p.name == port.sym()).map(|p| p.ty.clone())
+        n.ports
+            .inputs
+            .iter()
+            .chain(&n.ports.outputs)
+            .find(|p| p.name == port.sym())
+            .map(|p| p.ty.clone())
     };
     // `u.id(a) + 1`: an int add of `a` itself.
     let add = super::nodes_of(m, "BrickComponentType_Expr_MathAdd");
@@ -511,13 +432,19 @@ fn a_generic_mod_called_through_a_namespace_infers_its_type_params() {
     assert_eq!(source(add[0].id, WirePort::InputA), Some(input("a")));
     // `t = u.id(s)`: the string itself, stored as a string.
     let sets = super::nodes_of(m, crate::ir::gate_class::VAR_SET);
-    let store_t = sets.iter().find(|n| source(n.id, WirePort::Value) == Some(input("s"))).expect("t = s");
+    let store_t = sets
+        .iter()
+        .find(|n| source(n.id, WirePort::Value) == Some(input("s")))
+        .expect("t = s");
     assert_eq!(port_ty(store_t, WirePort::Value), Some(Type::String));
     // `u.pick(c, f, 2.5)`: a float Select between `f` and 2.5 on `c`.
     let select = super::nodes_of(m, crate::ir::gate_class::SELECT);
     assert_eq!(select.len(), 1);
     assert_eq!(port_ty(select[0], WirePort::Output), Some(Type::Float));
-    let operands = [source(select[0].id, WirePort::InputA), source(select[0].id, WirePort::InputB)];
+    let operands = [
+        source(select[0].id, WirePort::InputA),
+        source(select[0].id, WirePort::InputB),
+    ];
     assert!(operands.contains(&Some(input("f"))), "{operands:?}");
     assert_eq!(source(select[0].id, WirePort::BSelectB), Some(input("c")));
 }
@@ -555,8 +482,15 @@ fn a_private_mod_named_like_a_builtin_does_not_replace_it_in_the_importer() {
                 in go: exec\nimport { useabs } from \"lib\"\non go { fo = abs(fl)\n so = useabs(k) }";
     let r = compile_multi(main, &[("lib", ABS_LIB)]);
     assert_no_errors(&r);
-    assert_eq!(sets_fed_by(&r, "BrickComponentType_Expr_MathAbs"), 1, "fo = abs(fl) stores the builtin's result");
-    assert!(sets_string(&r, "neg") && sets_string(&r, "pos"), "useabs still calls the module's abs");
+    assert_eq!(
+        sets_fed_by(&r, "BrickComponentType_Expr_MathAbs"),
+        1,
+        "fo = abs(fl) stores the builtin's result"
+    );
+    assert!(
+        sets_string(&r, "neg") && sets_string(&r, "pos"),
+        "useabs still calls the module's abs"
+    );
 }
 
 /// The importer's own `mod abs` does not replace the builtin inside an
@@ -569,8 +503,15 @@ fn the_importers_mod_does_not_replace_a_builtin_inside_an_imported_body() {
                 on go { fo = helperabs(fl)\n so = abs(k) }";
     let r = compile_multi(main, &[("lib", lib)]);
     assert_no_errors(&r);
-    assert_eq!(sets_fed_by(&r, "BrickComponentType_Expr_MathAbs"), 1, "helperabs calls the builtin");
-    assert!(sets_string(&r, "mine"), "the importer's own call is its own mod");
+    assert_eq!(
+        sets_fed_by(&r, "BrickComponentType_Expr_MathAbs"),
+        1,
+        "helperabs calls the builtin"
+    );
+    assert!(
+        sets_string(&r, "mine"),
+        "the importer's own call is its own mod"
+    );
 }
 
 /// The members of an `import * as` module are reached as `u.f`; a bare
@@ -580,7 +521,10 @@ fn the_importers_mod_does_not_replace_a_builtin_inside_an_imported_body() {
 fn a_namespace_member_named_like_a_builtin_does_not_replace_it() {
     let lib = "mod abs(x: float) -> float { return x * 2.0 }\nmod twice(x: float) -> float { return abs(x) }";
     for (main, sibling_calls) in [
-        ("var fl: float = -1.5\nvar fo: float = 0.0\nin go: exec\nimport * as u from \"lib\"\non go { fo = abs(fl) }", 0),
+        (
+            "var fl: float = -1.5\nvar fo: float = 0.0\nin go: exec\nimport * as u from \"lib\"\non go { fo = abs(fl) }",
+            0,
+        ),
         (
             "var fl: float = -1.5\nvar fo: float = 0.0\nvar f2: float = 0.0\nin go: exec\nimport * as u from \"lib\"\n\
              on go { fo = abs(fl)\n f2 = u.twice(fl) }",
@@ -594,8 +538,16 @@ fn a_namespace_member_named_like_a_builtin_does_not_replace_it() {
     ] {
         let r = compile_multi(main, &[("lib", lib)]);
         assert_no_errors(&r);
-        assert_eq!(sets_fed_by(&r, "BrickComponentType_Expr_MathAbs"), 1, "{main}");
-        assert_eq!(sets_fed_by(&r, "BrickComponentType_Expr_MathMultiply"), sibling_calls, "{main}");
+        assert_eq!(
+            sets_fed_by(&r, "BrickComponentType_Expr_MathAbs"),
+            1,
+            "{main}"
+        );
+        assert_eq!(
+            sets_fed_by(&r, "BrickComponentType_Expr_MathMultiply"),
+            sibling_calls,
+            "{main}"
+        );
     }
 }
 
@@ -606,13 +558,13 @@ fn a_whole_module_import_names_its_mod_over_the_builtin() {
     let main = "var k: int = -3\nvar so: string = \"\"\nin go: exec\nimport \"lib\"\non go { var t = abs(k)\n so = t }";
     let r = compile_multi(main, &[("lib", ABS_LIB)]);
     assert_no_errors(&r);
-    assert!(!has_gate_class(&r, "BrickComponentType_Expr_MathAbs"));
+    assert!(!has_gate_deep(&r, "BrickComponentType_Expr_MathAbs"));
     assert!(sets_string(&r, "neg"));
     // Named by a named import too.
     let main = "var k: int = -3\nvar so: string = \"\"\nin go: exec\nimport { abs } from \"lib\"\non go { so = abs(k) }";
     let r = compile_multi(main, &[("lib", ABS_LIB)]);
     assert_no_errors(&r);
-    assert!(!has_gate_class(&r, "BrickComponentType_Expr_MathAbs"));
+    assert!(!has_gate_deep(&r, "BrickComponentType_Expr_MathAbs"));
     assert!(sets_string(&r, "neg"));
 }
 
@@ -636,7 +588,10 @@ fn a_private_const_mod_named_like_a_builtin_does_not_fold_in_the_importer() {
         })
         .collect();
     assert!(ints.contains(&2), "the `else` store survives: {ints:?}");
-    assert!(ints.contains(&99), "useabs still calls the module's const mod: {ints:?}");
+    assert!(
+        ints.contains(&99),
+        "useabs still calls the module's const mod: {ints:?}"
+    );
 }
 
 /// The floats a program's `Var_Set` gates store.
@@ -660,9 +615,8 @@ fn float_sets(r: &LowerResult) -> Vec<f64> {
 fn a_method_call_reaches_its_self_mod_in_every_file() {
     let main = "var vv: vector = Vec(1.0, 2.0, 3.0)\nvar fo: float = 0.0\nin go: exec\n\
                 mod Length(self: vector) -> float { return 777.0 }\non go { fo = vv.Length() }";
-    let r = compile(main);
-    assert_no_errors(&r);
-    assert!(!has_gate_class(&r, "BrickComponentType_Expr_String_Length"));
+    let r = compile_ok(main);
+    assert!(!has_gate_deep(&r, "BrickComponentType_Expr_String_Length"));
     assert_eq!(float_sets(&r), [777.0]);
     let lib = "mod Length(self: vector) -> float { return 777.0 }\n\
                mod dist2(self: vector, o: vector) -> float { return 5.0 }\n\
@@ -671,8 +625,8 @@ fn a_method_call_reaches_its_self_mod_in_every_file() {
                 in go: exec\non go { fo = pub1(vv) }";
     let r = compile_multi(main, &[("lib", lib)]);
     assert_no_errors(&r);
-    assert!(!has_gate(&r, "_Unsupported"));
-    assert!(!has_gate_class(&r, "BrickComponentType_Expr_String_Length"));
+    assert!(!has_unsupported(&r.module));
+    assert!(!has_gate_deep(&r, "BrickComponentType_Expr_String_Length"));
     assert_eq!(float_sets(&r), [782.0]);
 }
 
@@ -691,39 +645,58 @@ fn a_private_self_mod_answers_only_its_own_module() {
     let head = "var fl: float = -1.5\nvar vv: vector = Vec(3.0, 4.0, 0.0)\nvar fo: float = 0.0\nin go: exec\n";
     let program = |import: &str, body: &str| format!("{import}\n{head}on go {{ {body} }}");
     let error_codes = |r: &LowerResult| -> Vec<String> {
-        r.diagnostics
-            .iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .map(|d| d.code.to_string())
+        crate::test_support::error_codes(&r.diagnostics)
+            .into_iter()
+            .map(str::to_string)
             .collect()
     };
     for (body, code, says) in [
         ("fo = fl.abs()", "WS036", "takes no receiver"),
         ("fo = vv.Length()", "WS003", "Magnitude(vv)"),
-        ("fo = fl.twice()", "WS036", "`twice` is not declared in `main` and `main` does not import it"),
-        ("fo = pub2(fl, vv)
- fo = fl.abs()", "WS036", "takes no receiver"),
+        (
+            "fo = fl.twice()",
+            "WS036",
+            "`twice` is not declared in `main` and `main` does not import it",
+        ),
+        (
+            "fo = pub2(fl, vv)
+ fo = fl.abs()",
+            "WS036",
+            "takes no receiver",
+        ),
     ] {
-        let r = compile_multi(&program("import { pub2 } from \"lib\"", body), &[("lib", lib)]);
+        let r = compile_multi(
+            &program("import { pub2 } from \"lib\"", body),
+            &[("lib", lib)],
+        );
         assert_eq!(error_codes(&r), [code], "`{body}`");
         let d = r.diagnostics.iter().find(|d| d.code == code).unwrap();
         assert!(d.message.contains(says), "`{body}`: {}", d.message);
     }
     // The library's own body still reaches all three.
-    let r = compile_multi(&program("import { pub2 } from \"lib\"", "fo = pub2(fl, vv)"), &[("lib", lib)]);
+    let r = compile_multi(
+        &program("import { pub2 } from \"lib\"", "fo = pub2(fl, vv)"),
+        &[("lib", lib)],
+    );
     assert_no_errors(&r);
-    assert!(!has_gate(&r, "_Unsupported"));
-    assert!(!has_gate_class(&r, "BrickComponentType_Expr_String_Length"));
-    assert!(!has_gate_class(&r, "BrickComponentType_Expr_MathAbs"));
+    assert!(!has_unsupported(&r.module));
+    assert!(!has_gate_deep(&r, "BrickComponentType_Expr_String_Length"));
+    assert!(!has_gate_deep(&r, "BrickComponentType_Expr_MathAbs"));
     // A private plain mod follows the same rule.
-    let r = compile_multi(&program("import { pub2 } from \"lib\"", "fo = twice(fl)"), &[("lib", lib)]);
+    let r = compile_multi(
+        &program("import { pub2 } from \"lib\"", "fo = twice(fl)"),
+        &[("lib", lib)],
+    );
     assert_eq!(error_codes(&r), ["WS002"]);
     // Named by the importer: its own calls reach the `self` mod.
     for import in ["import { Length } from \"lib\"", "import \"lib\""] {
         let r = compile_multi(&program(import, "fo = vv.Length()"), &[("lib", lib)]);
         assert_no_errors(&r);
-        assert!(!r.diagnostics.iter().any(|d| d.code == "WS014"), "{import}: {:?}", r.diagnostics);
-        assert!(!has_gate_class(&r, "BrickComponentType_Expr_String_Length"), "{import}");
+        crate::test_support::assert_no_code(&r.diagnostics, "WS014");
+        assert!(
+            !has_gate_deep(&r, "BrickComponentType_Expr_String_Length"),
+            "{import}"
+        );
         assert_eq!(float_sets(&r), [777.0], "{import}");
     }
 }
@@ -738,13 +711,12 @@ fn a_duplicate_mod_is_one_error_and_an_annotation_uses_its_alias() {
     let main = "import { pubt } from \"lt\"\nvar fl: float = 1.5\nvar fo: float = 0.0\nin go: exec\n\
                 mod twice(self: float) -> float { return self * 7.0 }\non go { fo = pubt(fl) + fl.twice() }";
     let r = compile_multi(main, &[("lt", lib)]);
-    let codes: Vec<&str> = r
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-        .map(|d| d.code.as_str())
-        .collect();
-    assert_eq!(codes, ["WS013"], "{:?}", r.diagnostics);
+    assert_eq!(
+        crate::test_support::error_codes(&r.diagnostics),
+        ["WS013"],
+        "{:?}",
+        r.diagnostics
+    );
     let lib = "type P = { a: int, b: float }\nmod libmk(k: int) -> P { return { a: k, b: 2.5 } }";
     for main in [
         "import { libmk, P } from \"lr\"\nvar k: int = 3\nin go: exec\non go { out z: P = libmk(k) }",
@@ -769,10 +741,14 @@ fn a_private_self_mod_does_not_make_the_importers_method_call_effectful() {
                 on go { fo = vlen(vv) }\non go2 { n = if c then s.Length() else 0 }";
     let r = compile_multi(main, &[("lv", lib)]);
     assert_no_errors(&r);
-    assert!(has_gate_class(&r, "BrickComponentType_Expr_String_Length"));
-    assert!(has_gate_class(&r, "BrickComponentType_Expr_Select"));
-    assert!(!has_gate_class(&r, "BrickComponentType_Exec_Branch"));
-    assert_eq!(float_sets(&r), [777.0], "the library's own call still reaches its mod");
+    assert!(has_gate_deep(&r, "BrickComponentType_Expr_String_Length"));
+    assert!(has_gate_deep(&r, "BrickComponentType_Expr_Select"));
+    assert!(!has_gate_deep(&r, "BrickComponentType_Exec_Branch"));
+    assert_eq!(
+        float_sets(&r),
+        [777.0],
+        "the library's own call still reaches its mod"
+    );
 }
 
 /// A library body calls only what its own file declares or imports, by method
@@ -791,19 +767,22 @@ var n: int = 0
 in go: exec
 mod m(a: const int) -> int { return a }
 ";
-    for body in ["const Q = sq(2)
-on go { n = Q }", "on go {
+    for body in [
+        "const Q = sq(2)
+on go { n = Q }",
+        "on go {
 const Q = sq(2)
 n = Q
-}", "on go { n = m(sq(2)) }"] {
+}",
+        "on go { n = m(sq(2)) }",
+    ] {
         let r = compile_multi(&format!("{head}{body}"), &[("lib", lib)]);
-        let codes: Vec<&str> = r
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .map(|d| d.code.as_ref())
-            .collect();
-        assert_eq!(codes, ["WS002"], "{body}: {:?}", r.diagnostics);
+        assert_eq!(
+            crate::test_support::error_codes(&r.diagnostics),
+            ["WS002"],
+            "{body}: {:?}",
+            r.diagnostics
+        );
     }
 }
 
@@ -823,17 +802,41 @@ fn a_library_body_does_not_reach_its_importers_mods() {
     };
     // A whole-module import brings both bodies, so it reports both calls.
     for (import, call, expect) in [
-        ("import { pubh } from \"lib\"", "pubh(fl)", &[("WS036", "hook")][..]),
-        ("import { pubp } from \"lib\"", "pubp(fl)", &[("WS002", "hookp")][..]),
-        ("import \"lib\"", "pubh(fl)", &[("WS036", "hook"), ("WS002", "hookp")][..]),
+        (
+            "import { pubh } from \"lib\"",
+            "pubh(fl)",
+            &[("WS036", "hook")][..],
+        ),
+        (
+            "import { pubp } from \"lib\"",
+            "pubp(fl)",
+            &[("WS002", "hookp")][..],
+        ),
+        (
+            "import \"lib\"",
+            "pubh(fl)",
+            &[("WS036", "hook"), ("WS002", "hookp")][..],
+        ),
     ] {
-        let r = compile_multi(&format!("{import}\n{head}on go {{ fo = {call} }}"), &[("lib", lib)]);
+        let r = compile_multi(
+            &format!("{import}\n{head}on go {{ fo = {call} }}"),
+            &[("lib", lib)],
+        );
         let errs = errors(&r);
         assert_eq!(errs.len(), expect.len(), "{import} {call}: {errs:?}");
         for (e, (code, name)) in errs.iter().zip(expect) {
-            assert_eq!((e.code.as_ref(), &*e.range.file), (*code, "lib.ws"), "{import} {call}");
+            assert_eq!(
+                (e.code.as_ref(), &*e.range.file),
+                (*code, "lib.ws"),
+                "{import} {call}"
+            );
             let m = &e.message;
-            assert!(m.contains(&format!("`{name}` is not declared in `lib.ws` and `lib.ws` does not import it")), "{m}");
+            assert!(
+                m.contains(&format!(
+                    "`{name}` is not declared in `lib.ws` and `lib.ws` does not import it"
+                )),
+                "{m}"
+            );
             assert!(m.contains("`main` imports `lib.ws`"), "{m}");
         }
     }
@@ -843,8 +846,15 @@ fn a_library_body_does_not_reach_its_importers_mods() {
     let main = "import \"a\"\nimport \"b\"\nvar fl: float = 1.5\nvar fo: float = 0.0\nin go: exec\non go { fo = pa(fl) }";
     let errs = errors(&compile_multi(main, &[("a", a), ("b", b)]));
     assert_eq!(errs.len(), 1, "{errs:?}");
-    assert_eq!((errs[0].code.as_ref(), &*errs[0].range.file), ("WS002", "a.ws"));
-    assert!(errs[0].message.contains("Import it into `a.ws`"), "{}", errs[0].message);
+    assert_eq!(
+        (errs[0].code.as_ref(), &*errs[0].range.file),
+        ("WS002", "a.ws")
+    );
+    assert!(
+        errs[0].message.contains("Import it into `a.ws`"),
+        "{}",
+        errs[0].message
+    );
     // Declared in the library, both answer.
     let lib = format!(
         "mod hook(self: float) -> float {{ return self * 9.0 }}\n\
@@ -854,7 +864,7 @@ fn a_library_body_does_not_reach_its_importers_mods() {
                 on go { fo = pubh(fl) + pubp(fl) }";
     let r = compile_multi(main, &[("lib", &lib)]);
     assert_no_errors(&r);
-    assert!(!has_gate(&r, "_Unsupported"));
+    assert!(!has_unsupported(&r.module));
 }
 
 /// A library names the top-level values (constants, `let`s, storage, ports)
@@ -864,9 +874,13 @@ fn a_library_body_does_not_reach_its_importers_mods() {
 /// value before. An importer reads a library's value as it did.
 #[test]
 fn a_library_names_the_values_it_declares_or_imports() {
-    let codes = |main: &str, deps: &[(&str, &str)]| super::shadow_differential::outcome(main, deps, false).codes;
+    let codes = |main: &str, deps: &[(&str, &str)]| {
+        super::shadow_differential::outcome(main, deps, false).codes
+    };
     let main = |import: &str| {
-        format!("{import}\nconst K = 4\nconst CH = \"evt\"\nlet L = 5\nvar V: int = 6\nin go: exec\nvar x: int = 0\nout ox: int = x\non go {{ x = mk() }}")
+        format!(
+            "{import}\nconst K = 4\nconst CH = \"evt\"\nlet L = 5\nvar V: int = 6\nin go: exec\nvar x: int = 0\nout ox: int = x\non go {{ x = mk() }}"
+        )
     };
     for body in [
         "mod mk() -> int { return K + 1 }",
@@ -878,21 +892,44 @@ fn a_library_names_the_values_it_declares_or_imports() {
     ] {
         for import in ["import { mk } from \"lk\"", "import \"lk\""] {
             let got = codes(&main(import), &[("lk", body)]);
-            assert!(got.contains(&"WS002".to_string()), "{import} / {body}: {got:?}");
+            assert!(
+                got.contains(&"WS002".to_string()),
+                "{import} / {body}: {got:?}"
+            );
         }
     }
     // Its own constants and its imports' are its to read, and an importer
     // reads what it imports.
     let own = [("lk", "const K2 = 7\nmod mk() -> int { return K2 + 1 }")];
-    assert!(codes(&main("import { mk } from \"lk\""), &own).is_empty(), "{:?}", codes(&main("import { mk } from \"lk\""), &own));
-    let through = [("lk", "import { K3 } from \"base\"\nmod mk() -> int { return K3 + 1 }"), ("base", "const K3 = 9")];
-    assert!(codes(&main("import { mk } from \"lk\""), &through).is_empty(), "{:?}", codes(&main("import { mk } from \"lk\""), &through));
+    assert!(
+        codes(&main("import { mk } from \"lk\""), &own).is_empty(),
+        "{:?}",
+        codes(&main("import { mk } from \"lk\""), &own)
+    );
+    let through = [
+        (
+            "lk",
+            "import { K3 } from \"base\"\nmod mk() -> int { return K3 + 1 }",
+        ),
+        ("base", "const K3 = 9"),
+    ];
+    assert!(
+        codes(&main("import { mk } from \"lk\""), &through).is_empty(),
+        "{:?}",
+        codes(&main("import { mk } from \"lk\""), &through)
+    );
     let lib = [("lk", "const K4 = 3\nmod mk() -> int { return K4 }")];
     let read = "\nvar y: int = 0\nout oy: int = y\non go { y = K4 }";
     for import in ["import \"lk\"", "import { mk, K4 } from \"lk\""] {
-        assert!(codes(&format!("{}{read}", main(import)), &lib).is_empty(), "{import}");
+        assert!(
+            codes(&format!("{}{read}", main(import)), &lib).is_empty(),
+            "{import}"
+        );
     }
-    let unnamed = codes(&format!("{}{read}", main("import { mk } from \"lk\"")), &lib);
+    let unnamed = codes(
+        &format!("{}{read}", main("import { mk } from \"lk\"")),
+        &lib,
+    );
     assert!(!unnamed.contains(&"WS002".to_string()), "{unnamed:?}");
 }
 
@@ -900,12 +937,21 @@ fn a_library_names_the_values_it_declares_or_imports() {
 
 /// Lower `main_src` with in-memory imported files, folding off so argument
 /// values stay visible on the gates they reach.
-fn lower_files(main_src: &str, files: &[(&str, &str)]) -> (Vec<crate::diagnostic::Diagnostic>, LowerResult) {
-    let files: crate::collections::HashMap<String, String> =
-        files.iter().map(|(n, s)| (n.to_string(), s.to_string())).collect();
+fn lower_files(
+    main_src: &str,
+    files: &[(&str, &str)],
+) -> (Vec<crate::diagnostic::Diagnostic>, LowerResult) {
+    let files: crate::collections::HashMap<String, String> = files
+        .iter()
+        .map(|(n, s)| (n.to_string(), s.to_string()))
+        .collect();
     let loader = crate::resolve::MemLoader { files };
-    let crate::compile::FrontEnd { resolved, typecheck: tc, lowered, .. } =
-        crate::compile::front_end(main_src, "main.ws", None, FoldMode::ForceOff, &loader);
+    let crate::compile::FrontEnd {
+        resolved,
+        typecheck: tc,
+        lowered,
+        ..
+    } = crate::compile::front_end(main_src, "main.ws", None, FoldMode::ForceOff, &loader);
     let mut diags = resolved.diagnostics;
     diags.extend(tc.diagnostics);
     diags.extend(lowered.diagnostics.iter().cloned());
@@ -913,7 +959,14 @@ fn lower_files(main_src: &str, files: &[(&str, &str)]) -> (Vec<crate::diagnostic
 }
 
 fn assert_clean(diags: &[crate::diagnostic::Diagnostic]) {
-    assert!(diags.is_empty(), "{:?}", diags.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>());
+    assert!(
+        diags.is_empty(),
+        "{:?}",
+        diags
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
 }
 
 fn int_inputs(r: &LowerResult, class: &str, port: &str) -> Vec<i64> {
@@ -966,7 +1019,11 @@ fn a_namespaced_call_takes_defaults_and_named_arguments() {
     assert_eq!(int_inputs(&r, MUL, "InputB"), vec![2, 5]);
     let call = crate::ir::gate_class::FUNCTION_CALL;
     assert_eq!(nodes_of(&r.module, call).len(), 2);
-    assert_eq!(int_inputs(&r, call, "Input1"), vec![7], "only the named call supplies y");
+    assert_eq!(
+        int_inputs(&r, call, "Input1"),
+        vec![7],
+        "only the named call supplies y"
+    );
 }
 
 /// A `fn` reached through a chain of imports, from another `fn`, a `mod` and
@@ -996,7 +1053,10 @@ chip Counter(tick: exec) -> (value: int) {
     );
     assert_clean(&diags);
     // twice (1) + add twice inside twice (2) + add in viaMod (1) + add in Counter (1)
-    assert_eq!(nodes_of(&r.module, crate::ir::gate_class::FUNCTION_CALL).len(), 5);
+    assert_eq!(
+        nodes_of(&r.module, crate::ir::gate_class::FUNCTION_CALL).len(),
+        5
+    );
     let total_vars = nodes_of(&r.module, "BrickComponentType_Var")
         .iter()
         .filter(|n| matches!(n.properties.get(&*crate::intern::sym::NAME_LABEL), Some(crate::ir::Literal::String(s)) if s == "total"))

@@ -1,718 +1,509 @@
-    use super::*;
+use super::*;
 
-    fn hover_value(source: &str, line: u32, col: u32) -> Option<String> {
-        let raw = hover(source, line, col, "{}")?;
-        let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
-        parsed
-            .get("value")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+// These test the playground's adapter: the editor's UTF-16 columns in and
+// out, the `files_json` loader, the JSON shapes the editor reads, and the
+// passes this entry point runs. What the analysis answers is tested in
+// `wirescript::analysis`.
+
+/// The editor (UTF-16) column of the `nth` `needle` on 0-based `line`.
+fn editor_col(src: &str, line: usize, needle: &str, nth: usize) -> u32 {
+    let l = src.lines().nth(line).unwrap();
+    let byte = l.match_indices(needle).nth(nth).expect("needle").0;
+    l[..byte].encode_utf16().count() as u32
+}
+
+fn hover_value(source: &str, line: u32, col: u32) -> Option<String> {
+    let raw = hover(source, line, col, "{}")?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    parsed
+        .get("value")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn parse_items(json: &str) -> Vec<serde_json::Value> {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
+/// A line holding emoji (two UTF-16 units, four bytes, one char each) and
+/// an accent (one unit, two bytes) gives a name three columns; the cursor
+/// arrives in UTF-16 and must land on it. Four emoji put the char and
+/// UTF-16 columns further apart than the name is long.
+const NON_ASCII: &str = "var abc: int = 0\nvar xyz: int = 0\nin go: exec\non go {\n  BroadcastChatMessage(\"\u{1F389}\u{1F389}\u{1F389}\u{1F389}\u{e9}\" .. abc .. xyz)\n}";
+
+#[test]
+fn hover_reads_an_editor_column_on_a_non_ascii_line() {
+    for (needle, want) in [("abc", "var abc: int"), ("xyz", "var xyz: int")] {
+        let col = editor_col(NON_ASCII, 4, needle, 0);
+        let h =
+            hover_value(NON_ASCII, 4, col + 1).unwrap_or_else(|| panic!("no hover on {needle}"));
+        assert!(h.contains(want), "{needle}: {h}");
     }
+}
 
-    // ---- var hover ----
-    #[test]
-    fn hover_var() {
-        let h = hover_value("var count: int = 0", 0, 4).unwrap();
-        assert!(h.contains("var count: int"), "got: {h}");
-    }
+#[test]
+fn diagnostics_run_lowering_and_read_the_files_json() {
+    let codes = |out: &str| -> Vec<String> {
+        parse_items(out)
+            .iter()
+            .map(|d| d["code"].as_str().unwrap_or("").to_string())
+            .collect()
+    };
+    assert!(
+        parse_items(&diagnostics("var x: int = 0", "{}")).is_empty(),
+        "a clean program has no diagnostics"
+    );
+    assert!(codes(&diagnostics("on RoundStart() { x = 1 }", "{}")).contains(&"WS002".to_string()));
+    let files = r#"{"lib.ws": "mod foo(v: *int) { v = v + 1 }"}"#;
+    let items = parse_items(&diagnostics(
+        "import \"lib\"\nvar x: int = 0\non RoundStart() { foo(x) }",
+        files,
+    ));
+    assert!(
+        items.is_empty(),
+        "an import from the files json resolves: {items:?}"
+    );
+    let items = parse_items(&diagnostics("import \"nonexistent\"", "{}"));
+    assert!(
+        items.iter().any(|i| i["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("cannot resolve")),
+        "a missing import is reported: {items:?}"
+    );
+}
 
-    #[test]
-    fn hover_var_inferred() {
-        let h = hover_value("var x = 42", 0, 4).unwrap();
-        assert!(h.contains("var x"), "got: {h}");
-    }
+/// A misspelled receiver method type-checks clean and lowers to an
+/// `_Unsupported` placeholder, which emit drops. This path stopped at
+/// typecheck, so the editor showed nothing for a dead circuit while
+/// `wirescript_compile` went on to succeed.
+#[test]
+fn diagnostics_report_an_unsupported_placeholder() {
+    let out = diagnostics(
+        "var m: Map<int, int>\nvar n: int = 0\non RoundStart() { n = m.size() }\n",
+        "{}",
+    );
+    assert!(
+        out.contains("WSP001"),
+        "expected a WSP001 placeholder warning, got: {out}"
+    );
+}
 
-    // ---- let hover ----
-    #[test]
-    fn hover_let() {
-        let h = hover_value("var x: int = 0\nlet y = x + 1", 1, 4).unwrap();
-        assert!(h.contains("let y"), "got: {h}");
-    }
+#[test]
+fn diagnostics_carry_editor_columns_on_a_non_ascii_line() {
+    // `undefined` starts at byte 20 of the line, UTF-16 column 19.
+    let items = parse_items(&diagnostics("let s = \"h\u{e9}llo\" .. undefined\n", "{}"));
+    let d = items
+        .iter()
+        .find(|i| i["code"] == "WS002")
+        .unwrap_or_else(|| panic!("{items:?}"));
+    assert_eq!(
+        (
+            d["startLine"].as_u64(),
+            d["startCol"].as_u64(),
+            d["endCol"].as_u64()
+        ),
+        (Some(0), Some(19), Some(28)),
+        "{d:?}"
+    );
+}
 
-    // ---- buffer hover ----
-    #[test]
-    fn hover_buffer() {
-        let h = hover_value("var x: int = 0\nbuffer prev = x", 1, 7).unwrap();
-        assert!(h.contains("buffer prev"), "got: {h}");
-    }
-
-    // ---- in hover ----
-    #[test]
-    fn hover_in() {
-        let h = hover_value("in trigger: exec", 0, 3).unwrap();
-        assert!(h.contains("in trigger: exec"), "got: {h}");
-    }
-
-    // ---- mod hover ----
-    #[test]
-    fn hover_mod() {
-        let h = hover_value("mod inc(v: *int) { v = v + 1 }", 0, 4).unwrap();
-        assert!(h.contains("mod inc"), "got: {h}");
-        assert!(h.contains("*int"), "got: {h}");
-    }
-
-    // ---- chip hover ----
-    #[test]
-    fn hover_chip() {
-        let h = hover_value(
-            "chip Foo(x: int) -> (result: int) {\n  out result = x\n}",
-            0,
-            5,
-        )
-        .unwrap();
-        assert!(h.contains("chip Foo"), "got: {h}");
-    }
-
-    // ---- fn hover ----
-    #[test]
-    fn hover_fn() {
-        let h = hover_value("fn double(x: int) -> int = x * 2", 0, 3).unwrap();
-        assert!(h.contains("fn double"), "got: {h}");
-        assert!(h.contains("int"), "got: {h}");
-    }
-
-    // ---- builtin call hover ----
-    #[test]
-    fn hover_builtin_call() {
-        let h = hover_value("var x: int = Random(0, 10)", 0, 13).unwrap();
-        assert!(h.contains("Random"), "got: {h}");
-    }
-
-    // ---- builtin call with gate docs ----
-    #[test]
-    fn hover_display_text_has_docs() {
-        let h = hover_value(
-            "var ctrl: controller\non RoundStart() { ctrl.DisplayText(\"hi\") }",
-            1,
-            23,
-        )
-        .unwrap();
-        assert!(h.contains("DisplayText"), "got: {h}");
-    }
-
-    // ---- named param hover ----
-    #[test]
-    fn hover_named_param() {
-        // fontSize at col 24-31 on line 2
-        let src =
-            "var ctrl: controller\non RoundStart() {\n  DisplayText(ctrl, \"hi\", fontSize = 20)\n}";
-        // Try hovering on the 'f' of fontSize
-        if let Some(h) = hover_value(src, 2, 24) {
-            assert!(h.contains("fontSize") || h.contains("Font"), "got: {h}");
-        }
-        // Named param hover depends on find_enclosing_call detecting the call context
-    }
-
-    // ---- field access hover ----
-    #[test]
-    fn hover_record_field() {
-        let src = "in player: character\nlet input = InputReader(player)\nlet fwd = input.Forward";
-        let h = hover_value(src, 2, 16).unwrap();
-        assert!(h.contains("Forward") && h.contains("float"), "got: {h}");
-    }
-
-    // ---- event hover ----
-    #[test]
-    fn hover_event() {
-        let h = hover_value("on RoundStart() { }", 0, 3).unwrap();
-        assert!(h.contains("RoundStart"), "got: {h}");
-        // Should show `on RoundStart` (using `on`, not fictional `event` keyword)
-        assert!(
-            h.contains("on RoundStart"),
-            "hover should use `on` keyword, got: {h}"
-        );
-    }
-
-    #[test]
-    fn hover_event_with_params() {
-        let h = hover_value("on CharacterDied() -> (character) { }", 0, 3).unwrap();
-        assert!(h.contains("CharacterDied"), "got: {h}");
-        assert!(h.contains("character"), "got: {h}");
-        // Should show `on CharacterDied(...)` using `on`, not `event`
-        assert!(
-            h.contains("on CharacterDied"),
-            "hover should use `on` keyword, got: {h}"
-        );
-    }
-
-    #[test]
-    fn hover_event_mid_name() {
-        // Hovering at any position within the event name should show the same info
-        let h = hover_value("on CharacterDied() -> (a) { }", 0, 10).unwrap();
-        assert!(
-            h.contains("CharacterDied"),
-            "mid-name hover should show event, got: {h}"
-        );
-        assert!(
-            h.contains("character"),
-            "should show event param type, got: {h}"
-        );
-    }
-
-    // ---- array method hover ----
-    #[test]
-    fn hover_array_push() {
-        let h = hover_value("var items: int[]\non RoundStart() { items.push(1) }", 1, 24).unwrap();
-        assert!(h.contains("push"), "got: {h}");
-    }
-
-    // ---- chained receiver call type inference ----
-    #[test]
-    fn hover_chain_vec_normalize() {
-        let h = hover_value(
-            "let foo = Vec(0.0, 1.0, 2.0).Normalize()\nout r = foo",
-            1,
-            8,
-        )
-        .unwrap();
-        assert!(
-            h.contains("vector"),
-            "Vec.Normalize() should be vector, got: {h}"
-        );
-    }
-
-    #[test]
-    fn hover_chain_vec_magnitude() {
-        let h = hover_value(
-            "let foo = Vec(1.0, 2.0, 3.0).Magnitude()\nout r = foo",
-            1,
-            8,
-        )
-        .unwrap();
-        assert!(
-            h.contains("float"),
-            "Vec.Magnitude() should be float, got: {h}"
-        );
-    }
-
-    #[test]
-    fn hover_chain_vec_dot() {
-        let h = hover_value(
-            "let a = Vec(1.0, 0.0, 0.0)\nlet b = Vec(0.0, 1.0, 0.0)\nlet d = a.Dot(b)\nout r = d",
-            3,
-            8,
-        )
-        .unwrap();
-        assert!(h.contains("float"), "a.Dot(b) should be float, got: {h}");
-    }
-
-    #[test]
-    fn hover_chain_vec_cross() {
-        let h = hover_value(
-            "let a = Vec(1.0, 0.0, 0.0)\nlet c = a.Cross(Vec(0.0, 1.0, 0.0))\nout r = c",
-            2,
-            8,
-        )
-        .unwrap();
-        assert!(
-            h.contains("vector"),
-            "a.Cross(b) should be vector, got: {h}"
-        );
-    }
-
-    #[test]
-    fn hover_chain_vec_distance() {
-        let h = hover_value(
-            "let d = Vec(0.0, 0.0, 0.0).Distance(Vec(1.0, 1.0, 1.0))\nout r = d",
-            1,
-            8,
-        )
-        .unwrap();
-        assert!(
-            h.contains("float"),
-            "Vec.Distance() should be float, got: {h}"
-        );
-    }
-
-    #[test]
-    fn hover_chain_vec_scale() {
-        let h = hover_value("let s = Vec(1.0, 2.0, 3.0).ScaleVec(2.0)\nout r = s", 1, 8).unwrap();
-        assert!(
-            h.contains("vector"),
-            "Vec.ScaleVec() should be vector, got: {h}"
-        );
-    }
-
-    #[test]
-    fn hover_chain_vec_split() {
-        let h = hover_value("let p = Vec(1.0, 2.0, 3.0).SplitVec()\nout r = p", 1, 8).unwrap();
-        assert!(
-            h.contains("x") && h.contains("y") && h.contains("z"),
-            "Vec.SplitVec() should be {{x,y,z}}, got: {h}"
-        );
-    }
-
-    #[test]
-    fn hover_chain_vec_magnitude_sq() {
-        let h = hover_value("let m = Vec(1.0, 2.0, 3.0).MagnitudeSq()\nout r = m", 1, 8).unwrap();
-        assert!(
-            h.contains("float"),
-            "Vec.MagnitudeSq() should be float, got: {h}"
-        );
-    }
-
-    #[test]
-    fn hover_chain_string_contains() {
-        let h = hover_value(
-            "var s: string = \"hello\"\nlet r = s.Contains(\"ell\")\nout o = r",
-            2,
-            8,
-        )
-        .unwrap();
-        assert!(h.contains("bool"), "s.Contains() should be bool, got: {h}");
-    }
-
-    #[test]
-    fn hover_chain_string_tolower() {
-        let h = hover_value(
-            "var s: string = \"HELLO\"\nlet r = s.ToLower()\nout o = r",
-            2,
-            8,
-        )
-        .unwrap();
-        assert!(
-            h.contains("string"),
-            "s.ToLower() should be string, got: {h}"
-        );
-    }
-
-    #[test]
-    fn hover_chain_string_length() {
-        let h = hover_value(
-            "var s: string = \"hello\"\nlet r = s.Length()\nout o = r",
-            2,
-            8,
-        )
-        .unwrap();
-        assert!(h.contains("int"), "s.Length() should be int, got: {h}");
-    }
-
-    #[test]
-    fn hover_chain_string_split() {
-        let h = hover_value(
-            "var s: string = \"a,b\"\nlet r = s.Split(\",\")\nout o = r",
-            2,
-            8,
-        )
-        .unwrap();
-        assert!(
-            h.contains("Left") && h.contains("Right"),
-            "s.Split() should be {{Left, Right}}, got: {h}"
-        );
-    }
-
-    #[test]
-    fn hover_chain_string_find() {
-        let h = hover_value(
-            "var s: string = \"hello\"\nlet r = s.Find(\"ll\")\nout o = r",
-            2,
-            8,
-        )
-        .unwrap();
-        assert!(h.contains("int"), "s.Find() should be int, got: {h}");
-    }
-
-    #[test]
-    fn hover_chain_color_split() {
-        let h = hover_value(
-            "let c = Color(1.0, 0.0, 0.0)\nlet p = c.SplitColor()\nout r = p",
-            2,
-            8,
-        )
-        .unwrap();
-        assert!(
-            h.contains("r") && h.contains("g") && h.contains("b"),
-            "c.SplitColor() should be {{r,g,b,a}}, got: {h}"
-        );
-    }
-
-    // ---- doc comment hover ----
-    #[test]
-    fn hover_with_doc_comment() {
-        let h = hover_value(
-            "/// Increments a value.\nmod inc(v: *int) { v = v + 1 }",
-            1,
-            4,
-        )
-        .unwrap();
-        assert!(h.contains("mod inc"), "got: {h}");
-    }
-
-    // ---- InputReader (pure call) hover ----
-    #[test]
-    fn hover_input_reader() {
-        let h = hover_value("in ch: character\nlet input = InputReader(ch)", 1, 12).unwrap();
-        assert!(h.contains("InputReader"), "got: {h}");
-        assert!(h.contains("Forward"), "should show record output, got: {h}");
-    }
-
-    fn parse_diags(json: &str) -> Vec<serde_json::Value> {
-        serde_json::from_str(json).unwrap_or_default()
-    }
-
-    fn parse_items(json: &str) -> Vec<serde_json::Value> {
-        serde_json::from_str(json).unwrap_or_default()
-    }
-
-    // ---- diagnostics ----
-    #[test]
-    fn diagnostics_no_errors() {
-        let items = parse_diags(&diagnostics("var x: int = 0", "{}"));
-        assert!(items.is_empty());
-    }
-
-    /// A misspelled receiver method type-checks clean and lowers to an
-    /// `_Unsupported` placeholder, which emit drops. This path stopped at
-    /// typecheck, so the editor showed nothing for a dead circuit while
-    /// `wirescript_compile` went on to succeed.
-    #[test]
-    fn diagnostics_report_an_unsupported_placeholder() {
-        let out = diagnostics(
-            "var m: Map<int, int>\nvar n: int = 0\non RoundStart() { n = m.size() }\n",
-            "{}",
-        );
-        assert!(
-            out.contains("WSP001"),
-            "expected a WSP001 placeholder warning, got: {out}"
-        );
-    }
-
-    #[test]
-    fn diagnostics_unknown_ident() {
-        let items = parse_diags(&diagnostics("on RoundStart() { x = 1 }", "{}"));
-        assert!(items.iter().any(|i| i["code"] == "WS002"));
-    }
-
-    #[test]
-    fn diagnostics_import_with_files() {
-        let files = r#"{"lib.ws": "mod foo(v: *int) { v = v + 1 }"}"#;
-        let items = parse_diags(&diagnostics(
-            "import \"lib\"\nvar x: int = 0\non RoundStart() { foo(x) }",
-            files,
-        ));
-        assert!(items.is_empty(), "unexpected diags: {:?}", items);
-    }
-
-    #[test]
-    fn diagnostics_import_missing_file() {
-        let items = parse_diags(&diagnostics("import \"nonexistent\"", "{}"));
-        assert!(items.iter().any(|i| {
-            i["message"]
-                .as_str()
-                .unwrap_or("")
-                .contains("cannot resolve")
-        }));
-    }
-
-    // ---- completions ----
-    #[test]
-    fn completions_includes_keywords() {
-        let items = parse_items(&completions("", 0, 0, "{}", &[]));
-        assert!(items.iter().any(|i| i["label"] == "var"));
-        assert!(items.iter().any(|i| i["label"] == "import"));
-    }
-
-    #[test]
-    fn completions_includes_builtins() {
-        let items = parse_items(&completions("", 0, 0, "{}", &[]));
-        assert!(items.iter().any(|i| i["label"] == "Random"));
-        assert!(items.iter().any(|i| i["label"] == "DisplayText"));
-    }
-
-    #[test]
-    fn completions_includes_user_symbols() {
-        let items = parse_items(&completions("var score: int = 0\n", 1, 0, "{}", &[]));
-        assert!(items.iter().any(|i| i["label"] == "score"));
-    }
-
-    #[test]
-    fn completions_includes_chat_command_event() {
-        let items = parse_items(&completions("", 0, 0, "{}", &[]));
-        assert!(items.iter().any(|i| i["label"] == "ChatCommand"));
-    }
-
-    #[test]
-    fn var_array_member_completion_has_full_method_set() {
-        // `var ids: string[]` completion should include the full array
-        // method set (find/sort/insert/...).
-        let src = "var ids: string[]\nids.";
-        let items = parse_items(&completions(src, 1, 4, "{}", &[]));
-        for m in ["push", "find", "sort", "insert", "slice"] {
-            assert!(items.iter().any(|i| i["label"] == m), "array method {m} missing: {items:?}");
-        }
-        assert!(!items.iter().any(|i| i["label"] == "if"), "keyword leaked");
-    }
-
-    #[test]
-    fn string_member_completion_is_string_only() {
-        // `foo.` where foo is a string must show string methods, not the
-        // global keyword/function/type list.
-        let src = "let foo = \"\"\nfoo.";
-        let items = parse_items(&completions(src, 1, 4, "{}", &[]));
-        assert!(items.iter().any(|i| i["label"] == "Contains"), "Contains missing: {items:?}");
-        assert!(!items.iter().any(|i| i["label"] == "if"), "keyword leaked");
-        assert!(!items.iter().any(|i| i["label"] == "int"), "type leaked");
-        assert!(!items.iter().any(|i| i["label"] == "ChatCommand"), "event leaked");
-    }
-
-    /// The playground completes with the language server's engine: an indexed
-    /// read offers the read's outputs, and a match arm the scrutinee's variants.
-    #[test]
-    fn completion_matches_the_language_server() {
-        let src = "var xs: int[]
-let a = xs[0].";
-        let items = parse_items(&completions(src, 1, 14, "{}", &[]));
-        assert!(items.iter().any(|i| i["label"] == "OutOfBounds"), "got: {items:?}");
-        let src = "enum Hue { Red, Green }
+/// The playground completes with the language server's engine, enum
+/// lookup included: a match arm offers the scrutinee's variants.
+#[test]
+fn completion_matches_the_language_server() {
+    let src = "enum Hue { Red, Green }
 var h: Hue
 in go: exec
 on go { let n = match h {  } }";
-        let col = src.lines().nth(3).unwrap().find("{  }").unwrap() as u32 + 2;
-        let items = parse_items(&completions(src, 3, col, "{}", &[]));
-        assert!(items.iter().any(|i| i["label"] == "Green"), "got: {items:?}");
-    }
+    let col = src.lines().nth(3).unwrap().find("{  }").unwrap() as u32 + 2;
+    let items = parse_items(&completions(src, 3, col, "{}", &[]));
+    assert!(
+        items.iter().any(|i| i["label"] == "Green"),
+        "got: {items:?}"
+    );
+}
 
-    /// The playground reads `insertText`: an optional argument inserts
-    /// `name = `, not its bare label.
-    #[test]
-    fn completion_items_carry_insert_text_as_the_editor_reads_it() {
-        let src = "in go: exec
+/// The playground reads `insertText`: an optional argument inserts
+/// `name = `, not its bare label.
+#[test]
+fn completion_items_carry_insert_text_as_the_editor_reads_it() {
+    let src = "in go: exec
 on go { SendCustomEvent( }";
-        let col = src.lines().nth(1).unwrap().find('(').unwrap() as u32 + 1;
-        let items = parse_items(&completions(src, 1, col, "{}", &[]));
-        let data1 = items.iter().find(|i| i["label"] == "data1 = ").unwrap_or_else(|| panic!("{items:?}"));
-        assert_eq!(data1["insertText"], "data1 = ", "{data1:?}");
-    }
+    let col = src.lines().nth(1).unwrap().find('(').unwrap() as u32 + 1;
+    let items = parse_items(&completions(src, 1, col, "{}", &[]));
+    let data1 = items
+        .iter()
+        .find(|i| i["label"] == "data1 = ")
+        .unwrap_or_else(|| panic!("{items:?}"));
+    assert_eq!(data1["insertText"], "data1 = ", "{data1:?}");
+}
 
-    #[test]
-    fn prefab_ref_completes_from_registry() {
-        // `$./t` offers registered prefab paths under `./t…`.
-        let prefabs = vec!["./turret.brz".to_string(), "./enemies/tank.brz".to_string()];
-        let src = "on x { SpawnPrefab(prefab = $./t) }";
-        let col = (src.find("$./t").unwrap() + "$./t".len()) as u32;
-        let items = parse_items(&completions(src, 0, col, "{}", &prefabs));
-        assert!(items.iter().any(|i| i["label"] == "./turret.brz"), "got: {items:?}");
-        assert!(!items.iter().any(|i| i["label"] == "./enemies/tank.brz"));
-    }
+// ---- workspace symbols ----
+#[test]
+fn workspace_symbols_lists_exports() {
+    let files =
+        r#"{"utils.ws": "mod inc(v: *int) { v = v + 1 }\nfn double(x: int) -> int = x * 2"}"#;
+    let items = parse_items(&workspace_symbols(files));
+    assert!(
+        items
+            .iter()
+            .any(|i| i["name"] == "inc" && i["kind"] == "mod")
+    );
+    assert!(
+        items
+            .iter()
+            .any(|i| i["name"] == "double" && i["kind"] == "fn")
+    );
+}
 
-    // ---- workspace symbols ----
-    #[test]
-    fn workspace_symbols_lists_exports() {
-        let files =
-            r#"{"utils.ws": "mod inc(v: *int) { v = v + 1 }\nfn double(x: int) -> int = x * 2"}"#;
-        let items = parse_items(&workspace_symbols(files));
-        assert!(
-            items
-                .iter()
-                .any(|i| i["name"] == "inc" && i["kind"] == "mod")
-        );
-        assert!(
-            items
-                .iter()
-                .any(|i| i["name"] == "double" && i["kind"] == "fn")
-        );
-    }
+// ---- definition ----
 
-    // ---- definition ----
-    fn def_loc(source: &str, line: u32, col: u32) -> Option<serde_json::Value> {
-        definition(source, line, col).and_then(|s| serde_json::from_str(&s).ok())
-    }
+/// Where go-to-definition lands, as the editor reads it.
+#[derive(Debug, PartialEq)]
+struct Landing {
+    file: Option<String>,
+    line: u64,
+    start: u64,
+    end: Option<u64>,
+}
 
-    fn def_loc_files(source: &str, line: u32, col: u32, files: &str) -> Option<serde_json::Value> {
-        definition_with_files(source, line, col, files).and_then(|s| serde_json::from_str(&s).ok())
-    }
+fn landing(file: Option<&str>, line: u64, start: u64, end: Option<u64>) -> Option<Landing> {
+    Some(Landing {
+        file: file.map(String::from),
+        line,
+        start,
+        end,
+    })
+}
 
-    #[test]
-    fn definition_var() {
-        let d = def_loc("var x: int = 0\non RoundStart() { x = 1 }", 1, 18).unwrap();
-        assert_eq!(d["startLine"], 0);
-        assert_eq!(d["startCol"], 4, "should point to 'x', not 'var'");
-        assert_eq!(d["endCol"], 5);
-    }
-
-    #[test]
-    fn definition_let() {
-        let d = def_loc("var x: int = 0\nlet y = x + 1\nout r = y", 2, 8);
-        assert!(d.is_some(), "should find definition of y");
-        assert_eq!(d.unwrap()["startLine"], 1);
-    }
-
-    #[test]
-    fn definition_buffer() {
-        let d = def_loc("var x: int = 0\nbuffer prev = x\nout r = prev", 2, 8);
-        assert!(d.is_some(), "should find definition of prev");
-        assert_eq!(d.unwrap()["startLine"], 1);
-    }
-
-    #[test]
-    fn definition_in() {
-        let d = def_loc("in trigger: exec\non trigger { }", 1, 3);
-        assert!(d.is_some(), "should find definition of trigger");
-        assert_eq!(d.unwrap()["startLine"], 0);
-    }
-
-    #[test]
-    fn definition_mod() {
-        let d = def_loc(
-            "mod inc(v: *int) { v = v + 1 }\non RoundStart() { inc(x) }",
+/// Go-to-definition from each row's editor position; `want` is where it
+/// lands (`end: None` leaves the end column unchecked), `None` nowhere.
+#[test]
+fn definition_lands_on_the_name_in_editor_columns() {
+    const LIB: &str = r#"{"lib.ws": "mod foo(v: *int) { v = v + 1 }"}"#;
+    const ADD_LIB: &str =
+        r#"{"lib.ws": "chip Add(a: int, b: int) -> (result: int) {\n  out result = a + b\n}"}"#;
+    const MATH_LIB: &str =
+        r#"{"math.ws": "chip Add(a: int, b: int) -> (result: int) {\n  out result = a + b\n}"}"#;
+    const EMOJI_DECL: &str =
+        "/* \u{1F389} */ var abc: int = 0\non RoundStart() {\n  /* \u{e9}\u{1F389} */ abc = 1\n}";
+    let emoji_use = editor_col(EMOJI_DECL, 2, "abc", 0);
+    let emoji_decl = editor_col(EMOJI_DECL, 0, "abc", 0) as u64;
+    let nx = |needle: &str| editor_col(NON_ASCII, 4, needle, 0);
+    let rows: Vec<(&str, &str, &str, u32, u32, Option<Landing>)> = vec![
+        (
+            "a var lands on its name, not `var`",
+            "var x: int = 0\non RoundStart() { x = 1 }",
+            "{}",
             1,
             18,
-        );
-        assert!(d.is_some(), "should find definition of inc");
-        assert_eq!(d.unwrap()["startLine"], 0);
-    }
-
-    #[test]
-    fn definition_chip() {
-        let d = def_loc(
+            landing(None, 0, 4, Some(5)),
+        ),
+        (
+            "a let",
+            "var x: int = 0\nlet y = x + 1\nout r = y",
+            "{}",
+            2,
+            8,
+            landing(None, 1, 4, Some(5)),
+        ),
+        (
+            "a buffer",
+            "var x: int = 0\nbuffer prev = x\nout r = prev",
+            "{}",
+            2,
+            8,
+            landing(None, 1, 7, Some(11)),
+        ),
+        (
+            "an in port",
+            "in trigger: exec\non trigger { }",
+            "{}",
+            1,
+            3,
+            landing(None, 0, 3, Some(10)),
+        ),
+        (
+            "a mod",
+            "mod inc(v: *int) { v = v + 1 }\non RoundStart() { inc(x) }",
+            "{}",
+            1,
+            18,
+            landing(None, 0, 4, Some(7)),
+        ),
+        (
+            "a chip",
             "chip Foo(x: int) -> (r: int) {\n  out r = x\n}\nlet f = Foo(1)",
+            "{}",
             3,
             8,
-        );
-        assert!(d.is_some(), "should find definition of Foo");
-        assert_eq!(d.unwrap()["startLine"], 0);
-    }
-
-    #[test]
-    fn definition_fn() {
-        let d = def_loc("fn double(x: int) -> int = x * 2\nlet y = double(21)", 1, 8);
-        assert!(d.is_some(), "should find definition of double");
-        assert_eq!(d.unwrap()["startLine"], 0);
-    }
-
-    #[test]
-    fn definition_array() {
-        let d = def_loc("var items: int[]\non RoundStart() { items.push(1) }", 1, 18);
-        assert!(d.is_some(), "should find definition of items");
-        assert_eq!(d.unwrap()["startLine"], 0);
-    }
-
-    #[test]
-    fn definition_param_in_mod() {
-        let d = def_loc("mod inc(v: *int) { v = v + 1 }", 0, 19);
-        assert!(d.is_some(), "should find definition of param v");
-    }
-
-    #[test]
-    fn definition_imported_symbol() {
-        let files = r#"{"lib.ws": "mod foo(v: *int) { v = v + 1 }"}"#;
-        let d = def_loc_files(
+            landing(None, 0, 5, Some(8)),
+        ),
+        (
+            "a fn",
+            "fn double(x: int) -> int = x * 2\nlet y = double(21)",
+            "{}",
+            1,
+            8,
+            landing(None, 0, 3, Some(9)),
+        ),
+        (
+            "an array",
+            "var items: int[]\non RoundStart() { items.push(1) }",
+            "{}",
+            1,
+            18,
+            landing(None, 0, 4, Some(9)),
+        ),
+        (
+            "a mod param",
+            "mod inc(v: *int) { v = v + 1 }",
+            "{}",
+            0,
+            19,
+            landing(None, 0, 8, Some(9)),
+        ),
+        (
+            "a builtin has no source definition",
+            "on RoundStart() { }",
+            "{}",
+            0,
+            3,
+            None,
+        ),
+        (
+            "an imported symbol is in the imported file",
             "import \"lib\"\nvar x: int = 0\non RoundStart() { foo(x) }",
+            LIB,
             2,
             18,
-            files,
-        );
-        assert!(d.is_some(), "should find definition of imported foo");
-        let d = d.unwrap();
-        assert_eq!(d["file"], "lib.ws", "should point to imported file");
-    }
-
-    #[test]
-    fn definition_import_path_jumps_to_file() {
-        let files = r#"{"lib.ws": "mod foo(v: *int) { v = v + 1 }"}"#;
-        // Cursor on the "lib" path string
-        let d = def_loc_files("import \"lib\"\nvar x: int = 0", 0, 8, files);
-        assert!(d.is_some(), "clicking import path should jump to file");
-        let d = d.unwrap();
-        assert_eq!(d["file"], "lib.ws");
-        assert_eq!(d["startLine"], 0);
-        assert_eq!(d["startCol"], 0);
-    }
-
-    #[test]
-    fn definition_named_import_jumps_to_symbol() {
-        let files =
-            r#"{"lib.ws": "chip Add(a: int, b: int) -> (result: int) {\n  out result = a + b\n}"}"#;
-        // Cursor on "Add" in import { Add } from "lib"
-        let d = def_loc_files(
+            landing(Some("lib.ws"), 0, 4, None),
+        ),
+        (
+            "an import path jumps to the file's top",
+            "import \"lib\"\nvar x: int = 0",
+            LIB,
+            0,
+            8,
+            landing(Some("lib.ws"), 0, 0, None),
+        ),
+        (
+            "a named import specifier jumps to the symbol",
             "import { Add } from \"lib\"\nlet r = Add(1, 2)",
+            ADD_LIB,
             0,
             10,
-            files,
-        );
-        assert!(d.is_some(), "clicking named import should jump to symbol");
-        let d = d.unwrap();
-        assert_eq!(d["file"], "lib.ws");
-    }
-
-    #[test]
-    fn definition_imported_usage_jumps_cross_file() {
-        let files = r#"{"math.ws": "chip Add(a: int, b: int) -> (result: int) {\n  out result = a + b\n}"}"#;
-        // Cursor on "Add" in the call expression
-        let d = def_loc_files(
+            landing(Some("lib.ws"), 0, 5, None),
+        ),
+        (
+            "an imported use jumps across files",
             "import { Add } from \"math\"\nlet r = Add(1, 2)",
+            MATH_LIB,
             1,
             9,
-            files,
-        );
-        assert!(d.is_some(), "should find cross-file definition of Add");
-        let d = d.unwrap();
-        assert_eq!(d["file"], "math.ws", "should point to the imported file");
+            landing(Some("math.ws"), 0, 5, None),
+        ),
+        // Both the cursor and the landing are on lines whose UTF-16,
+        // char and byte columns all differ.
+        (
+            "a use and a declaration on non-ASCII lines",
+            EMOJI_DECL,
+            "{}",
+            2,
+            emoji_use + 1,
+            landing(None, 0, emoji_decl, Some(emoji_decl + 3)),
+        ),
+        (
+            "the second of two names after emoji",
+            NON_ASCII,
+            "{}",
+            4,
+            nx("xyz") + 1,
+            landing(None, 1, 4, Some(7)),
+        ),
+        (
+            "the first of two names after emoji",
+            NON_ASCII,
+            "{}",
+            4,
+            nx("abc"),
+            landing(None, 0, 4, Some(7)),
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, files, line, col, want) in &rows {
+        let raw = if *files == "{}" {
+            definition(src, *line, *col)
+        } else {
+            definition_with_files(src, *line, *col, files)
+        };
+        let got = raw
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .map(|d| Landing {
+                file: d["file"].as_str().map(String::from),
+                line: d["startLine"].as_u64().unwrap(),
+                start: d["startCol"].as_u64().unwrap(),
+                end: want.as_ref().and_then(|w| w.end).and(d["endCol"].as_u64()),
+            });
+        if got != *want {
+            failures.push(format!("{label}: want {want:?}, got {got:?}"));
+        }
     }
+    assert!(
+        failures.is_empty(),
+        "{} of {} rows failed:\n{}",
+        failures.len(),
+        rows.len(),
+        failures.join("\n")
+    );
+}
 
-    #[test]
-    fn definition_builtin_returns_none() {
-        let d = def_loc("on RoundStart() { }", 0, 3);
-        assert!(d.is_none(), "builtins have no source definition");
-    }
+// ---- references ----
 
-    // ---- references ----
-    #[test]
-    fn references_var() {
-        let r = references("var x: int = 0\non RoundStart() { x = x + 1 }", 0, 4);
-        let refs: Vec<serde_json::Value> = serde_json::from_str(&r.unwrap()).unwrap();
-        assert!(
-            refs.len() >= 3,
-            "should find at least 3 references (decl + 2 uses), got {}",
-            refs.len()
-        );
-    }
+/// Every reference at `(line, col)` as `(line, start, end)` editor
+/// columns, sorted.
+fn refs(source: &str, line: u32, col: u32) -> Vec<(u64, u64, u64)> {
+    let r = references(source, line, col).expect("a target under the cursor");
+    let mut out: Vec<(u64, u64, u64)> = parse_items(&r)
+        .iter()
+        .map(|l| {
+            (
+                l["startLine"].as_u64().unwrap(),
+                l["startCol"].as_u64().unwrap(),
+                l["endCol"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
 
-    #[test]
-    fn references_mod() {
-        let r = references(
+/// Each site is narrowed to the name token, so a rename rewrites exactly
+/// the name and nothing beside it.
+#[test]
+fn references_are_the_name_tokens_in_editor_columns() {
+    let capture = "in target: character\n// character comment\non CharacterSpawned() -> (character) {\n  character.DisplayText(\"hi\")\n}";
+    let abc = editor_col(NON_ASCII, 4, "abc", 0) as u64;
+    let xyz = editor_col(NON_ASCII, 4, "xyz", 0) as u64;
+    let rows: &[(&str, &str, u32, u32, Vec<(u64, u64, u64)>)] = &[
+        (
+            "a var: the decl and both uses",
+            "var x: int = 0\non RoundStart() { x = x + 1 }",
+            0,
+            4,
+            vec![(0, 4, 5), (1, 18, 19), (1, 22, 23)],
+        ),
+        (
+            "a mod: the decl and the call",
             "mod inc(v: *int) { v = v + 1 }\non RoundStart() { inc(x) }",
             0,
             4,
-        );
-        let refs: Vec<serde_json::Value> = serde_json::from_str(&r.unwrap()).unwrap();
-        assert!(
-            refs.len() >= 2,
-            "should find at least 2 references, got {}",
-            refs.len()
-        );
-    }
-
-    #[test]
-    fn references_let() {
-        let r = references("let y = 42\nout a = y\nout b = y", 0, 4);
-        let refs: Vec<serde_json::Value> = serde_json::from_str(&r.unwrap()).unwrap();
-        assert!(
-            refs.len() >= 3,
-            "should find at least 3 references, got {}",
-            refs.len()
-        );
-    }
-
-    #[test]
-    fn references_capture_is_scope_aware_not_textual() {
-        // The `character` capture must resolve only within its own handler —
+            vec![(0, 4, 7), (1, 18, 21)],
+        ),
+        (
+            "a let: the decl and both reads",
+            "let y = 42\nout a = y\nout b = y",
+            0,
+            4,
+            vec![(0, 4, 5), (1, 8, 9), (2, 8, 9)],
+        ),
+        // The `character` capture resolves only within its own handler:
         // not the `: character` type annotation (a separate, type-position
         // namespace) and not a `// character` comment (not AST at all).
-        // Regression guard: the scope-aware resolver walks AST use sites
-        // only, so comments and other-namespace occurrences are never
-        // candidates in the first place.
-        let src = "in target: character\n// character comment\non CharacterSpawned() -> (character) {\n  character.DisplayText(\"hi\")\n}";
-        let r = references(src, 2, 29);
-        let refs: Vec<serde_json::Value> = serde_json::from_str(&r.unwrap()).unwrap();
-        let lines: Vec<u64> = refs
-            .iter()
-            .map(|l| l["startLine"].as_u64().unwrap())
-            .collect();
-        assert_eq!(refs.len(), 2, "expected decl + 1 use, got {:?}", lines);
-        assert!(
-            lines.iter().all(|&l| l == 2 || l == 3),
-            "leaked outside the capture's own handler (comment/annotation): {:?}",
-            lines
-        );
+        (
+            "a capture is scope-aware, not textual",
+            capture,
+            2,
+            29,
+            vec![(2, 26, 35), (3, 2, 11)],
+        ),
+        (
+            "names after emoji: the first",
+            NON_ASCII,
+            0,
+            4,
+            vec![(0, 4, 7), (4, abc, abc + 3)],
+        ),
+        (
+            "names after emoji: from the use",
+            NON_ASCII,
+            4,
+            xyz as u32 + 1,
+            vec![(1, 4, 7), (4, xyz, xyz + 3)],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, line, col, want) in rows {
+        let got = refs(src, *line, *col);
+        if got != *want {
+            failures.push(format!("{label}: want {want:?}, got {got:?}"));
+        }
     }
+    assert!(
+        failures.is_empty(),
+        "{} of {} rows failed:\n{}",
+        failures.len(),
+        rows.len(),
+        failures.join("\n")
+    );
+}
+
+// ---- inlay hints and format ----
+
+#[test]
+fn inlay_hints_carry_editor_columns() {
+    // Line 1: the hint after `x` is char column 14 and UTF-16 column 15.
+    let src = "let s = \"\u{1F389}\"\n/* \u{e9}\u{1F389} */ let x = 42\n";
+    let hints = parse_items(&inlay_hints(src, "{}"));
+    let at = |line: u64| {
+        hints
+            .iter()
+            .find(|h| h["line"] == line)
+            .unwrap_or_else(|| panic!("no hint on line {line}: {hints:?}"))
+    };
+    let (s, x) = (at(0), at(1));
+    assert_eq!(
+        (s["col"].as_u64(), s["kind"].as_str()),
+        (Some(5), Some("type")),
+        "{s:?}"
+    );
+    assert!(s["label"].as_str().unwrap().contains("string"), "{s:?}");
+    assert_eq!(x["col"].as_u64(), Some(15), "{x:?}");
+    assert!(x["label"].as_str().unwrap().contains("int"), "{x:?}");
+}
+
+#[test]
+fn format_indents_with_the_editors_tab_settings() {
+    let src = "on go {\nx = 1\n}\n";
+    assert_eq!(format(src, 4, false), "on go {\n    x = 1\n}\n");
+    assert_eq!(format(src, 2, true), "on go {\n\tx = 1\n}\n");
+}
+
+#[test]
+fn every_completion_kind_has_the_editors_name() {
+    use wirescript::analysis::CompletionKind as K;
+    let want = [
+        (K::Text, "text"),
+        (K::Method, "method"),
+        (K::Function, "function"),
+        (K::Field, "field"),
+        (K::Variable, "variable"),
+        (K::Class, "type"),
+        (K::Module, "module"),
+        (K::Property, "property"),
+        (K::Keyword, "keyword"),
+        (K::Constant, "constant"),
+        (K::EnumMember, "enum"),
+        (K::Event, "event"),
+        (K::File, "file"),
+    ];
+    for (kind, name) in want {
+        assert_eq!(kind_name(kind), name, "{kind:?}");
+    }
+}
+
+#[test]
+fn hover_on_blank_space_is_none() {
+    assert_eq!(hover("var a: int = 0\n\nvar b: int = 1", 1, 0, "{}"), None);
+}

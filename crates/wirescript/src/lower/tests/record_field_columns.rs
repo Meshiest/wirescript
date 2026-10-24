@@ -9,7 +9,10 @@ use crate::ir::gate_class as gc;
 
 /// The `NAME_LABEL` of a storage gate.
 fn label(r: &LowerResult, node: crate::ir::NodeId) -> String {
-    match r.module.nodes[&node].properties.get(&crate::intern::sym::NAME_LABEL) {
+    match r.module.nodes[&node]
+        .properties
+        .get(&crate::intern::sym::NAME_LABEL)
+    {
         Some(crate::ir::Literal::String(s)) => s.clone(),
         other => panic!("storage gate {node:?} has no name label: {other:?}"),
     }
@@ -44,23 +47,23 @@ fn storage_ops(r: &LowerResult) -> Vec<(String, String)> {
 /// For every `Var_Set` writing the var labelled `var`: the gate class feeding
 /// its `Value` and the label of the column that gate reads.
 fn reads_into(r: &LowerResult, var: &str) -> Vec<(String, String)> {
-    let source_of = |node: crate::ir::NodeId, port: WirePort| {
-        r.module
-            .wires
-            .iter()
-            .find(|w| w.target.node_id == node && w.target.port == port)
-            .map(|w| w.source.node_id)
-    };
     let mut out = Vec::new();
-    for set in r.module.nodes.values().filter(|n| n.gate_class == gc::VAR_SET) {
-        let Some(target) = source_of(set.id, WirePort::VarRef) else { continue };
+    for set in r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == gc::VAR_SET)
+    {
+        let Some(target) = source_of(r, set.id, WirePort::VarRef) else {
+            continue;
+        };
         if label(r, target) != var {
             continue;
         }
-        let value = source_of(set.id, WirePort::Value).expect("Var_Set Value must be wired");
+        let value = source_of(r, set.id, WirePort::Value).expect("Var_Set Value must be wired");
         let reader = &r.module.nodes[&value];
-        let column = source_of(value, WirePort::ArrayVarRef)
-            .or_else(|| source_of(value, WirePort::MapVarRef))
+        let column = source_of(r, value, WirePort::ArrayVarRef)
+            .or_else(|| source_of(r, value, WirePort::MapVarRef))
             .map(|c| label(r, c))
             .unwrap_or_default();
         out.push((reader.gate_class.to_string(), column));
@@ -70,24 +73,36 @@ fn reads_into(r: &LowerResult, var: &str) -> Vec<(String, String)> {
 }
 
 fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> =
-        v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+    let mut out: Vec<(String, String)> = v
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
     out.sort();
     out
 }
 
+#[track_caller]
 fn assert_clean_columns(r: &LowerResult) {
     assert_no_errors(r);
+    crate::test_support::assert_no_code(&r.diagnostics, "WSP001");
+    assert!(!has_unsupported(&r.module), "no placeholder gate");
     assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
-        "no placeholder warning: {:?}",
-        r.diagnostics
-    );
-    assert!(!has_gate(r, gc::UNSUPPORTED), "no placeholder gate");
-    assert!(
-        !has_gate(r, gc::SPLIT_VECTOR),
+        !has_gate_deep(r, gc::SPLIT_VECTOR),
         "a record column is never read through a vector split"
     );
+}
+
+/// The labels of every `class` storage gate, sorted.
+fn labels_of(r: &LowerResult, class: &str) -> Vec<String> {
+    let mut out: Vec<String> = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == class)
+        .map(|n| label(r, n.id))
+        .collect();
+    out.sort();
+    out
 }
 
 const PH: &str = "type P = { x: int, y: int }
@@ -98,26 +113,16 @@ in go: exec
 ";
 
 #[test]
-fn record_array_field_is_stored_as_columns() {
-    let r = compile(&format!("{PH}on go {{ h.n = 1 }}\n"));
-    assert_no_errors(&r);
-    let mut arrays: Vec<String> = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.gate_class == gc::ARRAY_VAR)
-        .map(|n| label(&r, n.id))
-        .collect();
-    arrays.sort();
-    assert_eq!(arrays, ["h.pts.x", "h.pts.y"], "one column per element field");
-}
-
-#[test]
 fn record_array_field_push_fans_across_the_columns() {
     let r = compile(&format!(
         "{PH}on go {{ let p: P = {{ x: 1, y: 2 }}; h.pts.push(p); h.pts.push({{ x: 3, y: 4 }}) }}\n"
     ));
     assert_clean_columns(&r);
+    assert_eq!(
+        labels_of(&r, gc::ARRAY_VAR),
+        ["h.pts.x", "h.pts.y"],
+        "one column per element field"
+    );
     assert_eq!(
         storage_ops(&r),
         pairs(&[
@@ -180,7 +185,7 @@ fn record_array_field_writes_target_the_right_column() {
 #[test]
 fn record_array_field_foreach_is_ws082() {
     let r = compile(&format!("{PH}on go {{ for p in h.pts {{ o = p.y }} }}\n"));
-    assert!(r.diagnostics.iter().any(|d| d.code == "WS082"), "{:?}", r.diagnostics);
+    crate::test_support::assert_code(&r.diagnostics, "WS082");
 }
 
 /// Sorting one column of the record array field reorders every sibling column,
@@ -195,7 +200,10 @@ fn record_array_field_column_sort_moves_the_whole_row() {
         .module
         .wires
         .iter()
-        .filter(|w| w.target.node_id == sort && r.module.nodes[&w.source.node_id].gate_class == gc::ARRAY_VAR)
+        .filter(|w| {
+            w.target.node_id == sort
+                && r.module.nodes[&w.source.node_id].gate_class == gc::ARRAY_VAR
+        })
         .map(|w| (w.target.port, label(&r, w.source.node_id)))
         .collect();
     cols.sort_by(|a, b| a.1.cmp(&b.1));
@@ -213,15 +221,18 @@ fn record_array_field_column_sort_moves_the_whole_row() {
 /// one field sorts that field alone, never its siblings.
 #[test]
 fn record_var_array_field_sort_sorts_only_that_field() {
-    let r = compile(
+    let r = compile_ok(
         "type H = { xs: int[], ys: int[], n: int }
 var h: H
 in go: exec
 on go { h.xs.sort() }
 ",
     );
-    assert_no_errors(&r);
-    assert!(!has_gate(&r, gc::ARRAY_SORT_MULTIPLE), "{:?}", storage_ops(&r));
+    assert!(
+        !has_gate(&r, gc::ARRAY_SORT_MULTIPLE),
+        "{:?}",
+        storage_ops(&r)
+    );
     assert_eq!(storage_ops(&r), pairs(&[(gc::ARRAY_SORT, "h.xs")]));
 }
 
@@ -236,7 +247,10 @@ fn record_copy_copies_each_column_of_a_record_array_field() {
         .collect();
     assert_eq!(
         copies,
-        pairs(&[(gc::ARRAY_COPY_FROM, "h2.pts.x"), (gc::ARRAY_COPY_FROM, "h2.pts.y")])
+        pairs(&[
+            (gc::ARRAY_COPY_FROM, "h2.pts.x"),
+            (gc::ARRAY_COPY_FROM, "h2.pts.y")
+        ])
     );
     let sources: Vec<String> = r
         .module
@@ -252,13 +266,12 @@ fn record_copy_copies_each_column_of_a_record_array_field() {
 
 #[test]
 fn record_array_field_record_initializer_bakes_the_columns() {
-    let r = compile(
+    let r = compile_ok(
         "type P = { x: int, y: int }
 type H = { pts: P[] }
 var h: H = { pts: [{ x: 1, y: 2 }, { x: 3, y: 4 }] }
 ",
     );
-    assert_no_errors(&r);
     for (col, want) in [("h.pts.x", [1, 3]), ("h.pts.y", [2, 4])] {
         let gate = r
             .module
@@ -284,21 +297,6 @@ in go: exec
 ";
 
 #[test]
-fn record_map_field_is_stored_as_columns() {
-    let r = compile(&format!("{PM}on go {{ h.n = 1 }}\n"));
-    assert_no_errors(&r);
-    let mut maps: Vec<String> = r
-        .module
-        .nodes
-        .values()
-        .filter(|n| n.gate_class == gc::MAP_VAR)
-        .map(|n| label(&r, n.id))
-        .collect();
-    maps.sort();
-    assert_eq!(maps, ["h.m.x", "h.m.y"]);
-}
-
-#[test]
 fn record_map_field_writes_and_reads_use_the_columns() {
     let r = compile(&format!(
         "{PM}on go {{
@@ -312,11 +310,22 @@ fn record_map_field_writes_and_reads_use_the_columns() {
 "
     ));
     assert_clean_columns(&r);
-    let sets: Vec<(String, String)> =
-        storage_ops(&r).into_iter().filter(|(c, _)| c == gc::MAP_SET).collect();
+    assert_eq!(
+        labels_of(&r, gc::MAP_VAR),
+        ["h.m.x", "h.m.y"],
+        "one column per element field"
+    );
+    let sets: Vec<(String, String)> = storage_ops(&r)
+        .into_iter()
+        .filter(|(c, _)| c == gc::MAP_SET)
+        .collect();
     assert_eq!(
         sets,
-        pairs(&[(gc::MAP_SET, "h.m.x"), (gc::MAP_SET, "h.m.y"), (gc::MAP_SET, "h.m.x")])
+        pairs(&[
+            (gc::MAP_SET, "h.m.x"),
+            (gc::MAP_SET, "h.m.y"),
+            (gc::MAP_SET, "h.m.x")
+        ])
     );
     assert_eq!(
         reads_into(&r, "o"),
@@ -342,7 +351,10 @@ on go {
   u.h.pts.x[0] = 5
 }
 ",
-        &[("lib", "type P = { x: int, y: int }\ntype H = { pts: P[] }\nvar h: H\n")],
+        &[(
+            "lib",
+            "type P = { x: int, y: int }\ntype H = { pts: P[] }\nvar h: H\n",
+        )],
     );
     assert_clean_columns(&r);
     assert_eq!(
@@ -360,7 +372,7 @@ on go {
 /// field: `h.xs.push(3); o = h.xs[0]` and `h.n` lower exactly as before.
 #[test]
 fn record_var_scalar_array_field_is_unchanged() {
-    let r = compile(
+    let r = compile_ok(
         "type H = { xs: int[], n: int }
 var h: H
 var o: int = 0
@@ -368,15 +380,14 @@ in go: exec
 on go { h.xs.push(3); o = h.xs[0]; h.n = 2; o = h.n }
 ",
     );
-    assert_no_errors(&r);
-    assert!(!has_gate(&r, gc::UNSUPPORTED));
+    assert!(!has_unsupported(&r.module));
     let mut classes: Vec<&str> = r.module.nodes.values().map(|n| n.gate_class).collect();
     classes.sort();
     let mut want = vec![
         gc::ARRAY_VAR,
         gc::VAR,
         gc::VAR,
-        "BrickComponentType_Internal_MicrochipInput",
+        gc::MICROCHIP_INPUT,
         gc::ARRAY_PUSH,
         gc::ARRAY_GET,
         gc::VAR_SET,
@@ -412,7 +423,12 @@ fn record_array_field_pop_insert_remove_clear_fan_across_the_columns() {
     ));
     assert_clean_columns(&r);
     let mut want = Vec::new();
-    for class in [gc::ARRAY_INSERT, gc::ARRAY_POP, gc::ARRAY_REMOVE_AT_INDEX, gc::ARRAY_CLEAR] {
+    for class in [
+        gc::ARRAY_INSERT,
+        gc::ARRAY_POP,
+        gc::ARRAY_REMOVE_AT_INDEX,
+        gc::ARRAY_CLEAR,
+    ] {
         want.push((class, "h.pts.x"));
         want.push((class, "h.pts.y"));
     }
@@ -503,7 +519,8 @@ fn storage(r: &LowerResult, label_text: &str) -> crate::ir::NodeId {
         .nodes
         .values()
         .find(|n| {
-            matches!(n.gate_class, gc::ARRAY_VAR | gc::MAP_VAR | gc::VAR) && label(r, n.id) == label_text
+            matches!(n.gate_class, gc::ARRAY_VAR | gc::MAP_VAR | gc::VAR)
+                && label(r, n.id) == label_text
         })
         .unwrap_or_else(|| panic!("no storage labelled {label_text}"))
         .id
@@ -519,14 +536,16 @@ fn initial(r: &LowerResult, label_text: &str) -> Option<crate::ir::Literal> {
 #[test]
 fn record_var_container_field_initializers_bake() {
     use crate::ir::Literal as L;
-    let r = compile(
+    let r = compile_ok(
         "type P = { x: int, y: int }
 type H = { xs: int[], m: Map<string, int>, pm: Map<string, P>, n: int }
 var h: H = { xs: [1, 2], m: { \"a\": 3 }, pm: { \"b\": { x: 4, y: 5 } }, n: 6 }
 ",
     );
-    assert_no_errors(&r);
-    assert_eq!(initial(&r, "h.xs"), Some(L::Array(vec![L::Int(1), L::Int(2)])));
+    assert_eq!(
+        initial(&r, "h.xs"),
+        Some(L::Array(vec![L::Int(1), L::Int(2)]))
+    );
     assert_eq!(
         initial(&r, "h.m"),
         Some(L::Map(vec![(L::String("a".into()), L::Int(3))]))
@@ -642,7 +661,9 @@ on go { h = { xs: ys, n: 2 } }
         "{:?}",
         r.diagnostics
     );
-    let c = compile(&format!("{PH}var pts2: P[]\non go {{ h = {{ pts: pts2, n: 1 }} }}\n"));
+    let c = compile(&format!(
+        "{PH}var pts2: P[]\non go {{ h = {{ pts: pts2, n: 1 }} }}\n"
+    ));
     assert_clean_columns(&c);
     let copies: Vec<(String, String)> = storage_ops(&c)
         .into_iter()
@@ -650,7 +671,10 @@ on go { h = { xs: ys, n: 2 } }
         .collect();
     assert_eq!(
         copies,
-        pairs(&[(gc::ARRAY_COPY_FROM, "h.pts.x"), (gc::ARRAY_COPY_FROM, "h.pts.y")])
+        pairs(&[
+            (gc::ARRAY_COPY_FROM, "h.pts.x"),
+            (gc::ARRAY_COPY_FROM, "h.pts.y")
+        ])
     );
 }
 
@@ -665,20 +689,16 @@ fn record_if_expr_with_a_column_record_field_is_ws071() {
 }}
 "
     ));
-    assert!(
-        r.diagnostics
-            .iter()
-            .any(|d| d.code == "WS071" && d.severity == crate::diagnostic::Severity::Error),
-        "{:?}",
-        r.diagnostics
-    );
+    assert!(has_error(&r, "WS071"), "{:?}", r.diagnostics);
 }
 
 /// A spread fills every field it provides (containers copy per column, as
 /// `pts = qs` does), and the explicit fields override it.
 #[test]
 fn whole_record_literal_assign_with_a_spread() {
-    let r = compile(&format!("{PH}var h2: H\non go {{ h = {{ ...h2, pts: [{{ x: 1, y: 2 }}] }} }}\n"));
+    let r = compile(&format!(
+        "{PH}var h2: H\non go {{ h = {{ ...h2, pts: [{{ x: 1, y: 2 }}] }} }}\n"
+    ));
     assert_clean_columns(&r);
     assert_eq!(
         storage_ops(&r),
@@ -691,11 +711,16 @@ fn whole_record_literal_assign_with_a_spread() {
     );
     assert_eq!(written_var_labels(&r), ["h.n"]);
 
-    let s = compile(&format!("{PH}var h2: H\non go {{ h = {{ ...h2, n: 1 }} }}\n"));
+    let s = compile(&format!(
+        "{PH}var h2: H\non go {{ h = {{ ...h2, n: 1 }} }}\n"
+    ));
     assert_clean_columns(&s);
     assert_eq!(
         storage_ops(&s),
-        pairs(&[(gc::ARRAY_COPY_FROM, "h.pts.x"), (gc::ARRAY_COPY_FROM, "h.pts.y")])
+        pairs(&[
+            (gc::ARRAY_COPY_FROM, "h.pts.x"),
+            (gc::ARRAY_COPY_FROM, "h.pts.y")
+        ])
     );
     assert_eq!(written_var_labels(&s), ["h.n"]);
 
@@ -708,7 +733,10 @@ on go { h = { ...h2, xs: [1] } }
 ",
     );
     assert_clean_columns(&t);
-    assert_eq!(storage_ops(&t), pairs(&[(gc::ARRAY_CLEAR, "h.xs"), (gc::ARRAY_PUSH, "h.xs")]));
+    assert_eq!(
+        storage_ops(&t),
+        pairs(&[(gc::ARRAY_CLEAR, "h.xs"), (gc::ARRAY_PUSH, "h.xs")])
+    );
     assert_eq!(written_var_labels(&t), ["h.n"]);
 }
 
@@ -727,7 +755,11 @@ fn generic_aliased_record_array_is_stored_as_columns() {
         let (x, y) = (format!("{col}.x"), format!("{col}.y"));
         assert_eq!(
             storage_ops(&r),
-            pairs(&[(gc::ARRAY_PUSH, x.as_str()), (gc::ARRAY_PUSH, y.as_str()), (gc::ARRAY_GET, y.as_str())]),
+            pairs(&[
+                (gc::ARRAY_PUSH, x.as_str()),
+                (gc::ARRAY_PUSH, y.as_str()),
+                (gc::ARRAY_GET, y.as_str())
+            ]),
             "{decl}"
         );
     }
@@ -750,7 +782,7 @@ on go {
 ",
     );
     assert_clean_columns(&r);
-    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    crate::test_support::assert_no_diags(&r.diagnostics);
     assert_eq!(
         storage_ops(&r),
         pairs(&[
@@ -767,7 +799,7 @@ on go {
     );
     assert!(written_var_labels(&r).contains(&"h.n".to_string()));
 
-    let p = compile(
+    let p = compile_ok(
         "type P = { x: int, y: int }
 var o: int = 0
 in k: int
@@ -775,23 +807,24 @@ in go: exec
 on go { var p: P = { x: k, y: 1 }\n o = p.x }
 ",
     );
-    assert_no_errors(&p);
     let written = written_var_labels(&p);
-    assert!(written.contains(&"p.x".to_string()) && written.contains(&"p.y".to_string()), "{written:?}");
+    assert!(
+        written.contains(&"p.x".to_string()) && written.contains(&"p.y".to_string()),
+        "{written:?}"
+    );
 }
 
 /// A `static` local record var keeps its baked initializer and is never reset.
 #[test]
 fn static_local_record_var_initializes_once() {
     use crate::ir::Literal as L;
-    let r = compile(
+    let r = compile_ok(
         "type H = { xs: int[], n: int }
 var o: int = 0
 in go: exec
 on go { static var h: H = { xs: [1], n: 2 }\n h.xs.push(3)\n o = h.n }
 ",
     );
-    assert_no_errors(&r);
     assert!(!has_gate(&r, gc::ARRAY_CLEAR));
     assert_eq!(initial(&r, "h.xs"), Some(L::Array(vec![L::Int(1)])));
     assert_eq!(initial(&r, "h.n"), Some(L::Int(2)));
@@ -811,45 +844,32 @@ var h: H = { xs: ys, n: 1 }
     assert!(
         r.diagnostics
             .iter()
-            .any(|d| d.message.contains("'var h'") && d.message.contains("not a compile-time constant")),
+            .any(|d| d.message.contains("'var h'")
+                && d.message.contains("not a compile-time constant")),
         "{:?}",
         r.diagnostics
     );
     let ok = compile("type H = { xs: int[], n: int }\nvar h: H = { xs: [1, 2], n: 1 }\n");
-    assert!(ok.diagnostics.is_empty(), "{:?}", ok.diagnostics);
+    crate::test_support::assert_no_diags(&ok.diagnostics);
 }
 
 /// The scalar field values of a whole-literal assign are read before any
 /// container field is rebuilt: `n: h.xs.length()` sees the old contents.
 #[test]
 fn whole_record_literal_assign_reads_scalars_before_rebuilding_containers() {
-    let r = compile(
+    let r = compile_ok(
         "type H = { xs: int[], n: int }
 var h: H
 in go: exec
 on go { h = { xs: [5], n: h.xs.length() } }
 ",
     );
-    assert_no_errors(&r);
     let len = find_gate(&r, gc::ARRAY_GET_LENGTH);
     let clear = find_gate(&r, gc::ARRAY_CLEAR);
-    assert!(wired_reachable(&r, len, clear), "GetLength must run before the Clear");
-}
-
-/// A call in a record literal's scalar field runs once, not once for the
-/// record probe and again for the value.
-#[test]
-fn record_literal_call_field_runs_once() {
-    let r = compile(
-        "type P = { x: int, y: int }
-var p: P
-var xs: int[]
-in go: exec
-on go { p = { x: xs.pop(), y: 1 } }
-",
+    assert!(
+        wired_reachable(&r, len, clear),
+        "GetLength must run before the Clear"
     );
-    assert_no_errors(&r);
-    assert_eq!(gate_count(&r, gc::ARRAY_POP), 1);
 }
 
 /// The gate feeding the `Value` of the `Var_Set` that writes `label_text`.
@@ -878,7 +898,7 @@ fn written_from(r: &LowerResult, label_text: &str) -> crate::ir::NodeId {
 /// is that field, never the record's first port or an unrelated exec wire.
 #[test]
 fn record_literal_dot_value_field_reads_the_field() {
-    let r = compile(
+    let r = compile_ok(
         "type R = { k: int, Value: int }
 type P = { x: int, y: int }
 var p: P
@@ -888,7 +908,6 @@ mod mk(v: int) -> R { return { k: v + 100, Value: v + 7 } }
 on go { p = { x: mk(z).Value, y: 1 } }
 ",
     );
-    assert_no_errors(&r);
     let src = written_from(&r, "p.x");
     let node = &r.module.nodes[&src];
     assert_eq!(
@@ -896,7 +915,7 @@ on go { p = { x: mk(z).Value, y: 1 } }
         "p.x must be written from `v + 7`, not the exec input: {node:?}"
     );
 
-    let w = compile(
+    let w = compile_ok(
         "type R = { Value: int, k: int, z: int }
 type P = { x: int, y: int }
 var rs: R[]
@@ -905,7 +924,6 @@ in go: exec
 on go { p = { x: rs.pop().Value, y: 5 } }
 ",
     );
-    assert_no_errors(&w);
     assert_eq!(gate_count(&w, gc::ARRAY_POP), 3, "one Pop per column");
     let pop = written_from(&w, "p.x");
     assert_eq!(w.module.nodes[&pop].gate_class, gc::ARRAY_POP);
@@ -946,9 +964,14 @@ fn record_literal_field_calls_run_once() {
             gc::ARRAY_POP,
             2,
         ),
+        // Not once for the record probe and again for the value.
+        (
+            "type P = { x: int, y: int }\nvar p: P\nvar xs: int[]\nin go: exec\non go { p = { x: xs.pop(), y: 1 } }\n",
+            gc::ARRAY_POP,
+            1,
+        ),
     ] {
-        let r = compile(src);
-        assert_no_errors(&r);
+        let r = compile_ok(src);
         assert_eq!(gate_count(&r, class), want, "{src}");
     }
 }
@@ -956,18 +979,16 @@ fn record_literal_field_calls_run_once() {
 /// `h = { ...h, n: 1 }` copies nothing onto itself.
 #[test]
 fn self_spread_copies_nothing() {
-    let r = compile(
+    let r = compile_ok(
         "type H = { xs: int[], n: int }
 var h: H
 in go: exec
 on go { h = { ...h, n: 1 } }
 ",
     );
-    assert_no_errors(&r);
     assert!(!has_gate(&r, gc::ARRAY_COPY_FROM));
     assert_eq!(written_var_labels(&r), ["h.n"]);
-    let s = compile("type H = { xs: int[], n: int }\nvar h: H\nin go: exec\non go { h = h }\n");
-    assert_no_errors(&s);
+    let s = compile_ok("type H = { xs: int[], n: int }\nvar h: H\nin go: exec\non go { h = h }\n");
     assert!(!has_gate(&s, gc::ARRAY_COPY_FROM) && !has_gate(&s, gc::VAR_SET));
 }
 
@@ -975,7 +996,7 @@ on go { h = { ...h, n: 1 } }
 /// `let` form evaluates it.
 #[test]
 fn overridden_field_is_still_evaluated() {
-    let r = compile(
+    let r = compile_ok(
         "type P = { x: int, y: int }
 var p: P
 var a: int[]
@@ -985,7 +1006,6 @@ mod mk(v: int) -> P { return { x: v, y: v } }
 on go { p = { x: a.pop(), ...mk(b.pop()) } }
 ",
     );
-    assert_no_errors(&r);
     let mut popped: Vec<String> = r
         .module
         .wires
@@ -1004,7 +1024,7 @@ on go { p = { x: a.pop(), ...mk(b.pop()) } }
 /// spread is lowered once.
 #[test]
 fn spread_of_a_gate_result_and_an_earlier_spread_lower_once() {
-    let r = compile(
+    let r = compile_ok(
         "type R = { Value: int, Found: bool }
 var r: R
 var m: Map<int, int>
@@ -1014,7 +1034,6 @@ mod mk(v: int) -> R { return { Value: v, Found: true } }
 on go { r = { ...mk(b.pop()), ...m.get(3) } }
 ",
     );
-    assert_no_errors(&r);
     assert_eq!(gate_count(&r, gc::ARRAY_POP), 1);
     assert_eq!(gate_count(&r, gc::MAP_GET), 1);
     let get = find_gate(&r, gc::MAP_GET);
@@ -1034,8 +1053,11 @@ on go { h = { ...h2, m: { \"a\": 1 } } }
 ",
     );
     assert_clean_columns(&r);
-    assert!(!r.diagnostics.iter().any(|d| d.code == "WS026"), "{:?}", r.diagnostics);
-    assert_eq!(storage_ops(&r), pairs(&[(gc::MAP_CLEAR, "h.m"), (gc::MAP_SET, "h.m")]));
+    crate::test_support::assert_no_code(&r.diagnostics, "WS026");
+    assert_eq!(
+        storage_ops(&r),
+        pairs(&[(gc::MAP_CLEAR, "h.m"), (gc::MAP_SET, "h.m")])
+    );
     assert_eq!(written_var_labels(&r), ["h.n"]);
 }
 
@@ -1052,7 +1074,8 @@ var h: H = { m: { \"a\": k }, n: 1 }
     assert!(
         r.diagnostics
             .iter()
-            .any(|d| d.message.contains("'var h'") && d.message.contains("not a compile-time constant")),
+            .any(|d| d.message.contains("'var h'")
+                && d.message.contains("not a compile-time constant")),
         "{:?}",
         r.diagnostics
     );
@@ -1063,7 +1086,7 @@ var h: H = { m: { \"a\": k }, n: 1 }
 /// record array, not only the nested record's siblings.
 #[test]
 fn nested_column_sort_carries_every_root_column() {
-    let r = compile(
+    let r = compile_ok(
         "type P = { x: int, y: int }
 type Q = { p: P, k: int }
 var qs: Q[]
@@ -1071,19 +1094,25 @@ in go: exec
 on go { qs.p.x.sort() }
 ",
     );
-    assert_no_errors(&r);
     assert!(!has_gate(&r, gc::ARRAY_SORT));
     let sort = find_gate(&r, gc::ARRAY_SORT_MULTIPLE);
     let mut cols: Vec<(WirePort, String)> = r
         .module
         .wires
         .iter()
-        .filter(|w| w.target.node_id == sort && r.module.nodes[&w.source.node_id].gate_class == gc::ARRAY_VAR)
+        .filter(|w| {
+            w.target.node_id == sort
+                && r.module.nodes[&w.source.node_id].gate_class == gc::ARRAY_VAR
+        })
         .map(|w| (w.target.port, label(&r, w.source.node_id)))
         .collect();
     cols.sort_by(|a, b| a.1.cmp(&b.1));
     assert_eq!(cols.len(), 3, "{cols:?}");
-    assert_eq!(cols[1], (WirePort::ArrayVarRef, "qs.p.x".to_string()), "{cols:?}");
+    assert_eq!(
+        cols[1],
+        (WirePort::ArrayVarRef, "qs.p.x".to_string()),
+        "{cols:?}"
+    );
     let carried: Vec<&str> = cols.iter().map(|(_, l)| l.as_str()).collect();
     assert_eq!(carried, ["qs.k", "qs.p.x", "qs.p.y"]);
 }

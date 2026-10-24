@@ -1,59 +1,135 @@
 //! `@label` / `@closed` / doc comments land on IR nodes as pseudo-properties.
 
+use super::compile_ok_auto;
 use crate::intern::sym;
 use crate::ir::{Literal, NodeKind};
 
 fn lower_src(src: &str) -> crate::ir::Module {
-    let crate::compile::FrontEnd { resolved: parsed, lowered: r, .. } =
-        crate::compile::front_end(src, "test", None, crate::lower::FoldMode::Auto, &crate::resolve::FsLoader);
-    assert!(
-        parsed.diagnostics.is_empty(),
-        "parse diags: {:?}",
-        parsed.diagnostics
-    );
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| !matches!(d.severity, crate::diagnostic::Severity::Error)),
-        "lower diags: {:?}",
-        r.diagnostics
-    );
-    r.module
+    compile_ok_auto(src).module
 }
 
 fn chip_nodes(m: &crate::ir::Module) -> Vec<&crate::ir::Node> {
-    m.nodes.values().filter(|n| n.kind == NodeKind::Chip).collect()
+    m.nodes
+        .values()
+        .filter(|n| n.kind == NodeKind::Chip)
+        .collect()
 }
 
-/// Recursively collect every `Chip` node across this module and all nested
-/// chip sub-modules (`module.chips`).
-fn all_chip_nodes<'a>(m: &'a crate::ir::Module, out: &mut Vec<&'a crate::ir::Node>) {
-    out.extend(m.nodes.values().filter(|n| n.kind == NodeKind::Chip));
-    for child in m.chips.values() {
-        all_chip_nodes(child, out);
-    }
+fn label_of(n: &crate::ir::Node) -> Option<&Literal> {
+    n.properties.get(&*sym::NAME_LABEL)
 }
 
-/// Recursively find the first node (anywhere in `module.chips`) whose
-/// `PortLabel` property equals `label`.
-fn find_node_with_port_label<'a>(
-    m: &'a crate::ir::Module,
-    label: &str,
-) -> Option<&'a crate::ir::Node> {
-    for n in m.nodes.values() {
-        if matches!(
-            n.properties.get(&*sym::PORT_LABEL),
-            Some(Literal::String(s)) if s == label
-        ) {
-            return Some(n);
+/// Which node a label row reads.
+enum Find {
+    /// The program's one root-level chip node.
+    Chip,
+    /// The root module's first output node.
+    Output,
+    /// The port node (anywhere in the tree) whose `PortLabel` is this name.
+    Port(&'static str),
+}
+
+/// `@label(...)` sets the display NAME_LABEL, folding a constant expression
+/// the way FormatText renders it; a `chip let` without one is labelled with
+/// its binding names.
+#[test]
+fn label_annotations_set_the_display_name() {
+    let rows: &[(&str, &str, Find, &str)] = &[
+        // `chip let x = ...` has no name of its own; it displays the binding name.
+        (
+            "chip let takes its binding name",
+            "@closed chip let sphereCheckSize = 5",
+            Find::Chip,
+            "sphereCheckSize",
+        ),
+        (
+            "chip let with several bindings joins their names",
+            "chip let a = 1, b = 2",
+            Find::Chip,
+            "a, b",
+        ),
+        (
+            "an explicit @label wins over the derived name",
+            "@label(\"Reach\") chip let sphereCheckSize = 5",
+            Find::Chip,
+            "Reach",
+        ),
+        (
+            "anon chip label folds arithmetic",
+            "@label(1 + 2) chip { }",
+            Find::Chip,
+            "3",
+        ),
+        // A folded float label reads the 3-decimal, trailing-zero-trimmed way
+        // FormatText renders a float, not `f64::to_string()`. (An uncalled named
+        // chip has no instance node, so the anon-chip form carries the label.)
+        (
+            "a float label rounds by the format render law",
+            "@label(0.33333) chip { }",
+            Find::Chip,
+            "0.333",
+        ),
+        (
+            "out carries an explicit string label",
+            "@label(\"hi\") out v: int = 0",
+            Find::Output,
+            "hi",
+        ),
+        (
+            "an out label expression folds via a constant let",
+            "let title = \"Score\"\n@label(title) out v: int = 0",
+            Find::Output,
+            "Score",
+        ),
+        (
+            "an input's label sits beside its port label",
+            "@label(\"Fire!\") in t: exec\nout done = t",
+            Find::Port("t"),
+            "Fire!",
+        ),
+        // A statement-level `@label(...) in p` inside a NAMED chip's body.
+        (
+            "a port declared inside a named chip keeps its label",
+            "chip Foo(x: int) -> (r: int) {\n@label(\"Pretty\") in p: int\nout r = x + p\n}\nlet a = Foo(1)\nout result = a.r",
+            Find::Port("p"),
+            "Pretty",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, find, want) in rows {
+        let m = lower_src(src);
+        let node = match find {
+            Find::Chip => {
+                let chips = chip_nodes(&m);
+                if chips.len() != 1 {
+                    failures.push(format!("{label}: {} chip nodes, want 1\n{src}", chips.len()));
+                    continue;
+                }
+                Some(chips[0])
+            }
+            Find::Output => m.outputs.iter().filter_map(|id| m.nodes.get(id)).next(),
+            Find::Port(name) => m.nodes_deep().find(|n| {
+                matches!(n.properties.get(&*sym::PORT_LABEL), Some(Literal::String(s)) if s == name)
+            }),
+        };
+        let got = node.and_then(label_of);
+        if got != Some(&Literal::String((*want).into())) {
+            failures.push(format!("{label}: label {got:?}, want {want:?}\n{src}"));
         }
     }
-    for child in m.chips.values() {
-        if let Some(n) = find_node_with_port_label(child, label) {
-            return Some(n);
-        }
-    }
-    None
+    crate::test_support::report_failures(&failures, rows.len());
+}
+
+/// `@label` is legal directly on `var` and overrides the name-derived default.
+#[test]
+fn var_can_carry_explicit_label() {
+    let m = lower_src("@label(\"HP\") var hp: int = 0");
+    assert!(
+        m.nodes
+            .values()
+            .any(|n| matches!(label_of(n), Some(Literal::String(s)) if s == "HP")),
+        "var node labeled \"HP\""
+    );
 }
 
 #[test]
@@ -64,10 +140,7 @@ fn anon_chip_gets_label_closed_and_doc_props() {
     let chips = chip_nodes(&m);
     assert_eq!(chips.len(), 1);
     let n = chips[0];
-    assert_eq!(
-        n.properties.get(&*sym::NAME_LABEL),
-        Some(&Literal::String("Score Tracker".into()))
-    );
+    assert_eq!(label_of(n), Some(&Literal::String("Score Tracker".into())));
     assert_eq!(
         n.properties.get(&*sym::CHIP_CLOSED),
         Some(&Literal::Bool(true))
@@ -75,33 +148,6 @@ fn anon_chip_gets_label_closed_and_doc_props() {
     assert_eq!(
         n.properties.get(&*sym::DOC_TEXT),
         Some(&Literal::String("Keeps the score.".into()))
-    );
-}
-
-#[test]
-fn chip_let_labels_the_chip_with_the_binding_name() {
-    // `chip let x = ...` has no name of its own; it should display the binding
-    // name so the compiled let-chip is identifiable in the wire graph.
-    let m = lower_src("@closed chip let sphereCheckSize = 5");
-    let chips = chip_nodes(&m);
-    assert_eq!(chips.len(), 1);
-    assert_eq!(
-        chips[0].properties.get(&*sym::NAME_LABEL),
-        Some(&Literal::String("sphereCheckSize".into()))
-    );
-
-    // Multiple bindings (`chip let a = 1, b = 2`) join their names.
-    let m2 = lower_src("chip let a = 1, b = 2");
-    assert_eq!(
-        chip_nodes(&m2)[0].properties.get(&*sym::NAME_LABEL),
-        Some(&Literal::String("a, b".into()))
-    );
-
-    // An explicit `@label(...)` still wins over the derived name.
-    let m3 = lower_src("@label(\"Reach\") chip let sphereCheckSize = 5");
-    assert_eq!(
-        chip_nodes(&m3)[0].properties.get(&*sym::NAME_LABEL),
-        Some(&Literal::String("Reach".into()))
     );
 }
 
@@ -131,33 +177,15 @@ fn named_chip_instances_inherit_decl_annotations_and_doc() {
 #[test]
 fn default_chip_has_no_closed_or_open_prop() {
     let m = lower_src("chip { var a: int = 0 }\nchip { var b: int = 0 }");
-    for n in chip_nodes(&m) {
+    let chips = chip_nodes(&m);
+    assert_eq!(chips.len(), 2);
+    for n in chips {
         assert!(n.properties.get(&*sym::CHIP_CLOSED).is_none());
         assert!(
             n.properties.get(&crate::intern::intern("_open")).is_none(),
             "_open is retired"
         );
     }
-}
-
-#[test]
-fn port_label_prop_set_alongside_port_label() {
-    let m = lower_src("@label(\"Fire!\") in t: exec\nout done = t");
-    let node = m
-        .inputs
-        .iter()
-        .filter_map(|id| m.nodes.get(id))
-        .find(|n| {
-            matches!(
-                n.properties.get(&*sym::PORT_LABEL),
-                Some(Literal::String(s)) if s == "t"
-            )
-        })
-        .expect("input node for t");
-    assert_eq!(
-        node.properties.get(&*sym::NAME_LABEL),
-        Some(&Literal::String("Fire!".into()))
-    );
 }
 
 #[test]
@@ -181,42 +209,15 @@ fn stmt_level_annotated_nested_chip_gets_doc() {
          let o = Outer(1)\n\
          out result = o.r",
     );
-    let mut chips = Vec::new();
-    all_chip_nodes(&m, &mut chips);
-    let n = chips
-        .iter()
-        .find(|n| {
-            matches!(
-                n.properties.get(&*sym::NAME_LABEL),
-                Some(Literal::String(s)) if s == "Inner"
-            )
-        })
+    let n = m
+        .nodes_deep()
+        .filter(|n| n.kind == NodeKind::Chip)
+        .find(|n| matches!(label_of(n), Some(Literal::String(s)) if s == "Inner"))
         .expect("chip node labeled \"Inner\" (searched root module + all module.chips)");
     assert_eq!(
         n.properties.get(&*sym::DOC_TEXT),
         Some(&Literal::String("Inner doc.".into())),
         "doc comment on a statement-level annotated chip must survive lowering"
-    );
-}
-
-#[test]
-fn stmt_level_annotated_in_inside_named_chip_gets_label() {
-    // `@label(...) in p: ...` declared as a statement inside a *named*
-    // chip's body (not just at top level) must still stamp NAME_LABEL on
-    // the resulting port node.
-    let m = lower_src(
-        "chip Foo(x: int) -> (r: int) {\n\
-         @label(\"Pretty\") in p: int\n\
-         out r = x + p\n\
-         }\n\
-         let a = Foo(1)\n\
-         out result = a.r",
-    );
-    let n = find_node_with_port_label(&m, "p")
-        .expect("port node for 'p' inside Foo's chip module");
-    assert_eq!(
-        n.properties.get(&*sym::NAME_LABEL),
-        Some(&Literal::String("Pretty".into()))
     );
 }
 
@@ -227,80 +228,5 @@ fn multi_line_doc_joins_with_newlines() {
     assert_eq!(
         chips[0].properties.get(&*sym::DOC_TEXT),
         Some(&Literal::String("Line one.\nLine two.".into()))
-    );
-}
-
-// ---------- `@label(expr)` + `@label` on `var` ----------
-
-#[test]
-fn out_can_carry_explicit_string_label() {
-    let m = lower_src("@label(\"hi\") out v: int = 0");
-    let node = m
-        .outputs
-        .iter()
-        .filter_map(|id| m.nodes.get(id))
-        .next()
-        .expect("output node for v");
-    assert_eq!(
-        node.properties.get(&*sym::NAME_LABEL),
-        Some(&Literal::String("hi".into()))
-    );
-}
-
-#[test]
-fn out_label_expr_folds_via_constant_let() {
-    let m = lower_src("let title = \"Score\"\n@label(title) out v: int = 0");
-    let node = m
-        .outputs
-        .iter()
-        .filter_map(|id| m.nodes.get(id))
-        .next()
-        .expect("output node for v");
-    assert_eq!(
-        node.properties.get(&*sym::NAME_LABEL),
-        Some(&Literal::String("Score".into()))
-    );
-}
-
-#[test]
-fn anon_chip_label_expr_folds_arithmetic() {
-    let m = lower_src("@label(1 + 2) chip { }");
-    let chips = chip_nodes(&m);
-    assert_eq!(chips.len(), 1);
-    assert_eq!(
-        chips[0].properties.get(&*sym::NAME_LABEL),
-        Some(&Literal::String("3".into()))
-    );
-}
-
-#[test]
-fn var_can_carry_explicit_label() {
-    // `@label` is legal directly on `var` and overrides the name-derived
-    // default the same way it does on a port.
-    let m = lower_src("@label(\"HP\") var hp: int = 0");
-    m.nodes
-        .values()
-        .find(|n| {
-            matches!(
-                n.properties.get(&*sym::NAME_LABEL),
-                Some(Literal::String(s)) if s == "HP"
-            )
-        })
-        .expect("var node labeled \"HP\"");
-}
-
-#[test]
-fn label_expr_float_rounds_via_format_render_law() {
-    // A folded float label reads the same 3-decimal / trailing-zero-trimmed
-    // way FormatText renders a float everywhere else (0.33333 -> "0.333"),
-    // NOT the full-precision `f64::to_string()`. (An uncalled *named* chip
-    // produces no instance node, so the anon-chip form is used to exercise
-    // the baked label — the float render path is shared by every label site.)
-    let m = lower_src("@label(0.33333) chip { }");
-    let chips = chip_nodes(&m);
-    assert_eq!(chips.len(), 1);
-    assert_eq!(
-        chips[0].properties.get(&*sym::NAME_LABEL),
-        Some(&Literal::String("0.333".into()))
     );
 }

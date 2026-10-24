@@ -130,6 +130,26 @@ pub fn diagnostics(source: &str, files_json: &str) -> String {
     serde_json::to_string(&diags).unwrap_or_else(|_| "[]".into())
 }
 
+/// The kind name the playground editor reads for a completion.
+fn kind_name(kind: wirescript::analysis::CompletionKind) -> &'static str {
+    use wirescript::analysis::CompletionKind as K;
+    match kind {
+        K::Text => "text",
+        K::Method => "method",
+        K::Function => "function",
+        K::Field => "field",
+        K::Variable => "variable",
+        K::Class => "type",
+        K::Module => "module",
+        K::Property => "property",
+        K::Keyword => "keyword",
+        K::Constant => "constant",
+        K::EnumMember => "enum",
+        K::Event => "event",
+        K::File => "file",
+    }
+}
+
 pub fn completions(
     source: &str,
     line: u32,
@@ -137,37 +157,31 @@ pub fn completions(
     files_json: &str,
     prefab_paths: &[String],
 ) -> String {
-    use wirescript::analysis::CompletionKind as K;
     let loader = make_loader(files_json);
     let resolved = resolve(source, "editor", &loader);
     let tc = typecheck_with_inference(&resolved.ast, "editor").0;
     let symbols = collect_symbols(&resolved.ast, &tc.type_of_expr);
     let col = editor_col_to_char(source, line as usize, col as usize);
-    let items: Vec<CompletionOut> = wirescript::analysis::completions(source, &symbols, line as usize, col, prefab_paths, &wirescript::typecheck::enums::EnumRegistry::editor_lookup)
-        .into_iter()
-        .map(|c| CompletionOut {
-            kind: match c.kind {
-                K::Text => "text",
-                K::Method => "method",
-                K::Function => "function",
-                K::Field => "field",
-                K::Variable => "variable",
-                K::Class => "type",
-                K::Module => "module",
-                K::Property => "property",
-                K::Keyword => "keyword",
-                K::Constant => "constant",
-                K::EnumMember => "enum",
-                K::Event => "event",
-                K::File => "file",
-            },
-            // A completion that replaces the text before the cursor inserts
-            // its whole label.
-            insert_text: c.insert_text.or_else(|| c.replace_from.map(|_| c.label.clone())),
-            label: c.label,
-            detail: c.detail,
-        })
-        .collect();
+    let items: Vec<CompletionOut> = wirescript::analysis::completions(
+        source,
+        &symbols,
+        line as usize,
+        col,
+        prefab_paths,
+        &wirescript::typecheck::enums::EnumRegistry::editor_lookup,
+    )
+    .into_iter()
+    .map(|c| CompletionOut {
+        kind: kind_name(c.kind),
+        // A completion that replaces the text before the cursor inserts
+        // its whole label.
+        insert_text: c
+            .insert_text
+            .or_else(|| c.replace_from.map(|_| c.label.clone())),
+        label: c.label,
+        detail: c.detail,
+    })
+    .collect();
     serde_json::to_string(&items).unwrap_or_else(|_| "[]".into())
 }
 

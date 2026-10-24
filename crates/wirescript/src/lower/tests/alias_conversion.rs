@@ -6,12 +6,24 @@
 //! as it names aliases. Rows compare the save against the twin written without
 //! the alias.
 
-use super::declaring_scope::{compile_main, save_dump};
+use super::declaring_scope::{compiled, save_dump};
 
 /// Compare `a` against `b`, both folds: equal saves, or the same error codes
 /// when neither compiles.
 fn same_outcome(row: &str, a: &str, b: &str, deps: &[(&str, &str)], failures: &mut Vec<String>) {
-    for fold in [true, false] {
+    same_outcome_at(row, a, b, deps, &[true, false], failures);
+}
+
+/// [`same_outcome`] at the given folds only.
+fn same_outcome_at(
+    row: &str,
+    a: &str,
+    b: &str,
+    deps: &[(&str, &str)],
+    folds: &[bool],
+    failures: &mut Vec<String>,
+) {
+    for &fold in folds {
         match (save_dump(a, deps, fold), save_dump(b, deps, fold)) {
             (Ok(x), Ok(y)) if x == y => {}
             (Err(mut x), Err(mut y)) => {
@@ -28,21 +40,45 @@ fn same_outcome(row: &str, a: &str, b: &str, deps: &[(&str, &str)], failures: &m
                 let only_b: Vec<&String> = y.iter().filter(|l| !x.contains(l)).take(3).collect();
                 failures.push(format!("{row} fold {fold}: saves differ\n{a}\n--- twin\n{b}\nonly a: {only_a:#?}\nonly b: {only_b:#?}"));
             }
-            (x, y) => failures.push(format!("{row} fold {fold}: {:?} / twin {:?}\n{a}\n--- twin\n{b}", x.err(), y.err())),
+            (x, y) => failures.push(format!(
+                "{row} fold {fold}: {:?} / twin {:?}\n{a}\n--- twin\n{b}",
+                x.err(),
+                y.err()
+            )),
         }
     }
 }
 
+#[track_caller]
 fn report(failures: Vec<String>, rows: usize) {
-    assert!(rows > 0, "no rows ran");
-    assert!(failures.is_empty(), "{} of {rows} rows failed:\n{}", failures.len(), failures.join("\n\n"));
+    crate::test_support::report_failures(&failures, rows);
 }
 
 fn codes(src: &str, deps: &[(&str, &str)]) -> Vec<String> {
-    match compile_main(src, deps, true) {
-        Ok(out) => out.diagnostics.iter().map(|d| d.code.to_string()).collect(),
+    match compiled(src, deps, true) {
+        Ok(c) => c
+            .out
+            .diagnostics
+            .iter()
+            .map(|d| d.code.to_string())
+            .collect(),
         Err(codes) => codes,
     }
+}
+
+/// The codes resolving and type-checking `src` report, with no lowering.
+fn typecheck_codes(src: &str) -> Vec<String> {
+    let loader = crate::resolve::MemLoader {
+        files: Default::default(),
+    };
+    let resolved = crate::resolve::resolve(src, "main", &loader);
+    let (tc, _) = crate::typecheck::typecheck_with_inference(&resolved.ast, "main");
+    resolved
+        .diagnostics
+        .iter()
+        .chain(&tc.diagnostics)
+        .map(|d| d.code.to_string())
+        .collect()
 }
 
 const EVENT_HEAD: &str = "in go: exec\nin go2: exec\nin iv: int\nin fv: float\nin bv: bool\nin sv: string\n\
@@ -77,17 +113,36 @@ const ALIAS_FORMS: &[(&str, &str, &str)] = &[
 /// A receiver's data parameter or an `await CustomEvent` capture: `@T` is the
 /// type as the row spells it, `@V` the value sent, `@O` the var it lands in.
 const EVENT_PLACES: &[(&str, &str)] = &[
-    ("receiver parameter", "on go { SendCustomEvent(\"e\", @V) }\non CustomEvent(\"e\") -> (q: @T) { @O = q }\n"),
-    ("await capture", "on go2 { SendCustomEvent(\"e\", @V) }\non go { let q: @T = await CustomEvent(\"e\")\n @O = q }\n"),
+    (
+        "receiver parameter",
+        "on go { SendCustomEvent(\"e\", @V) }\non CustomEvent(\"e\") -> (q: @T) { @O = q }\n",
+    ),
+    (
+        "await capture",
+        "on go2 { SendCustomEvent(\"e\", @V) }\non go { let q: @T = await CustomEvent(\"e\")\n @O = q }\n",
+    ),
 ];
 
+/// The default set compares each row at one fold, alternating so every place,
+/// type and form meets both: the alias is resolved before folding and the
+/// row reads only equality with its twin. Both folds run under `--ignored`.
 #[test]
 fn an_event_parameter_declared_through_an_alias_is_the_type_it_names() {
+    event_parameter_through_an_alias_matrix(false);
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn an_event_parameter_declared_through_an_alias_is_the_type_it_names_exhaustive() {
+    event_parameter_through_an_alias_matrix(true);
+}
+
+fn event_parameter_through_an_alias_matrix(full: bool) {
     let mut failures = Vec::new();
     let mut rows = 0;
-    for (place, body) in EVENT_PLACES {
-        for (written, value, out) in EVENT_TYPES {
-            for (form, decls, spelled) in ALIAS_FORMS {
+    for (pi, (place, body)) in EVENT_PLACES.iter().enumerate() {
+        for (ti, (written, value, out)) in EVENT_TYPES.iter().enumerate() {
+            for (fi, (form, decls, spelled)) in ALIAS_FORMS.iter().enumerate() {
                 let lib = format!("type A = {written}\n");
                 let namespaced = form.starts_with("namespaced");
                 // A library names only its own types, so it aliases the builtins.
@@ -95,13 +150,36 @@ fn an_event_parameter_declared_through_an_alias_is_the_type_it_names() {
                     continue;
                 }
                 let deps: &[(&str, &str)] = if namespaced { &[("u", &lib)] } else { &[] };
-                let fill = |t: &str| body.replace("@T", t).replace("@V", value).replace("@O", out);
+                let fill = |t: &str| {
+                    body.replace("@T", t)
+                        .replace("@V", value)
+                        .replace("@O", out)
+                };
                 let decls = decls.replace('@', written);
                 // An import comes first; an alias after the types it names.
-                let (top, after) = if namespaced { (decls.as_str(), "") } else { ("", decls.as_str()) };
-                let aliased = format!("{top}{EVENT_HEAD}{after}{}", fill(&spelled.replace('@', written)));
+                let (top, after) = if namespaced {
+                    (decls.as_str(), "")
+                } else {
+                    ("", decls.as_str())
+                };
+                let aliased = format!(
+                    "{top}{EVENT_HEAD}{after}{}",
+                    fill(&spelled.replace('@', written))
+                );
                 let twin = format!("{top}{EVENT_HEAD}{after}{}", fill(written));
-                same_outcome(&format!("{place} {form} {written}"), &aliased, &twin, deps, &mut failures);
+                let folds: &[bool] = match (full, (pi + ti + fi) % 2) {
+                    (true, _) => &[true, false],
+                    (false, 0) => &[true],
+                    (false, _) => &[false],
+                };
+                same_outcome_at(
+                    &format!("{place} {form} {written}"),
+                    &aliased,
+                    &twin,
+                    deps,
+                    folds,
+                    &mut failures,
+                );
                 rows += 1;
             }
         }
@@ -119,7 +197,13 @@ fn an_event_parameter_declared_as_an_alias_of_a_ref_is_that_ref() {
         )
     };
     let mut failures = Vec::new();
-    same_outcome("alias of a ref", &program("RI"), &program("*int"), &[], &mut failures);
+    same_outcome(
+        "alias of a ref",
+        &program("RI"),
+        &program("*int"),
+        &[],
+        &mut failures,
+    );
     report(failures, 1);
 }
 
@@ -128,7 +212,12 @@ fn an_event_parameter_declared_as_an_alias_of_a_ref_is_that_ref() {
 /// held in it, through an alias as when written.
 #[test]
 fn an_event_type_mismatch_is_reported_through_an_alias() {
-    for (decl, t) in [("", "int"), ("type I = int\n", "I"), ("type I0 = int\ntype I = I0\n", "I"), ("type Id<X> = X\n", "Id<int>")] {
+    for (decl, t) in [
+        ("", "int"),
+        ("type I = int\n", "I"),
+        ("type I0 = int\ntype I = I0\n", "I"),
+        ("type Id<X> = X\n", "Id<int>"),
+    ] {
         let program = |sent: &str| {
             format!(
                 "{decl}in go: exec\nin fv: float\nvar n: int = 0\non go {{ SendCustomEvent(\"e\", {sent}) }}\n\
@@ -138,7 +227,10 @@ fn an_event_type_mismatch_is_reported_through_an_alias() {
         let mismatch = codes(&program("fv"), &[]);
         assert!(mismatch.contains(&"WS030".to_string()), "{t}: {mismatch:?}");
         let constant = codes(&program("2.5"), &[]);
-        assert!(constant.contains(&"WS030".to_string()) && !constant.contains(&"WS106".to_string()), "{t}: {constant:?}");
+        assert!(
+            constant.contains(&"WS030".to_string()) && !constant.contains(&"WS106".to_string()),
+            "{t}: {constant:?}"
+        );
         let matched = codes(&program("2"), &[]);
         assert!(!matched.contains(&"WS030".to_string()), "{t}: {matched:?}");
     }
@@ -150,8 +242,21 @@ fn an_event_type_mismatch_is_reported_through_an_alias() {
 /// constant `if`, `match` or `Select`, a block value, arithmetic of
 /// constants), and is sent unconverted. Every receiver of the channel is
 /// checked, typed `await` captures included.
+///
+/// `WS030` is a typecheck code, so the default set reads it from typecheck
+/// alone; the full compile of every row runs under `--ignored`.
 #[test]
 fn a_number_constant_sent_to_the_other_number_type_is_ws030() {
+    number_constant_sent_to_the_other_number_type_matrix(false);
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn a_number_constant_sent_to_the_other_number_type_is_ws030_exhaustive() {
+    number_constant_sent_to_the_other_number_type_matrix(true);
+}
+
+fn number_constant_sent_to_the_other_number_type_matrix(full: bool) {
     let head = "enum M { A, B }\nconst m = M.A\nconst KF = 2.5\nconst KI = 2\nin go: exec\nin go2: exec\n\
                 in fv: float\nin iv: int\nvar n: int = 0\nvar x: float = 0.0\n";
     let floats = [
@@ -165,42 +270,99 @@ fn a_number_constant_sent_to_the_other_number_type_is_ws030() {
         "{ 2.5 }",
         "fv",
     ];
-    let ints = ["13", "KI", "if true then 2 else 3", "match m { M.A => 2, M.B => 3 }", "KI + 0", "-KI", "{ 2 }", "iv"];
+    let ints = [
+        "13",
+        "KI",
+        "if true then 2 else 3",
+        "match m { M.A => 2, M.B => 3 }",
+        "KI + 0",
+        "-KI",
+        "{ 2 }",
+        "iv",
+    ];
     let mut rows = 0;
     let mut failures = Vec::new();
     let mut check = |src: String, want: usize| {
-        let got = codes(&src, &[]).iter().filter(|c| *c == "WS030").count();
+        let codes = if full {
+            codes(&src, &[])
+        } else {
+            typecheck_codes(&src)
+        };
+        let got = codes.iter().filter(|c| *c == "WS030").count();
         if got != want {
             failures.push(format!("{got} WS030, want {want}\n{src}"));
         }
         rows += 1;
     };
     let handler = |sent: &str, recv: &str| {
-        format!("{head}on go {{ SendCustomEvent(\"e\", {sent}) }}\non CustomEvent(\"e\") -> {recv}\n")
+        format!(
+            "{head}on go {{ SendCustomEvent(\"e\", {sent}) }}\non CustomEvent(\"e\") -> {recv}\n"
+        )
     };
     for sent in floats {
         check(handler(sent, "(q: int) { n = q }"), 1);
         check(handler(sent, "(q: float) { x = q }"), 0);
-        check(handler(sent, "(q: int) { n = q }\non CustomEvent(\"e\") -> (q: float) { x = q }"), 1);
-        check(handler(sent, "(q: float) { x = q }\non CustomEvent(\"e\") -> (q: int) { n = q }"), 1);
-        let capture = |t: &str| format!("{head}on go {{ SendCustomEvent(\"e\", {sent}) }}\non go2 {{ let v: {t} = await CustomEvent(\"e\")\n x = v }}\n");
+        check(
+            handler(
+                sent,
+                "(q: int) { n = q }\non CustomEvent(\"e\") -> (q: float) { x = q }",
+            ),
+            1,
+        );
+        check(
+            handler(
+                sent,
+                "(q: float) { x = q }\non CustomEvent(\"e\") -> (q: int) { n = q }",
+            ),
+            1,
+        );
+        let capture = |t: &str| {
+            format!(
+                "{head}on go {{ SendCustomEvent(\"e\", {sent}) }}\non go2 {{ let v: {t} = await CustomEvent(\"e\")\n x = v }}\n"
+            )
+        };
         check(capture("int"), 1);
         check(capture("float"), 0);
-        let global = format!("{head}on go {{ SendGlobalCustomEvent(\"g\", {sent}) }}\non GlobalCustomEvent(\"g\") -> (q: int) {{ n = q }}\n");
+        let global = format!(
+            "{head}on go {{ SendGlobalCustomEvent(\"g\", {sent}) }}\non GlobalCustomEvent(\"g\") -> (q: int) {{ n = q }}\n"
+        );
         check(global, 1);
     }
     for sent in ints {
         check(handler(sent, "(q: float) { x = q }"), 1);
         check(handler(sent, "(q: int) { n = q }"), 0);
-        check(handler(sent, "(q: float) { x = q }\non CustomEvent(\"e\") -> (q: int) { n = q }"), 1);
-        let capture = format!("{head}on go {{ SendCustomEvent(\"e\", {sent}) }}\non go2 {{ let v: float = await CustomEvent(\"e\")\n x = v }}\n");
+        check(
+            handler(
+                sent,
+                "(q: float) { x = q }\non CustomEvent(\"e\") -> (q: int) { n = q }",
+            ),
+            1,
+        );
+        let capture = format!(
+            "{head}on go {{ SendCustomEvent(\"e\", {sent}) }}\non go2 {{ let v: float = await CustomEvent(\"e\")\n x = v }}\n"
+        );
         check(capture, 1);
     }
     // The constant is sent as written: the save holds the float.
-    let sent = super::declaring_scope::save_values(&handler("2.5", "(q: int) { n = q }"), &[], true, false).unwrap();
-    assert!(sent.iter().any(|l| matches!(l, crate::ir::Literal::Float(f) if *f == 2.5)), "{sent:?}");
+    let sent = super::declaring_scope::save_values(
+        &handler("2.5", "(q: int) { n = q }"),
+        &[],
+        true,
+        false,
+    )
+    .unwrap();
+    assert!(
+        sent.iter()
+            .any(|l| matches!(l, crate::ir::Literal::Float(f) if *f == 2.5)),
+        "{sent:?}"
+    );
     assert!(rows > 0);
-    assert!(failures.is_empty(), "{} of {rows} rows failed:\n{}", failures.len(), failures.join("\n\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {rows} rows failed:\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
 }
 
 /// A chip parameter that is a record of refs written through an alias, or an
@@ -243,7 +405,14 @@ fn a_chip_parameter_through_an_alias_of_a_ref_binds_as_written() {
                 var r: R = { a: 1, b: 2 }\n";
     let mut failures = Vec::new();
     for (row, aliased, written, body) in rows {
-        let twin_body = body.replace("p: PR", if row.contains("literal") { "p: *{ a: int, b: int }" } else { "p: *R" });
+        let twin_body = body.replace(
+            "p: PR",
+            if row.contains("literal") {
+                "p: *{ a: int, b: int }"
+            } else {
+                "p: *R"
+            },
+        );
         let aliased = format!("{aliased}{}{body}\n", head_for(head, aliased));
         let twin = format!("{written}{}{twin_body}\n", head_for(head, written));
         same_outcome(row, &aliased, &twin, &[], &mut failures);
@@ -253,7 +422,11 @@ fn a_chip_parameter_through_an_alias_of_a_ref_binds_as_written() {
 
 /// `head`, without the record var when `decls` declares no `R` to give it.
 fn head_for(head: &str, decls: &str) -> String {
-    if decls.contains("type R ") { head.to_string() } else { head.replace("var r: R = { a: 1, b: 2 }\n", "") }
+    if decls.contains("type R ") {
+        head.to_string()
+    } else {
+        head.replace("var r: R = { a: 1, b: 2 }\n", "")
+    }
 }
 
 /// A program's own type named like a builtin generic (`Map`, or `Array`/`Ref`
@@ -262,21 +435,65 @@ fn head_for(head: &str, decls: &str) -> String {
 #[test]
 fn a_program_type_named_like_a_builtin_generic_is_the_programs() {
     let rows: &[(&str, &str, &str)] = &[
-        ("generic alias Map", "type @<K, V> = { k: K, v: V }\n", "var m: @<int, int> = { k: 1, v: 2 }\non go { n = m.v }"),
-        ("generic alias Map, const", "type @<K, V> = { k: K, v: V }\n", "const M: @<int, float> = { k: 1, v: 2.5 }\non go { x = M.v\n n = M.k }"),
-        ("generic alias Map, mod parameter", "type @<K, V> = { k: K, v: V }\n", "mod f(p: @<int, int>) -> int { return p.k + p.v }\non go { n = f({ k: 1, v: 2 }) }"),
-        ("generic alias Map, chip parameter", "type @<K, V> = { k: K, v: V }\n", "chip C(p: @<int, int>) -> (r: int) { return p.k * p.v }\nout o = C({ k: 3, v: 2 })"),
-        ("one-parameter Map", "type @<V> = { v: V }\n", "var m: @<int> = { v: 4 }\non go { n = m.v }"),
-        ("generic enum Map", "enum @<T> { Some(T), No }\n", "var m: @<int> = @.Some(3)\non go { match m { Some(v) => { n = v } No => { } } }"),
-        ("plain alias Map", "type @ = { k: int, v: int }\n", "var m: @ = { k: 1, v: 2 }\non go { n = m.v }"),
-        ("two-parameter Array", "type @<K, V> = { k: K, v: V }\n", "var m: @<int, int> = { k: 1, v: 2 }\non go { n = m.v }"),
+        (
+            "generic alias Map",
+            "type @<K, V> = { k: K, v: V }\n",
+            "var m: @<int, int> = { k: 1, v: 2 }\non go { n = m.v }",
+        ),
+        (
+            "generic alias Map, const",
+            "type @<K, V> = { k: K, v: V }\n",
+            "const M: @<int, float> = { k: 1, v: 2.5 }\non go { x = M.v\n n = M.k }",
+        ),
+        (
+            "generic alias Map, mod parameter",
+            "type @<K, V> = { k: K, v: V }\n",
+            "mod f(p: @<int, int>) -> int { return p.k + p.v }\non go { n = f({ k: 1, v: 2 }) }",
+        ),
+        (
+            "generic alias Map, chip parameter",
+            "type @<K, V> = { k: K, v: V }\n",
+            "chip C(p: @<int, int>) -> (r: int) { return p.k * p.v }\nout o = C({ k: 3, v: 2 })",
+        ),
+        (
+            "one-parameter Map",
+            "type @<V> = { v: V }\n",
+            "var m: @<int> = { v: 4 }\non go { n = m.v }",
+        ),
+        (
+            "generic enum Map",
+            "enum @<T> { Some(T), No }\n",
+            "var m: @<int> = @.Some(3)\non go { match m { Some(v) => { n = v } No => { } } }",
+        ),
+        (
+            "plain alias Map",
+            "type @ = { k: int, v: int }\n",
+            "var m: @ = { k: 1, v: 2 }\non go { n = m.v }",
+        ),
+        (
+            "two-parameter Array",
+            "type @<K, V> = { k: K, v: V }\n",
+            "var m: @<int, int> = { k: 1, v: 2 }\non go { n = m.v }",
+        ),
     ];
     let head = "in go: exec\nvar n: int = 0\nvar x: float = 0.0\n";
     let mut failures = Vec::new();
     for (row, decl, body) in rows {
-        let name = if row.contains("Array") { "Array" } else { "Map" };
-        let named = format!("{}{head}{}\n", decl.replace('@', name), body.replace('@', name));
-        let twin = format!("{}{head}{}\n", decl.replace('@', "Pair"), body.replace('@', "Pair"));
+        let name = if row.contains("Array") {
+            "Array"
+        } else {
+            "Map"
+        };
+        let named = format!(
+            "{}{head}{}\n",
+            decl.replace('@', name),
+            body.replace('@', name)
+        );
+        let twin = format!(
+            "{}{head}{}\n",
+            decl.replace('@', "Pair"),
+            body.replace('@', "Pair")
+        );
         same_outcome(row, &named, &twin, &[], &mut failures);
         if row == &"generic alias Map" {
             let ref_named = named.replace("Map", "Ref");
@@ -289,26 +506,65 @@ fn a_program_type_named_like_a_builtin_generic_is_the_programs() {
     for import in ["import { sum } from \"lib\"\n", "import \"lib\"\n"] {
         let src = format!("{import}{head}on go {{ n = sum({{ k: 1, v: 2 }}) }}\n");
         for fold in [true, false] {
-            let (a, b) = (save_dump(&src, &[("lib", lib)], fold), save_dump(&src, &[("lib", &twin_lib)], fold));
+            let (a, b) = (
+                save_dump(&src, &[("lib", lib)], fold),
+                save_dump(&src, &[("lib", &twin_lib)], fold),
+            );
             if a.is_err() || a != b {
-                failures.push(format!("library Map {import} fold {fold}: {:?} / {:?}", a.err(), b.err()));
+                failures.push(format!(
+                    "library Map {import} fold {fold}: {:?} / {:?}",
+                    a.err(),
+                    b.err()
+                ));
             }
         }
     }
     report(failures, rows.len() + 3);
 }
 
-/// `Array<T>` and `Ref<T>` spell `T[]` and `*T`, so a type or enum declared
-/// as `Array` or `Ref` with one type parameter would never be read: `WS107`.
-/// Another arity is the program's own type (see above).
+/// A type or enum declared under a builtin type's name is WS107: `Array<T>`
+/// and `Ref<T>` spell `T[]` and `*T`, so a one-parameter `Array` or `Ref` would
+/// never be read, and one named like `float` or `any` would shadow the
+/// builtin. Another arity is the program's own type (see above).
 #[test]
-fn a_type_named_array_or_ref_with_one_parameter_is_rejected() {
-    for decl in ["type Ref<V> = V[]", "type Array<T> = { v: T }", "enum Ref<T> { A(T), B }", "enum Array<T> { A(T), B }"] {
-        let src = format!("{decl}\nin go: exec\nvar n: int = 0\nvar a: int = 1\nmod f(p: Ref<int>) {{ p = 5 }}\non go {{ f(a)\n n = a }}\n");
-        assert!(codes(&src, &[]).contains(&"WS107".to_string()), "{decl}: {:?}", codes(&src, &[]));
+fn a_type_named_like_a_builtin_type_is_ws107() {
+    let refs = |decl: &str| {
+        format!(
+            "{decl}\nin go: exec\nvar n: int = 0\nvar a: int = 1\nmod f(p: Ref<int>) {{ p = 5 }}\non go {{ f(a)\n n = a }}\n"
+        )
+    };
+    let builtin = |decl: &str| format!("{decl}\nvar x: float = 1.5\nout ox: float = x\n");
+    let rows: Vec<(String, bool)> = vec![
+        (refs("type Ref<V> = V[]"), true),
+        (refs("type Array<T> = { v: T }"), true),
+        (refs("enum Ref<T> { A(T), B }"), true),
+        (refs("enum Array<T> { A(T), B }"), true),
+        (builtin("type float = int"), true),
+        (builtin("type int = float"), true),
+        (builtin("type string = int"), true),
+        (builtin("enum vector { A, B }"), true),
+        (builtin("type any = int"), true),
+        ("type Ref<K, V> = { k: K, v: V }\nin go: exec\nvar n: int = 0\nvar m: Ref<int, int> = { k: 1, v: 2 }\non go { n = m.v }\n".into(), false),
+    ];
+    let mut failures = Vec::new();
+    for (src, want) in &rows {
+        let got = match compiled(src, &[], true) {
+            Err(codes) => codes.contains(&"WS107".to_string()),
+            Ok(c) => {
+                if c.out.diagnostics.iter().any(|d| d.code == "WS107") {
+                    failures.push(format!("WS107 is not an error:\n{src}"));
+                }
+                false
+            }
+        };
+        if got != *want {
+            failures.push(format!(
+                "WS107 error {got}, want {want}: {:?}\n{src}",
+                codes(src, &[])
+            ));
+        }
     }
-    let ok = "type Ref<K, V> = { k: K, v: V }\nin go: exec\nvar n: int = 0\nvar m: Ref<int, int> = { k: 1, v: 2 }\non go { n = m.v }\n";
-    assert!(!codes(ok, &[]).contains(&"WS107".to_string()));
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 /// A library reads its own alias whatever its importer declares under the
@@ -319,20 +575,34 @@ fn a_library_names_the_enums_it_declares_or_imports() {
     let own = "type F = float\nmod mo() -> float { static var t: F = 5\n return t / 2 }\n";
     let written = "mod mo() -> float { static var t: float = 5\n return t / 2 }\n";
     let via = "import \"c\"\ntype G = F\nmod mb() -> float { static var t: G = 5\n var u: F = 5\n return t / 2 + u / 2 }\n";
-    let via_written = "mod mb() -> float { static var t: float = 5\n var u: float = 5\n return t / 2 + u / 2 }\n";
+    let via_written =
+        "mod mb() -> float { static var t: float = 5\n var u: float = 5\n return t / 2 + u / 2 }\n";
     let c = "type F = float\n";
     let mut failures = Vec::new();
     let mut rows = 0;
     // A whole import brings the library's `F` beside the importer's: `WS013`.
-    let whole = "import \"own\"\nenum F { A, B }\nin go: exec\nvar x: float = 0.0\non go { x = mo() }\n";
+    let whole =
+        "import \"own\"\nenum F { A, B }\nin go: exec\nvar x: float = 0.0\non go { x = mo() }\n";
     assert!(codes(whole, &[("own", own)]).contains(&"WS013".to_string()));
-    for (import, call) in [("import { mo } from \"own\"\n", "mo()"), ("import * as o from \"own\"\n", "o.mo()")] {
-        let src = format!("{import}enum F {{ A, B }}\nin go: exec\nvar x: float = 0.0\non go {{ x = {call} }}\n");
+    for (import, call) in [
+        ("import { mo } from \"own\"\n", "mo()"),
+        ("import * as o from \"own\"\n", "o.mo()"),
+    ] {
+        let src = format!(
+            "{import}enum F {{ A, B }}\nin go: exec\nvar x: float = 0.0\non go {{ x = {call} }}\n"
+        );
         let renamed = src.replace("enum F", "enum Fx");
         for fold in [true, false] {
-            let (a, b) = (save_dump(&src, &[("own", own)], fold), save_dump(&renamed, &[("own", written)], fold));
+            let (a, b) = (
+                save_dump(&src, &[("own", own)], fold),
+                save_dump(&renamed, &[("own", written)], fold),
+            );
             if a.is_err() || a != b {
-                failures.push(format!("own alias over importer enum, {import} fold {fold}: {:?} / {:?}", a.err(), b.err()));
+                failures.push(format!(
+                    "own alias over importer enum, {import} fold {fold}: {:?} / {:?}",
+                    a.err(),
+                    b.err()
+                ));
             }
         }
         rows += 1;
@@ -340,9 +610,17 @@ fn a_library_names_the_enums_it_declares_or_imports() {
     let src = "import { mb } from \"b\"\nenum F { A, B }\nin go: exec\nvar x: float = 0.0\non go { x = mb() }\n";
     for fold in [true, false] {
         let a = save_dump(src, &[("b", via), ("c", c)], fold);
-        let b = save_dump(&src.replace("enum F", "enum Fx"), &[("b", via_written)], fold);
+        let b = save_dump(
+            &src.replace("enum F", "enum Fx"),
+            &[("b", via_written)],
+            fold,
+        );
         if a.is_err() || a != b {
-            failures.push(format!("imported alias over importer enum fold {fold}: {:?} / {:?}", a.err(), b.err()));
+            failures.push(format!(
+                "imported alias over importer enum fold {fold}: {:?} / {:?}",
+                a.err(),
+                b.err()
+            ));
         }
     }
     rows += 1;
@@ -351,9 +629,19 @@ fn a_library_names_the_enums_it_declares_or_imports() {
         "mod me() -> int { var e: Dir = Dir.B\n return EnumToInt(e) }\n",
         "mod me() -> int { return EnumToInt(Dir.B) }\n",
     ] {
-        for import in ["import { me } from \"le\"\n", "import * as l from \"le\"\n", "import \"le\"\n"] {
-            let call = if import.contains("* as") { "l.me()" } else { "me()" };
-            let src = format!("{import}enum Dir {{ A, B }}\nin go: exec\nvar x: int = 0\non go {{ x = {call} }}\n");
+        for import in [
+            "import { me } from \"le\"\n",
+            "import * as l from \"le\"\n",
+            "import \"le\"\n",
+        ] {
+            let call = if import.contains("* as") {
+                "l.me()"
+            } else {
+                "me()"
+            };
+            let src = format!(
+                "{import}enum Dir {{ A, B }}\nin go: exec\nvar x: int = 0\non go {{ x = {call} }}\n"
+            );
             let got = codes(&src, &[("le", lib)]);
             if !got.contains(&"WS002".to_string()) {
                 failures.push(format!("importer-only enum, {import}{lib}: {got:?}"));
@@ -383,31 +671,58 @@ fn no_type_is_read_without_its_aliases() {
             if path.is_dir() {
                 walk(&path, out);
             } else if path.extension().is_some_and(|e| e == "rs") {
-                let rel = path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap().to_string_lossy().replace('\\', "/");
-                out.push((rel, std::fs::read_to_string(&path).expect("read a source file")));
+                let rel = path
+                    .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((
+                    rel,
+                    std::fs::read_to_string(&path).expect("read a source file"),
+                ));
             }
         }
     }
     let mut files = Vec::new();
-    walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
     assert!(files.len() > 100, "{}", files.len());
-    let builds_context = ["src/types/resolve.rs", "src/types/resolve/tests.rs", "src/typecheck/resolve.rs"];
+    let builds_context = [
+        "src/types/resolve.rs",
+        "src/types/resolve/tests.rs",
+        "src/typecheck/resolve.rs",
+    ];
     let this_file = "src/lower/tests/alias_conversion.rs";
     for (rel, text) in &files {
         if rel == this_file {
             continue;
         }
         let constructs = text.contains(&["ResolveCtx", " {"].concat());
-        assert!(!constructs || builds_context.contains(&rel.as_str()), "{rel} builds a resolver context of its own");
-        for gone in ["fn type_of_type_expr", "fn type_expr_to_type", "fn ce_param_type"] {
+        assert!(
+            !constructs || builds_context.contains(&rel.as_str()),
+            "{rel} builds a resolver context of its own"
+        );
+        for gone in [
+            "fn type_of_type_expr",
+            "fn type_expr_to_type",
+            "fn ce_param_type",
+        ] {
             assert!(!text.contains(gone), "{rel} declares `{gone}`");
         }
         if rel.starts_with("src/lower/") {
-            assert!(!text.contains(&["types::resolve::", "resolve_type("].concat()), "{rel} calls the canonical resolver directly");
+            assert!(
+                !text.contains(&["types::resolve::", "resolve_type("].concat()),
+                "{rel} calls the canonical resolver directly"
+            );
         }
         // An empty declaration table resolves no alias: only a test builds one.
         let test_file = rel.contains("/tests/") || rel.ends_with("tests.rs");
-        assert!(test_file || !text.contains(&["DeclaredTypes::", "default()"].concat()), "{rel} reads types with no declarations");
+        assert!(
+            test_file || !text.contains(&["DeclaredTypes::", "default()"].concat()),
+            "{rel} reads types with no declarations"
+        );
     }
 }
 
@@ -432,14 +747,21 @@ fn the_enum_registry_is_read_by_a_written_name_only_in_the_resolvers() {
             if path.is_dir() {
                 walk(&path, out);
             } else if path.extension().is_some_and(|e| e == "rs") {
-                let rel = path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap().to_string_lossy().replace('\\', "/");
+                let rel = path
+                    .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 let text = std::fs::read_to_string(&path).expect("read a source file");
                 out.push((rel, text.split_whitespace().collect::<String>()));
             }
         }
     }
     let mut files = Vec::new();
-    walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
     assert!(files.len() > 100, "{}", files.len());
     let this_file = "src/lower/tests/alias_conversion.rs";
     let mut found = Vec::new();
@@ -453,11 +775,24 @@ fn the_enum_registry_is_read_by_a_written_name_only_in_the_resolvers() {
         found.extend(registry_bypasses(rel, text));
     }
     assert!(found.is_empty(), "{}", found.join("\n"));
-    let (_, enums) = files.iter().find(|(rel, _)| rel == REGISTRY).expect("the registry");
-    for handed_out in ["fnvalues(&self", "Iterator<Item=&EnumDef>", "Iterator<Item=&'_EnumDef>"] {
-        assert!(!enums.contains(handed_out), "the registry hands out its enums: {handed_out}");
+    let (_, enums) = files
+        .iter()
+        .find(|(rel, _)| rel == REGISTRY)
+        .expect("the registry");
+    for handed_out in [
+        "fnvalues(&self",
+        "Iterator<Item=&EnumDef>",
+        "Iterator<Item=&'_EnumDef>",
+    ] {
+        assert!(
+            !enums.contains(handed_out),
+            "the registry hands out its enums: {handed_out}"
+        );
     }
-    assert!(seen_written > 0 && seen_paths > 0, "the resolvers read written names, the paths read paths");
+    assert!(
+        seen_written > 0 && seen_paths > 0,
+        "the resolvers read written names, the paths read paths"
+    );
 }
 
 /// The guard catches each way around the registry, and passes what the
@@ -465,7 +800,13 @@ fn the_enum_registry_is_read_by_a_written_name_only_in_the_resolvers() {
 /// write it, whitespace and all.
 #[test]
 fn the_enum_registry_guard_catches_each_bypass() {
-    let caught = |src: &str| !registry_bypasses("src/lower/stmt.rs", &src.split_whitespace().collect::<String>()).is_empty();
+    let caught = |src: &str| {
+        !registry_bypasses(
+            "src/lower/stmt.rs",
+            &src.split_whitespace().collect::<String>(),
+        )
+        .is_empty()
+    };
     let bypasses = [
         "let d = EnumRegistry::editor_lookup(&reg, written);",
         "let d = crate::typecheck::enums::EnumRegistry::expression_path(&ctx.enum_defs, n);",
@@ -528,11 +869,31 @@ fn registry_bypasses(rel: &str, text: &str) -> Vec<String> {
             found.push(format!("{rel} {what}"));
         }
     };
-    only_in(&["written_name", "type_named"], &resolvers, "reads an enum by a written type name");
-    only_in(&["expression_path"], &paths, "reads an enum by name outside an expression path");
-    only_in(&["editor_lookup"], &[], "reads an enum by the editor's lookup");
-    only_in(&["declaring_variants"], &[REGISTRY], "reads an enum by written variant text");
-    only_in(&["citing_arms"], &["src/const_eval/expr.rs", REGISTRY], "reads an enum by the variants arms cite");
+    only_in(
+        &["written_name", "type_named"],
+        &resolvers,
+        "reads an enum by a written type name",
+    );
+    only_in(
+        &["expression_path"],
+        &paths,
+        "reads an enum by name outside an expression path",
+    );
+    only_in(
+        &["editor_lookup"],
+        &[],
+        "reads an enum by the editor's lookup",
+    );
+    only_in(
+        &["declaring_variants"],
+        &[REGISTRY],
+        "reads an enum by written variant text",
+    );
+    only_in(
+        &["citing_arms"],
+        &["src/const_eval/expr.rs", REGISTRY],
+        "reads an enum by the variants arms cite",
+    );
     if rel == REGISTRY {
         return found;
     }
@@ -542,7 +903,9 @@ fn registry_bypasses(rel: &str, text: &str) -> Vec<String> {
         .split(';')
         .filter_map(|stmt| {
             let at = stmt.rfind("let")?;
-            let rest = stmt[at + 3..].strip_prefix("mut").unwrap_or(&stmt[at + 3..]);
+            let rest = stmt[at + 3..]
+                .strip_prefix("mut")
+                .unwrap_or(&stmt[at + 3..]);
             let end = rest.find(['=', ':'])?;
             let value = &rest[rest.find('=')? + 1..];
             let head = value.find(['(', '{']).map_or(value, |i| &value[..=i]);
@@ -573,7 +936,9 @@ fn registry_bypasses(rel: &str, text: &str) -> Vec<String> {
             a.contains("Type::Enum{") || built.contains(&a)
         });
         if fed {
-            found.push(format!("{rel} reads an enum through a type built from its name"));
+            found.push(format!(
+                "{rel} reads an enum through a type built from its name"
+            ));
         }
     }
     // A table of enums by a name.
@@ -636,9 +1001,19 @@ fn an_alias_of_an_enum_in_a_payload_or_a_field_is_the_enum() {
     // An alias of a generic enum instance as a payload.
     let oi = "in go: exec\nvar n: int = 0\ntype OI = Option<int>\nenum E { A(@), B }\nvar e: E = E.A(Some(4))\n\
               on go { match e {\n E.A(Some(q)) => { n = q }\n E.A(None) => { n = 2 }\n E.B => { n = 3 }\n} }";
-    same_outcome("generic alias payload", &oi.replace('@', "OI"), &oi.replace('@', "Option<int>"), &[], &mut failures);
+    same_outcome(
+        "generic alias payload",
+        &oi.replace('@', "OI"),
+        &oi.replace('@', "Option<int>"),
+        &[],
+        &mut failures,
+    );
     let missing = format!("{head}{}", rows[1].replace('@', "D"));
-    assert!(codes(&missing, &[]).contains(&"WS054".to_string()), "{:?}", codes(&missing, &[]));
+    assert!(
+        codes(&missing, &[]).contains(&"WS054".to_string()),
+        "{:?}",
+        codes(&missing, &[])
+    );
     report(failures, rows.len() + 1);
 }
 
@@ -663,16 +1038,34 @@ fn an_enum_of_a_namespace_import_reads_as_its_named_import() {
         "const k = c.Dir.E\non go { x = EnumToInt(k)\n x = c.Dir.S.Discriminant }",
         "on go { x = c.twice(c.Dir.S) }",
     ];
-    let head = |import: &str| format!("{import}\nin go: exec\nvar x: int = 0\nvar f: float = 0.0\n");
+    let head =
+        |import: &str| format!("{import}\nin go: exec\nvar x: int = 0\nvar f: float = 0.0\n");
     let mut failures = Vec::new();
     for row in rows {
         let namespaced = format!("{}{row}", head("import * as c from \"c\""));
-        let named = format!("{}{}", head("import { Dir, Shape, DD } from \"c\"\nimport * as c from \"c\""), row.replace("c.Dir", "Dir").replace("c.Shape", "Shape").replace("c.DD", "DD"));
+        let named = format!(
+            "{}{}",
+            head("import { Dir, Shape, DD } from \"c\"\nimport * as c from \"c\""),
+            row.replace("c.Dir", "Dir")
+                .replace("c.Shape", "Shape")
+                .replace("c.DD", "DD")
+        );
         same_outcome(row, &namespaced, &named, &deps, &mut failures);
-        assert!(save_dump(&namespaced, &deps, true).is_ok(), "{row}: {:?}", codes(&namespaced, &deps));
+        assert!(
+            save_dump(&namespaced, &deps, true).is_ok(),
+            "{row}: {:?}",
+            codes(&namespaced, &deps)
+        );
     }
-    let clash = format!("{}enum Dir {{ Q }}\non go {{ x = 1 }}", head("import * as c from \"c\""));
-    assert!(codes(&clash, &deps).contains(&"WS013".to_string()), "{:?}", codes(&clash, &deps));
+    let clash = format!(
+        "{}enum Dir {{ Q }}\non go {{ x = 1 }}",
+        head("import * as c from \"c\"")
+    );
+    assert!(
+        codes(&clash, &deps).contains(&"WS013".to_string()),
+        "{:?}",
+        codes(&clash, &deps)
+    );
     report(failures, rows.len());
 }
 
@@ -682,19 +1075,43 @@ fn an_enum_of_a_namespace_import_reads_as_its_named_import() {
 fn a_library_enum_hidden_by_a_duplicate_is_named_as_imported() {
     let deps = [
         ("c", "enum Dir { N, E, S }\n"),
-        ("a", "import { Dir } from \"c\"\nmod ma() -> int { var e: Dir = Dir.S\n return EnumToInt(e) }\n"),
+        (
+            "a",
+            "import { Dir } from \"c\"\nmod ma() -> int { var e: Dir = Dir.S\n return EnumToInt(e) }\n",
+        ),
     ];
     let src = "import { ma } from \"a\"\nenum Dir { Q, R }\nin go: exec\nvar x: int = 0\non go { x = ma() }\n";
     let loader = crate::resolve::MemLoader {
-        files: deps.iter().map(|(k, v)| (format!("{k}.ws"), v.to_string())).collect(),
+        files: deps
+            .iter()
+            .map(|(k, v)| (format!("{k}.ws"), v.to_string()))
+            .collect(),
     };
-    let input = crate::CompileInput { source: src, file: "main", module_name: None, fold_mode: crate::FoldMode::ForceOn };
-    let Err(crate::CompileError::HasErrors(errors)) = crate::compile_with_loader(input, Default::default(), &loader) else {
+    let input = crate::CompileInput {
+        source: src,
+        file: "main",
+        module_name: None,
+        fold_mode: crate::FoldMode::ForceOn,
+    };
+    let Err(crate::CompileError::HasErrors(errors)) =
+        crate::compile_with_loader(input, Default::default(), &loader)
+    else {
         panic!("compiles");
     };
     assert!(errors.iter().any(|d| d.code == "WS013"), "{errors:?}");
-    assert!(!errors.iter().any(|d| d.message.contains("neither declares it nor imports it")), "{errors:?}");
+    assert!(
+        !errors
+            .iter()
+            .any(|d| d.message.contains("neither declares it nor imports it")),
+        "{errors:?}"
+    );
     // Every `WS002` of the cascade, the type written in `var e: Dir` too.
     let unknown: Vec<_> = errors.iter().filter(|d| d.code == "WS002").collect();
-    assert!(unknown.len() >= 2 && unknown.iter().all(|d| d.message.contains("declared in c.ws")), "{errors:?}");
+    assert!(
+        unknown.len() >= 2
+            && unknown
+                .iter()
+                .all(|d| d.message.contains("declared in c.ws")),
+        "{errors:?}"
+    );
 }

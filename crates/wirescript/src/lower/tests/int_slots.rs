@@ -7,7 +7,7 @@
 //! `WS028`. One rule (`const_eval::float_as_int`, through
 //! `const_eval::coerce_const_to_type`) serves every route.
 
-use super::declaring_scope::{compile_main, save_dump, save_values};
+use super::declaring_scope::{compile_main, compiled, save_dump, save_values};
 use crate::ir::Literal;
 
 /// What the constant is written as. Every kind truncates to 13, so the twin
@@ -50,7 +50,10 @@ impl Kind {
     }
 
     fn drops_a_fraction(self) -> bool {
-        matches!(self, Kind::FloatFraction | Kind::FloatConst | Kind::FloatArithmetic | Kind::Negated)
+        matches!(
+            self,
+            Kind::FloatFraction | Kind::FloatConst | Kind::FloatArithmetic | Kind::Negated
+        )
     }
 
     /// What the twin writes: `13` for a literal, and for a name or an
@@ -65,7 +68,14 @@ impl Kind {
 }
 
 /// Constants no `int` holds, each a `WS028` wherever it goes into one.
-const OUT_OF_RANGE: [&str; 6] = ["1e30", "-1e30", "9.3e18", "-9.3e18", "9223372036854775808.0", "BIG"];
+const OUT_OF_RANGE: [&str; 6] = [
+    "1e30",
+    "-1e30",
+    "9.3e18",
+    "-9.3e18",
+    "9223372036854775808.0",
+    "BIG",
+];
 
 /// The declarations every row reads; the twin reads them too, so an unused
 /// one adds nothing to either save.
@@ -77,70 +87,264 @@ const HEAD: &str = "in go: exec\nin c: bool\nvar x: float = 0.0\nvar n: int = 0\
 /// Every body reads the value back the ways a value is used (an integer
 /// division, an untyped `var`, an interpolation) where it can.
 const ROUTES: &[(&str, &str, &str)] = &[
-    ("assignment", "", "on go { n = @\nx = n / 4\nvar u = n\nx = u / 4 }"),
-    ("var initializer", "var v: int = @\n", "on go { x = v / 4\nvar u = v\nx = u / 4 }"),
-    ("handler var", "", "on go { var v: int = @\nx = v / 4\nvar u = v\nx = u / 4 }"),
-    ("static var", "mod sm() -> float { static var sv: int = @\nsv = sv + 1\nreturn sv / 4 }\n", "on go { x = sm() }"),
-    ("mod parameter", "mod ih(v: int) -> float { var u = v\nm = v\nreturn u / 4 }\n", "on go { x = ih(@) }"),
-    ("generic argument", "mod gi<T>(v: T) -> T { return v }\n", "on go { n = gi<int>(@)\nx = n / 4 }"),
-    ("chip parameter", "chip C(p: int) -> (r: int) { on go { m = p\nemit r = p * 10 } }\n", "on go { n = C(@) }"),
-    ("pure chip parameter", "chip D(v: int) -> (r: float) { return v / 4 }\n", "out od = D(@)"),
-    ("chip parameter read untyped", "chip U(p: int) { on go { var u = p\nx = u / 4\ns = \"${p}\" } }\n", "on go { U(@) }"),
-    ("annotated let", "", "on go { let l: int = @\nx = l / 4\nvar u = l\nx = u / 4\ns = \"${l}\" }"),
-    ("annotated const", "const K: int = @\n", "on go { x = K / 4\nvar u = K\nx = u / 4\ns = \"${K}\" }"),
-    ("top-level let", "let L: int = @\n", "on go { x = L / 4\nvar u = L\nx = u / 4 }"),
-    ("const chain", "const K: int = @\nconst KK = K / 4\n", "on go { x = KK\nn = K + 1 }"),
-    ("const operand", "const K: int = @\nmod f(v: int) -> int { return v * 10 }\n", "on go { m = f(6) + K }"),
-    ("return value", "mod give() -> int { return @ }\n", "on go { x = give() / 4\nvar u = give()\nx = u / 4 }"),
+    (
+        "assignment",
+        "",
+        "on go { n = @\nx = n / 4\nvar u = n\nx = u / 4 }",
+    ),
+    (
+        "var initializer",
+        "var v: int = @\n",
+        "on go { x = v / 4\nvar u = v\nx = u / 4 }",
+    ),
+    (
+        "handler var",
+        "",
+        "on go { var v: int = @\nx = v / 4\nvar u = v\nx = u / 4 }",
+    ),
+    (
+        "static var",
+        "mod sm() -> float { static var sv: int = @\nsv = sv + 1\nreturn sv / 4 }\n",
+        "on go { x = sm() }",
+    ),
+    (
+        "mod parameter",
+        "mod ih(v: int) -> float { var u = v\nm = v\nreturn u / 4 }\n",
+        "on go { x = ih(@) }",
+    ),
+    (
+        "generic argument",
+        "mod gi<T>(v: T) -> T { return v }\n",
+        "on go { n = gi<int>(@)\nx = n / 4 }",
+    ),
+    (
+        "chip parameter",
+        "chip C(p: int) -> (r: int) { on go { m = p\nemit r = p * 10 } }\n",
+        "on go { n = C(@) }",
+    ),
+    (
+        "pure chip parameter",
+        "chip D(v: int) -> (r: float) { return v / 4 }\n",
+        "out od = D(@)",
+    ),
+    (
+        "chip parameter read untyped",
+        "chip U(p: int) { on go { var u = p\nx = u / 4\ns = \"${p}\" } }\n",
+        "on go { U(@) }",
+    ),
+    (
+        "annotated let",
+        "",
+        "on go { let l: int = @\nx = l / 4\nvar u = l\nx = u / 4\ns = \"${l}\" }",
+    ),
+    (
+        "annotated const",
+        "const K: int = @\n",
+        "on go { x = K / 4\nvar u = K\nx = u / 4\ns = \"${K}\" }",
+    ),
+    (
+        "top-level let",
+        "let L: int = @\n",
+        "on go { x = L / 4\nvar u = L\nx = u / 4 }",
+    ),
+    (
+        "const chain",
+        "const K: int = @\nconst KK = K / 4\n",
+        "on go { x = KK\nn = K + 1 }",
+    ),
+    (
+        "const operand",
+        "const K: int = @\nmod f(v: int) -> int { return v * 10 }\n",
+        "on go { m = f(6) + K }",
+    ),
+    (
+        "return value",
+        "mod give() -> int { return @ }\n",
+        "on go { x = give() / 4\nvar u = give()\nx = u / 4 }",
+    ),
     ("emitted output", "out o: int\n", "on go { emit o = @ }"),
     ("out initializer", "out o: int = @\n", "on go { x = o / 4 }"),
-    ("chip emitted output", "chip E() -> (r: int) { on go { emit r = @ } }\n", "on go { n = E()\nx = n / 4 }"),
-    ("array literal", "var is: int[] = [@, 4]\n", "on go { x = is[0] / 4 }"),
-    ("array push", "var is: int[]\n", "on go { is.push(@)\nx = is[0] / 4 }"),
-    ("array insert and fill", "var is: int[]\n", "on go { is.insert(0, @)\nis.fill(@)\nx = is[0] / 4 }"),
-    ("array element write", "var is: int[]\n", "on go { is.push(1)\nis[0] = @\nx = is[0] / 4 }"),
-    ("map literal", "var im: Map<string, int> = { \"a\": @ }\n", "on go { x = im[\"a\"] / 4 }"),
-    ("map set", "var im: Map<string, int>\n", "on go { im.set(\"a\", @)\nx = im[\"a\"] / 4 }"),
-    ("const array", "const A: int[] = [@, 4]\nin k: int\n", "on go { x = A[k] / 4 }"),
-    ("const map", "const M: Map<string, int> = { \"a\": @ }\n", "on go { n = M[\"a\"] + 1\nx = M[\"a\"] / 4 }"),
-    ("enum payload", "enum S { Sq(int), No }\nvar sv: S = S.No\n", "on go { sv = S.Sq(@)\nmatch sv { Sq(v) => { x = v / 4 } No => { } } }"),
-    ("enum named payload", "enum S { Box { w: int }, No }\nvar sv: S = S.No\n", "on go { sv = S.Box { w: @ }\nmatch sv { Box { w } => { x = w / 4 } No => { } } }"),
-    ("generic enum initializer", "enum Opt<T> { Some(T), None }\nvar o: Opt<int> = Opt.Some(@)\n", "on go { match o { Some(v) => { x = v / 4 } None => { } } }"),
-    ("generic enum assignment", "enum Opt<T> { Some(T), None }\nvar o: Opt<int> = Opt.None\n", "on go { o = Opt.Some(@)\nmatch o { Some(v) => { x = v / 4 } None => { } } }"),
-    ("generic enum const", "enum Opt<T> { Some(T), None }\nconst O: Opt<int> = Opt.Some(@)\n", "on go { match O { Some(v) => { x = v / 4 } None => { } } }"),
-    ("record var", "type P = { a: int, b: float }\nvar p: P = { a: @, b: 1.0 }\n", "on go { x = p.a / 4 }"),
-    ("record assignment", "type P = { a: int, b: float }\nvar p: P = { a: 1, b: 1.0 }\n", "on go { p = { a: @, b: 1.0 }\nx = p.a / 4 }"),
-    ("record field write", "type P = { a: int, b: float }\nvar p: P = { a: 1, b: 1.0 }\n", "on go { p.a = @\nx = p.a / 4 }"),
-    ("record let", "type P = { a: int, b: float }\n", "on go { let r: P = { a: @, b: 1.0 }\nx = r.a / 4 }"),
-    ("record push", "type P = { a: int, b: float }\nvar ps: P[]\n", "on go { ps.push({ a: @, b: 1.0 })\nx = ps[0].a / 4 }"),
-    ("record mod argument", "type P = { a: int, b: float }\nmod pa(p: P) -> float { return p.a / 4 }\n", "on go { x = pa({ a: @, b: 1.0 }) }"),
-    ("record chip argument", "type P = { a: int, b: float }\nchip RC(p: P) -> (r: float) { return p.a / 4 }\n", "out od = RC({ a: @, b: 1.0 })"),
-    ("record enum payload", "type P = { a: int, b: float }\nenum E { W(P), No }\nvar e: E = E.No\n", "on go { e = E.W({ a: @, b: 1.0 })\nmatch e { W(p) => { x = p.a / 4 } No => { } } }"),
-    ("record generic enum payload", "type P = { a: int, b: float }\nenum Opt<T> { Some(T), None }\nvar o: Opt<P> = Opt.None\n", "on go { o = Opt.Some({ a: @, b: 1.0 })\nmatch o { Some(p) => { x = p.a / 4 } None => { } } }"),
-    ("tuple var", "var t: (int, float) = (@, 1.0)\n", "on go { x = t.0 / 4 }"),
-    ("tuple assignment", "var t: (int, float) = (0, 1.0)\n", "on go { t = (@, 1.0)\nx = t.0 / 4 }"),
-    ("tuple let", "", "on go { let t: (int, float) = (@, 1.0)\nx = t.0 / 4 }"),
-    ("tuple mod argument", "mod ta(t: (int, float)) -> float { return t.0 / 4 }\n", "on go { x = ta((@, 1.0)) }"),
+    (
+        "chip emitted output",
+        "chip E() -> (r: int) { on go { emit r = @ } }\n",
+        "on go { n = E()\nx = n / 4 }",
+    ),
+    (
+        "array literal",
+        "var is: int[] = [@, 4]\n",
+        "on go { x = is[0] / 4 }",
+    ),
+    (
+        "array push",
+        "var is: int[]\n",
+        "on go { is.push(@)\nx = is[0] / 4 }",
+    ),
+    (
+        "array insert and fill",
+        "var is: int[]\n",
+        "on go { is.insert(0, @)\nis.fill(@)\nx = is[0] / 4 }",
+    ),
+    (
+        "array element write",
+        "var is: int[]\n",
+        "on go { is.push(1)\nis[0] = @\nx = is[0] / 4 }",
+    ),
+    (
+        "map literal",
+        "var im: Map<string, int> = { \"a\": @ }\n",
+        "on go { x = im[\"a\"] / 4 }",
+    ),
+    (
+        "map set",
+        "var im: Map<string, int>\n",
+        "on go { im.set(\"a\", @)\nx = im[\"a\"] / 4 }",
+    ),
+    (
+        "const array",
+        "const A: int[] = [@, 4]\nin k: int\n",
+        "on go { x = A[k] / 4 }",
+    ),
+    (
+        "const map",
+        "const M: Map<string, int> = { \"a\": @ }\n",
+        "on go { n = M[\"a\"] + 1\nx = M[\"a\"] / 4 }",
+    ),
+    (
+        "enum payload",
+        "enum S { Sq(int), No }\nvar sv: S = S.No\n",
+        "on go { sv = S.Sq(@)\nmatch sv { Sq(v) => { x = v / 4 } No => { } } }",
+    ),
+    (
+        "enum named payload",
+        "enum S { Box { w: int }, No }\nvar sv: S = S.No\n",
+        "on go { sv = S.Box { w: @ }\nmatch sv { Box { w } => { x = w / 4 } No => { } } }",
+    ),
+    (
+        "generic enum initializer",
+        "enum Opt<T> { Some(T), None }\nvar o: Opt<int> = Opt.Some(@)\n",
+        "on go { match o { Some(v) => { x = v / 4 } None => { } } }",
+    ),
+    (
+        "generic enum assignment",
+        "enum Opt<T> { Some(T), None }\nvar o: Opt<int> = Opt.None\n",
+        "on go { o = Opt.Some(@)\nmatch o { Some(v) => { x = v / 4 } None => { } } }",
+    ),
+    (
+        "generic enum const",
+        "enum Opt<T> { Some(T), None }\nconst O: Opt<int> = Opt.Some(@)\n",
+        "on go { match O { Some(v) => { x = v / 4 } None => { } } }",
+    ),
+    (
+        "record var",
+        "type P = { a: int, b: float }\nvar p: P = { a: @, b: 1.0 }\n",
+        "on go { x = p.a / 4 }",
+    ),
+    (
+        "record assignment",
+        "type P = { a: int, b: float }\nvar p: P = { a: 1, b: 1.0 }\n",
+        "on go { p = { a: @, b: 1.0 }\nx = p.a / 4 }",
+    ),
+    (
+        "record field write",
+        "type P = { a: int, b: float }\nvar p: P = { a: 1, b: 1.0 }\n",
+        "on go { p.a = @\nx = p.a / 4 }",
+    ),
+    (
+        "record let",
+        "type P = { a: int, b: float }\n",
+        "on go { let r: P = { a: @, b: 1.0 }\nx = r.a / 4 }",
+    ),
+    (
+        "record push",
+        "type P = { a: int, b: float }\nvar ps: P[]\n",
+        "on go { ps.push({ a: @, b: 1.0 })\nx = ps[0].a / 4 }",
+    ),
+    (
+        "record mod argument",
+        "type P = { a: int, b: float }\nmod pa(p: P) -> float { return p.a / 4 }\n",
+        "on go { x = pa({ a: @, b: 1.0 }) }",
+    ),
+    (
+        "record chip argument",
+        "type P = { a: int, b: float }\nchip RC(p: P) -> (r: float) { return p.a / 4 }\n",
+        "out od = RC({ a: @, b: 1.0 })",
+    ),
+    (
+        "record enum payload",
+        "type P = { a: int, b: float }\nenum E { W(P), No }\nvar e: E = E.No\n",
+        "on go { e = E.W({ a: @, b: 1.0 })\nmatch e { W(p) => { x = p.a / 4 } No => { } } }",
+    ),
+    (
+        "record generic enum payload",
+        "type P = { a: int, b: float }\nenum Opt<T> { Some(T), None }\nvar o: Opt<P> = Opt.None\n",
+        "on go { o = Opt.Some({ a: @, b: 1.0 })\nmatch o { Some(p) => { x = p.a / 4 } None => { } } }",
+    ),
+    (
+        "tuple var",
+        "var t: (int, float) = (@, 1.0)\n",
+        "on go { x = t.0 / 4 }",
+    ),
+    (
+        "tuple assignment",
+        "var t: (int, float) = (0, 1.0)\n",
+        "on go { t = (@, 1.0)\nx = t.0 / 4 }",
+    ),
+    (
+        "tuple let",
+        "",
+        "on go { let t: (int, float) = (@, 1.0)\nx = t.0 / 4 }",
+    ),
+    (
+        "tuple mod argument",
+        "mod ta(t: (int, float)) -> float { return t.0 / 4 }\n",
+        "on go { x = ta((@, 1.0)) }",
+    ),
     ("buffer", "buffer b: int = @\n", "on go { x = b / 4 }"),
-    ("array index", "var ar: int[] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]\n", "on go { n = ar[@]\nx = n / 4 }"),
-    ("string index", "var st: string = \"abcdefghijklmnop\"\n", "on go { s = st[@] }"),
-    ("range bound", "", "on go { for i in 0..@ { m = m + i }\nx = m / 4 }"),
-    ("range count", "", "on go { for i in count(@, from = 1) { m = m + i } }"),
+    (
+        "array index",
+        "var ar: int[] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]\n",
+        "on go { n = ar[@]\nx = n / 4 }",
+    ),
+    (
+        "string index",
+        "var st: string = \"abcdefghijklmnop\"\n",
+        "on go { s = st[@] }",
+    ),
+    (
+        "range bound",
+        "",
+        "on go { for i in 0..@ { m = m + i }\nx = m / 4 }",
+    ),
+    (
+        "range count",
+        "",
+        "on go { for i in count(@, from = 1) { m = m + i } }",
+    ),
 ];
 
 /// A namespaced call is a route of its own.
-const LIB: &str = "mod ih(v: int) -> float { return v / 4 }\nchip C(p: int) -> (r: int) { return p * 10 }\n";
-const NAMESPACED: &[(&str, &str)] =
-    &[("namespaced mod argument", "on go { x = u.ih(@) }"), ("namespaced chip argument", "out oc = u.C(@)")];
+const LIB: &str =
+    "mod ih(v: int) -> float { return v / 4 }\nchip C(p: int) -> (r: int) { return p * 10 }\n";
+const NAMESPACED: &[(&str, &str)] = &[
+    ("namespaced mod argument", "on go { x = u.ih(@) }"),
+    ("namespaced chip argument", "out oc = u.C(@)"),
+];
 
 fn wsc(src: &str, deps: &[(&str, &str)], code: &str) -> usize {
-    match compile_main(src, deps, true) {
-        Ok(out) => out.diagnostics.iter().filter(|d| d.code == code).count(),
+    match compiled(src, deps, true) {
+        Ok(c) => c.out.diagnostics.iter().filter(|d| d.code == code).count(),
         Err(_) => 0,
     }
 }
 
-fn check_row(what: &str, src: &str, twin: &str, deps: &[(&str, &str)], kind: Kind, failures: &mut Vec<String>) {
+fn check_row(
+    what: &str,
+    src: &str,
+    twin: &str,
+    deps: &[(&str, &str)],
+    kind: Kind,
+    failures: &mut Vec<String>,
+) {
     for fold in [true, false] {
         match (save_dump(src, deps, fold), save_dump(twin, deps, fold)) {
             (Ok(a), Ok(b)) if a == b => {}
@@ -149,12 +353,18 @@ fn check_row(what: &str, src: &str, twin: &str, deps: &[(&str, &str)], kind: Kin
                 let only_b: Vec<&String> = b.iter().filter(|l| !a.contains(l)).take(4).collect();
                 failures.push(format!("{what} {kind:?} fold {fold}: differs from the twin\n{src}\nonly here: {only_a:#?}\nonly twin: {only_b:#?}"));
             }
-            (a, b) => failures.push(format!("{what} {kind:?} fold {fold}: {:?} / twin {:?}\n{src}", a.err(), b.err())),
+            (a, b) => failures.push(format!(
+                "{what} {kind:?} fold {fold}: {:?} / twin {:?}\n{src}",
+                a.err(),
+                b.err()
+            )),
         }
     }
     // The save holds the value as an integer: no float 13.5 or 13 in it.
     if let Ok(values) = save_values(src, deps, false, false)
-        && let Some(f) = values.iter().find(|l| matches!(l, Literal::Float(f) if *f == 13.5 || *f == 13.0))
+        && let Some(f) = values
+            .iter()
+            .find(|l| matches!(l, Literal::Float(f) if *f == 13.5 || *f == 13.0))
     {
         failures.push(format!("{what} {kind:?}: the save holds {f:?}\n{src}"));
     }
@@ -170,52 +380,157 @@ fn check_row(what: &str, src: &str, twin: &str, deps: &[(&str, &str)], kind: Kin
 
 fn check_out_of_range(what: &str, src: &str, deps: &[(&str, &str)], failures: &mut Vec<String>) {
     for fold in [true, false] {
-        match compile_main(src, deps, fold) {
+        match compiled(src, deps, fold) {
             Err(codes) if codes.iter().any(|c| c == "WS028") => {}
-            other => failures.push(format!("{what} fold {fold}: not WS028: {:?}\n{src}", other.err())),
+            other => failures.push(format!(
+                "{what} fold {fold}: not WS028: {:?}\n{src}",
+                other.err()
+            )),
         }
     }
 }
 
+/// Routes that take every kind and every out-of-range value in the sampled
+/// set: a plain store, a parameter, a chip pin, a constant, a container, an
+/// enum payload, a record field and a namespaced call.
+const FULL_ROUTES: &[&str] = &[
+    "assignment",
+    "mod parameter",
+    "chip parameter",
+    "annotated const",
+    "array push",
+    "generic enum assignment",
+    "record mod argument",
+    "namespaced chip argument",
+];
+
+/// The kinds and out-of-range values route `i` takes. `full` takes all of
+/// them; otherwise a route outside [`FULL_ROUTES`] takes one kind that drops
+/// a fraction and one that does not, and two out-of-range values, each
+/// rotating with `i` so every kind and value meets many routes.
+fn route_sample(i: usize, what: &str, full: bool) -> (Vec<Kind>, Vec<&'static str>) {
+    if full || FULL_ROUTES.contains(&what) {
+        return (Kind::ALL.to_vec(), OUT_OF_RANGE.to_vec());
+    }
+    let drops: Vec<Kind> = Kind::ALL
+        .into_iter()
+        .filter(|k| k.drops_a_fraction())
+        .collect();
+    let keeps: Vec<Kind> = Kind::ALL
+        .into_iter()
+        .filter(|k| !k.drops_a_fraction())
+        .collect();
+    let kinds = vec![
+        drops[i % drops.len()],
+        keeps[(i + i / keeps.len()) % keeps.len()],
+    ];
+    let values = vec![
+        OUT_OF_RANGE[(2 * i) % OUT_OF_RANGE.len()],
+        OUT_OF_RANGE[(2 * i + 1) % OUT_OF_RANGE.len()],
+    ];
+    (kinds, values)
+}
+
+/// The default set runs every route with two kinds and two out-of-range
+/// values, and the routes of [`FULL_ROUTES`] with all of them; the full
+/// product runs under `--ignored`.
 #[test]
 fn a_float_constant_in_an_int_place_is_the_integer_it_truncates_to_on_every_route() {
+    float_constant_in_an_int_place_matrix(false);
+}
+
+#[test]
+#[ignore = "exhaustive"]
+fn a_float_constant_in_an_int_place_is_the_integer_it_truncates_to_on_every_route_exhaustive() {
+    float_constant_in_an_int_place_matrix(true);
+}
+
+fn float_constant_in_an_int_place_matrix(full: bool) {
     let mut failures = Vec::new();
     let mut rows = 0;
     let mut twin_ints = 0;
-    for (what, decls, body) in ROUTES {
+    let mut kinds_seen = Vec::new();
+    let mut values_seen = Vec::new();
+    for (i, (what, decls, body)) in ROUTES.iter().enumerate() {
         let program = |v: &str| format!("{HEAD}{}{}", decls.replace('@', v), body.replace('@', v));
         let twin = program("13");
         // The route stores something the reader sees: the twin's 13, or what
         // it folds to.
-        let values = save_values(&twin, &[], false, false).unwrap_or_else(|c| panic!("{what}: {c:?}\n{twin}"));
-        if values.iter().any(|l| matches!(l, Literal::Int(13) | Literal::Int(3) | Literal::Int(130) | Literal::Int(14))) {
+        let values = save_values(&twin, &[], false, false)
+            .unwrap_or_else(|c| panic!("{what}: {c:?}\n{twin}"));
+        if values.iter().any(|l| {
+            matches!(
+                l,
+                Literal::Int(13) | Literal::Int(3) | Literal::Int(130) | Literal::Int(14)
+            )
+        }) {
             twin_ints += 1;
         } else {
-            failures.push(format!("{what}: the twin holds no integer from the route\n{twin}\n{values:?}"));
+            failures.push(format!(
+                "{what}: the twin holds no integer from the route\n{twin}\n{values:?}"
+            ));
         }
-        for kind in Kind::ALL {
-            check_row(what, &program(kind.text()), &program(kind.twin()), &[], kind, &mut failures);
+        let (kinds, out_of_range) = route_sample(i, what, full);
+        for kind in kinds {
+            check_row(
+                what,
+                &program(kind.text()),
+                &program(kind.twin()),
+                &[],
+                kind,
+                &mut failures,
+            );
+            kinds_seen.push(kind);
             rows += 1;
         }
-        for v in OUT_OF_RANGE {
+        for v in out_of_range {
             check_out_of_range(&format!("{what} {v}"), &program(v), &[], &mut failures);
+            values_seen.push(v);
             rows += 1;
         }
     }
-    for (what, body) in NAMESPACED {
-        let program = |v: &str| format!("import * as u from \"lib\"\n{HEAD}{}", body.replace('@', v));
+    for (j, (what, body)) in NAMESPACED.iter().enumerate() {
+        let program =
+            |v: &str| format!("import * as u from \"lib\"\n{HEAD}{}", body.replace('@', v));
         let deps = [("lib", LIB)];
-        for kind in Kind::ALL {
-            check_row(what, &program(kind.text()), &program(kind.twin()), &deps, kind, &mut failures);
+        let (kinds, out_of_range) = route_sample(ROUTES.len() + j, what, full);
+        for kind in kinds {
+            check_row(
+                what,
+                &program(kind.text()),
+                &program(kind.twin()),
+                &deps,
+                kind,
+                &mut failures,
+            );
+            kinds_seen.push(kind);
             rows += 1;
         }
-        for v in OUT_OF_RANGE {
+        for v in out_of_range {
             check_out_of_range(&format!("{what} {v}"), &program(v), &deps, &mut failures);
+            values_seen.push(v);
             rows += 1;
         }
     }
+    let names: Vec<&str> = ROUTES
+        .iter()
+        .map(|r| r.0)
+        .chain(NAMESPACED.iter().map(|r| r.0))
+        .collect();
+    assert!(
+        FULL_ROUTES.iter().all(|r| names.contains(r)),
+        "a full route is not a route"
+    );
+    assert!(
+        Kind::ALL.iter().all(|k| kinds_seen.contains(k)),
+        "a kind never ran"
+    );
+    assert!(
+        OUT_OF_RANGE.iter().all(|v| values_seen.contains(v)),
+        "an out-of-range value never ran"
+    );
     assert!(twin_ints > 0);
-    assert!(failures.is_empty(), "{} of {rows} rows failed:\n{}", failures.len(), failures.join("\n\n"));
+    crate::test_support::report_failures(&failures, rows);
 }
 
 /// A negated integer constant (`--2`, `-(-2)`, `-(-(-2))`, `-(-K)`, `-K`) is
@@ -235,7 +550,10 @@ fn a_negated_integer_constant_is_an_integer_in_both_fold_modes() {
         ("var u = -(-2)\n x = u / 4", "var u = 2\n x = u / 4"),
     ];
     for (src, twin) in rows {
-        let (a, b) = (format!("{head}on go {{ {src} }}"), format!("{head}on go {{ {twin} }}"));
+        let (a, b) = (
+            format!("{head}on go {{ {src} }}"),
+            format!("{head}on go {{ {twin} }}"),
+        );
         check_row(src, &a, &b, &[], Kind::IntLiteral, &mut failures);
     }
     // The one integer no negation of which an `int` holds.
@@ -290,7 +608,9 @@ fn a_negated_integer_parameter_going_into_a_float_place_is_a_float() {
         let (a, b) = (format!("{head}{src}"), format!("{head}{twin}"));
         match (save_dump(&a, &[], true), save_dump(&b, &[], true)) {
             (Ok(x), Ok(y)) if x == y => {}
-            other => failures.push(format!("{what}: differs from the twin writing -2: {other:?}")),
+            other => failures.push(format!(
+                "{what}: differs from the twin writing -2: {other:?}"
+            )),
         }
         for fold in [true, false] {
             match save_values(&a, &[], fold, false) {
@@ -308,15 +628,26 @@ fn a_negated_integer_parameter_going_into_a_float_place_is_a_float() {
 /// Each diagnostic of `src` (with `deps`) as `CODE message`.
 fn diagnostic_lines(src: &str, deps: &[(&str, &str)]) -> Vec<String> {
     let loader = crate::resolve::MemLoader {
-        files: deps.iter().map(|(k, v)| (format!("{k}.ws"), v.to_string())).collect(),
+        files: deps
+            .iter()
+            .map(|(k, v)| (format!("{k}.ws"), v.to_string()))
+            .collect(),
     };
-    let input = crate::CompileInput { source: src, file: "main", module_name: None, fold_mode: crate::FoldMode::ForceOn };
+    let input = crate::CompileInput {
+        source: src,
+        file: "main",
+        module_name: None,
+        fold_mode: crate::FoldMode::ForceOn,
+    };
     let diags = match crate::compile_with_loader(input, Default::default(), &loader) {
         Ok(out) => out.diagnostics,
         Err(crate::CompileError::HasErrors(errors)) => errors,
         Err(e) => panic!("{e:?}\n{src}"),
     };
-    diags.iter().map(|d| format!("{} {}", d.code, d.message)).collect()
+    diags
+        .iter()
+        .map(|d| format!("{} {}", d.code, d.message))
+        .collect()
 }
 
 /// A float literal no float holds exactly, going into an `int`, warns `WS106`
@@ -327,17 +658,40 @@ fn a_float_literal_going_into_an_int_is_quoted_as_written() {
     let head = "in go: exec\nvar n: int = 0\n";
     let lines = |v: &str| diagnostic_lines(&format!("{head}on go {{ n = {v} }}"), &[]);
     let inexact = lines("4503599627370497.5");
-    assert!(inexact.iter().any(|l| l.starts_with("WS106 4503599627370497.5") && l.contains("4503599627370498")), "{inexact:?}");
+    assert!(
+        inexact
+            .iter()
+            .any(|l| l.starts_with("WS106 4503599627370497.5") && l.contains("4503599627370498")),
+        "{inexact:?}"
+    );
     let whole = lines("9007199254740993.0");
-    assert!(whole.iter().any(|l| l.starts_with("WS106 9007199254740993.0")), "{whole:?}");
+    assert!(
+        whole
+            .iter()
+            .any(|l| l.starts_with("WS106 9007199254740993.0")),
+        "{whole:?}"
+    );
     let exact = lines("4503599627370496.0");
     assert!(!exact.iter().any(|l| l.starts_with("WS106")), "{exact:?}");
     let max = lines("9223372036854775807.0");
-    assert!(max.iter().any(|l| l.starts_with("WS028 9223372036854775807.0 goes")), "{max:?}");
+    assert!(
+        max.iter()
+            .any(|l| l.starts_with("WS028 9223372036854775807.0 goes")),
+        "{max:?}"
+    );
     // Written within the `int` range, it is a float beyond it: the message says which.
-    assert!(max.iter().any(|l| l.contains("where it is the float 9223372036854775808")), "{max:?}");
+    assert!(
+        max.iter()
+            .any(|l| l.contains("where it is the float 9223372036854775808")),
+        "{max:?}"
+    );
     let beyond = lines("1e30");
-    assert!(beyond.iter().any(|l| l.starts_with("WS028 1e30") && !l.contains("where it is the float")), "{beyond:?}");
+    assert!(
+        beyond
+            .iter()
+            .any(|l| l.starts_with("WS028 1e30") && !l.contains("where it is the float")),
+        "{beyond:?}"
+    );
     let min = lines("-9.223372036854775808e18");
     assert!(min.is_empty(), "{min:?}");
 }
@@ -353,10 +707,26 @@ fn a_constant_stride_keeps_its_value_and_a_non_positive_one_is_ws077() {
                 const S05 = 0.5\nconst S1 = 1.0\nconst SN = -0.5\nconst Z = 0\n\
                 const mod half() -> float { return 0.5 }\nconst mod neg() -> float { return -0.5 }\n";
     let shapes = [
-        ("range", "on go { for i in (0..6).step(@) { x = x + i } }", 0.5),
-        ("count", "on go { for i in count(12, from = 1, step = @) { x = x + i } }", 0.5),
-        ("rev", "on go { for i in (0..6).step(@).rev() { x = x + i } }", -0.5),
-        ("nested", "on go { for j in 0..2 { for i in (0..6).step(@) { for v in arr { x = x + i * v } } } }", 0.5),
+        (
+            "range",
+            "on go { for i in (0..6).step(@) { x = x + i } }",
+            0.5,
+        ),
+        (
+            "count",
+            "on go { for i in count(12, from = 1, step = @) { x = x + i } }",
+            0.5,
+        ),
+        (
+            "rev",
+            "on go { for i in (0..6).step(@).rev() { x = x + i } }",
+            -0.5,
+        ),
+        (
+            "nested",
+            "on go { for j in 0..2 { for i in (0..6).step(@) { for v in arr { x = x + i * v } } } }",
+            0.5,
+        ),
     ];
     let mut failures = Vec::new();
     for (shape, body, stride) in shapes {
@@ -365,15 +735,21 @@ fn a_constant_stride_keeps_its_value_and_a_non_positive_one_is_ws077() {
             let literal = save_dump(&program("0.5"), &[], fold);
             match save_values(&program("0.5"), &[], fold, false) {
                 Ok(values) => {
-                    if !values.contains(&Literal::Float(stride)) || !values.contains(&Literal::Int(12)) {
-                        failures.push(format!("{shape} fold {fold}: no stride {stride} or count 12: {values:?}"));
+                    if !values.contains(&Literal::Float(stride))
+                        || !values.contains(&Literal::Int(12))
+                    {
+                        failures.push(format!(
+                            "{shape} fold {fold}: no stride {stride} or count 12: {values:?}"
+                        ));
                     }
                 }
                 Err(c) => failures.push(format!("{shape} fold {fold}: {c:?}")),
             }
             for form in ["S05", "(S1 - 0.5)", "half()", "(1.0 / 2.0)"] {
                 if save_dump(&program(form), &[], fold) != literal {
-                    failures.push(format!("{shape} {form} fold {fold}: differs from the literal 0.5"));
+                    failures.push(format!(
+                        "{shape} {form} fold {fold}: differs from the literal 0.5"
+                    ));
                 }
             }
         }
@@ -383,19 +759,46 @@ fn a_constant_stride_keeps_its_value_and_a_non_positive_one_is_ws077() {
                 failures.push(format!("{shape} {form}: {warned} WS106"));
             }
         }
-        for form in ["0", "0.0", "-1", "-1.5", "Z", "SN", "(S05 - 0.5)", "(0.0 / 0.0)", "-1e30", "neg()"] {
+        for form in [
+            "0",
+            "0.0",
+            "-1",
+            "-1.5",
+            "Z",
+            "SN",
+            "(S05 - 0.5)",
+            "(0.0 / 0.0)",
+            "-1e30",
+            "neg()",
+        ] {
             for fold in [true, false] {
                 match compile_main(&program(form), &[], fold) {
                     Err(codes) if codes.iter().any(|c| c == "WS077") => {}
-                    other => failures.push(format!("{shape} {form} fold {fold}: not WS077: {:?}", other.err())),
+                    other => failures.push(format!(
+                        "{shape} {form} fold {fold}: not WS077: {:?}",
+                        other.err()
+                    )),
                 }
             }
         }
     }
-    let quoted = |v: &str| diagnostic_lines(&format!("{head}on go {{ for i in (0..6).step({v}) {{ }} }}"), &[]);
-    for (v, got) in [("0.0", "got 0.0."), ("-1.5", "got -1.5."), ("-1", "got -1."), ("SN", "got -0.5.")] {
+    let quoted = |v: &str| {
+        diagnostic_lines(
+            &format!("{head}on go {{ for i in (0..6).step({v}) {{ }} }}"),
+            &[],
+        )
+    };
+    for (v, got) in [
+        ("0.0", "got 0.0."),
+        ("-1.5", "got -1.5."),
+        ("-1", "got -1."),
+        ("SN", "got -0.5."),
+    ] {
         let lines = quoted(v);
-        if !lines.iter().any(|l| l.starts_with("WS077") && l.contains(got)) {
+        if !lines
+            .iter()
+            .any(|l| l.starts_with("WS077") && l.contains(got))
+        {
             failures.push(format!("{v}: {lines:?}"));
         }
     }
@@ -415,11 +818,18 @@ fn a_string_bound_is_suggested_only_where_every_call_takes_it() {
     };
     let vector = diagnostic_lines(&src("v"), &[]);
     assert!(
-        vector.iter().any(|l| l.starts_with("WS003") && l.contains("a call gives `T` a `vector`") && !l.contains("<T: string>")),
+        vector.iter().any(|l| l.starts_with("WS003")
+            && l.contains("a call gives `T` a `vector`")
+            && !l.contains("<T: string>")),
         "{vector:?}"
     );
     let string = diagnostic_lines(&src("\"ab\""), &[]);
-    assert!(string.iter().any(|l| l.starts_with("WS003") && l.contains("bound it: `<T: string>`")), "{string:?}");
+    assert!(
+        string
+            .iter()
+            .any(|l| l.starts_with("WS003") && l.contains("bound it: `<T: string>`")),
+        "{string:?}"
+    );
 }
 
 /// An integer literal given to a `bool` parameter is the bool it names, in
@@ -431,7 +841,10 @@ fn a_literal_given_to_a_bool_or_int_parameter_is_that_type() {
     for (form, call) in [
         ("chip C(p: bool) { on go { s = \"${p}\" } }\n", "C(@)"),
         ("mod M(p: bool) { s = \"${p}\" }\n", "on go { M(@) }"),
-        ("mod M(p: bool) -> int { return if p then 1 else 2 }\n", "on go { m = M(@) }"),
+        (
+            "mod M(p: bool) -> int { return if p then 1 else 2 }\n",
+            "on go { m = M(@) }",
+        ),
     ] {
         for (int, b) in [("1", "true"), ("0", "false")] {
             let p = |v: &str| format!("{HEAD}{form}{}", call.replace('@', v));
@@ -447,8 +860,14 @@ fn a_literal_given_to_a_bool_or_int_parameter_is_that_type() {
     for (form, call) in [
         ("chip C(p: int) { on go { s = \"${p}\" } }\n", "C(@)"),
         ("mod M(p: int) { s = \"${p}\" }\n", "on go { M(@) }"),
-        ("mod M(p: int) -> int { return p * 3 }\n", "on go { m = M(@) }"),
-        ("mod G<T>(p: T) -> T { return p }\n", "on go { m = G<int>(@) }"),
+        (
+            "mod M(p: int) -> int { return p * 3 }\n",
+            "on go { m = M(@) }",
+        ),
+        (
+            "mod G<T>(p: T) -> T { return p }\n",
+            "on go { m = G<int>(@) }",
+        ),
     ] {
         for (b, int) in [("true", "1"), ("false", "0")] {
             let p = |v: &str| format!("{HEAD}{form}{}", call.replace('@', v));

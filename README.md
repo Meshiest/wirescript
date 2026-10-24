@@ -25,7 +25,7 @@ Then, from the repo root:
 just                    # list all recipes
 just compile file.ws    # compile a .ws file to .brz (load in-game via the load dialog)
 just check file.ws      # type-check only, with error context
-just test               # run the wirescript unit tests
+just test               # run every test in the workspace (`just test-lib` for unit tests only)
 ```
 
 The first build compiles the whole toolchain in release mode and takes a few

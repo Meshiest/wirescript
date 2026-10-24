@@ -1051,6 +1051,26 @@ impl Module {
         go(self, &mut Vec::new(), f);
     }
 
+    /// This module and every chip module below it, in [`walk`](Self::walk) order.
+    pub fn modules_deep(&self) -> Vec<&Module> {
+        let mut out = Vec::new();
+        self.walk(&mut |_, m| out.push(m));
+        out
+    }
+
+    /// Every node of this module and the chip modules below it. Within a module
+    /// the order is the map's; use it for counting and searching, not output.
+    pub fn nodes_deep(&self) -> impl Iterator<Item = &Node> + '_ {
+        self.modules_deep()
+            .into_iter()
+            .flat_map(|m| m.nodes.values())
+    }
+
+    /// Every wire of this module and the chip modules below it.
+    pub fn wires_deep(&self) -> impl Iterator<Item = &Wire> + '_ {
+        self.modules_deep().into_iter().flat_map(|m| m.wires.iter())
+    }
+
     /// Every node in ascending id order, the order layout and emit visit them
     /// in. Layout and emit iterate nodes only through this: `nodes`' own
     /// iteration order depends on how the map was built, so a program built

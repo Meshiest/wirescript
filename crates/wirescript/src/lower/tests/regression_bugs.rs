@@ -1,23 +1,130 @@
-//! Regressions for three lowering bugs reported together (array aliasing,
-//! imported-namespace tuple access, and imported `on` handlers).
+//! Regressions for reported lowering bugs: aliases, imported names and
+//! handlers, record-valued expressions, pseudo-field spellings and dropped
+//! handlers.
 
 use super::*;
+use crate::ir::gate_class as gc;
 
-/// A `let` aliasing an array var must resolve for `x[i]` (and array methods),
-/// exactly like the original.
+/// An alias or a record-valued expression lowers to real gates in every
+/// position: no `_Unsupported` placeholder, and exact counts of the named
+/// classes over the whole module tree.
 #[test]
-fn let_alias_of_array_var_resolves_index() {
-    let r = compile("var a = [0]\nin go: exec\non go { let ar = a\n let v = ar[0] }");
-    assert!(
-        !has_unsupported(&r.module),
-        "aliased array index lowered to _Unsupported: {:?}",
-        r.diagnostics
-    );
-    assert_eq!(
-        count_class(&r.module, "BrickComponentType_Exec_ArrayVar_Get"),
-        1,
-        "ar[0] must lower to an ArrayVar_Get on the aliased array"
-    );
+fn aliases_and_record_valued_expressions_lower_in_every_position() {
+    const P: &str = "type P = { x: int, y: int }\n";
+    let rows: Vec<(&str, String, &[(&str, usize)])> = vec![
+        // A `let` aliasing an array var resolves for `x[i]` (and array methods)
+        // exactly like the original.
+        ("a let alias of an array var", "var a = [0]\nin go: exec\non go { let ar = a\n let v = ar[0] }".into(), &[(gc::ARRAY_GET, 1)]),
+        // ... and a `let` aliasing an INPUT-port array, like a `var` alias.
+        ("a let alias of an input array", "in a: int[]\nin go: exec\non go { let x = a\n let v = x[0] }".into(), &[(gc::ARRAY_GET, 1)]),
+        // A `match` EXPRESSION with record VALUE arms lowers to a per-field Select
+        // tree and writes the target's fields. It dropped the whole statement (no
+        // Select, no Var_Set, no diagnostic) while the statement form lowered.
+        (
+            "a match expression with record arms writes the target's fields",
+            format!(
+                "{P}enum S {{ A, B }}\nvar r: P = {{ x: 0, y: 0 }}\nvar p: P = {{ x: 1, y: 2 }}\nvar q: P = {{ x: 3, y: 4 }}\n\
+                 var s: S = S.A\nin go: exec\non go {{ r = match s {{ A => p, B => q }} }}"
+            ),
+            &[(gc::SELECT, 2), (gc::VAR_SET, 2)],
+        ),
+        // An enum value is a `__disc` + payload-slot record, so it takes the
+        // identical per-leaf Select path: one Select and one write, for `__disc`.
+        (
+            "a match expression with enum arms writes the target's slots",
+            "enum Dir { N, E }\nenum S { A, B }\nvar out1: Dir = Dir.N\nvar d1: Dir = Dir.N\nvar d2: Dir = Dir.E\n\
+             var s: S = S.A\nin go: exec\non go { out1 = match s { A => d1, B => d2 } }"
+                .into(),
+            &[(gc::SELECT, 1), (gc::VAR_SET, 1)],
+        ),
+        (
+            "a record-valued match bound to a let is read by field",
+            format!(
+                "{P}enum S {{ A, B }}\nvar o: int = 0\nvar p: P = {{ x: 1, y: 2 }}\nvar q: P = {{ x: 3, y: 4 }}\n\
+                 var s: S = S.A\nin go: exec\non go {{ let m = match s {{ A => p, B => q }}\n o = m.x }}"
+            ),
+            &[(gc::SELECT, 2)],
+        ),
+        // `let m = if c then p else q` binds a per-field record as the assignment
+        // form writes one. Only the assignment position resolved, so the `let`
+        // reported WS071 on each branch and read a placeholder.
+        (
+            "a record-valued if expression binds to a let",
+            format!(
+                "{P}var p: P = {{ x: 1, y: 2 }}\nvar q: P = {{ x: 3, y: 4 }}\nvar c: bool = false\nvar o: int = 0\n\
+                 in go: exec\non go {{ let m = if c then p else q\n o = m.y }}"
+            ),
+            &[(gc::SELECT, 2)],
+        ),
+        // A record array push, a record map set, an `out` port, and a `mod`/`chip`
+        // argument route through the same shared resolver, so a gap in one is a
+        // gap in all.
+        (
+            "a record-valued match in every other value position",
+            format!(
+                "{P}enum S {{ A, B }}\nvar p: P = {{ x: 1, y: 2 }}\nvar q: P = {{ x: 3, y: 4 }}\nvar s: S = S.A\n\
+                 var arr: P[]\nvar mp: Map<int, P>\nvar g1: int = 0\nvar g2: int = 0\n\
+                 mod takeRec(v: P) -> (o: int) {{ return v.x + v.y }}\nchip ChRec(v: P) -> (o: int) {{ out o = v.x - v.y }}\n\
+                 in go: exec\non go {{\n  arr.push(match s {{ A => p, B => q }})\n  mp.set(1, match s {{ A => p, B => q }})\n\
+                 g1 = takeRec(match s {{ A => p, B => q }})\n  g2 = ChRec(match s {{ A => p, B => q }})\n}}\n\
+                 out sum = (match s {{ A => p, B => q }}).x"
+            ),
+            &[],
+        ),
+        // A `mod` takes a record argument in every form its `chip` twin does: the
+        // container-element and record-valued-conditional spellings reached the
+        // callee as one opaque value port, so each field read was a placeholder.
+        (
+            "a mod record argument in every value form",
+            format!(
+                "{P}var p: P = {{ x: 1, y: 2 }}\nvar q: P = {{ x: 3, y: 4 }}\nvar arr: P[]\nvar mp: Map<int, P>\n\
+                 var c: bool = false\nvar g1: int = 0\nvar g2: int = 0\nvar g3: int = 0\n\
+                 mod takeRec(v: P) -> (o: int) {{ return v.x + v.y }}\nin go: exec\n\
+                 on go {{\n  arr.push(p)\n  mp.set(1, p)\n  g1 = takeRec(if c then p else q)\n  g2 = takeRec(arr[0])\n  g3 = takeRec(mp[1])\n}}"
+            ),
+            &[],
+        ),
+        // A `mod` with ONE record-typed output hands back the record itself, not a
+        // wrapper keyed by the output name: lowering bound `{o: {x, y}}`, so
+        // `r = mk(1)` wrote no field and `d.x` was a placeholder. Writes: r.x, r.y, a.
+        (
+            "a single record output mod unwraps to its fields",
+            format!(
+                "{P}mod mkP(n: int) -> (o: P) {{ out o = {{ x: n, y: n * 2 }} }}\nvar r: P = {{ x: 0, y: 0 }}\nvar a: int = 0\n\
+                 in go: exec\non go {{\n  r = mkP(1)\n  let d = mkP(2)\n  a = d.x\n}}"
+            ),
+            &[(gc::VAR_SET, 3)],
+        ),
+        // The arms unwrap, so the choice is still made per leaf field. Writes:
+        // r.x, r.y, and the `c = Opaque(true)` probe.
+        (
+            "a record-returning mod in both conditional arms selects per field",
+            format!(
+                "{P}mod mkP(n: int) -> (o: P) {{ out o = {{ x: n, y: n * 2 }} }}\nvar r: P = {{ x: 0, y: 0 }}\nvar c: bool = false\n\
+                 in go: exec\non go {{\n  c = Opaque(true)\n  r = if c then mkP(1) else mkP(3)\n}}"
+            ),
+            &[(gc::SELECT, 2), (gc::VAR_SET, 3)],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, src, want) in &rows {
+        let r = compile(src);
+        let errors = crate::test_support::error_codes(&r.diagnostics);
+        if !errors.is_empty() || has_unsupported(&r.module) {
+            failures.push(format!(
+                "{label}: errors {errors:?}, placeholder: {}\n{src}",
+                has_unsupported(&r.module)
+            ));
+            continue;
+        }
+        for &(class, n) in *want {
+            let got = count_class(&r.module, class);
+            if got != n {
+                failures.push(format!("{label}: {got} x {class}, want {n}\n{src}"));
+            }
+        }
+    }
+    crate::test_support::report_failures(&failures, rows.len());
 }
 
 /// `let t = Other.member; t.0` where the namespace member's bare name is ALSO
@@ -45,7 +152,10 @@ fn imported_namespace_tuple_pick_resolves() {
 fn imported_on_handler_generates() {
     let r = compile_multi(
         "import \"lib\"\non ReadBrickGrid() { BroadcastChatMessage(\"main\") }",
-        &[("lib", "on ReadBrickGrid() { BroadcastChatMessage(\"lib\") }")],
+        &[(
+            "lib",
+            "on ReadBrickGrid() { BroadcastChatMessage(\"lib\") }",
+        )],
     );
     // Both files desugar their non-event `on Foo()` to `let _on_expr_0`, and
     // the counter restarts per file, so the cross-file WS013 fired on a name
@@ -54,10 +164,7 @@ fn imported_on_handler_generates() {
     // together and this test stayed green.
     assert_no_errors(&r);
     assert_eq!(
-        count_class(
-            &r.module,
-            "BrickComponentType_Exec_Gamemode_BroadcastChatMessage"
-        ),
+        count_class(&r.module, gc::GAMEMODE_BROADCAST_CHAT),
         2,
         "both the local and the imported handler bodies must generate"
     );
@@ -68,31 +175,9 @@ fn imported_on_handler_generates() {
     );
 }
 
-/// A `let` aliasing an INPUT-port array/map (`in a: int[]` then `let x = a`)
-/// must resolve for `x[i]` and methods, like a `var` alias.
-#[test]
-fn let_alias_of_input_array_resolves_index() {
-    let r = compile("in a: int[]\nin go: exec\non go { let x = a\n let v = x[0] }");
-    assert!(
-        !has_unsupported(&r.module),
-        "aliased input-array index lowered to _Unsupported: {:?}",
-        r.diagnostics
-    );
-    assert_eq!(
-        count_class(&r.module, "BrickComponentType_Exec_ArrayVar_Get"),
-        1,
-        "x[0] must lower to an ArrayVar_Get on the aliased input"
-    );
-}
-
 /// Every node id used as a wire SOURCE anywhere in the module tree.
 fn wire_sources(m: &crate::ir::Module) -> crate::collections::HashSet<crate::ir::NodeId> {
-    let mut out: crate::collections::HashSet<crate::ir::NodeId> =
-        m.wires.iter().map(|w| w.source.node_id).collect();
-    for c in m.chips.values() {
-        out.extend(wire_sources(c));
-    }
-    out
+    m.wires_deep().map(|w| w.source.node_id).collect()
 }
 
 /// Root-module var gates carrying `name`, by `NAME_LABEL`.
@@ -100,7 +185,7 @@ fn var_ids_named(m: &crate::ir::Module, name: &str) -> Vec<crate::ir::NodeId> {
     let mut ids: Vec<crate::ir::NodeId> = m
         .nodes
         .iter()
-        .filter(|(_, n)| n.gate_class == "BrickComponentType_Var")
+        .filter(|(_, n)| n.gate_class == gc::VAR)
         .filter(|(_, n)| {
             matches!(
                 n.properties.get(&*sym::NAME_LABEL),
@@ -159,162 +244,6 @@ fn chip_record_ref_param_rebinds_per_call_site() {
     }
 }
 
-
-/// A `match` EXPRESSION whose arms are record VALUES must lower to a per-field
-/// `Select` tree and write the target's fields. It used to drop the whole
-/// statement — no Select, no `Var_Set`, no diagnostic — while the statement
-/// form (`match s { A => { r = p } ... }`) lowered correctly.
-#[test]
-fn match_expr_with_record_arms_writes_target_fields() {
-    let src = "type P = { x: int, y: int }\n\
-               enum S { A, B }\n\
-               var r: P = { x: 0, y: 0 }\n\
-               var p: P = { x: 1, y: 2 }\n\
-               var q: P = { x: 3, y: 4 }\n\
-               var s: S = S.A\n\
-               in go: exec\n\
-               on go { r = match s { A => p, B => q } }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
-    assert_eq!(
-        count_class(&r.module, "BrickComponentType_Expr_Select"),
-        2,
-        "one Select per record leaf field (x, y)"
-    );
-    // Two leaves written into `r`, plus the source reads.
-    assert!(
-        count_class(&r.module, "BrickComponentType_Exec_Var_Set") >= 2,
-        "each of `r`'s fields must be written"
-    );
-}
-
-/// The same for a `match` expression whose arms are ENUM values: an enum value
-/// is a `__disc` + payload-slot record, so it takes the identical per-leaf
-/// Select path.
-#[test]
-fn match_expr_with_enum_arms_writes_target_slots() {
-    let src = "enum Dir { N, E }\n\
-               enum S { A, B }\n\
-               var out1: Dir = Dir.N\n\
-               var d1: Dir = Dir.N\n\
-               var d2: Dir = Dir.E\n\
-               var s: S = S.A\n\
-               in go: exec\n\
-               on go { out1 = match s { A => d1, B => d2 } }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
-    assert_eq!(
-        count_class(&r.module, "BrickComponentType_Expr_Select"),
-        1,
-        "one Select for the `__disc` leaf"
-    );
-    assert!(
-        count_class(&r.module, "BrickComponentType_Exec_Var_Set") >= 1,
-        "the target's `__disc` must be written"
-    );
-}
-
-/// A record-valued `match` expression bound to a `let`, then read by field.
-#[test]
-fn match_expr_record_bound_to_let_reads_field() {
-    let src = "type P = { x: int, y: int }\n\
-               enum S { A, B }\n\
-               var o: int = 0\n\
-               var p: P = { x: 1, y: 2 }\n\
-               var q: P = { x: 3, y: 4 }\n\
-               var s: S = S.A\n\
-               in go: exec\n\
-               on go { let m = match s { A => p, B => q }\n o = m.x }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
-    assert!(
-        count_class(&r.module, "BrickComponentType_Expr_Select") >= 1,
-        "the read field must come through a Select"
-    );
-}
-
-/// A record-valued `match` in every other value position: a record array push,
-/// a record map set, an `out` port, and a `mod`/`chip` argument. Each routes
-/// through the same shared resolver, so a gap in one is a gap in all.
-#[test]
-fn match_expr_record_resolves_in_every_value_position() {
-    let src = "type P = { x: int, y: int }\n\
-               enum S { A, B }\n\
-               var p: P = { x: 1, y: 2 }\n\
-               var q: P = { x: 3, y: 4 }\n\
-               var s: S = S.A\n\
-               var arr: P[]\n\
-               var mp: Map<int, P>\n\
-               var g1: int = 0\n\
-               var g2: int = 0\n\
-               mod takeRec(v: P) -> (o: int) { return v.x + v.y }\n\
-               chip ChRec(v: P) -> (o: int) { out o = v.x - v.y }\n\
-               in go: exec\n\
-               on go {\n\
-                 arr.push(match s { A => p, B => q })\n\
-                 mp.set(1, match s { A => p, B => q })\n\
-                 g1 = takeRec(match s { A => p, B => q })\n\
-                 g2 = ChRec(match s { A => p, B => q })\n\
-               }\n\
-               out sum = (match s { A => p, B => q }).x";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
-}
-
-/// A `mod` takes a record argument in every form its `chip` twin does. The
-/// container-element and record-valued-conditional spellings used to reach the
-/// callee as one opaque value port, so each field read in the body lowered to
-/// an `_Unsupported` placeholder.
-#[test]
-fn mod_record_argument_accepts_every_value_form() {
-    let src = "type P = { x: int, y: int }\n\
-               var p: P = { x: 1, y: 2 }\n\
-               var q: P = { x: 3, y: 4 }\n\
-               var arr: P[]\n\
-               var mp: Map<int, P>\n\
-               var c: bool = false\n\
-               var g1: int = 0\n\
-               var g2: int = 0\n\
-               var g3: int = 0\n\
-               mod takeRec(v: P) -> (o: int) { return v.x + v.y }\n\
-               in go: exec\n\
-               on go {\n\
-                 arr.push(p)\n\
-                 mp.set(1, p)\n\
-                 g1 = takeRec(if c then p else q)\n\
-                 g2 = takeRec(arr[0])\n\
-                 g3 = takeRec(mp[1])\n\
-               }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
-}
-
-/// `let m = if c then p else q` on records binds a per-field record, the same
-/// way the assignment form writes one. Only the assignment position resolved,
-/// so the `let` reported WS071 on each branch and read a placeholder.
-#[test]
-fn record_valued_if_expr_binds_to_a_let() {
-    let src = "type P = { x: int, y: int }\n\
-               var p: P = { x: 1, y: 2 }\n\
-               var q: P = { x: 3, y: 4 }\n\
-               var c: bool = false\n\
-               var o: int = 0\n\
-               in go: exec\n\
-               on go { let m = if c then p else q\n o = m.y }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
-    assert!(
-        count_class(&r.module, "BrickComponentType_Expr_Select") >= 1,
-        "the read field must come through a Select"
-    );
-}
-
 /// A MULTI-OUTPUT gate result chosen by an `if` picks each port separately.
 /// `m.get(k)` is `{Value, Found}`, but the conditional built ONE Select over
 /// port 0, so `c.Found` read the *value* Select and the gate's `bFound` port
@@ -332,11 +261,10 @@ fn multi_output_result_through_a_conditional_selects_per_port() {
                  ok = r.Found\n\
                  v = r.Value\n\
                }";
-    let r = compile(src);
-    assert_no_errors(&r);
+    let r = compile_ok(src);
     assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_Expr_Select"),
+        count_class(&r.module, gc::SELECT),
         2,
         "one Select per output port (Value, Found)"
     );
@@ -346,7 +274,7 @@ fn multi_output_result_through_a_conditional_selects_per_port() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_Expr_Select")
+        .filter(|n| n.gate_class == gc::SELECT)
         .map(|n| n.id)
         .collect();
     for sel in &selects {
@@ -358,111 +286,23 @@ fn multi_output_result_through_a_conditional_selects_per_port() {
     }
     // Each Select reads a DIFFERENT pair of source ports (the two `bFound`
     // ports vs the two `Value` ports).
-    let feeds: std::collections::HashSet<_> = r
+    let feeds: crate::collections::HashSet<_> = r
         .module
         .wires
         .iter()
-        .filter(|w| selects.contains(&w.target.node_id)
-            && matches!(w.target.port, crate::lower::WirePort::InputA | crate::lower::WirePort::InputB))
+        .filter(|w| {
+            selects.contains(&w.target.node_id)
+                && matches!(
+                    w.target.port,
+                    crate::lower::WirePort::InputA | crate::lower::WirePort::InputB
+                )
+        })
         .map(|w| w.source)
         .collect();
-    assert_eq!(feeds.len(), 4, "expected 2 bFound + 2 Value feeds, got {feeds:?}");
-}
-
-/// A `mod` with ONE record-typed output hands back the record itself, not a
-/// wrapper keyed by the output name. Typecheck already reports the call as the
-/// record (`mk().x` is the field, `mk().o` a WS010), but lowering bound
-/// `{o: {x, y}}`: `r = mk(1)` wrote no field at all, and `let d = mk(1)` then
-/// `d.x` lowered to a placeholder.
-#[test]
-fn single_record_output_mod_unwraps_to_its_fields() {
-    let src = "type P = { x: int, y: int }\n\
-               mod mkP(n: int) -> (o: P) { out o = { x: n, y: n * 2 } }\n\
-               var r: P = { x: 0, y: 0 }\n\
-               var a: int = 0\n\
-               in go: exec\n\
-               on go {\n\
-                 r = mkP(1)\n\
-                 let d = mkP(2)\n\
-                 a = d.x\n\
-               }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
-    // Both of `r`'s fields, plus `a`.
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_Exec_Var_Set"),
-        3,
-        "`r.x`, `r.y` and `a` must each be written"
-    );
-}
-
-/// A record-returning `mod` in each arm of a conditional: the arms unwrap, so
-/// the choice is still made per leaf field.
-#[test]
-fn record_returning_mod_in_both_conditional_arms_selects_per_field() {
-    let src = "type P = { x: int, y: int }\n\
-               mod mkP(n: int) -> (o: P) { out o = { x: n, y: n * 2 } }\n\
-               var r: P = { x: 0, y: 0 }\n\
-               var c: bool = false\n\
-               in go: exec\n\
-               on go {\n\
-                 c = Opaque(true)\n\
-                 r = if c then mkP(1) else mkP(3)\n\
-               }";
-    let r = compile(src);
-    assert_no_errors(&r);
-    assert!(!has_unsupported(&r.module), "diags: {:?}", r.diagnostics);
-    assert_eq!(
-        count_class(&r.module, "BrickComponentType_Expr_Select"),
-        2,
-        "one Select per record field"
-    );
-    // `r.x`, `r.y`, plus the `c = Opaque(true)` probe write.
-    assert_eq!(
-        count_class(&r.module, "BrickComponentType_Exec_Var_Set"),
-        3,
-        "both of `r`'s fields must be written"
-    );
-}
-
-/// A container method given `exec = <trigger>` must not rewire the statements
-/// that follow it.
-///
-/// `exec =` makes the op a leaf, so the caller's exec context is saved and
-/// restored around it. A restore that sits past an early return leaves
-/// `current_exec` pointing at the trigger, and every following statement in
-/// the handler runs off `trig` instead of `RoundStart`. `insert` is the case
-/// here because it rejects named args and bails to `_Unsupported`.
-#[test]
-fn an_exec_arg_on_a_container_method_does_not_capture_the_following_statements() {
-    let r = compile(
-        "var xs: int[]\nvar a: int\nin trig: exec\n\
-         on RoundStart() {\n  xs.insert(index = 0, value = 7, exec = trig)\n  a = 1\n}\n",
-    );
-    let event = r
-        .module
-        .nodes
-        .iter()
-        .find(|(_, n)| n.kind == crate::ir::NodeKind::Event)
-        .map(|(id, _)| *id)
-        .expect("the RoundStart event node");
-    let set = r
-        .module
-        .nodes
-        .iter()
-        .find(|(_, n)| n.gate_class == crate::ir::gate_class::VAR_SET)
-        .map(|(id, _)| *id)
-        .expect("the `a = 1` set gate");
-    let driver = r
-        .module
-        .wires
-        .iter()
-        .find(|w| w.target.node_id == set && w.target.port == crate::ir::port_registry::WirePort::Exec)
-        .expect("`a = 1` must be driven by something");
-    assert_eq!(
-        driver.source.node_id, event,
-        "`a = 1` must run off RoundStart, not the `exec =` trigger"
+        feeds.len(),
+        4,
+        "expected 2 bFound + 2 Value feeds, got {feeds:?}"
     );
 }
 
@@ -494,13 +334,13 @@ fn a_branching_return_called_purely_reports_at_the_call_site() {
     );
 
     // From an exec context the same mod is fine.
-    let ok = compile(
+    compile_ok(
         "mod branchy(c: bool) -> (r: int) {\n\
          \x20 if c { return 1 } else { return 2 }\n}\n\
          in go: exec\nvar v: int\non go { v = branchy(true) }\n",
     );
-    assert_no_errors(&ok);
 }
+
 /// Is some `source_port` of a `source_class` node wired to some `target_port`
 /// of a `target_class` node? Proves the read reaches its consumer, which a gate
 /// count cannot: an `_Unsupported` object leaves the consumer in place with its
@@ -541,24 +381,23 @@ fn array_index_capital_value_reads_the_array_get() {
              in go: exec\n\
              on go {{ let pc = regs[15].{field}\n g = pc }}"
         );
-        let r = compile(&src);
-        assert_no_errors(&r);
+        let r = compile_ok(&src);
         assert!(
             !has_unsupported(&r.module),
             "regs[15].{field} lowered to _Unsupported: {:?}",
             r.diagnostics
         );
         assert_eq!(
-            count_class(&r.module, "BrickComponentType_Exec_ArrayVar_Get"),
+            count_class(&r.module, gc::ARRAY_GET),
             1,
             "regs[15].{field} must lower to one ArrayVar_Get"
         );
         assert!(
             wired_between(
                 &r,
-                "BrickComponentType_Exec_ArrayVar_Get",
+                gc::ARRAY_GET,
                 WirePort::Value,
-                "BrickComponentType_Exec_Var_Set",
+                gc::VAR_SET,
                 WirePort::Value,
             ),
             "regs[15].{field} must drive `g`'s Value pin, not be left dangling"
@@ -577,8 +416,7 @@ fn array_index_out_of_bounds_flag_accepts_every_capitalisation() {
              in go: exec\n\
              on go {{ let f = regs[15].{field}\n oob = f }}"
         );
-        let r = compile(&src);
-        assert_no_errors(&r);
+        let r = compile_ok(&src);
         assert!(
             !has_unsupported(&r.module),
             "regs[15].{field} lowered to _Unsupported: {:?}",
@@ -587,9 +425,9 @@ fn array_index_out_of_bounds_flag_accepts_every_capitalisation() {
         assert!(
             wired_between(
                 &r,
-                "BrickComponentType_Exec_ArrayVar_Get",
+                gc::ARRAY_GET,
                 WirePort::BOutOfBounds,
-                "BrickComponentType_Exec_Var_Set",
+                gc::VAR_SET,
                 WirePort::Value,
             ),
             "regs[15].{field} must read the gate's bOutOfBounds port"
@@ -608,10 +446,9 @@ fn a_var_field_trigger_accepts_every_capitalisation() {
              var hit: int = 0\n\
              on v.{field} {{ hit = 1 }}"
         );
-        let r = compile(&src);
-        assert_no_errors(&r);
+        let r = compile_ok(&src);
         assert_eq!(
-            count_class(&r.module, "BrickComponentType_Exec_Var_Set"),
+            count_class(&r.module, gc::VAR_SET),
             1,
             "on v.{field} produced no handler body at all: {:?}",
             r.diagnostics
@@ -631,8 +468,7 @@ fn map_index_found_flag_accepts_every_capitalisation() {
              in go: exec\n\
              on go {{ let f = m[1].{field}\n hit = f }}"
         );
-        let r = compile(&src);
-        assert_no_errors(&r);
+        let r = compile_ok(&src);
         assert!(
             !has_unsupported(&r.module),
             "m[1].{field} lowered to _Unsupported: {:?}",
@@ -641,9 +477,9 @@ fn map_index_found_flag_accepts_every_capitalisation() {
         assert!(
             wired_between(
                 &r,
-                "BrickComponentType_Exec_MapVar_Get",
+                gc::MAP_GET,
                 WirePort::BFound,
-                "BrickComponentType_Exec_Var_Set",
+                gc::VAR_SET,
                 WirePort::Value,
             ),
             "m[1].{field} must read the gate's bFound port"
@@ -661,7 +497,10 @@ fn found_on_an_array_index_stays_unsupported() {
          in go: exec\n\
          on go { let f = regs[0].Found\n hit = f }",
     );
-    assert!(has_unsupported(&r.module), "arr[i].Found must not resolve to a port the gate lacks");
+    assert!(
+        has_unsupported(&r.module),
+        "arr[i].Found must not resolve to a port the gate lacks"
+    );
 }
 
 /// A field naming no port on the object's gate still degrades to a placeholder
@@ -673,57 +512,6 @@ fn value_on_a_gate_without_that_port_stays_unsupported() {
     assert!(
         has_unsupported(&r.module),
         "a `.Value` read of a gate with no Value port must not fabricate a wire"
-    );
-}
-
-/// `xs.sort(descending = true)` type-checks (`descending` is the parameter's
-/// real name) but lowering read only `args.first()` as a POSITIONAL, so the
-/// flag was dropped and the array sorted ascending with no diagnostic at all.
-/// Provable only through the gate's properties: `--dump-ir` renders the named
-/// and positional forms identically.
-#[test]
-fn sort_named_descending_reaches_the_gate() {
-    for call in ["xs.sort(descending = true)", "xs.sort(true)"] {
-        let r = compile(&format!(
-            "var xs: int[] = [1, 2, 3]\nin go: exec\non go {{ {call} }}"
-        ));
-        assert_no_errors(&r);
-        let node = find_gate(&r, crate::ir::gate_class::ARRAY_SORT);
-        let n = &r.module.nodes[&node];
-        let baked = n.properties.get(&WirePort::BDescending.sym());
-        let wired = r
-            .module
-            .wires
-            .iter()
-            .any(|w| w.target == node.port(WirePort::BDescending));
-        assert!(
-            matches!(baked, Some(Literal::Bool(true))) || wired,
-            "`{call}` left bDescending unset (props {:?})",
-            n.properties
-        );
-    }
-}
-
-/// `xs.sort()` takes no flag, so the arm above cannot have started setting one
-/// unconditionally.
-#[test]
-fn sort_without_an_argument_leaves_descending_unset() {
-    let r = compile("var xs: int[] = [1, 2, 3]\nin go: exec\non go { xs.sort() }");
-    assert_no_errors(&r);
-    let node = find_gate(&r, crate::ir::gate_class::ARRAY_SORT);
-    assert!(
-        r.module.nodes[&node]
-            .properties
-            .get(&WirePort::BDescending.sym())
-            .is_none(),
-        "a bare sort() must not bake a descending flag"
-    );
-    assert!(
-        !r.module
-            .wires
-            .iter()
-            .any(|w| w.target == node.port(WirePort::BDescending)),
-        "a bare sort() must not wire the descending pin"
     );
 }
 
@@ -742,46 +530,43 @@ fn let_of_a_ref_binds_the_variable() {
              on go {{ v = *r }}\n\
              out o: int = v"
         );
-        let r = compile(&src);
-        assert_no_errors(&r);
+        let r = compile_ok(&src);
         assert!(
             !has_unsupported(&r.module),
             "`let r = {sigil}someVar` lowered to _Unsupported: {:?}",
             r.diagnostics
         );
         assert!(
-            wired_between(
-                &r,
-                "BrickComponentType_Var",
-                WirePort::VarRef,
-                "BrickComponentType_Exec_Var_Get",
-                WirePort::VarRef,
-            ) && wired_between(
-                &r,
-                "BrickComponentType_Exec_Var_Get",
-                WirePort::Value,
-                "BrickComponentType_Exec_Var_Set",
-                WirePort::Value,
-            ),
+            wired_between(&r, gc::VAR, WirePort::VarRef, gc::VAR_GET, WirePort::VarRef,)
+                && wired_between(
+                    &r,
+                    gc::VAR_GET,
+                    WirePort::Value,
+                    gc::VAR_SET,
+                    WirePort::Value,
+                ),
             "`v = *r` must read through someVar's ref, not a placeholder"
         );
         // One chain: the Var_Set's value comes from a Var_Get whose ref is a
         // var other than the one the Var_Set writes.
         let m = &r.module;
         let source = |node: crate::ir::NodeId, port: WirePort| {
-            m.wires.iter().find(|w| w.target.node_id == node && w.target.port == port).map(|w| w.source.node_id)
+            m.wires
+                .iter()
+                .find(|w| w.target.node_id == node && w.target.port == port)
+                .map(|w| w.source.node_id)
         };
         let set = m
             .nodes
             .values()
-            .find(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
+            .find(|n| n.gate_class == gc::VAR_SET)
             .expect("the write of v")
             .id;
         let get = source(set, WirePort::Value).expect("v's value is wired");
-        assert_eq!(m.nodes[&get].gate_class, "BrickComponentType_Exec_Var_Get");
+        assert_eq!(m.nodes[&get].gate_class, gc::VAR_GET);
         let read = source(get, WirePort::VarRef).expect("the read names a var");
         let written = source(set, WirePort::VarRef).expect("the write names a var");
-        assert_eq!(m.nodes[&read].gate_class, "BrickComponentType_Var");
+        assert_eq!(m.nodes[&read].gate_class, gc::VAR);
         assert_ne!(read, written, "`*r` reads someVar, not v");
     }
 }
@@ -807,7 +592,7 @@ fn an_unresolvable_trigger_does_not_orphan_the_next_statement() {
     );
     // `g = 1` and `g = 3`; `g = 2` belongs to the dead handler.
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_Exec_Var_Set"),
+        count_class(&r.module, gc::VAR_SET),
         2,
         "the surviving handler and the trailing assignment must both lower"
     );
@@ -844,13 +629,15 @@ fn a_record_valued_let_used_as_a_trigger_is_reported() {
 /// gate that reads 0.
 #[test]
 fn a_stranded_wire_is_an_internal_error() {
-    let r = compile("in n: int\nout a = n * 2\n");
-    assert_no_errors(&r);
+    let r = compile_ok("in n: int\nout a = n * 2\n");
     let range = crate::diagnostic::SourceRange::default();
 
     let mut clean = Vec::new();
     check_wires_resolve(&r.module, "a pass", true, &range, &mut clean);
-    assert!(clean.is_empty(), "a lowered program passes the check: {clean:?}");
+    assert!(
+        clean.is_empty(),
+        "a lowered program passes the check: {clean:?}"
+    );
 
     let mut broken = r.module.clone();
     let gate = *broken
@@ -864,7 +651,11 @@ fn a_stranded_wire_is_an_internal_error() {
     check_wires_resolve(&broken, "a pass", true, &range, &mut diags);
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert_eq!(diags[0].code, "WS094");
-    assert!(diags[0].message.contains("after `a pass`"), "{}", diags[0].message);
+    assert!(
+        diags[0].message.contains("after `a pass`"),
+        "{}",
+        diags[0].message
+    );
 
     // A wire to the never-allocated `NodeId(0)` is exempt only once an error
     // has been reported.
@@ -875,8 +666,16 @@ fn a_stranded_wire_is_an_internal_error() {
     });
     let mut diags = Vec::new();
     check_wires_resolve(&zero, "a pass", true, &range, &mut diags);
-    assert_eq!(diags.iter().filter(|d| d.code == "WS094").count(), 1, "{diags:?}");
-    let mut diags = vec![crate::diagnostic::Diagnostic::error("WS002", "earlier error", range.clone())];
+    assert_eq!(
+        diags.iter().filter(|d| d.code == "WS094").count(),
+        1,
+        "{diags:?}"
+    );
+    let mut diags = vec![crate::diagnostic::Diagnostic::error(
+        "WS002",
+        "earlier error",
+        range.clone(),
+    )];
     check_wires_resolve(&zero, "a pass", true, &range, &mut diags);
     assert!(!diags.iter().any(|d| d.code == "WS094"), "{diags:?}");
 }
@@ -899,15 +698,18 @@ fn a_bare_multi_output_array_read_is_typed_by_the_output_it_reads() {
             "in go: exec\nin a: int\nin b: float\n{decl}\nvar o: string = \"\"\nout oo: string = o\n\
              mod f() {{\n  var v = {expr}\n  o = \"${{v}}\"\n}}\non go {{ f() }}"
         );
-        let r = compile(&src);
-        assert_no_errors(&r);
+        let r = compile_ok(&src);
         let v = r
             .module
             .nodes
             .values()
             .find(|n| n.gate_class == crate::ir::gate_class::VAR && n.source_range.start.line == 8)
             .unwrap_or_else(|| panic!("no `v`\n{src}"));
-        assert!(v.ports.outputs.iter().any(|p| p.ty == want), "{expr}: {:?}", v.ports.outputs);
+        assert!(
+            v.ports.outputs.iter().any(|p| p.ty == want),
+            "{expr}: {:?}",
+            v.ports.outputs
+        );
     }
 }
 
@@ -935,14 +737,21 @@ fn a_generic_builtin_types_every_port_from_its_arguments_and_result() {
         "let d = SleepTicks(a, delay = 2)\nout od: string = d",
     ] {
         let src = format!("{head}{body}");
-        let r = compile(&src);
-        assert_no_errors(&r);
-        assert!(!r.diagnostics.iter().any(|d| d.code == "WS094"), "{body}: {:?}", r.diagnostics);
+        let r = compile_ok(&src);
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS094"),
+            "{body}: {:?}",
+            r.diagnostics
+        );
         let gate = r
             .module
             .nodes
             .values()
-            .find(|n| n.gate_class.contains("Select") || n.gate_class.contains("Swap") || n.gate_class.contains("Buffer"))
+            .find(|n| {
+                n.gate_class.contains("Select")
+                    || n.gate_class.contains("Swap")
+                    || n.gate_class.contains("Buffer")
+            })
             .unwrap_or_else(|| panic!("{body}: no gate"));
         for p in gate.ports.inputs.iter().chain(&gate.ports.outputs) {
             let name = crate::intern::resolve(p.name);
@@ -951,7 +760,11 @@ fn a_generic_builtin_types_every_port_from_its_arguments_and_result() {
                     Type::Record(fields) => fields.iter().map(|(_, t)| t.clone()).collect(),
                     t => vec![t.clone()],
                 };
-                assert!(leaves.iter().all(|t| *t == Type::String), "{body}: port {name} is {:?}", p.ty);
+                assert!(
+                    leaves.iter().all(|t| *t == Type::String),
+                    "{body}: port {name} is {:?}",
+                    p.ty
+                );
             }
         }
     }

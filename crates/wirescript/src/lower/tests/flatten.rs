@@ -4,49 +4,29 @@ use crate::ir::{Module, NodeId, NodeKind, gate_class as gc};
 
 use super::*;
 
-/// Lower `src` under the production `Auto` fold mode, so a module-level
-/// `@flat` in `src` reaches the pipeline exactly as it would in a real
-/// compile.
-fn lowered(src: &str) -> LowerResult {
-    let crate::compile::FrontEnd { resolved: parsed, lowered: r, .. } =
-        crate::compile::front_end(src, "test", None, FoldMode::Auto, &crate::resolve::FsLoader);
-    assert!(
-        parsed.diagnostics.is_empty(),
-        "parse diags: {:?}",
-        parsed.diagnostics
-    );
-    assert_no_errors(&r);
-    r
-}
-
 fn total_nodes(m: &Module) -> usize {
-    m.nodes.len() + m.chips.values().map(total_nodes).sum::<usize>()
+    m.nodes_deep().count()
 }
 
 fn total_wires(m: &Module) -> usize {
-    m.wires.len() + m.chips.values().map(total_wires).sum::<usize>()
+    m.wires_deep().count()
 }
 
+/// Chip modules anywhere below `m`.
 fn total_chips(m: &Module) -> usize {
-    m.chips.len() + m.chips.values().map(total_chips).sum::<usize>()
+    m.modules_deep().len() - 1
 }
 
 /// Every gate class present anywhere in the tree, with its count.
 fn class_census(m: &Module) -> std::collections::BTreeMap<&'static str, usize> {
     let mut out = std::collections::BTreeMap::new();
-    fn walk(m: &Module, out: &mut std::collections::BTreeMap<&'static str, usize>) {
-        for n in m.nodes.values() {
-            *out.entry(n.gate_class).or_insert(0) += 1;
-        }
-        for c in m.chips.values() {
-            walk(c, out);
-        }
+    for n in m.nodes_deep() {
+        *out.entry(n.gate_class).or_insert(0) += 1;
     }
-    walk(m, &mut out);
     out
 }
 
-/// Two named-chip instances plus a nested chip and an anonymous chip — the
+// Two named-chip instances plus a nested chip and an anonymous chip — the
 /// shapes that put nodes in a child module or tag them for one.
 const NESTED: &str = "\
 chip Inner(a: int) -> (r: int) {
@@ -74,36 +54,6 @@ fn flat(src: &str) -> String {
     format!("@flat\n\n{src}")
 }
 
-#[test]
-fn flat_collapses_the_whole_chip_tree_into_one_module() {
-    let plain = lowered(NESTED);
-    let flattened = lowered(&flat(NESTED));
-
-    assert!(
-        total_chips(&plain.module) > 0,
-        "the fixture must actually build child modules, else this proves nothing"
-    );
-    assert_eq!(
-        flattened.module.chips.len(),
-        0,
-        "@flat must leave no child module"
-    );
-    assert_eq!(total_chips(&flattened.module), 0);
-}
-
-#[test]
-fn flat_emits_no_microchip_node() {
-    let flattened = lowered(&flat(NESTED));
-    let chips: Vec<NodeId> = flattened
-        .module
-        .nodes
-        .iter()
-        .filter(|(_, n)| n.kind == NodeKind::Chip || n.gate_class == gc::MICROCHIP)
-        .map(|(id, _)| *id)
-        .collect();
-    assert!(chips.is_empty(), "microchip nodes survived: {chips:?}");
-}
-
 /// Flattening must MOVE the work, not drop it: every computing gate the
 /// nested build produced is still there afterwards. The chip shells go, and
 /// the three rerouter classes are excluded because the nested build's
@@ -111,8 +61,8 @@ fn flat_emits_no_microchip_node() {
 #[test]
 fn flat_keeps_every_gate_the_nested_build_had() {
     for src in [NESTED, DEEP_CHAIN] {
-        let plain = lowered(src);
-        let flattened = lowered(&flat(src));
+        let plain = compile_ok_auto(src);
+        let flattened = compile_ok_auto(&flat(src));
 
         let strip = |m: &Module| {
             let mut c = class_census(m);
@@ -136,20 +86,26 @@ fn flat_keeps_every_gate_the_nested_build_had() {
             "fixture built no microchip node, so its removal proves nothing"
         );
         assert_eq!(chip_node_count(&flattened.module), 0);
+        let shells: Vec<NodeId> = flattened
+            .module
+            .nodes_deep()
+            .filter(|n| n.gate_class == gc::MICROCHIP)
+            .map(|n| n.id)
+            .collect();
+        assert!(shells.is_empty(), "microchip nodes survived: {shells:?}");
     }
 }
 
 /// `NodeKind::Chip` nodes anywhere in the tree.
 fn chip_node_count(m: &Module) -> usize {
-    m.nodes.values().filter(|n| n.kind == NodeKind::Chip).count()
-        + m.chips.values().map(chip_node_count).sum::<usize>()
+    m.nodes_deep().filter(|n| n.kind == NodeKind::Chip).count()
 }
 
 /// The anon-chip partition is skipped under `@flat`, so no node keeps a
 /// `chip_id` pointing at a shell that no longer exists.
 #[test]
 fn flat_clears_every_chip_id_tag() {
-    let flattened = lowered(&flat(NESTED));
+    let flattened = compile_ok_auto(&flat(NESTED));
     let tagged: Vec<NodeId> = flattened
         .module
         .nodes
@@ -165,7 +121,7 @@ fn flat_clears_every_chip_id_tag() {
 /// — and any that a chip shell was an endpoint of are gone with it.
 #[test]
 fn flat_leaves_no_layout_edges() {
-    let flattened = lowered(&flat(NESTED));
+    let flattened = compile_ok_auto(&flat(NESTED));
     let layout_edges = flattened
         .module
         .wires
@@ -184,7 +140,7 @@ fn flat_leaves_no_layout_edges() {
 #[test]
 fn flat_leaves_no_wire_pointing_outside_the_module() {
     for src in [NESTED, DEEP_CHAIN] {
-        let flattened = lowered(&flat(src));
+        let flattened = compile_ok_auto(&flat(src));
         let m = &flattened.module;
         for w in &m.wires {
             assert!(
@@ -211,7 +167,7 @@ fn flat_leaves_no_wire_pointing_outside_the_module() {
 /// MicrochipInput/Output rerouters for wires that no longer cross anything.
 #[test]
 fn boundary_pins_is_a_no_op_on_a_flattened_module() {
-    let flattened = lowered(&flat(NESTED));
+    let flattened = compile_ok_auto(&flat(NESTED));
     assert!(
         flattened.module.chips.is_empty(),
         "precondition: the module under test must actually be flat"
@@ -245,17 +201,18 @@ on go {
 
 #[test]
 fn flat_reaches_the_deepest_chip() {
-    let plain = lowered(DEEP_CHAIN);
+    let plain = compile_ok_auto(DEEP_CHAIN);
     assert!(
         total_chips(&plain.module) >= 3,
         "fixture must nest at least three deep, got {}",
         total_chips(&plain.module)
     );
-    let flattened = lowered(&flat(DEEP_CHAIN));
+    let flattened = compile_ok_auto(&flat(DEEP_CHAIN));
     assert_eq!(total_chips(&flattened.module), 0);
     // The deepest body's own gates are in the one module now.
     assert!(
-        total_nodes(&flattened.module) >= total_nodes(&plain.module) - chip_node_count(&plain.module),
+        total_nodes(&flattened.module)
+            >= total_nodes(&plain.module) - chip_node_count(&plain.module),
         "nodes went missing on the way up"
     );
     assert!(total_wires(&flattened.module) > 0);
@@ -281,7 +238,7 @@ on go {
   emit total = Twice(seed) + Twice(seed + 1)
 }
 ";
-    let flattened = lowered(&flat(src));
+    let flattened = compile_ok_auto(&flat(src));
     let m = &flattened.module;
 
     let bodies = m
@@ -289,7 +246,11 @@ on go {
         .values()
         .filter(|s| matches!(&s.kind, crate::ir::ScopeKind::ChipBody { name } if name == "Twice"))
         .count();
-    assert_eq!(bodies, 2, "one ChipBody scope per instance; scopes: {:?}", m.scopes);
+    assert_eq!(
+        bodies, 2,
+        "one ChipBody scope per instance; scopes: {:?}",
+        m.scopes
+    );
 
     // Every node's scope must resolve in this module's table — an id left
     // over from a child module would silently re-home the node onto the
@@ -308,7 +269,7 @@ on go {
 /// sat in, so the region tree still shows it nested where the chip was.
 #[test]
 fn merged_chip_body_scopes_stay_parented() {
-    let flattened = lowered(&flat(NESTED));
+    let flattened = compile_ok_auto(&flat(NESTED));
     let m = &flattened.module;
     let bodies: Vec<_> = m
         .scopes
@@ -332,8 +293,8 @@ fn merged_chip_body_scopes_stay_parented() {
 /// bricks for the program's own top-level ports.
 #[test]
 fn merged_pins_stay_out_of_the_hosts_port_lists() {
-    let plain = lowered(NESTED);
-    let flattened = lowered(&flat(NESTED));
+    let plain = compile_ok_auto(NESTED);
+    let flattened = compile_ok_auto(&flat(NESTED));
     assert_eq!(
         flattened.module.inputs.len(),
         plain.module.inputs.len(),
@@ -364,7 +325,9 @@ fn merged_pins_stay_out_of_the_hosts_port_lists() {
 fn flat_drops_no_chip_port_wire_on_real_programs() {
     for src in [NESTED, DEEP_CHAIN] {
         // The program without `@flat`: its chip tree, for `flatten_chips` to flatten.
-        let mut r = crate::compile::front_end(src, "test", None, FoldMode::Auto, &crate::resolve::FsLoader).lowered;
+        let mut r =
+            crate::compile::front_end(src, "test", None, FoldMode::Auto, &crate::resolve::FsLoader)
+                .lowered;
         assert!(!r.module.chips.is_empty(), "nothing to flatten");
         let mut diags = Vec::new();
         let stats = crate::lower::flatten::flatten_chips(&mut r.module, &mut diags);
@@ -391,14 +354,7 @@ fn flat_composes_with_the_other_module_annotations() {
         let src = format!("{prefix}\n{NESTED}");
         let parsed = crate::parser::parse(&src, "test");
         assert!(parsed.ast.flat, "{prefix:?} did not set flat");
-        let r = lowered(&src);
+        let r = compile_ok_auto(&src);
         assert_eq!(r.module.chips.len(), 0, "{prefix:?} left a child module");
     }
-}
-
-/// Without `@flat` nothing changes — the chip tree is still built.
-#[test]
-fn omitting_flat_keeps_the_chip_tree() {
-    let plain = lowered(NESTED);
-    assert!(plain.module.chips.len() > 0);
 }
