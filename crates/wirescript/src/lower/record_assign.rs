@@ -12,11 +12,12 @@ use std::borrow::Cow;
 use super::*;
 use crate::intern::Sym;
 use crate::lower::ordered::{
-    Held, Later, Ordered, Reads, State, Writes, binding_reads, copied, hold, live_reads, storage_leaves,
+    Held, Later, Ordered, Reads, State, Writes, binding_reads, copied, hold, live_reads,
+    storage_leaves,
 };
 use crate::lower::stmt::{
-    ElemValue, Supplied, assign_record_fields, copy_container, lower_container_assign, rebuild_container, same_storage,
-    set_scalar_var,
+    ElemValue, Supplied, assign_record_fields, copy_container, lower_container_assign,
+    rebuild_container, same_storage, set_scalar_var,
 };
 
 /// Whether evaluating `e` only reads: no call, no container method, nothing
@@ -45,7 +46,9 @@ fn inert(ctx: &LowerCtx, e: &Expr) -> bool {
         } => inert(ctx, cond) && inert(ctx, then_branch) && inert(ctx, else_branch),
         Expr::RecordLit { fields, .. } => inert_fields(ctx, fields),
         Expr::Array { elements, .. } => elements.iter().all(|el| inert(ctx, el.expr())),
-        Expr::MapLit { entries, .. } => entries.iter().all(|en| inert(ctx, &en.key) && inert(ctx, &en.value)),
+        Expr::MapLit { entries, .. } => entries
+            .iter()
+            .all(|en| inert(ctx, &en.key) && inert(ctx, &en.value)),
         Expr::InterpLit { parts, .. } => parts.iter().all(|p| match p {
             InterpPart::Expr(x) => inert(ctx, x),
             _ => true,
@@ -60,7 +63,9 @@ fn inert_fields(ctx: &LowerCtx, fields: &[RecordLitField]) -> bool {
     fields.iter().all(|f| match f {
         RecordLitField::Named { value, .. } => inert(ctx, value),
         RecordLitField::Shorthand { .. } => true,
-        RecordLitField::Spread { value, .. } => matches!(resolve_field_chain(ctx, value), Some(Binding::Record(_))),
+        RecordLitField::Spread { value, .. } => {
+            matches!(resolve_field_chain(ctx, value), Some(Binding::Record(_)))
+        }
     })
 }
 
@@ -77,9 +82,10 @@ fn inert_reads(ctx: &LowerCtx, e: &Expr) -> Reads {
                 return live_reads(ctx, o.node_id.port(WirePort::RerOutput));
             }
         }
-        Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } | Expr::UnOp { operand: obj, .. } | Expr::Is { value: obj, .. } => {
-            all(&mut std::iter::once(obj.as_ref()))
-        }
+        Expr::FieldAccess { obj, .. }
+        | Expr::TuplePick { obj, .. }
+        | Expr::UnOp { operand: obj, .. }
+        | Expr::Is { value: obj, .. } => all(&mut std::iter::once(obj.as_ref())),
         Expr::BinOp { left, right, .. } => all(&mut [left.as_ref(), right.as_ref()].into_iter()),
         Expr::IfExpr {
             cond,
@@ -88,11 +94,15 @@ fn inert_reads(ctx: &LowerCtx, e: &Expr) -> Reads {
             ..
         } => all(&mut [cond.as_ref(), then_branch.as_ref(), else_branch.as_ref()].into_iter()),
         Expr::RecordLit { fields, .. } => all(&mut fields.iter().filter_map(|f| match f {
-            RecordLitField::Named { value, .. } | RecordLitField::Spread { value, .. } => Some(value),
+            RecordLitField::Named { value, .. } | RecordLitField::Spread { value, .. } => {
+                Some(value)
+            }
             RecordLitField::Shorthand { .. } => None,
         })),
         Expr::Array { elements, .. } => all(&mut elements.iter().map(|el| el.expr())),
-        Expr::MapLit { entries, .. } => all(&mut entries.iter().flat_map(|en| [&en.key, &en.value])),
+        Expr::MapLit { entries, .. } => {
+            all(&mut entries.iter().flat_map(|en| [&en.key, &en.value]))
+        }
         Expr::InterpLit { parts, .. } => all(&mut parts.iter().filter_map(|p| match p {
             InterpPart::Expr(x) => Some(x.as_ref()),
             _ => None,
@@ -124,8 +134,13 @@ fn shorthand_names(e: &Expr) -> impl Iterator<Item = &String> {
 pub(super) fn rebuilt(ctx: &LowerCtx, target: Option<&Binding>, value: &Expr) -> bool {
     match (target, value) {
         (Some(Binding::Var(v)), _) => matches!(v.storage, VarStorage::Array | VarStorage::Map),
-        (Some(Binding::Record(_)), Expr::Array { .. } | Expr::MapLit { .. } | Expr::RecordLit { .. }) => true,
-        (Some(Binding::Record(_)), value) => crate::lower::predeclare::const_container_init(ctx, value).is_some(),
+        (
+            Some(Binding::Record(_)),
+            Expr::Array { .. } | Expr::MapLit { .. } | Expr::RecordLit { .. },
+        ) => true,
+        (Some(Binding::Record(_)), value) => {
+            crate::lower::predeclare::const_container_init(ctx, value).is_some()
+        }
         _ => false,
     }
 }
@@ -208,14 +223,29 @@ fn plan<'e>(
                 match (t, f) {
                     (
                         Binding::Record(sub),
-                        RecordLitField::Named { name, value: Expr::RecordLit { fields: inner, .. }, .. },
+                        RecordLitField::Named {
+                            name,
+                            value: Expr::RecordLit { fields: inner, .. },
+                            ..
+                        },
                     ) => {
                         let d = deferred || inert_fields(ctx, inner);
                         let slot = slots.of(name);
                         let inner_slots = slot.as_ref().map_or(Slots::Unknown, Slots::Of);
-                        Part::Nested(plan(ctx, ord, sub, field_path, inner, inner_slots, d, range))
+                        Part::Nested(plan(
+                            ctx,
+                            ord,
+                            sub,
+                            field_path,
+                            inner,
+                            inner_slots,
+                            d,
+                            range,
+                        ))
                     }
-                    (t, RecordLitField::Named { value, .. }) => plan_rebuild(ctx, ord, t, field_path, value, deferred, range),
+                    (t, RecordLitField::Named { value, .. }) => {
+                        plan_rebuild(ctx, ord, t, field_path, value, deferred, range)
+                    }
                     // A shorthand names storage, never a literal: WS027.
                     (t, _) => Part::Rebuild {
                         target: t,
@@ -235,7 +265,9 @@ fn plan<'e>(
                     let target = &lit.target;
                     ord.source(ctx, &lit.path, Some(&t), range, |ctx| {
                         let full = match f {
-                            RecordLitField::Spread { value, .. } => branch_record_fields(ctx, value).unwrap_or_default(),
+                            RecordLitField::Spread { value, .. } => {
+                                branch_record_fields(ctx, value).unwrap_or_default()
+                            }
                             _ => crate::lower::decl::lower_record_lit(
                                 ctx,
                                 std::slice::from_ref(f),
@@ -243,7 +275,9 @@ fn plan<'e>(
                             ),
                         };
                         let mut read = full.clone();
-                        read.retain(|k, b| !later.contains(k) && !target.get(k).is_some_and(|t| same_storage(t, b)));
+                        read.retain(|k, b| {
+                            !later.contains(k) && !target.get(k).is_some_and(|t| same_storage(t, b))
+                        });
                         rec = Some(full);
                         Some(Binding::Record(read))
                     })
@@ -270,7 +304,9 @@ fn plan<'e>(
                     Some(slot) => slot,
                     None => {
                         let reads = match f {
-                            RecordLitField::Named { value, .. } if resolve_field_chain(ctx, value).is_none() => {
+                            RecordLitField::Named { value, .. }
+                                if resolve_field_chain(ctx, value).is_none() =>
+                            {
                                 inert_reads(ctx, value)
                             }
                             _ => binding_reads(ctx, &Binding::Record(named)),
@@ -279,7 +315,11 @@ fn plan<'e>(
                         ord.add(later, lit.path.clone(), Some(t), range, Some(reads))
                     }
                 };
-                Part::Src { slot, keys, watches }
+                Part::Src {
+                    slot,
+                    keys,
+                    watches,
+                }
             }
         };
         let supplied: Vec<Sym> = match &part {
@@ -291,7 +331,10 @@ fn plan<'e>(
                 && let Part::Src { slot, watches, .. } = &lit.parts[prev]
             {
                 ord.drop_key(*slot, k);
-                watches.iter().filter(|(w, _)| *w == k).for_each(|(_, w)| ord.forget(*w));
+                watches
+                    .iter()
+                    .filter(|(w, _)| *w == k)
+                    .for_each(|(_, w)| ord.forget(*w));
             }
             lit.latest.insert(k, lit.parts.len());
         }
@@ -324,19 +367,23 @@ fn plan_rebuild<'e>(
                 ArrayElem::Spread(e) => {
                     if let Some(b) = resolve_field_chain(ctx, e) {
                         let mut copies = copied(b);
-                        copies.containers.retain(|(n, _)| !n.is_some_and(|n| own.contains(&n)));
+                        copies
+                            .containers
+                            .retain(|(n, _)| !n.is_some_and(|n| own.contains(&n)));
                         ord.watch(path.clone(), copies, range);
                     }
                     Vec::new()
                 }
             })
             .collect(),
-        Expr::MapLit { entries, .. } if literal && columns => {
-            entries.iter().map(|en| vec![Later::Elem(&en.value, true), Later::Key(&en.key)]).collect()
-        }
-        Expr::MapLit { entries, .. } if literal => {
-            entries.iter().map(|en| vec![Later::Key(&en.key), Later::Elem(&en.value, false)]).collect()
-        }
+        Expr::MapLit { entries, .. } if literal && columns => entries
+            .iter()
+            .map(|en| vec![Later::Elem(&en.value, true), Later::Key(&en.key)])
+            .collect(),
+        Expr::MapLit { entries, .. } if literal => entries
+            .iter()
+            .map(|en| vec![Later::Key(&en.key), Later::Elem(&en.value, false)])
+            .collect(),
         _ => Vec::new(),
     };
     for values in parts {
@@ -408,14 +455,30 @@ impl Lit<'_> {
 
 /// One write of a record assignment.
 enum Write<'a> {
-    Set { target: VarRecord, value: Binding },
-    Copy { target: VarRecord, source: Binding, path: String },
-    Rebuild { target: &'a Binding, path: &'a str, value: &'a Expr, elems: &'a [Vec<usize>] },
+    Set {
+        target: VarRecord,
+        value: Binding,
+    },
+    Copy {
+        target: VarRecord,
+        source: Binding,
+        path: String,
+    },
+    Rebuild {
+        target: &'a Binding,
+        path: &'a str,
+        value: &'a Expr,
+        elems: &'a [Vec<usize>],
+    },
 }
 
 /// The writes of `lit`, in the order it is written: rebuilds in source order
 /// (a nested literal's writes in its place), then the fields.
-fn flat<'a>(lit: &'a Lit<'a>, get: &mut dyn FnMut(usize) -> Option<Binding>, out: &mut Vec<Write<'a>>) {
+fn flat<'a>(
+    lit: &'a Lit<'a>,
+    get: &mut dyn FnMut(usize) -> Option<Binding>,
+    out: &mut Vec<Write<'a>>,
+) {
     for p in lit.rebuilds() {
         match p {
             Part::Rebuild {
@@ -438,9 +501,16 @@ fn flat<'a>(lit: &'a Lit<'a>, get: &mut dyn FnMut(usize) -> Option<Binding>, out
 
 /// The writes that put `src` into `target`, one per leaf, in `target`'s
 /// iteration order: a scalar leaf is set and a container leaf copied.
-fn field_writes(target: &HashMap<Sym, Binding>, src: &HashMap<Sym, Binding>, path: &str, out: &mut Vec<Write<'_>>) {
+fn field_writes(
+    target: &HashMap<Sym, Binding>,
+    src: &HashMap<Sym, Binding>,
+    path: &str,
+    out: &mut Vec<Write<'_>>,
+) {
     for (fname, tbind) in crate::lower::stmt::in_field_order(target) {
-        let Some(sbind) = src.get(&fname) else { continue };
+        let Some(sbind) = src.get(&fname) else {
+            continue;
+        };
         let field_path = format!("{path}.{}", crate::intern::resolve(fname));
         match tbind {
             Binding::Record(tf) => {
@@ -494,7 +564,8 @@ fn container_io(ctx: &LowerCtx, w: &Write) -> (HashSet<NodeId>, HashSet<NodeId>)
 /// other in a cycle have no such order; those come last, and are the second
 /// list.
 fn write_order(ctx: &LowerCtx, writes: &[Write]) -> (Vec<usize>, Vec<usize>) {
-    let io: Vec<(HashSet<NodeId>, HashSet<NodeId>)> = writes.iter().map(|w| container_io(ctx, w)).collect();
+    let io: Vec<(HashSet<NodeId>, HashSet<NodeId>)> =
+        writes.iter().map(|w| container_io(ctx, w)).collect();
     // `before[j]`: every other write that reads a container write `j` replaces.
     let before: Vec<Vec<usize>> = (0..writes.len())
         .map(|j| {
@@ -506,7 +577,9 @@ fn write_order(ctx: &LowerCtx, writes: &[Write]) -> (Vec<usize>, Vec<usize>) {
     let mut order = Vec::with_capacity(writes.len());
     let mut done = vec![false; writes.len()];
     while order.len() < writes.len() {
-        let Some(next) = (0..writes.len()).find(|&j| !done[j] && before[j].iter().all(|&i| done[i])) else {
+        let Some(next) =
+            (0..writes.len()).find(|&j| !done[j] && before[j].iter().all(|&i| done[i]))
+        else {
             let stuck: Vec<usize> = (0..writes.len()).filter(|&j| !done[j]).collect();
             order.extend(&stuck);
             return (order, stuck);
@@ -518,7 +591,13 @@ fn write_order(ctx: &LowerCtx, writes: &[Write]) -> (Vec<usize>, Vec<usize>) {
 }
 
 /// Run `writes` in `order`.
-fn run_writes(ctx: &mut LowerCtx, ord: &mut Ordered, writes: Vec<Write>, order: &[usize], range: &SourceRange) {
+fn run_writes(
+    ctx: &mut LowerCtx,
+    ord: &mut Ordered,
+    writes: Vec<Write>,
+    order: &[usize],
+    range: &SourceRange,
+) {
     let mut writes: Vec<Option<Write>> = writes.into_iter().map(Some).collect();
     for &i in order {
         match writes[i].take() {
@@ -527,7 +606,9 @@ fn run_writes(ctx: &mut LowerCtx, ord: &mut Ordered, writes: Vec<Write>, order: 
                     set_scalar_var(ctx, &target, port, range);
                 }
             }
-            Some(Write::Copy { target, source, .. }) => copy_container(ctx, &target, &source, range),
+            Some(Write::Copy { target, source, .. }) => {
+                copy_container(ctx, &target, &source, range)
+            }
             Some(Write::Rebuild {
                 target,
                 path,
@@ -569,14 +650,20 @@ fn rebuild(
         if slots.is_empty() || (is_map && columns && ctx.current_exec.is_none()) {
             return Supplied::Skip;
         }
-        let port = |ctx: &mut LowerCtx, b: Option<Binding>| b.and_then(|b| binding_to_port(ctx, &b, range));
+        let port = |ctx: &mut LowerCtx, b: Option<Binding>| {
+            b.and_then(|b| binding_to_port(ctx, &b, range))
+        };
         let first = ord.value(ctx, slots[0]);
         match (is_map, columns, first) {
             (false, true, Some(Binding::Record(r))) => Supplied::Item(ElemValue::Record(r)),
-            (false, false, b) => port(ctx, b).map_or(Supplied::Missing, |p| Supplied::Item(ElemValue::Scalar(p))),
+            (false, false, b) => {
+                port(ctx, b).map_or(Supplied::Missing, |p| Supplied::Item(ElemValue::Scalar(p)))
+            }
             (true, true, Some(Binding::Record(r))) => {
                 let key = ord.value(ctx, slots[1]);
-                port(ctx, key).map_or(Supplied::Missing, |k| Supplied::Entry(k, ElemValue::Record(r)))
+                port(ctx, key).map_or(Supplied::Missing, |k| {
+                    Supplied::Entry(k, ElemValue::Record(r))
+                })
             }
             (true, false, key) => {
                 let value = ord.value(ctx, slots[1]);
@@ -655,7 +742,12 @@ fn report_cycle(ctx: &mut LowerCtx, writes: &[Write], stuck: &[usize], range: &S
 /// The storage `lit` writes: every rebuilt container, and every field a
 /// source supplies other than one naming the field's own storage. `named`
 /// gives a slot's record as far as it names storage.
-fn lit_written(ctx: &LowerCtx, lit: &Lit, named: &mut dyn FnMut(usize) -> Option<Binding>, w: &mut Writes) {
+fn lit_written(
+    ctx: &LowerCtx,
+    lit: &Lit,
+    named: &mut dyn FnMut(usize) -> Option<Binding>,
+    w: &mut Writes,
+) {
     for p in lit.rebuilds() {
         match p {
             Part::Rebuild { target, .. } => w.add(ctx, target),
@@ -678,7 +770,9 @@ fn written(ctx: &LowerCtx, writes: &[Write]) -> Writes {
     let mut w = Writes::default();
     for write in writes {
         match write {
-            Write::Set { target, .. } | Write::Copy { target, .. } => w.add(ctx, &Binding::Var(target.clone())),
+            Write::Set { target, .. } | Write::Copy { target, .. } => {
+                w.add(ctx, &Binding::Var(target.clone()))
+            }
             Write::Rebuild { target, .. } => w.add(ctx, target),
         }
     }
@@ -707,7 +801,16 @@ pub(super) fn assign_literal(
     range: &SourceRange,
 ) {
     let mut ord = Ordered::default();
-    let lit = plan(ctx, &mut ord, target.clone(), path.to_string(), fields, slots, false, range);
+    let lit = plan(
+        ctx,
+        &mut ord,
+        target.clone(),
+        path.to_string(),
+        fields,
+        slots,
+        false,
+        range,
+    );
     let (changed, reorder) = {
         let mut named = |s: usize| match &ord.slots[s].state {
             State::Live(b) | State::Fixed(b) => Some(b.clone()),
@@ -719,7 +822,10 @@ pub(super) fn assign_literal(
         let (order, stuck) = write_order(ctx, &writes);
         let mut changed = Writes::default();
         lit_written(ctx, &lit, &mut named, &mut changed);
-        (changed, !stuck.is_empty() || order.iter().enumerate().any(|(i, j)| i != *j))
+        (
+            changed,
+            !stuck.is_empty() || order.iter().enumerate().any(|(i, j)| i != *j),
+        )
     };
     ord.fix_changed(ctx, &changed);
     if !reorder {

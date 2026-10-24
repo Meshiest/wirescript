@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::collections::{HashMap, HashSet};
 
-use crate::ast::*;
 use crate::ast::walk;
+use crate::ast::*;
 use crate::diagnostic::{Diagnostic, Suppressions};
 use crate::parser::{ParseResult, parse};
 
@@ -160,7 +160,9 @@ fn installs_behaviour(d: &TopDecl) -> bool {
 fn decl_names(d: &TopDecl) -> Vec<String> {
     match d {
         TopDecl::Let(l) => crate::const_eval::bound_names(&l.binding),
-        _ => decl_name(d).map(|n| vec![n.to_string()]).unwrap_or_default(),
+        _ => decl_name(d)
+            .map(|n| vec![n.to_string()])
+            .unwrap_or_default(),
     }
 }
 
@@ -219,7 +221,8 @@ impl DeclAccum {
         let file = d.range().file.clone();
         for n in decl_names(d) {
             self.bound.entry(n.clone()).or_default().push(file.clone());
-            self.merged.insert((file.clone(), d.range().start.offset, n));
+            self.merged
+                .insert((file.clone(), d.range().start.offset, n));
         }
         self.installed.insert((file, d.range().start.offset));
     }
@@ -227,7 +230,8 @@ impl DeclAccum {
     /// Whether the declaration `d` has already been merged (the same
     /// declaration of the same file, reached by another import edge).
     fn already_installed(&self, d: &TopDecl) -> bool {
-        self.installed.contains(&(d.range().file.clone(), d.range().start.offset))
+        self.installed
+            .contains(&(d.range().file.clone(), d.range().start.offset))
     }
     fn push(&mut self, d: TopDecl) {
         self.index(&d);
@@ -239,7 +243,9 @@ impl DeclAccum {
     }
     /// `decls.iter().any(|e| decl_binds(e, name) && e.range().file == file)`.
     fn binds_in_file(&self, name: &str, file: &Arc<str>) -> bool {
-        self.bound.get(name).is_some_and(|files| files.iter().any(|f| f == file))
+        self.bound
+            .get(name)
+            .is_some_and(|files| files.iter().any(|f| f == file))
     }
 
     /// Whether `d`, which binds `names`, has been merged under them already:
@@ -248,7 +254,9 @@ impl DeclAccum {
     /// merged under an alias only.
     fn merged_as(&self, d: &TopDecl, names: &[String]) -> bool {
         let (file, at) = decl_id(d);
-        names.iter().any(|n| self.merged.contains(&(file.clone(), at, n.clone())))
+        names
+            .iter()
+            .any(|n| self.merged.contains(&(file.clone(), at, n.clone())))
     }
 }
 
@@ -345,7 +353,12 @@ fn resolve_file(
             TopDecl::TypeAlias(_) => Some(d.clone()),
             TopDecl::Namespace(ns) => Some(TopDecl::Namespace(NamespaceDecl {
                 name: ns.name.clone(),
-                decls: ns.decls.iter().filter(|m| matches!(m, TopDecl::TypeAlias(_))).cloned().collect(),
+                decls: ns
+                    .decls
+                    .iter()
+                    .filter(|m| matches!(m, TopDecl::TypeAlias(_)))
+                    .cloned()
+                    .collect(),
                 source_path: ns.source_path.clone(),
                 module_doc: None,
                 range: ns.range.clone(),
@@ -384,7 +397,15 @@ fn resolve_import(
         return;
     }
 
-    let canon = match resolve_file(&imp.path, relative_to, loader, cache, stack, diagnostics, scope) {
+    let canon = match resolve_file(
+        &imp.path,
+        relative_to,
+        loader,
+        cache,
+        stack,
+        diagnostics,
+        scope,
+    ) {
         Some(c) => c,
         None => {
             diagnostics.push(Diagnostic::error(
@@ -432,15 +453,32 @@ fn resolve_import(
                 .is_some_and(|s| s.contains(&decl_id(d)))
     };
     let named_here: Vec<(Arc<str>, usize)> = match &imp.kind {
-        ImportKind::All => importable.iter().filter(|d| module_names(d)).map(|d| decl_id(d)).collect(),
+        ImportKind::All => importable
+            .iter()
+            .filter(|d| module_names(d))
+            .map(|d| decl_id(d))
+            .collect(),
         ImportKind::Named(bindings) => bindings
             .iter()
-            .filter_map(|b| importable.iter().rfind(|d| decl_binds(d, &b.name)).map(|d| decl_id(d)))
+            .filter_map(|b| {
+                importable
+                    .iter()
+                    .rfind(|d| decl_binds(d, &b.name))
+                    .map(|d| decl_id(d))
+            })
             .collect(),
         ImportKind::Namespace(_) => Vec::new(),
     };
-    scope.named.entry(imp.range.file.clone()).or_default().extend(named_here);
-    scope.files.entry(imp.range.file.clone()).or_default().insert(module_file.clone());
+    scope
+        .named
+        .entry(imp.range.file.clone())
+        .or_default()
+        .extend(named_here);
+    scope
+        .files
+        .entry(imp.range.file.clone())
+        .or_default()
+        .insert(module_file.clone());
 
     match &imp.kind {
         ImportKind::All => {
@@ -474,7 +512,8 @@ fn resolve_import(
             // called `K`. A name imported as itself is the declaration pushed
             // (`merged_as`); another declaration of it in the module, which
             // the module reads by position, still travels.
-            let binding_names: HashSet<&str> = bindings.iter().filter_map(|b| b.alias.as_deref()).collect();
+            let binding_names: HashSet<&str> =
+                bindings.iter().filter_map(|b| b.alias.as_deref()).collect();
             // Everything this import contributes goes after here; the closure
             // pass below pulls dependencies in discovery order, which is not
             // declaration order, so the block is re-sorted at the end.
@@ -552,7 +591,9 @@ fn resolve_import(
             loop {
                 let mut added = false;
                 for d in &importable {
-                    if matches!(d, TopDecl::TypeAlias(_)) { continue; }
+                    if matches!(d, TopDecl::TypeAlias(_)) {
+                        continue;
+                    }
                     let names = decl_names(d);
                     // Same diamond-dedup rule as the `ImportKind::All` path, and
                     // for the same reason: a name already bound FROM ANOTHER
@@ -564,7 +605,8 @@ fn resolve_import(
                     let called_as_method = matches!(d, TopDecl::Chip(c)
                         if c.is_self_receiver() && target.used.contains(&format!(".{}", c.name)));
                     if !names.is_empty()
-                        && (names.iter().any(|n| target.used.contains(n.as_str())) || called_as_method)
+                        && (names.iter().any(|n| target.used.contains(n.as_str()))
+                            || called_as_method)
                         && !names.iter().any(|n| binding_names.contains(n.as_str()))
                         && !target.merged_as(d, &names)
                     {
@@ -583,13 +625,18 @@ fn resolve_import(
             // initializer would land after the array and read as undeclared.
             // The source file already orders constants before their users,
             // and a name it declares twice in the order it reads them.
-            let order: HashMap<(Arc<str>, usize), usize> =
-                importable.iter().enumerate().map(|(i, d)| (decl_id(d), i)).collect();
-            target.decls[import_start..].sort_by_key(|d| order.get(&decl_id(d)).copied().unwrap_or(usize::MAX));
+            let order: HashMap<(Arc<str>, usize), usize> = importable
+                .iter()
+                .enumerate()
+                .map(|(i, d)| (decl_id(d), i))
+                .collect();
+            target.decls[import_start..]
+                .sort_by_key(|d| order.get(&decl_id(d)).copied().unwrap_or(usize::MAX));
 
             // Inline-expand type aliases in imported declarations' params
             // so the TypeAlias doesn't need to be in the importing scope.
-            let type_aliases: HashMap<String, Alias> = importable.iter()
+            let type_aliases: HashMap<String, Alias> = importable
+                .iter()
                 .filter_map(|d| match d {
                     TopDecl::TypeAlias(t) => Some((t.name.clone(), alias_of(t))),
                     _ => None,
@@ -700,7 +747,9 @@ fn resolve_import(
         loop {
             let mut added = false;
             for ns in &source_namespaces {
-                let TopDecl::Namespace(nsd) = ns else { continue };
+                let TopDecl::Namespace(nsd) = ns else {
+                    continue;
+                };
                 let name = nsd.name.as_str();
                 if !target.used.contains(name) {
                     continue;
@@ -866,24 +915,27 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
         used_idents.contains(&format!(".{name}"))
             && merged.decls.iter().any(|d| match d {
                 TopDecl::Chip(c) => c.name == name && c.is_self_receiver(),
-                TopDecl::Fn(f) => f.name == name && f.params.first().is_some_and(|p| p.name == "self"),
+                TopDecl::Fn(f) => {
+                    f.name == name && f.params.first().is_some_and(|p| p.name == "self")
+                }
                 _ => false,
             })
     };
     for d in &parsed.ast.decls {
         if let TopDecl::Import(imp) = d
-            && let ImportKind::Named(bindings) = &imp.kind {
-                for b in bindings {
-                    let check_name = b.alias.as_deref().unwrap_or(&b.name);
-                    if !used_idents.contains(check_name) && !called_as_method(check_name) {
-                        diagnostics.push(Diagnostic::warning(
-                            "WS014",
-                            format!("unused import '{}'", check_name),
-                            b.range.clone(),
-                        ));
-                    }
+            && let ImportKind::Named(bindings) = &imp.kind
+        {
+            for b in bindings {
+                let check_name = b.alias.as_deref().unwrap_or(&b.name);
+                if !used_idents.contains(check_name) && !called_as_method(check_name) {
+                    diagnostics.push(Diagnostic::warning(
+                        "WS014",
+                        format!("unused import '{}'", check_name),
+                        b.range.clone(),
+                    ));
                 }
             }
+        }
     }
 
     // `ws-ignore` directives from the entry file and every file it pulled in.
@@ -956,7 +1008,8 @@ pub(crate) enum Uses {
 
 /// Every name `node`, or anything below it, uses (see [`Uses`]).
 pub(crate) fn collect_idents(node: walk::Node, uses: Uses, idents: &mut HashSet<String>) {
-    let skipped = |n: walk::Node| uses == Uses::All && matches!(n, walk::Node::Decl(TopDecl::Namespace(_)));
+    let skipped =
+        |n: walk::Node| uses == Uses::All && matches!(n, walk::Node::Decl(TopDecl::Namespace(_)));
     if skipped(node) {
         return;
     }
@@ -997,7 +1050,10 @@ fn leaf_idents(node: walk::Node, uses: Uses, idents: &mut HashSet<String>) {
         },
         _ if uses == Uses::Code => {}
         walk::Node::Decl(d) => match d {
-            TopDecl::Handler(h) | TopDecl::Event(EventDecl { captured: Some(h), .. }) => handler_idents(h, idents),
+            TopDecl::Handler(h)
+            | TopDecl::Event(EventDecl {
+                captured: Some(h), ..
+            }) => handler_idents(h, idents),
             TopDecl::Chip(c) => chip_idents(c, idents),
             TopDecl::Fn(f) => {
                 for p in &f.params {
@@ -1079,21 +1135,31 @@ fn collect_idents_in_trigger(t: &Trigger, idents: &mut HashSet<String>) {
 
 fn collect_idents_in_type_expr(t: &TypeExpr, idents: &mut HashSet<String>) {
     match t {
-        TypeExpr::Name { name, .. } => { idents.insert(name.clone()); }
+        TypeExpr::Name { name, .. } => {
+            idents.insert(name.clone());
+        }
         TypeExpr::Ref { inner, .. } | TypeExpr::Array { inner, .. } => {
             collect_idents_in_type_expr(inner, idents);
         }
         TypeExpr::Tuple { fields, .. } => {
-            for f in fields { collect_idents_in_type_expr(f, idents); }
+            for f in fields {
+                collect_idents_in_type_expr(f, idents);
+            }
         }
         TypeExpr::Record { fields, .. } => {
-            for f in fields { collect_idents_in_type_expr(&f.typ, idents); }
+            for f in fields {
+                collect_idents_in_type_expr(&f.typ, idents);
+            }
         }
         TypeExpr::Union { options, .. } => {
-            for o in options { collect_idents_in_type_expr(o, idents); }
+            for o in options {
+                collect_idents_in_type_expr(o, idents);
+            }
         }
         TypeExpr::Generic { args, .. } => {
-            for a in args { collect_idents_in_type_expr(a, idents); }
+            for a in args {
+                collect_idents_in_type_expr(a, idents);
+            }
         }
     }
 }
@@ -1102,7 +1168,10 @@ fn collect_idents_in_type_expr(t: &TypeExpr, idents: &mut HashSet<String>) {
 type Alias = (Vec<String>, TypeExpr);
 
 fn alias_of(t: &crate::ast::TypeAliasDecl) -> Alias {
-    (t.type_params.iter().map(|p| p.name.clone()).collect(), t.typ.clone())
+    (
+        t.type_params.iter().map(|p| p.name.clone()).collect(),
+        t.typ.clone(),
+    )
 }
 
 fn expand_type_aliases_in_decl(d: &mut TopDecl, aliases: &HashMap<String, Alias>) {
@@ -1121,24 +1190,40 @@ fn expand_type_aliases_in_decl(d: &mut TopDecl, aliases: &HashMap<String, Alias>
         }
         TopDecl::Chip(c) => {
             let params: Vec<String> = c.type_params.iter().map(|p| p.name.clone()).collect();
-            for p in &mut c.inputs { expand_aliases(&mut p.typ, aliases, &params, &mut Vec::new()); }
-            for o in &mut c.outputs { expand_aliases(&mut o.typ, aliases, &params, &mut Vec::new()); }
+            for p in &mut c.inputs {
+                expand_aliases(&mut p.typ, aliases, &params, &mut Vec::new());
+            }
+            for o in &mut c.outputs {
+                expand_aliases(&mut o.typ, aliases, &params, &mut Vec::new());
+            }
         }
         TopDecl::Fn(f) => {
-            for p in &mut f.params { expand_type_aliases_in_type_expr(&mut p.typ, aliases); }
-            if let Some(t) = &mut f.return_type { expand_type_aliases_in_type_expr(t, aliases); }
+            for p in &mut f.params {
+                expand_type_aliases_in_type_expr(&mut p.typ, aliases);
+            }
+            if let Some(t) = &mut f.return_type {
+                expand_type_aliases_in_type_expr(t, aliases);
+            }
         }
         TopDecl::Let(l) => {
-            if let Some(t) = &mut l.typ { expand_type_aliases_in_type_expr(t, aliases); }
+            if let Some(t) = &mut l.typ {
+                expand_type_aliases_in_type_expr(t, aliases);
+            }
         }
         TopDecl::Var(v) => {
-            if let Some(t) = &mut v.typ { expand_type_aliases_in_type_expr(t, aliases); }
+            if let Some(t) = &mut v.typ {
+                expand_type_aliases_in_type_expr(t, aliases);
+            }
         }
         TopDecl::Out(o) => {
-            if let Some(t) = &mut o.typ { expand_type_aliases_in_type_expr(t, aliases); }
+            if let Some(t) = &mut o.typ {
+                expand_type_aliases_in_type_expr(t, aliases);
+            }
         }
         TopDecl::Buffer(b) => {
-            if let Some(t) = &mut b.typ { expand_type_aliases_in_type_expr(t, aliases); }
+            if let Some(t) = &mut b.typ {
+                expand_type_aliases_in_type_expr(t, aliases);
+            }
         }
         TopDecl::In(i) => {
             expand_type_aliases_in_type_expr(&mut i.typ, aliases);
@@ -1167,7 +1252,12 @@ fn expand_type_aliases_in_type_expr(t: &mut TypeExpr, aliases: &HashMap<String, 
 /// `active` is the chain of aliases being substituted on the current path. A
 /// name already on it is left alone, so a self-referential or mutually
 /// recursive alias expands one level and stops rather than looping forever.
-fn expand_aliases(t: &mut TypeExpr, aliases: &HashMap<String, Alias>, params: &[String], active: &mut Vec<String>) {
+fn expand_aliases(
+    t: &mut TypeExpr,
+    aliases: &HashMap<String, Alias>,
+    params: &[String],
+    active: &mut Vec<String>,
+) {
     match t {
         TypeExpr::Name { name, .. } => {
             if params.iter().any(|p| p == name) || active.iter().any(|a| a == name) {
@@ -1189,16 +1279,24 @@ fn expand_aliases(t: &mut TypeExpr, aliases: &HashMap<String, Alias>, params: &[
             expand_aliases(inner, aliases, params, active);
         }
         TypeExpr::Tuple { fields, .. } => {
-            for f in fields { expand_aliases(f, aliases, params, active); }
+            for f in fields {
+                expand_aliases(f, aliases, params, active);
+            }
         }
         TypeExpr::Record { fields, .. } => {
-            for f in fields { expand_aliases(&mut f.typ, aliases, params, active); }
+            for f in fields {
+                expand_aliases(&mut f.typ, aliases, params, active);
+            }
         }
         TypeExpr::Union { options, .. } => {
-            for o in options { expand_aliases(o, aliases, params, active); }
+            for o in options {
+                expand_aliases(o, aliases, params, active);
+            }
         }
         TypeExpr::Generic { name, args, .. } => {
-            for a in args.iter_mut() { expand_aliases(a, aliases, params, active); }
+            for a in args.iter_mut() {
+                expand_aliases(a, aliases, params, active);
+            }
             if params.iter().any(|p| p == name) || active.iter().any(|a| a == name) {
                 return;
             }
@@ -1212,13 +1310,17 @@ fn expand_aliases(t: &mut TypeExpr, aliases: &HashMap<String, Alias>, params: &[
             active.push(name.clone());
             expand_aliases(&mut body, aliases, alias_params, active);
             active.pop();
-            let subst: HashMap<String, TypeExpr> = alias_params.iter().cloned().zip(args.iter().cloned()).collect();
+            let subst: HashMap<String, TypeExpr> = alias_params
+                .iter()
+                .cloned()
+                .zip(args.iter().cloned())
+                .collect();
             *t = crate::types::resolve::substitute_type_expr(&body, &subst);
         }
     }
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod dep_pull_tests;
+#[cfg(test)]
+mod tests;

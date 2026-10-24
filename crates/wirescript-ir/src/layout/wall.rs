@@ -133,8 +133,7 @@ pub fn assign_wall_slots(
     let mut chips = HashMap::default();
     // Breadth-first over nesting depth. Each frontier entry carries the
     // world Z its plane was given, which is what its own children anchor on.
-    let mut frontier: Vec<(f32, &Module, &LayoutResult)> =
-        vec![(root.location.z, module, lr)];
+    let mut frontier: Vec<(f32, &Module, &LayoutResult)> = vec![(root.location.z, module, lr)];
     loop {
         let mut row: Vec<RowPlane> = Vec::new();
         for (parent_z, m, mlr) in &frontier {

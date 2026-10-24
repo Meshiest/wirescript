@@ -23,11 +23,20 @@ pub fn asset_types() -> Vec<&'static str> {
 /// that component's properties.
 pub fn asset_names(asset_type: &str) -> Vec<&'static str> {
     if asset_type == COMPONENT {
-        return crate::catalog::component_types().iter().map(|o| o.name.as_str()).collect();
+        return crate::catalog::component_types()
+            .iter()
+            .map(|o| o.name.as_str())
+            .collect();
     }
-    if let Some(name) = asset_type.strip_prefix(COMPONENT).and_then(|r| r.strip_prefix('/')) {
+    if let Some(name) = asset_type
+        .strip_prefix(COMPONENT)
+        .and_then(|r| r.strip_prefix('/'))
+    {
         return match crate::catalog::component_type(name) {
-            Some(o) => crate::catalog::component_properties(o.class).into_iter().map(|p| p.name).collect(),
+            Some(o) => crate::catalog::component_properties(o.class)
+                .into_iter()
+                .map(|p| p.name)
+                .collect(),
             None => Vec::new(),
         };
     }
@@ -48,7 +57,9 @@ pub fn asset_type_exists(asset_type: &str) -> bool {
 pub fn asset_exists(asset_type: &str, asset_name: &str) -> bool {
     match asset_name.split_once('/') {
         Some((component, property)) if asset_type == COMPONENT => {
-            asset_names(&format!("{COMPONENT}/{component}")).iter().any(|n| *n == property)
+            asset_names(&format!("{COMPONENT}/{component}"))
+                .iter()
+                .any(|n| *n == property)
         }
         _ => asset_names(asset_type).iter().any(|n| *n == asset_name),
     }
@@ -77,7 +88,11 @@ mod tests;
 /// environment's properties (with their types) after `Environment.<env>.`.
 /// `None` when the cursor is not in such a path. Each item is
 /// `(label, detail)`.
-pub fn environment_completions(source: &str, line: usize, col: usize) -> Option<Vec<(String, String)>> {
+pub fn environment_completions(
+    source: &str,
+    line: usize,
+    col: usize,
+) -> Option<Vec<(String, String)>> {
     use crate::catalog::properties::{self, PropertyType};
     use crate::typecheck::props::{ENVIRONMENT, environment_by_label, environment_names};
     let l = source.lines().nth(line)?;
@@ -93,7 +108,8 @@ pub fn environment_completions(source: &str, line: usize, col: usize) -> Option<
             environment_names()
                 .into_iter()
                 .map(|name| {
-                    let detail = environment_by_label(&name).map_or(String::new(), |e| format!("environment `{}`", e.option));
+                    let detail = environment_by_label(&name)
+                        .map_or(String::new(), |e| format!("environment `{}`", e.option));
                     (name, detail)
                 })
                 .collect(),
@@ -106,7 +122,9 @@ pub fn environment_completions(source: &str, line: usize, col: usize) -> Option<
                     .map(|p| {
                         let detail = match properties::property_type(p) {
                             PropertyType::Value(t) => crate::analysis::types::type_str(&t),
-                            PropertyType::Enum(en) => format!("int ({})", crate::catalog::clean_game_enum_type(&en)),
+                            PropertyType::Enum(en) => {
+                                format!("int ({})", crate::catalog::clean_game_enum_type(&en))
+                            }
                             PropertyType::Unsupported(why) => format!("unsupported: {why}"),
                         };
                         (p.name.clone(), detail)

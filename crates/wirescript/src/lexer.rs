@@ -95,8 +95,8 @@ fn keyword_set() -> &'static HashSet<&'static str> {
 }
 
 const TWO_CHAR_OPS: &[&str] = &[
-    "&&", "||", "^^", "==", "!=", "<=", ">=", "<<", ">>", "**", "..",
-    "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
+    "&&", "||", "^^", "==", "!=", "<=", ">=", "<<", ">>", "**", "..", "+=", "-=", "*=", "/=", "%=",
+    "&=", "|=", "^=",
 ];
 const THREE_CHAR_OPS: &[&str] = &["...", "<<=", ">>="];
 const SINGLE_CHAR_OPS: &[char] = &[
@@ -111,7 +111,15 @@ pub struct LexResult {
 }
 
 pub fn lex(source: &str, file: &str) -> LexResult {
-    lex_at(source, file, Pos { offset: 0, line: 1, col: 1 })
+    lex_at(
+        source,
+        file,
+        Pos {
+            offset: 0,
+            line: 1,
+            col: 1,
+        },
+    )
 }
 
 /// Lex a FRAGMENT carved out of a larger file, reporting positions in the
@@ -190,7 +198,9 @@ impl<'a> Lexer<'a> {
                 let start = self.snapshot();
                 if self.peek_char(2) == Some('/') {
                     // Doc comment: `/// text`
-                    self.advance(); self.advance(); self.advance(); // skip ///
+                    self.advance();
+                    self.advance();
+                    self.advance(); // skip ///
                     if self.pos < self.bytes.len() && self.bytes[self.pos] == b' ' {
                         self.advance(); // skip optional leading space
                     }
@@ -317,12 +327,7 @@ impl<'a> Lexer<'a> {
             let start = self.snapshot();
             self.advance();
             let end = self.snapshot();
-            self.diag(
-                "WSP001",
-                format!("unexpected character '{c}'"),
-                start,
-                end,
-            );
+            self.diag("WSP001", format!("unexpected character '{c}'"), start, end);
         }
 
         // `abs` by hand: this is the one token that does not go through
@@ -422,7 +427,8 @@ impl<'a> Lexer<'a> {
 
     fn diag(&mut self, code: &str, message: impl Into<String>, start: Pos, end: Pos) {
         let range = SourceRange::new(self.file.clone(), self.abs(start), self.abs(end));
-        self.diagnostics.push(Diagnostic::error(code, message.into(), range));
+        self.diagnostics
+            .push(Diagnostic::error(code, message.into(), range));
     }
 
     /// Read an asset reference into a [`TokenKind::AssetRef`] token. Two forms
@@ -447,7 +453,13 @@ impl<'a> Lexer<'a> {
         let path = self.source[path_start..self.pos].to_string();
         let end = self.snapshot();
         let text = self.source[start.offset..end.offset].to_string();
-        self.emit(TokenKind::AssetRef, text, start, end, Some(TokenValue::Str(path)));
+        self.emit(
+            TokenKind::AssetRef,
+            text,
+            start,
+            end,
+            Some(TokenValue::Str(path)),
+        );
     }
 
     /// Read an inline nested-prefab block `` $```…``` `` into a
@@ -545,18 +557,20 @@ impl<'a> Lexer<'a> {
     /// `:` is an annotation / field / map-key separator rather than an atom.
     fn prev_tok_completes_value(&self) -> bool {
         match self.tokens.last() {
-            Some(t) => matches!(
-                t.kind,
-                TokenKind::Ident
-                    | TokenKind::Str
-                    | TokenKind::StrInterp
-                    | TokenKind::Int
-                    | TokenKind::Float
-                    | TokenKind::Atom
-                    | TokenKind::RParen
-                    | TokenKind::RBracket
-                    | TokenKind::RBrace
-            ) || (t.kind == TokenKind::Kw && matches!(t.text.as_str(), "true" | "false")),
+            Some(t) => {
+                matches!(
+                    t.kind,
+                    TokenKind::Ident
+                        | TokenKind::Str
+                        | TokenKind::StrInterp
+                        | TokenKind::Int
+                        | TokenKind::Float
+                        | TokenKind::Atom
+                        | TokenKind::RParen
+                        | TokenKind::RBracket
+                        | TokenKind::RBrace
+                ) || (t.kind == TokenKind::Kw && matches!(t.text.as_str(), "true" | "false"))
+            }
             None => false,
         }
     }
@@ -576,7 +590,13 @@ impl<'a> Lexer<'a> {
         let name = self.source[name_start..self.pos].to_string();
         let end = self.snapshot();
         let text = self.source[start.offset..end.offset].to_string();
-        self.emit(TokenKind::Atom, text, start, end, Some(TokenValue::Str(name)));
+        self.emit(
+            TokenKind::Atom,
+            text,
+            start,
+            end,
+            Some(TokenValue::Str(name)),
+        );
     }
 
     fn read_block_comment(&mut self) {
@@ -600,7 +620,12 @@ impl<'a> Lexer<'a> {
             }
         }
         if depth > 0 {
-            self.diag("WSP001", "unterminated block comment", start, self.snapshot());
+            self.diag(
+                "WSP001",
+                "unterminated block comment",
+                start,
+                self.snapshot(),
+            );
         }
     }
 
@@ -681,7 +706,12 @@ impl<'a> Lexer<'a> {
                 }
                 let expr_end = self.snapshot();
                 if depth != 0 {
-                    self.diag("WSP001", "unterminated string interpolation", start, expr_end);
+                    self.diag(
+                        "WSP001",
+                        "unterminated string interpolation",
+                        start,
+                        expr_end,
+                    );
                     return;
                 }
                 parts.push(InterpPart::Expr {
@@ -763,9 +793,21 @@ impl<'a> Lexer<'a> {
                     if !literal.is_empty() {
                         parts.push(InterpPart::Lit(std::mem::take(&mut literal)));
                     }
-                    self.emit(TokenKind::StrInterp, text, start, end, Some(TokenValue::Interp(parts)));
+                    self.emit(
+                        TokenKind::StrInterp,
+                        text,
+                        start,
+                        end,
+                        Some(TokenValue::Interp(parts)),
+                    );
                 } else {
-                    self.emit(TokenKind::Str, text, start, end, Some(TokenValue::Str(literal)));
+                    self.emit(
+                        TokenKind::Str,
+                        text,
+                        start,
+                        end,
+                        Some(TokenValue::Str(literal)),
+                    );
                 }
                 return;
             }
@@ -811,7 +853,12 @@ impl<'a> Lexer<'a> {
                 }
                 let expr_end = self.snapshot();
                 if depth != 0 {
-                    self.diag("WSP001", "unterminated string interpolation", start, expr_end);
+                    self.diag(
+                        "WSP001",
+                        "unterminated string interpolation",
+                        start,
+                        expr_end,
+                    );
                     return;
                 }
                 parts.push(InterpPart::Expr {
@@ -837,7 +884,12 @@ impl<'a> Lexer<'a> {
                 self.advance();
             }
         }
-        self.diag("WSP001", "unterminated string at end of file", start, self.snapshot());
+        self.diag(
+            "WSP001",
+            "unterminated string at end of file",
+            start,
+            self.snapshot(),
+        );
     }
 
     fn read_number(&mut self) {
@@ -848,9 +900,7 @@ impl<'a> Lexer<'a> {
         let mut is_bin = false;
         let mut is_oct = false;
 
-        if self.bytes[self.pos] == b'0'
-            && matches!(self.peek_char(1), Some('x') | Some('X'))
-        {
+        if self.bytes[self.pos] == b'0' && matches!(self.peek_char(1), Some('x') | Some('X')) {
             text.push(self.bytes[self.pos] as char);
             self.advance();
             text.push(self.bytes[self.pos] as char);
@@ -865,8 +915,7 @@ impl<'a> Lexer<'a> {
                     break;
                 }
             }
-        } else if self.bytes[self.pos] == b'0'
-            && matches!(self.peek_char(1), Some('b') | Some('B'))
+        } else if self.bytes[self.pos] == b'0' && matches!(self.peek_char(1), Some('b') | Some('B'))
         {
             text.push(self.bytes[self.pos] as char);
             self.advance();
@@ -882,8 +931,7 @@ impl<'a> Lexer<'a> {
                     break;
                 }
             }
-        } else if self.bytes[self.pos] == b'0'
-            && matches!(self.peek_char(1), Some('o') | Some('O'))
+        } else if self.bytes[self.pos] == b'0' && matches!(self.peek_char(1), Some('o') | Some('O'))
         {
             text.push(self.bytes[self.pos] as char);
             self.advance();
@@ -911,7 +959,10 @@ impl<'a> Lexer<'a> {
             }
             // fractional part
             if self.bytes.get(self.pos).copied() == Some(b'.')
-                && self.peek_char(1).map(|c| c.is_ascii_digit()).unwrap_or(false)
+                && self
+                    .peek_char(1)
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
             {
                 is_float = true;
                 text.push('.');

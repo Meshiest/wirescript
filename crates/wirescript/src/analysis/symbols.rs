@@ -142,7 +142,11 @@ fn collect_param_symbols(syms: &mut Vec<SymbolDef>, params: &[Param], script: &S
                         };
                         let ty = resolve_record_param_field_type(script, &p.typ, orig_name);
                         syms.push(SymbolDef {
-                            name: field_name, kind: "param", range: p.range.clone(), ty, exec: false,
+                            name: field_name,
+                            kind: "param",
+                            range: p.range.clone(),
+                            ty,
+                            exec: false,
                             is_const: p.is_const,
                         });
                     }
@@ -151,7 +155,11 @@ fn collect_param_symbols(syms: &mut Vec<SymbolDef>, params: &[Param], script: &S
                     for (i, name) in names.iter().enumerate() {
                         let ty = resolve_record_param_field_type(script, &p.typ, &i.to_string());
                         syms.push(SymbolDef {
-                            name: name.clone(), kind: "param", range: p.range.clone(), ty, exec: false,
+                            name: name.clone(),
+                            kind: "param",
+                            range: p.range.clone(),
+                            ty,
+                            exec: false,
                             is_const: p.is_const,
                         });
                     }
@@ -244,7 +252,13 @@ fn pattern_symbols(syms: &mut Vec<SymbolDef>, pattern: &Pattern, tmap: &TypeMap)
     }
 }
 
-pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file: Option<&str>, script: &Script) {
+pub fn collect_decl(
+    syms: &mut Vec<SymbolDef>,
+    d: &TopDecl,
+    tmap: &TypeMap,
+    file: Option<&str>,
+    script: &Script,
+) {
     let is_local = |range: &SourceRange| -> bool {
         file.is_none_or(|f| {
             range.file.as_ref() == f || range.file.ends_with(f) || f.ends_with(range.file.as_ref())
@@ -513,7 +527,13 @@ fn namespace_member_decl(d: &TopDecl) -> Option<(String, &'static str)> {
     }
 }
 
-pub fn collect_stmt(syms: &mut Vec<SymbolDef>, s: &Stmt, tmap: &TypeMap, file: Option<&str>, script: &Script) {
+pub fn collect_stmt(
+    syms: &mut Vec<SymbolDef>,
+    s: &Stmt,
+    tmap: &TypeMap,
+    file: Option<&str>,
+    script: &Script,
+) {
     match s {
         Stmt::Var(v) => collect_decl(syms, &TopDecl::Var(v.clone()), tmap, file, script),
         Stmt::Buffer(b) => collect_decl(syms, &TopDecl::Buffer(b.clone()), tmap, file, script),
@@ -578,7 +598,6 @@ pub fn collect_stmt(syms: &mut Vec<SymbolDef>, s: &Stmt, tmap: &TypeMap, file: O
         }
         Stmt::ChipDecl(c) => collect_decl(syms, &TopDecl::Chip(c.clone()), tmap, file, script),
         Stmt::If(i) => {
-
             for s in &i.then_block.stmts {
                 collect_stmt(syms, s, tmap, file, script);
             }
@@ -644,7 +663,7 @@ pub fn collect_stmt(syms: &mut Vec<SymbolDef>, s: &Stmt, tmap: &TypeMap, file: O
 /// slot tables. A collection's element type is read back from `tmap`
 /// (typecheck's own inference), since this module cannot infer types itself.
 fn collect_for_bindings(syms: &mut Vec<SymbolDef>, f: &ForStmt, tmap: &TypeMap) {
-    use crate::ir::plane::{for_slots, plane_spec, slot_types, ForSlot, LoopKind};
+    use crate::ir::plane::{ForSlot, LoopKind, for_slots, plane_spec, slot_types};
 
     let (kind, elem): (LoopKind, Vec<Type>) = match &f.source {
         ForSource::Range(_) => (LoopKind::CountFor, Vec::new()),
@@ -670,7 +689,9 @@ fn collect_for_bindings(syms: &mut Vec<SymbolDef>, f: &ForStmt, tmap: &TypeMap) 
     for (pat, slot) in f.bindings.iter().zip(&slots) {
         match slot {
             ForSlot::RangeSlotNames => {
-                let ForPat::Record { fields, .. } = pat else { continue };
+                let ForPat::Record { fields, .. } = pat else {
+                    continue;
+                };
                 for field in fields {
                     let RecordDestructField::Named { name, alias, range } = field else {
                         continue;
@@ -710,17 +731,31 @@ fn push_for_pat_symbol(syms: &mut Vec<SymbolDef>, pat: &ForPat, ty: &Type) {
         ForPat::Record { fields, .. } => {
             // An already-erroneous slot (the source type didn't resolve to a
             // record): bind every name with no type rather than guessing one.
-            let rec = if let Type::Record(rec) | Type::Outputs(rec) = ty { Some(rec) } else { None };
+            let rec = if let Type::Record(rec) | Type::Outputs(rec) = ty {
+                Some(rec)
+            } else {
+                None
+            };
             for field in fields {
                 let (name, range, fty) = match field {
                     RecordDestructField::Named { name, alias, range } => (
                         alias.clone().unwrap_or_else(|| name.clone()),
                         range.clone(),
-                        rec.and_then(|r| r.iter().find(|(n, _)| n == name)).map(|(_, t)| type_str(t)),
+                        rec.and_then(|r| r.iter().find(|(n, _)| n == name))
+                            .map(|(_, t)| type_str(t)),
                     ),
-                    RecordDestructField::Rest { name, range } => (name.clone(), range.clone(), None),
+                    RecordDestructField::Rest { name, range } => {
+                        (name.clone(), range.clone(), None)
+                    }
                 };
-                syms.push(SymbolDef { name, kind: "let", range, ty: fty, exec: false, is_const: false });
+                syms.push(SymbolDef {
+                    name,
+                    kind: "let",
+                    range,
+                    ty: fty,
+                    exec: false,
+                    is_const: false,
+                });
             }
         }
     }
@@ -729,7 +764,10 @@ fn push_for_pat_symbol(syms: &mut Vec<SymbolDef>, pat: &ForPat, ty: &Type) {
 fn collect_let_symbols(syms: &mut Vec<SymbolDef>, l: &LetDecl, tmap: &TypeMap) {
     match &l.binding {
         LetBinding::Ident { name, .. } => {
-            let ty = l.typ.as_ref().map(type_expr_str)
+            let ty = l
+                .typ
+                .as_ref()
+                .map(type_expr_str)
                 .or_else(|| infer_expr_type(&l.value, tmap));
             syms.push(SymbolDef {
                 name: name.clone(),
@@ -747,7 +785,11 @@ fn collect_let_symbols(syms: &mut Vec<SymbolDef>, l: &LetDecl, tmap: &TypeMap) {
                 // same-named record field.
                 let ty = value_field_type(&l.value, tmap, Some(i), name);
                 syms.push(SymbolDef {
-                    name: name.clone(), kind: "let", range: l.range.clone(), ty, exec: false,
+                    name: name.clone(),
+                    kind: "let",
+                    range: l.range.clone(),
+                    ty,
+                    exec: false,
                     is_const: l.is_const,
                 });
             }
@@ -763,14 +805,17 @@ fn collect_let_symbols(syms: &mut Vec<SymbolDef>, l: &LetDecl, tmap: &TypeMap) {
                     RecordDestructField::Rest { name, .. } => (name.clone(), None),
                 };
                 syms.push(SymbolDef {
-                    name, kind: "let", range: l.range.clone(), ty, exec: false,
+                    name,
+                    kind: "let",
+                    range: l.range.clone(),
+                    ty,
+                    exec: false,
                     is_const: l.is_const,
                 });
             }
         }
     }
 }
-
 
 /// Type of a destructured binding, read from the initializer expression's
 /// type in `tmap`: record fields resolve by `field` name (or by `index` for

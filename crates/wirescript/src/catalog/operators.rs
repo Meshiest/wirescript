@@ -255,11 +255,7 @@ fn math_binary(op: &'static str, class_math: &'static str, vec: bool) -> OpSpec 
     // int on a math gate. Accept them here; `lower_binop` routes an object
     // operand through `(obj || false)` so it still reduces to an int the gate
     // takes — i.e. `1 + player` lowers to `add(1, or(player, false))`.
-    const OBJECT_TYPES: &[Type] = &[
-        Type::Entity,
-        Type::Controller,
-        Type::Character,
-    ];
+    const OBJECT_TYPES: &[Type] = &[Type::Entity, Type::Controller, Type::Character];
     for o in OBJECT_TYPES {
         rules.extend([
             OpRule {
@@ -410,9 +406,7 @@ fn bitwise_binary(op: &'static str, gate_class: &'static str) -> OpSpec {
 
 fn compare_binary(op: &'static str, gate_class: &'static str) -> OpSpec {
     use Type::*;
-    const VARIANT_TYPES: &[Type] = &[
-        Int, Float, Bool, String, Entity, Controller, Character,
-    ];
+    const VARIANT_TYPES: &[Type] = &[Int, Float, Bool, String, Entity, Controller, Character];
     // Equality (`==`/`!=`) additionally compares the composite value variants by
     // content: the game's CompareEqual/CompareNotEqual gates are certified for
     // same-type vector/rotator/quat/color operands (`data/gate_semantics.json`).
@@ -568,10 +562,7 @@ fn build_operators() -> Vec<OpSpec> {
         compare_binary("<", "BrickComponentType_Expr_CompareLess"),
         compare_binary("<=", "BrickComponentType_Expr_CompareLessOrEqual"),
         compare_binary(">", "BrickComponentType_Expr_CompareGreater"),
-        compare_binary(
-            ">=",
-            "BrickComponentType_Expr_CompareGreaterOrEqual",
-        ),
+        compare_binary(">=", "BrickComponentType_Expr_CompareGreaterOrEqual"),
         // String concat. The game's String_Concatenate gate auto-converts any
         // wire-variant input (numbers, bools, vectors, entities, characters,
         // controllers, …) to a string, so accept every variant-able primitive

@@ -22,7 +22,9 @@ fn display_file(file: &str) -> &str {
 }
 
 fn within(outer: &SourceRange, inner: &SourceRange) -> bool {
-    outer.file == inner.file && outer.start.offset <= inner.start.offset && inner.end.offset <= outer.end.offset
+    outer.file == inner.file
+        && outer.start.offset <= inner.start.offset
+        && inner.end.offset <= outer.end.offset
 }
 
 /// Start checking `decl`'s body: log the storage and calls it resolves.
@@ -38,7 +40,10 @@ pub(super) fn open_body(ctx: &mut TypeCheckCtx, decl: &ChipDecl) {
 pub(super) fn close_body(ctx: &mut TypeCheckCtx, decl: &ChipDecl) {
     ctx.open_bodies.pop();
     let seen = ctx.scope.close_storage_log();
-    let uses = ctx.storage_uses.entry((decl.range.file.clone(), decl.range.start.offset)).or_default();
+    let uses = ctx
+        .storage_uses
+        .entry((decl.range.file.clone(), decl.range.start.offset))
+        .or_default();
     for (name, at) in seen {
         if !within(&decl.range, &at) {
             add_use(uses.entry(name).or_default(), at);
@@ -75,7 +80,11 @@ fn propagate_uses(ctx: &mut TypeCheckCtx) {
     let edges: Vec<(DeclKey, DeclKey)> = ctx
         .body_calls
         .iter()
-        .flat_map(|(caller, callees)| callees.iter().map(move |callee| (caller.clone(), callee.clone())))
+        .flat_map(|(caller, callees)| {
+            callees
+                .iter()
+                .map(move |callee| (caller.clone(), callee.clone()))
+        })
         .collect();
     let mut by_callee: HashMap<&DeclKey, Vec<usize>> = HashMap::default();
     for (i, (_, callee)) in edges.iter().enumerate() {
@@ -86,12 +95,20 @@ fn propagate_uses(ctx: &mut TypeCheckCtx) {
         let mut added: Vec<(DeclKey, String, SourceRange)> = Vec::new();
         for &i in &visit {
             let (caller, callee) = &edges[i];
-            let Some(range) = ctx.body_ranges.get(caller) else { continue };
+            let Some(range) = ctx.body_ranges.get(caller) else {
+                continue;
+            };
             let own = ctx.storage_uses.get(caller);
-            let Some(uses) = ctx.storage_uses.get(callee) else { continue };
+            let Some(uses) = ctx.storage_uses.get(callee) else {
+                continue;
+            };
             for (name, decls) in uses {
                 for at in decls {
-                    if !within(range, at) && !own.and_then(|o| o.get(name)).is_some_and(|d| d.contains(at)) {
+                    if !within(range, at)
+                        && !own
+                            .and_then(|o| o.get(name))
+                            .is_some_and(|d| d.contains(at))
+                    {
                         added.push((caller.clone(), name.clone(), at.clone()));
                     }
                 }
@@ -99,32 +116,58 @@ fn propagate_uses(ctx: &mut TypeCheckCtx) {
         }
         let mut grew: crate::collections::HashSet<DeclKey> = crate::collections::HashSet::default();
         for (caller, name, at) in added {
-            if add_use(ctx.storage_uses.entry(caller.clone()).or_default().entry(name).or_default(), at) {
+            if add_use(
+                ctx.storage_uses
+                    .entry(caller.clone())
+                    .or_default()
+                    .entry(name)
+                    .or_default(),
+                at,
+            ) {
                 grew.insert(caller);
             }
         }
-        visit = grew.iter().filter_map(|k| by_callee.get(k)).flatten().copied().collect();
+        visit = grew
+            .iter()
+            .filter_map(|k| by_callee.get(k))
+            .flatten()
+            .copied()
+            .collect();
         visit.sort_unstable();
         visit.dedup();
     }
     #[cfg(debug_assertions)]
-    assert_eq!(ctx.storage_uses, swept, "propagated uses differ from sweeping every call per pass");
+    assert_eq!(
+        ctx.storage_uses, swept,
+        "propagated uses differ from sweeping every call per pass"
+    );
 }
 
 /// [`propagate_uses`] by sweeping every call in each pass, which it must
 /// match exactly, order included.
 #[cfg(debug_assertions)]
-fn propagate_by_sweeping(ctx: &TypeCheckCtx, all: &mut HashMap<DeclKey, HashMap<String, Vec<SourceRange>>>) {
+fn propagate_by_sweeping(
+    ctx: &TypeCheckCtx,
+    all: &mut HashMap<DeclKey, HashMap<String, Vec<SourceRange>>>,
+) {
     loop {
         let mut added: Vec<(DeclKey, String, SourceRange)> = Vec::new();
         for (caller, callees) in &ctx.body_calls {
-            let Some(range) = ctx.body_ranges.get(caller) else { continue };
+            let Some(range) = ctx.body_ranges.get(caller) else {
+                continue;
+            };
             let own = all.get(caller);
             for callee in callees {
-                let Some(uses) = all.get(callee) else { continue };
+                let Some(uses) = all.get(callee) else {
+                    continue;
+                };
                 for (name, decls) in uses {
                     for at in decls {
-                        if !within(range, at) && !own.and_then(|o| o.get(name)).is_some_and(|d| d.contains(at)) {
+                        if !within(range, at)
+                            && !own
+                                .and_then(|o| o.get(name))
+                                .is_some_and(|d| d.contains(at))
+                        {
                             added.push((caller.clone(), name.clone(), at.clone()));
                         }
                     }
@@ -152,7 +195,11 @@ fn reachable_idents(
         return;
     }
     let mut names = crate::collections::HashSet::default();
-    crate::resolve::collect_idents(crate::ast::walk::Node::Block(&decl.body), crate::resolve::Uses::All, &mut names);
+    crate::resolve::collect_idents(
+        crate::ast::walk::Node::Block(&decl.body),
+        crate::resolve::Uses::All,
+        &mut names,
+    );
     for p in &decl.inputs {
         names.remove(&p.name);
     }
@@ -192,29 +239,41 @@ fn resolve_mod_at_top(ctx: &TypeCheckCtx, name: &str) -> Option<Arc<ChipDecl>> {
 /// `mod` or shares a top-level one's name.
 fn resolves_at_top(ctx: &TypeCheckCtx) -> bool {
     let stack = ctx.scope.stack();
-    let Some(top) = ctx.mod_decls.first() else { return false };
+    let Some(top) = ctx.mod_decls.first() else {
+        return false;
+    };
     ctx.mod_decls.iter().skip(1).all(HashMap::is_empty)
         && stack.floor() == 0
         && (1..stack.depth()).all(|i| {
-            stack
-                .frame_entries(i)
-                .all(|(sym, info)| info.kind != SymbolKind::Chip && !top.contains_key(crate::intern::resolve(sym)))
+            stack.frame_entries(i).all(|(sym, info)| {
+                info.kind != SymbolKind::Chip && !top.contains_key(crate::intern::resolve(sym))
+            })
         })
 }
 
 impl TopCalls {
     fn of(ctx: &TypeCheckCtx) -> Self {
-        let mut out = Self { decls: ctx.mod_decls.first().map_or(0, HashMap::len), ..Default::default() };
+        let mut out = Self {
+            decls: ctx.mod_decls.first().map_or(0, HashMap::len),
+            ..Default::default()
+        };
         for decl in ctx.mod_decls.first().into_iter().flat_map(HashMap::values) {
             let key: DeclKey = (decl.range.file.clone(), decl.range.start.offset);
             let mut names = crate::collections::HashSet::default();
-            crate::resolve::collect_idents(crate::ast::walk::Node::Block(&decl.body), crate::resolve::Uses::All, &mut names);
+            crate::resolve::collect_idents(
+                crate::ast::walk::Node::Block(&decl.body),
+                crate::resolve::Uses::All,
+                &mut names,
+            );
             for p in &decl.inputs {
                 names.remove(&p.name);
             }
             let mut callees = Vec::new();
             for n in &names {
-                out.mentioned_by.entry(n.clone()).or_default().push(key.clone());
+                out.mentioned_by
+                    .entry(n.clone())
+                    .or_default()
+                    .push(key.clone());
                 if let Some(callee) = resolve_mod_at_top(ctx, n) {
                     let to: DeclKey = (callee.range.file.clone(), callee.range.start.offset);
                     out.callers.entry(to.clone()).or_default().push(key.clone());
@@ -232,8 +291,13 @@ impl TopCalls {
         if let Some(r) = self.reaching.get(name) {
             return r.clone();
         }
-        let mut found: crate::collections::HashSet<DeclKey> =
-            self.mentioned_by.get(name).into_iter().flatten().cloned().collect();
+        let mut found: crate::collections::HashSet<DeclKey> = self
+            .mentioned_by
+            .get(name)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
         let mut queue: Vec<DeclKey> = found.iter().cloned().collect();
         while let Some(k) = queue.pop() {
             for caller in self.callers.get(&k).into_iter().flatten() {
@@ -249,8 +313,10 @@ impl TopCalls {
 
     /// [`reachable_idents`] from `key`, sorted.
     fn idents(&self, key: &DeclKey) -> Vec<String> {
-        let mut visited: crate::collections::HashSet<&DeclKey> = crate::collections::HashSet::default();
-        let mut names: crate::collections::HashSet<&String> = crate::collections::HashSet::default();
+        let mut visited: crate::collections::HashSet<&DeclKey> =
+            crate::collections::HashSet::default();
+        let mut names: crate::collections::HashSet<&String> =
+            crate::collections::HashSet::default();
         let mut stack = vec![key];
         while let Some(k) = stack.pop() {
             if !visited.insert(k) {
@@ -290,7 +356,10 @@ pub(super) fn note_call(ctx: &mut TypeCheckCtx, name: &str, decl: &ChipDecl) {
     let key: DeclKey = (decl.range.file.clone(), decl.range.start.offset);
     for body in &ctx.open_bodies {
         if *body != key {
-            ctx.body_calls.entry(body.clone()).or_default().insert(key.clone());
+            ctx.body_calls
+                .entry(body.clone())
+                .or_default()
+                .insert(key.clone());
         }
     }
     // Only a local shadows: a top-level declaration is no local, and what a
@@ -304,7 +373,11 @@ pub(super) fn note_call(ctx: &mut TypeCheckCtx, name: &str, decl: &ChipDecl) {
             ctx.first_called_at_top.insert(key.clone());
             let stack = ctx.scope.stack();
             let mut bound: Vec<String> = (1..stack.depth())
-                .flat_map(|i| stack.frame_entries(i).map(|(sym, _)| crate::intern::resolve(sym).to_string()))
+                .flat_map(|i| {
+                    stack
+                        .frame_entries(i)
+                        .map(|(sym, _)| crate::intern::resolve(sym).to_string())
+                })
                 .collect();
             bound.sort_unstable();
             bound.dedup();
@@ -318,7 +391,12 @@ pub(super) fn note_call(ctx: &mut TypeCheckCtx, name: &str, decl: &ChipDecl) {
                 names,
                 {
                     let mut all = crate::collections::HashSet::default();
-                    reachable_idents(ctx, decl, &mut crate::collections::HashSet::default(), &mut all);
+                    reachable_idents(
+                        ctx,
+                        decl,
+                        &mut crate::collections::HashSet::default(),
+                        &mut all,
+                    );
                     let mut all: Vec<String> = all.into_iter().collect();
                     all.sort_unstable();
                     all.iter().filter_map(|n| local(ctx, n)).collect::<Vec<_>>()
@@ -351,7 +429,11 @@ pub(super) fn note_call(ctx: &mut TypeCheckCtx, name: &str, decl: &ChipDecl) {
     };
     ctx.scope.resume_storage_log();
     if !names.is_empty() {
-        ctx.call_sites.push(CallSite { callee: key, callee_name: name.to_string(), names });
+        ctx.call_sites.push(CallSite {
+            callee: key,
+            callee_name: name.to_string(),
+            names,
+        });
     }
 }
 
@@ -360,12 +442,17 @@ pub(super) fn note_call(ctx: &mut TypeCheckCtx, name: &str, decl: &ChipDecl) {
 /// shadowing declaration and name, at the declaration.
 pub(super) fn report(ctx: &mut TypeCheckCtx) {
     propagate_uses(ctx);
-    let mut seen: crate::collections::HashSet<(SourceRange, String)> = crate::collections::HashSet::default();
+    let mut seen: crate::collections::HashSet<(SourceRange, String)> =
+        crate::collections::HashSet::default();
     let mut found: Vec<(SourceRange, String)> = Vec::new();
     for site in &ctx.call_sites {
-        let Some(uses) = ctx.storage_uses.get(&site.callee) else { continue };
+        let Some(uses) = ctx.storage_uses.get(&site.callee) else {
+            continue;
+        };
         for (name, here) in &site.names {
-            let Some(used) = uses.get(name).and_then(|d| d.iter().find(|u| *u != here)) else { continue };
+            let Some(used) = uses.get(name).and_then(|d| d.iter().find(|u| *u != here)) else {
+                continue;
+            };
             if !seen.insert((here.clone(), name.clone())) {
                 continue;
             }

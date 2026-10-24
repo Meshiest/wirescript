@@ -15,8 +15,8 @@ use crate::typecheck::enums::{Payload, VariantDef};
 // reinterpretation, payload expansion, and generic-instantiation column typing
 // stay single-sourced with typecheck.
 use crate::typecheck::patterns::{
-    ColEnum, Enums, expand_matching, head_variant_name, is_value_test, or_alternatives, payload_arity,
-    resolve_col_type, resolve_field_type,
+    ColEnum, Enums, expand_matching, head_variant_name, is_value_test, or_alternatives,
+    payload_arity, resolve_col_type, resolve_field_type,
 };
 
 /// The key a scrutinee that is a single value (not an enum) sits under in the
@@ -98,9 +98,16 @@ pub enum ConcatPart {
 pub fn value_test(p: &Pattern, ty: &Type) -> Option<ValueTest> {
     match p {
         Pattern::Literal { expr, .. } => pattern_literal(expr, ty).map(ValueTest::Eq),
-        Pattern::Range { lo, hi, .. } => Some(ValueTest::Range(pattern_literal(lo, ty)?, pattern_literal(hi, ty)?)),
+        Pattern::Range { lo, hi, .. } => Some(ValueTest::Range(
+            pattern_literal(lo, ty)?,
+            pattern_literal(hi, ty)?,
+        )),
         Pattern::Concat { parts, .. } => Some(ValueTest::Concat(concat_parts(parts))),
-        Pattern::Or { alts, .. } => alts.iter().map(|a| value_test(a, ty)).collect::<Option<Vec<_>>>().map(ValueTest::Any),
+        Pattern::Or { alts, .. } => alts
+            .iter()
+            .map(|a| value_test(a, ty))
+            .collect::<Option<Vec<_>>>()
+            .map(ValueTest::Any),
         _ => None,
     }
 }
@@ -251,7 +258,11 @@ pub fn collect_captures(pattern: &Pattern, prefix: &mut Vec<String>, out: &mut V
         Pattern::Wildcard(_) | Pattern::Literal { .. } | Pattern::Range { .. } => {}
         // An alternative binds no names (typecheck's WS121).
         Pattern::Or { .. } => {}
-        Pattern::Binding { name, .. } => out.push(Capture { name: name.clone(), path: prefix.clone(), hole: None }),
+        Pattern::Binding { name, .. } => out.push(Capture {
+            name: name.clone(),
+            path: prefix.clone(),
+            hole: None,
+        }),
         Pattern::Concat { parts, .. } => {
             let merged = concat_parts(parts);
             let mut hole = 0;
@@ -259,7 +270,11 @@ pub fn collect_captures(pattern: &Pattern, prefix: &mut Vec<String>, out: &mut V
                 match p {
                     Pattern::Literal { expr, .. } if matches!(**expr, Expr::StringLit { .. }) => {}
                     Pattern::Binding { name, .. } => {
-                        out.push(Capture { name: name.clone(), path: prefix.clone(), hole: Some((merged.clone(), hole)) });
+                        out.push(Capture {
+                            name: name.clone(),
+                            path: prefix.clone(),
+                            hole: Some((merged.clone(), hole)),
+                        });
                         hole += 1;
                     }
                     _ => hole += 1,
@@ -322,16 +337,32 @@ pub fn build(enums: Enums<'_>, scrutinee: &Type, arms: &[Pattern]) -> Decision {
 }
 
 /// [`build`], where `guarded[i]` says arm `i` has an `if` guard.
-pub fn build_guarded(enums: Enums<'_>, scrutinee: &Type, arms: &[Pattern], guarded: &[bool]) -> Decision {
+pub fn build_guarded(
+    enums: Enums<'_>,
+    scrutinee: &Type,
+    arms: &[Pattern],
+    guarded: &[bool],
+) -> Decision {
     let root = match scrutinee {
-        Type::Enum { args, .. } => enums.defs.of(scrutinee).map(|edef| ColEnum { edef, args: args.clone() }),
+        Type::Enum { args, .. } => enums.defs.of(scrutinee).map(|edef| ColEnum {
+            edef,
+            args: args.clone(),
+        }),
         _ => None,
     };
-    let cols = vec![Col { path: vec![], ty: root, raw: scrutinee.clone() }];
+    let cols = vec![Col {
+        path: vec![],
+        ty: root,
+        raw: scrutinee.clone(),
+    }];
     let rows: Vec<Row> = arms
         .iter()
         .enumerate()
-        .map(|(i, p)| Row { arm: i, guarded: guarded.get(i).copied().unwrap_or(false), cells: vec![p.clone()] })
+        .map(|(i, p)| Row {
+            arm: i,
+            guarded: guarded.get(i).copied().unwrap_or(false),
+            cells: vec![p.clone()],
+        })
         .collect();
     compile(&cols, &rows, enums)
 }
@@ -380,7 +411,11 @@ pub fn resolve_const<'d>(decision: &'d Decision, root: &Literal) -> ConstOutcome
     match decision {
         Decision::Leaf(i) => ConstOutcome::Arm(*i),
         Decision::Fail => ConstOutcome::Fail,
-        Decision::Switch { path, cases, default } => match read_disc_literal(root, path) {
+        Decision::Switch {
+            path,
+            cases,
+            default,
+        } => match read_disc_literal(root, path) {
             Some(k) => match cases.iter().find(|(keys, _)| keys.contains(&k)) {
                 Some((_, sub)) => resolve_const(sub, root),
                 None => match default {
@@ -390,9 +425,15 @@ pub fn resolve_const<'d>(decision: &'d Decision, root: &Literal) -> ConstOutcome
             },
             None => ConstOutcome::Fail,
         },
-        Decision::Check { tests, arm, guarded, otherwise } => {
+        Decision::Check {
+            tests,
+            arm,
+            guarded,
+            otherwise,
+        } => {
             for check in tests {
-                let passed = read_value_literal(root, &check.path).and_then(|v| test_literal(&check.test, &v));
+                let passed = read_value_literal(root, &check.path)
+                    .and_then(|v| test_literal(&check.test, &v));
                 match passed {
                     Some(true) => {}
                     Some(false) => return resolve_const(otherwise, root),
@@ -400,7 +441,10 @@ pub fn resolve_const<'d>(decision: &'d Decision, root: &Literal) -> ConstOutcome
                 }
             }
             match guarded {
-                true => ConstOutcome::Guard { arm: *arm, otherwise },
+                true => ConstOutcome::Guard {
+                    arm: *arm,
+                    otherwise,
+                },
                 false => ConstOutcome::Arm(*arm),
             }
         }
@@ -410,7 +454,9 @@ pub fn resolve_const<'d>(decision: &'d Decision, root: &Literal) -> ConstOutcome
 /// Navigate `root` along `path`'s `PathStep::Field`s to the sub-record's
 /// `__disc`, the literal-value twin of `lower::expr::read_disc_at_path`.
 fn read_disc_literal(root: &Literal, path: &[PathStep]) -> Option<i64> {
-    let Some(Literal::Record(entries)) = read_value_literal(root, path) else { return None };
+    let Some(Literal::Record(entries)) = read_value_literal(root, path) else {
+        return None;
+    };
     match entries.iter().find(|(n, _)| n == "__disc")?.1 {
         Literal::Int(v) => Some(v),
         _ => None,
@@ -421,7 +467,9 @@ fn read_disc_literal(root: &Literal, path: &[PathStep]) -> Option<i64> {
 fn read_value_literal(root: &Literal, path: &[PathStep]) -> Option<Literal> {
     let mut cur = root;
     for PathStep::Field(f) in path {
-        let Literal::Record(entries) = cur else { return None };
+        let Literal::Record(entries) = cur else {
+            return None;
+        };
         cur = &entries.iter().find(|(n, _)| n == f)?.1;
     }
     Some(cur.clone())
@@ -434,14 +482,19 @@ fn read_value_literal(root: &Literal, path: &[PathStep]) -> Option<Literal> {
 pub fn capture_literal(root: &Literal, capture: &Capture) -> Option<Literal> {
     let mut cur = root;
     for seg in &capture.path {
-        let Literal::Record(entries) = cur else { return None };
+        let Literal::Record(entries) = cur else {
+            return None;
+        };
         cur = &entries.iter().find(|(n, _)| n == seg)?.1;
     }
     match &capture.hole {
         None => Some(cur.clone()),
         Some((parts, k)) => {
             let Literal::String(s) = cur else { return None };
-            match_concat(parts, s)?.into_iter().nth(*k).map(Literal::String)
+            match_concat(parts, s)?
+                .into_iter()
+                .nth(*k)
+                .map(Literal::String)
         }
     }
 }
@@ -504,7 +557,10 @@ fn specialize_rows<'a>(
     enums: Enums<'a>,
 ) -> (Vec<Col<'a>>, Vec<Row>) {
     let arity = payload_arity(&v.payload);
-    let parent_ty = cols[idx].ty.as_ref().expect("a switched column has a governing enum");
+    let parent_ty = cols[idx]
+        .ty
+        .as_ref()
+        .expect("a switched column has a governing enum");
     let mut new_cols = Vec::with_capacity(cols.len() + arity);
     new_cols.extend(clone_cols(&cols[..idx]));
     new_cols.extend(payload_columns(&cols[idx].path, parent_ty, v, enums));
@@ -519,7 +575,11 @@ fn specialize_rows<'a>(
         let mut cells = row.cells[..idx].to_vec();
         cells.extend(expand_matching(&row.cells[idx], v));
         cells.extend(row.cells[idx + 1..].iter().cloned());
-        new_rows.push(Row { arm: row.arm, guarded: row.guarded, cells });
+        new_rows.push(Row {
+            arm: row.arm,
+            guarded: row.guarded,
+            cells,
+        });
     }
     (new_cols, new_rows)
 }
@@ -558,14 +618,24 @@ fn default_matrix_rows<'a>(
             let row = &rows[r];
             let mut cells = row.cells[..idx].to_vec();
             cells.extend(row.cells[idx + 1..].iter().cloned());
-            Row { arm: row.arm, guarded: row.guarded, cells }
+            Row {
+                arm: row.arm,
+                guarded: row.guarded,
+                cells,
+            }
         })
         .collect();
     (new_cols, new_rows)
 }
 
 fn clone_cols<'a>(cols: &[Col<'a>]) -> Vec<Col<'a>> {
-    cols.iter().map(|c| Col { path: c.path.clone(), ty: c.ty.clone(), raw: c.raw.clone() }).collect()
+    cols.iter()
+        .map(|c| Col {
+            path: c.path.clone(),
+            ty: c.ty.clone(),
+            raw: c.raw.clone(),
+        })
+        .collect()
 }
 
 /// Rows with a `|` in an enum column split into one row per alternative, so
@@ -575,7 +645,8 @@ fn expand_enum_ors(cols: &[Col], rows: &[Row]) -> Vec<Row> {
     let mut out = Vec::with_capacity(rows.len());
     let mut stack: Vec<Row> = rows.iter().rev().cloned().collect();
     while let Some(row) = stack.pop() {
-        let at = (0..cols.len()).find(|&i| cols[i].ty.is_some() && matches!(row.cells[i], Pattern::Or { .. }));
+        let at = (0..cols.len())
+            .find(|&i| cols[i].ty.is_some() && matches!(row.cells[i], Pattern::Or { .. }));
         match at {
             None => out.push(row),
             Some(i) => {
@@ -600,10 +671,12 @@ fn expand_enum_ors(cols: &[Col], rows: &[Row]) -> Vec<Row> {
 /// that constrains only values becomes a `Check` of all its tests.
 fn compile(cols: &[Col], rows: &[Row], enums: Enums<'_>) -> Decision {
     let expanded;
-    let rows = if rows
-        .iter()
-        .any(|r| r.cells.iter().zip(cols).any(|(c, col)| col.ty.is_some() && matches!(c, Pattern::Or { .. })))
-    {
+    let rows = if rows.iter().any(|r| {
+        r.cells
+            .iter()
+            .zip(cols)
+            .any(|(c, col)| col.ty.is_some() && matches!(c, Pattern::Or { .. }))
+    }) {
         expanded = expand_enum_ors(cols, rows);
         &expanded[..]
     } else {
@@ -613,13 +686,18 @@ fn compile(cols: &[Col], rows: &[Row], enums: Enums<'_>) -> Decision {
         return Decision::Fail;
     };
     let enum_pick = (0..cols.len()).find(|&i| {
-        cols[i].ty.is_some() && (cell_head(&first.cells[i], cols[i].ty.as_ref()).is_some() || is_value_test(&first.cells[i]))
+        cols[i].ty.is_some()
+            && (cell_head(&first.cells[i], cols[i].ty.as_ref()).is_some()
+                || is_value_test(&first.cells[i]))
     });
     let Some(idx) = enum_pick else {
         let tests: Vec<ValueCheck> = (0..cols.len())
             .filter_map(|i| {
-                value_test(&first.cells[i], &cols[i].raw)
-                    .map(|test| ValueCheck { path: cols[i].path.clone(), ty: cols[i].raw.clone(), test })
+                value_test(&first.cells[i], &cols[i].raw).map(|test| ValueCheck {
+                    path: cols[i].path.clone(),
+                    ty: cols[i].raw.clone(),
+                    test,
+                })
             })
             .collect();
         if tests.is_empty() && !first.guarded {
@@ -632,7 +710,11 @@ fn compile(cols: &[Col], rows: &[Row], enums: Enums<'_>) -> Decision {
             otherwise: Box::new(compile(cols, &rows[1..], enums)),
         };
     };
-    let edef = cols[idx].ty.as_ref().expect("a constrained column has a governing enum").edef;
+    let edef = cols[idx]
+        .ty
+        .as_ref()
+        .expect("a constrained column has a governing enum")
+        .edef;
 
     // Group rows by head constructor in one pass (O(1) name lookup via
     // `vmap`, matching `head_variant_name`'s reading: a `Variant` names any
@@ -691,7 +773,11 @@ fn compile(cols: &[Col], rows: &[Row], enums: Enums<'_>) -> Decision {
         Some(Box::new(compile(&def_cols, &def_rows, enums)))
     };
 
-    Decision::Switch { path: cols[idx].path.clone(), cases, default }
+    Decision::Switch {
+        path: cols[idx].path.clone(),
+        cases,
+        default,
+    }
 }
 
 #[cfg(test)]
@@ -717,7 +803,10 @@ mod tests {
         }
 
         fn enums(&self) -> Enums<'_> {
-            Enums { defs: &self.defs, types: &self.types }
+            Enums {
+                defs: &self.defs,
+                types: &self.types,
+            }
         }
     }
 
@@ -726,15 +815,25 @@ mod tests {
     }
 
     fn enum_ty(name: &str) -> Type {
-        Type::Enum { name: name.to_string(), args: vec![] }
+        Type::Enum {
+            name: name.to_string(),
+            args: vec![],
+        }
     }
 
     fn type_name(name: &str) -> TypeExpr {
-        TypeExpr::Name { name: name.to_string(), range: dummy_range() }
+        TypeExpr::Name {
+            name: name.to_string(),
+            range: dummy_range(),
+        }
     }
 
     fn variant(name: &str, disc: i64, payload: Payload) -> VariantDef {
-        VariantDef { name: name.to_string(), discriminant: disc, payload }
+        VariantDef {
+            name: name.to_string(),
+            discriminant: disc,
+            payload,
+        }
     }
 
     fn shape_enum_def() -> EnumDef {
@@ -744,7 +843,11 @@ mod tests {
             variants: vec![
                 variant("Empty", 0, Payload::Unit),
                 variant("Circle", 1, Payload::Positional(vec![type_name("float")])),
-                variant("Rect", 2, Payload::Positional(vec![type_name("float"), type_name("float")])),
+                variant(
+                    "Rect",
+                    2,
+                    Payload::Positional(vec![type_name("float"), type_name("float")]),
+                ),
             ],
         }
     }
@@ -752,7 +855,11 @@ mod tests {
     fn option_enum_def() -> EnumDef {
         EnumDef {
             name: "Option".to_string(),
-            type_params: vec![TypeParam { name: "T".to_string(), bound: None, range: dummy_range() }],
+            type_params: vec![TypeParam {
+                name: "T".to_string(),
+                bound: None,
+                range: dummy_range(),
+            }],
             variants: vec![
                 variant("Some", 0, Payload::Positional(vec![type_name("T")])),
                 variant("None", 1, Payload::Unit),
@@ -824,11 +931,17 @@ mod tests {
 
     fn any_switch_path_eq(d: &Decision, want: &[&str]) -> bool {
         match d {
-            Decision::Switch { path, cases, default } => {
+            Decision::Switch {
+                path,
+                cases,
+                default,
+            } => {
                 let names: Vec<&str> = path.iter().map(|PathStep::Field(f)| f.as_str()).collect();
                 names == want
                     || cases.iter().any(|(_, c)| any_switch_path_eq(c, want))
-                    || default.as_deref().map_or(false, |c| any_switch_path_eq(c, want))
+                    || default
+                        .as_deref()
+                        .map_or(false, |c| any_switch_path_eq(c, want))
             }
             _ => false,
         }
@@ -836,8 +949,14 @@ mod tests {
 
     #[test]
     fn flat_match_builds_a_single_switch() {
-        let d = build(Reg::new(shape_enums()).enums(), &enum_ty("Shape"), &pats(&["Circle(_)", "Rect(_, _)", "Empty"]));
-        let Decision::Switch { path, cases, .. } = d else { panic!("{d:?}") };
+        let d = build(
+            Reg::new(shape_enums()).enums(),
+            &enum_ty("Shape"),
+            &pats(&["Circle(_)", "Rect(_, _)", "Empty"]),
+        );
+        let Decision::Switch { path, cases, .. } = d else {
+            panic!("{d:?}")
+        };
         assert!(path.is_empty());
         assert_eq!(cases.len(), 3);
         assert!(cases.iter().all(|(_, c)| matches!(c, Decision::Leaf(_))));
@@ -853,12 +972,17 @@ mod tests {
 
     #[test]
     fn nested_match_switches_on_sub_disc() {
-        let d = build(Reg::new(tree_enums()).enums(), &enum_ty("Tree"), &pats(&["Node(Some(_))", "Node(None)", "Leaf(_)"]));
+        let d = build(
+            Reg::new(tree_enums()).enums(),
+            &enum_ty("Tree"),
+            &pats(&["Node(Some(_))", "Node(None)", "Leaf(_)"]),
+        );
         fn has_nested_switch(d: &Decision) -> bool {
             match d {
                 Decision::Switch { cases, default, .. } => {
-                    cases.iter().any(|(_, c)| matches!(c, Decision::Switch { path, .. } if !path.is_empty()))
-                        || cases.iter().any(|(_, c)| has_nested_switch(c))
+                    cases.iter().any(
+                        |(_, c)| matches!(c, Decision::Switch { path, .. } if !path.is_empty()),
+                    ) || cases.iter().any(|(_, c)| has_nested_switch(c))
                         || default.as_deref().map_or(false, has_nested_switch)
                 }
                 _ => false,
@@ -869,21 +993,35 @@ mod tests {
 
     #[test]
     fn nonexhaustive_adds_a_fail_default() {
-        let d = build(Reg::new(shape_enums()).enums(), &enum_ty("Shape"), &pats(&["Circle(_)"]));
-        let Decision::Switch { cases, default, .. } = d else { panic!("{d:?}") };
+        let d = build(
+            Reg::new(shape_enums()).enums(),
+            &enum_ty("Shape"),
+            &pats(&["Circle(_)"]),
+        );
+        let Decision::Switch { cases, default, .. } = d else {
+            panic!("{d:?}")
+        };
         assert_eq!(cases.len(), 1);
         assert_eq!(default.as_deref(), Some(&Decision::Fail));
     }
 
     #[test]
     fn nested_positional_slot_uses_indexed_key() {
-        let d = build(Reg::new(tree_enums()).enums(), &enum_ty("Tree"), &pats(&["Node(Some(_))", "Node(None)", "Leaf(_)"]));
+        let d = build(
+            Reg::new(tree_enums()).enums(),
+            &enum_ty("Tree"),
+            &pats(&["Node(Some(_))", "Node(None)", "Leaf(_)"]),
+        );
         assert!(any_switch_path_eq(&d, &["__Node_0"]));
     }
 
     #[test]
     fn nested_named_slot_uses_field_key() {
-        let d = build(Reg::new(wrap_enums()).enums(), &enum_ty("Wrap"), &pats(&["W { inner: Some(_) }", "W { inner: None }"]));
+        let d = build(
+            Reg::new(wrap_enums()).enums(),
+            &enum_ty("Wrap"),
+            &pats(&["W { inner: Some(_) }", "W { inner: None }"]),
+        );
         assert!(any_switch_path_eq(&d, &["__W_inner"]));
     }
 
@@ -891,7 +1029,10 @@ mod tests {
         EnumDef {
             name: "Inner".to_string(),
             type_params: vec![],
-            variants: vec![variant("On", 0, Payload::Unit), variant("Off", 1, Payload::Unit)],
+            variants: vec![
+                variant("On", 0, Payload::Unit),
+                variant("Off", 1, Payload::Unit),
+            ],
         }
     }
 
@@ -903,7 +1044,10 @@ mod tests {
     }
 
     fn opt_inner_ty() -> Type {
-        Type::Enum { name: "Option".to_string(), args: vec![enum_ty("Inner")] }
+        Type::Enum {
+            name: "Option".to_string(),
+            args: vec![enum_ty("Inner")],
+        }
     }
 
     #[test]
@@ -912,12 +1056,18 @@ mod tests {
         // through the instantiation, so the decision tree switches on the
         // nested `__Some_0` disc to tell `Some(On)` from `Some(Off)`. A
         // still-opaque payload would collapse both into one wildcard leaf.
-        let d = build(Reg::new(opt_inner_enums()).enums(), &opt_inner_ty(), &pats(&["Some(On)", "Some(Off)", "None"]));
+        let d = build(
+            Reg::new(opt_inner_enums()).enums(),
+            &opt_inner_ty(),
+            &pats(&["Some(On)", "Some(Off)", "None"]),
+        );
         assert!(any_switch_path_eq(&d, &["__Some_0"]), "{d:?}");
     }
 
     fn parts(p: &str) -> Vec<ConcatPart> {
-        let Pattern::Concat { parts, .. } = parse_pattern_str(p) else { panic!("{p} is no string pattern") };
+        let Pattern::Concat { parts, .. } = parse_pattern_str(p) else {
+            panic!("{p} is no string pattern")
+        };
         concat_parts(&parts)
     }
 
@@ -946,34 +1096,94 @@ mod tests {
 
     #[test]
     fn literal_arms_become_a_chain_of_checks() {
-        let d = build(Reg::new(shape_enums()).enums(), &Type::String, &pats(&[r#""+""#, r#""-" | "<""#, "_"]));
-        let Decision::Check { tests, arm: 0, guarded: false, otherwise } = &d else { panic!("{d:?}") };
+        let d = build(
+            Reg::new(shape_enums()).enums(),
+            &Type::String,
+            &pats(&[r#""+""#, r#""-" | "<""#, "_"]),
+        );
+        let Decision::Check {
+            tests,
+            arm: 0,
+            guarded: false,
+            otherwise,
+        } = &d
+        else {
+            panic!("{d:?}")
+        };
         assert_eq!(tests[0].test, ValueTest::Eq(Literal::String("+".into())));
-        let Decision::Check { tests, arm: 1, otherwise, .. } = &**otherwise else { panic!("{d:?}") };
+        let Decision::Check {
+            tests,
+            arm: 1,
+            otherwise,
+            ..
+        } = &**otherwise
+        else {
+            panic!("{d:?}")
+        };
         assert!(matches!(tests[0].test, ValueTest::Any(ref alts) if alts.len() == 2));
         assert_eq!(**otherwise, Decision::Leaf(2));
     }
 
     #[test]
     fn a_guarded_catch_all_falls_through_to_the_next_arm() {
-        let d = build_guarded(Reg::new(shape_enums()).enums(), &Type::Int, &pats(&["n", "_"]), &[true, false]);
-        assert_eq!(d, Decision::Check { tests: vec![], arm: 0, guarded: true, otherwise: Box::new(Decision::Leaf(1)) });
+        let d = build_guarded(
+            Reg::new(shape_enums()).enums(),
+            &Type::Int,
+            &pats(&["n", "_"]),
+            &[true, false],
+        );
+        assert_eq!(
+            d,
+            Decision::Check {
+                tests: vec![],
+                arm: 0,
+                guarded: true,
+                otherwise: Box::new(Decision::Leaf(1))
+            }
+        );
     }
 
     #[test]
     fn variants_of_one_alternative_share_a_case() {
-        let d = build(Reg::new(shape_enums()).enums(), &enum_ty("Shape"), &pats(&["Circle(_) | Rect(_, _)", "Empty"]));
-        let Decision::Switch { cases, .. } = d else { panic!("{d:?}") };
-        assert!(cases.contains(&(vec![1, 2], Decision::Leaf(0))), "{cases:?}");
+        let d = build(
+            Reg::new(shape_enums()).enums(),
+            &enum_ty("Shape"),
+            &pats(&["Circle(_) | Rect(_, _)", "Empty"]),
+        );
+        let Decision::Switch { cases, .. } = d else {
+            panic!("{d:?}")
+        };
+        assert!(
+            cases.contains(&(vec![1, 2], Decision::Leaf(0))),
+            "{cases:?}"
+        );
         assert!(cases.contains(&(vec![0], Decision::Leaf(1))), "{cases:?}");
     }
 
     #[test]
     fn a_literal_in_a_payload_checks_that_slot() {
-        let d = build(Reg::new(tree_enums()).enums(), &enum_ty("Tree"), &pats(&["Leaf(0)", "Leaf(n)", "Node(_)"]));
-        let Decision::Switch { cases, .. } = &d else { panic!("{d:?}") };
-        let leaf = cases.iter().find(|(k, _)| k == &vec![0]).map(|(_, d)| d).expect("Leaf case");
-        let Decision::Check { tests, arm: 0, otherwise, .. } = leaf else { panic!("{leaf:?}") };
+        let d = build(
+            Reg::new(tree_enums()).enums(),
+            &enum_ty("Tree"),
+            &pats(&["Leaf(0)", "Leaf(n)", "Node(_)"]),
+        );
+        let Decision::Switch { cases, .. } = &d else {
+            panic!("{d:?}")
+        };
+        let leaf = cases
+            .iter()
+            .find(|(k, _)| k == &vec![0])
+            .map(|(_, d)| d)
+            .expect("Leaf case");
+        let Decision::Check {
+            tests,
+            arm: 0,
+            otherwise,
+            ..
+        } = leaf
+        else {
+            panic!("{leaf:?}")
+        };
         assert_eq!(tests[0].path, vec![PathStep::Field("__Leaf_0".into())]);
         assert_eq!(tests[0].test, ValueTest::Eq(Literal::Int(0)));
         assert_eq!(**otherwise, Decision::Leaf(1));

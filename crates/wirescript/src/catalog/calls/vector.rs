@@ -129,7 +129,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "ToRotation",
             gc::DIRECTION_TO_ROTATION,
             Type::Vector,
-            vec![CallParam::req("direction", WirePort::Direction, Type::Vector)],
+            vec![CallParam::req(
+                "direction",
+                WirePort::Direction,
+                Type::Vector,
+            )],
             WirePort::Output,
             Type::Quat,
         ),

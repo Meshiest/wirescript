@@ -106,7 +106,8 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
         }
         let mut inside: Vec<Vec<usize>> = vec![Vec::new(); sccs.len()];
         for (i, w) in in_scope.iter().enumerate() {
-            if let (Some(&a), Some(&b)) = (scc_of.get(&w.source.node_id), scc_of.get(&w.target.node_id))
+            if let (Some(&a), Some(&b)) =
+                (scc_of.get(&w.source.node_id), scc_of.get(&w.target.node_id))
                 && a == b
                 && g.contains_edge(&w.source.node_id, &w.target.node_id)
             {

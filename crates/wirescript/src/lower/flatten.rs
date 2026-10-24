@@ -185,10 +185,7 @@ fn merge_child(parent: &mut Module, chip_id: NodeId, child: Module) {
         // `chip_id` is left as-is: NodeIds are globally unique, so it still
         // names the right shell after the move. `drop_chip_nodes` clears it
         // once, on the fully merged module, rather than once per level.
-        node.scope_id = scope_map
-            .get(&node.scope_id)
-            .copied()
-            .unwrap_or(host_scope);
+        node.scope_id = scope_map.get(&node.scope_id).copied().unwrap_or(host_scope);
         let clobbered = parent.nodes.insert(id, node);
         assert!(
             clobbered.is_none(),
@@ -205,7 +202,11 @@ fn merge_child(parent: &mut Module, chip_id: NodeId, child: Module) {
 /// A loop's plane shell is refused (WS080) instead of dropped: it and its
 /// still chip_id-tagged body are left alone, since merging them would compile
 /// a different program.
-fn drop_chip_nodes(module: &mut Module, stats: &mut FlattenStats, diagnostics: &mut Vec<Diagnostic>) {
+fn drop_chip_nodes(
+    module: &mut Module,
+    stats: &mut FlattenStats,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     let mut shells: HashSet<NodeId> = HashSet::default();
     let mut refused: HashSet<NodeId> = HashSet::default();
     for (id, n) in &module.nodes {

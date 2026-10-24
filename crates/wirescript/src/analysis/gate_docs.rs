@@ -1,6 +1,6 @@
 use crate::collections::HashMap;
-use std::sync::OnceLock;
 use serde::Deserialize;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GatePortDoc {

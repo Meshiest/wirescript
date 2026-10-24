@@ -27,16 +27,17 @@ use std::collections::HashMap as StdMap;
 
 use brdb::{
     AsBrdbValue, BString, BrickType, Collision, Color, IntVector, Position, Vector3f,
-    WireConnection, WirePort as BrdbWirePort, World,
-    assets::LiteralComponent,
-    schema::WireValue,
+    WireConnection, WirePort as BrdbWirePort, World, assets::LiteralComponent, schema::WireValue,
 };
 
 use crate::intern::{Sym, intern_static, resolve, sym};
 use crate::ir::port_registry::WirePort;
+use crate::ir::{
+    Literal, Module, Node, NodeId, NodeKind, PortRef, Program, ProgramSettings, Type, Wire,
+    gate_class as gc,
+};
 use crate::layout::wall::WallLayout;
 use crate::layout::{BusEnd, BusLayout, LayoutResult, NodeRotation};
-use crate::ir::{Literal, Module, Node, NodeId, NodeKind, PortRef, Program, ProgramSettings, Type, Wire, gate_class as gc};
 
 /// The collision mask of an `@invisible` brick: it stops nothing.
 ///
@@ -66,10 +67,10 @@ use variants::*;
 mod schema_meta;
 pub use schema_meta::*;
 mod components;
-use components::*;
 #[cfg(any(test, feature = "test-internals"))]
 #[doc(hidden)]
 pub use components::roundtrip_adv_inventory_component;
+use components::*;
 pub use components::{SettingParamOf, check_native_settings};
 #[cfg(feature = "test-internals")]
 #[doc(hidden)]
@@ -79,7 +80,9 @@ pub use variants::wire_value_as;
 /// that need the builtin call table. Not a stable API.
 #[cfg(feature = "test-internals")]
 #[doc(hidden)]
-pub fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'static str], bool)> {
+pub fn data_struct_for_gate(
+    gate_class: &str,
+) -> Option<(&'static str, &'static [&'static str], bool)> {
     schema_meta::data_struct_for_gate(gate_class)
 }
 mod labels;
@@ -213,7 +216,12 @@ pub fn build_world(
     let root_grid_idx = world.grids.len();
     world.grids.push((inner_pair.0.clone(), Vec::new()));
 
-    let mut ctx = EmitContext::new(opts.prefab_resolver.clone(), opts.nested_compiler.clone(), settings, chip_brick_id);
+    let mut ctx = EmitContext::new(
+        opts.prefab_resolver.clone(),
+        opts.nested_compiler.clone(),
+        settings,
+        chip_brick_id,
+    );
     emit_module(
         &mut world,
         &mut ctx,

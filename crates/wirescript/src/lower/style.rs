@@ -19,12 +19,15 @@ pub(crate) const MATERIAL_ENUM: &str = "BrickMaterial";
 /// through this.
 pub(crate) fn material_arg(e: &Expr) -> std::borrow::Cow<'_, Expr> {
     if let Expr::Ident { name, range } = e
-        && crate::catalog::builtin_game_enums()
-            .iter()
-            .any(|g| g.clean_name == MATERIAL_ENUM && g.variants.iter().any(|v| &v.clean_name == name))
+        && crate::catalog::builtin_game_enums().iter().any(|g| {
+            g.clean_name == MATERIAL_ENUM && g.variants.iter().any(|v| &v.clean_name == name)
+        })
     {
         return std::borrow::Cow::Owned(Expr::FieldAccess {
-            obj: Box::new(Expr::Ident { name: MATERIAL_ENUM.to_string(), range: range.clone() }),
+            obj: Box::new(Expr::Ident {
+                name: MATERIAL_ENUM.to_string(),
+                range: range.clone(),
+            }),
             field: name.clone(),
             range: range.clone(),
         });
@@ -52,14 +55,20 @@ fn srgb_constructor(
     cx: &crate::const_eval::ConstCtx,
     budget: &mut crate::const_eval::Budget,
 ) -> Option<Literal> {
-    let Expr::Call { callee, args, .. } = e else { return None };
-    let Expr::Ident { name, .. } = callee.as_ref() else { return None };
+    let Expr::Call { callee, args, .. } = e else {
+        return None;
+    };
+    let Expr::Ident { name, .. } = callee.as_ref() else {
+        return None;
+    };
     if name != "ColorSRGB" || args.len() != 4 {
         return None;
     }
     let mut bytes = [0u8; 4];
     for (slot, arg) in bytes.iter_mut().zip(args) {
-        let CallArg::Positional(arg) = arg else { return None };
+        let CallArg::Positional(arg) = arg else {
+            return None;
+        };
         *slot = match crate::const_eval::eval_expr(arg, cx, budget).ok()? {
             Literal::Int(n) => n.clamp(0, 255) as u8,
             Literal::Float(f) => (f as i64).clamp(0, 255) as u8,
@@ -73,7 +82,10 @@ fn srgb_constructor(
 /// The `_material` a constant `BrickMaterial` bakes as: its discriminant.
 fn material_value(lit: &Literal) -> Option<Literal> {
     match lit {
-        Literal::Record(fields) => fields.iter().find(|(n, _)| n == "__disc").map(|(_, v)| v.clone()),
+        Literal::Record(fields) => fields
+            .iter()
+            .find(|(n, _)| n == "__disc")
+            .map(|(_, v)| v.clone()),
         Literal::Int(_) => Some(lit.clone()),
         _ => None,
     }
@@ -81,20 +93,35 @@ fn material_value(lit: &Literal) -> Option<Literal> {
 
 /// The baked `_color` / `_material` of each of `color` and `material` that
 /// folds to a constant here.
-fn baked_style(ctx: &LowerCtx, color: Option<&Expr>, material: Option<&Expr>) -> (Option<Literal>, Option<Literal>) {
+fn baked_style(
+    ctx: &LowerCtx,
+    color: Option<&Expr>,
+    material: Option<&Expr>,
+) -> (Option<Literal>, Option<Literal>) {
     let cx = ctx.const_ctx(None);
-    let color = color.and_then(|e| style_constant(e, &cx)).and_then(|lit| crate::ir::brick_color(&lit));
-    let material = material.and_then(|e| style_constant(&material_arg(e), &cx)).and_then(|lit| material_value(&lit));
+    let color = color
+        .and_then(|e| style_constant(e, &cx))
+        .and_then(|lit| crate::ir::brick_color(&lit));
+    let material = material
+        .and_then(|e| style_constant(&material_arg(e), &cx))
+        .and_then(|lit| material_value(&lit));
     (color, material)
 }
 
 /// Set the constant parts of a `@color` / `@material` on `node_id`.
-pub(super) fn bake_style(ctx: &mut LowerCtx, node_id: NodeId, color: Option<&Expr>, material: Option<&Expr>) {
+pub(super) fn bake_style(
+    ctx: &mut LowerCtx,
+    node_id: NodeId,
+    color: Option<&Expr>,
+    material: Option<&Expr>,
+) {
     if color.is_none() && material.is_none() {
         return;
     }
     let (color, material) = baked_style(ctx, color, material);
-    let Some(node) = ctx.builder.module.nodes.get_mut(&node_id) else { return };
+    let Some(node) = ctx.builder.module.nodes.get_mut(&node_id) else {
+        return;
+    };
     let props = std::sync::Arc::make_mut(&mut node.properties);
     if let Some(c) = color {
         props.insert(*sym::BRICK_COLOR, c);
@@ -126,9 +153,18 @@ pub(super) fn bake_var_style(ctx: &mut LowerCtx, d: &VarDecl) {
     if d.color_expr.is_none() && d.material_expr.is_none() {
         return;
     }
-    let nodes = ctx.scope.get(&d.name).map(storage_nodes).unwrap_or_default();
+    let nodes = ctx
+        .scope
+        .get(&d.name)
+        .map(storage_nodes)
+        .unwrap_or_default();
     for node_id in nodes {
-        bake_style(ctx, node_id, d.color_expr.as_ref(), d.material_expr.as_ref());
+        bake_style(
+            ctx,
+            node_id,
+            d.color_expr.as_ref(),
+            d.material_expr.as_ref(),
+        );
     }
 }
 
@@ -161,11 +197,21 @@ pub(super) fn resolve_dynamic_var_styles(ctx: &mut LowerCtx, decls: &[TopDecl]) 
             continue;
         }
         let view = ctx.top_view(crate::scope::top::ReadAt::code(&v.range));
-        let hosts = ctx.scope.get(&v.name).map(storage_nodes).unwrap_or_default();
+        let hosts = ctx
+            .scope
+            .get(&v.name)
+            .map(storage_nodes)
+            .unwrap_or_default();
         if !hosts.is_empty() {
             let cx = ctx.const_ctx(None);
-            let runtime_color = v.color_expr.as_ref().filter(|e| style_constant(e, &cx).is_none());
-            let runtime_material = v.material_expr.as_ref().filter(|e| style_constant(&material_arg(e), &cx).is_none());
+            let runtime_color = v
+                .color_expr
+                .as_ref()
+                .filter(|e| style_constant(e, &cx).is_none());
+            let runtime_material = v
+                .material_expr
+                .as_ref()
+                .filter(|e| style_constant(&material_arg(e), &cx).is_none());
             if let Some(e) = runtime_color {
                 let src = lower_color_value(ctx, e);
                 for &host in &hosts {
@@ -188,7 +234,11 @@ pub(super) fn resolve_dynamic_var_styles(ctx: &mut LowerCtx, decls: &[TopDecl]) 
 /// `root_style`: baked when constant, lowered in pure context and wired at
 /// emit when not. Runs beside `resolve_module_label`, so it may
 /// forward-reference declarations below it.
-pub(super) fn resolve_module_style(ctx: &mut LowerCtx, color: Option<&Expr>, material: Option<&Expr>) {
+pub(super) fn resolve_module_style(
+    ctx: &mut LowerCtx,
+    color: Option<&Expr>,
+    material: Option<&Expr>,
+) {
     if color.is_none() && material.is_none() {
         return;
     }

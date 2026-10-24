@@ -84,7 +84,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         controller_exec(
             "CharacterOf",
             gc::CHARACTER_GET_FROM_CONTROLLER,
-            vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
+            vec![CallParam::req(
+                "controller",
+                WirePort::PlayerState,
+                Type::Controller,
+            )],
             vec![CallOutput::plain(WirePort::Character, Type::Character)],
         ),
     );
@@ -116,7 +120,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         CallSpec {
             name: "InputReader",
             gate_class: gc::INPUT_SPLITTER,
-            params: vec![CallParam::req("character", WirePort::Character, Type::Character)],
+            params: vec![CallParam::req(
+                "character",
+                WirePort::Character,
+                Type::Character,
+            )],
             exec: false,
             outputs: vec![CallOutput::plain(
                 WirePort::InputForward,
@@ -207,7 +215,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         character_exec(
             "GetDamage",
             gc::CHARACTER_GET_DAMAGE,
-            vec![CallParam::req("character", WirePort::Character, Type::Character)],
+            vec![CallParam::req(
+                "character",
+                WirePort::Character,
+                Type::Character,
+            )],
             vec![CallOutput::plain(
                 WirePort::Damage,
                 Type::Record(vec![
@@ -260,7 +272,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         controller_exec(
             "GetUserName",
             gc::PLAYERSTATE_GET_USER_NAME,
-            vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
+            vec![CallParam::req(
+                "controller",
+                WirePort::PlayerState,
+                Type::Controller,
+            )],
             vec![CallOutput::plain(WirePort::UserName, Type::String)],
         ),
     );
@@ -269,7 +285,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         controller_exec(
             "GetUserId",
             gc::PLAYERSTATE_GET_USER_ID,
-            vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
+            vec![CallParam::req(
+                "controller",
+                WirePort::PlayerState,
+                Type::Controller,
+            )],
             vec![CallOutput::plain(WirePort::UserId, Type::String)],
         ),
     );
@@ -278,7 +298,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         controller_exec(
             "GetDisplayName",
             gc::PLAYERSTATE_GET_DISPLAY_NAME,
-            vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
+            vec![CallParam::req(
+                "controller",
+                WirePort::PlayerState,
+                Type::Controller,
+            )],
             vec![CallOutput::plain(WirePort::DisplayName, Type::String)],
         ),
     );
@@ -287,7 +311,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         controller_exec(
             "IsTrusted",
             gc::PLAYERSTATE_IS_TRUSTED,
-            vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
+            vec![CallParam::req(
+                "controller",
+                WirePort::PlayerState,
+                Type::Controller,
+            )],
             vec![CallOutput::plain(WirePort::BIsTrusted, Type::Bool)],
         ),
     );
@@ -310,7 +338,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         controller_exec(
             "ForceRespawn",
             gc::PLAYERSTATE_FORCE_RESPAWN,
-            vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
+            vec![CallParam::req(
+                "controller",
+                WirePort::PlayerState,
+                Type::Controller,
+            )],
             vec![],
         ),
     );

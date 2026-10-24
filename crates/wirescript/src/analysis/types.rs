@@ -1,6 +1,6 @@
+use super::TypeMap;
 use crate::ast::TypeExpr;
 use crate::ir::Type;
-use super::TypeMap;
 
 /// The source-language spelling of a type (`*int`, `int[]`, `Map<string, int>`,
 /// …). A thin alias over the `Display` impl on [`Type`] (in `crate::ir`), kept
@@ -38,7 +38,8 @@ pub fn type_expr_str(t: &TypeExpr) -> String {
 
 pub fn infer_expr_type(expr: &crate::ast::Expr, tmap: &TypeMap) -> Option<String> {
     let r = expr.range();
-    tmap.get(&(r.file.clone(), r.start.offset, r.end.offset)).map(type_str)
+    tmap.get(&(r.file.clone(), r.start.offset, r.end.offset))
+        .map(type_str)
 }
 
 /// Map a primitive type name (as produced by [`type_str`]) back to a [`Type`].
@@ -56,7 +57,7 @@ pub fn type_from_name(s: &str) -> Option<Type> {
 /// coercion — so a `string` value shows only string methods, not everything
 /// that happens to format into text. Empty for non-primitive/unknown names.
 pub fn receiver_methods(type_name: &str) -> Vec<(&'static str, String)> {
-    use crate::types::coerce::{coerce, CoerceRule};
+    use crate::types::coerce::{CoerceRule, coerce};
     let Some(var_ty) = type_from_name(type_name) else {
         return Vec::new();
     };
@@ -180,7 +181,7 @@ pub fn user_receiver_methods(
     type_name: &str,
     symbols: &[crate::analysis::SymbolDef],
 ) -> Vec<(String, String)> {
-    use crate::types::coerce::{coerce, CoerceRule};
+    use crate::types::coerce::{CoerceRule, coerce};
     let recv_prim = type_from_name(type_name);
     let mut out = Vec::new();
     for sym in symbols {
@@ -191,7 +192,9 @@ pub fn user_receiver_methods(
         if sym.name.contains('.') {
             continue;
         }
-        let Some(sig) = sym.ty.as_deref() else { continue };
+        let Some(sig) = sym.ty.as_deref() else {
+            continue;
+        };
         let Some((first_name, first_ty, rest)) = split_signature_params(sig) else {
             continue;
         };

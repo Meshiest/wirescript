@@ -131,7 +131,11 @@ pub(super) fn color_for_node(
     // touch. A gate with no non-exec output (`MapVar_Set`/`_Clear`) still falls
     // through to grey.
     if node.gate_class.contains("Exec_MapVar_")
-        && let Some(p) = node.ports.outputs.iter().find(|p| !matches!(p.ty, Type::Exec))
+        && let Some(p) = node
+            .ports
+            .outputs
+            .iter()
+            .find(|p| !matches!(p.ty, Type::Exec))
     {
         return color_for_type(&p.ty);
     }
@@ -252,8 +256,17 @@ mod tests {
     fn map_access_gate_colours_by_its_value_not_grey() {
         let module = Module::new("t");
         let idx: HashMap<(NodeId, WirePort), NodeId> = HashMap::default();
-        assert_eq!(color_for_node(&map_get(Type::String), &module, &idx), C_STRING);
-        assert_eq!(color_for_node(&map_get(Type::Float), &module, &idx), C_FLOAT);
-        assert_ne!(color_for_node(&map_get(Type::String), &module, &idx), C_GREY);
+        assert_eq!(
+            color_for_node(&map_get(Type::String), &module, &idx),
+            C_STRING
+        );
+        assert_eq!(
+            color_for_node(&map_get(Type::Float), &module, &idx),
+            C_FLOAT
+        );
+        assert_ne!(
+            color_for_node(&map_get(Type::String), &module, &idx),
+            C_GREY
+        );
     }
 }

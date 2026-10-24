@@ -117,7 +117,15 @@ struct PlacementArgs {
 impl PlacementArgs {
     /// `base` with this placement.
     fn apply(&self, base: wirescript::EmitOptions) -> wirescript::EmitOptions {
-        wirescript::EmitOptions { chip_pos: wirescript::Placement { x: self.x, y: self.y, z: self.z }, open: self.open, ..base }
+        wirescript::EmitOptions {
+            chip_pos: wirescript::Placement {
+                x: self.x,
+                y: self.y,
+                z: self.z,
+            },
+            open: self.open,
+            ..base
+        }
     }
 }
 
@@ -141,18 +149,34 @@ fn main() {
 fn run() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Compile { source, output, name, verbose, place, dump_ir, emit_ir, no_fold, fold } => {
+        Command::Compile {
+            source,
+            output,
+            name,
+            verbose,
+            place,
+            dump_ir,
+            emit_ir,
+            no_fold,
+            fold,
+        } => {
             let fold_mode = match (fold, no_fold) {
                 (true, true) => unreachable!("clap conflicts_with rules out --fold --no-fold"),
                 (true, false) => wirescript::FoldMode::ForceOn,
                 (false, true) => wirescript::FoldMode::ForceOff,
                 (false, false) => wirescript::FoldMode::Auto,
             };
-            run_wirescript(source, output, name, verbose, &place, dump_ir, emit_ir, fold_mode)
+            run_wirescript(
+                source, output, name, verbose, &place, dump_ir, emit_ir, fold_mode,
+            )
         }
-        Command::Assemble { source, output, place, check_roundtrip, no_validate } => {
-            run_assemble(source, output, &place, check_roundtrip, !no_validate)
-        }
+        Command::Assemble {
+            source,
+            output,
+            place,
+            check_roundtrip,
+            no_validate,
+        } => run_assemble(source, output, &place, check_roundtrip, !no_validate),
         Command::Fmt { paths, check } => run_fmt(&paths, check),
     }
 }
@@ -190,7 +214,8 @@ fn run_fmt(paths: &[PathBuf], check: bool) -> Result<(), Box<dyn Error>> {
     }
     let mut unformatted = 0usize;
     for file in &files {
-        let src = std::fs::read_to_string(file).map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+        let src = std::fs::read_to_string(file)
+            .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
         let opts = wirescript::analysis::FormatOptions::default().with_editorconfig(file);
         let formatted = wirescript::analysis::format_with(&src, &opts);
         if formatted == src {
@@ -200,7 +225,8 @@ fn run_fmt(paths: &[PathBuf], check: bool) -> Result<(), Box<dyn Error>> {
         if check {
             println!("{}", file.display());
         } else {
-            std::fs::write(file, formatted).map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+            std::fs::write(file, formatted)
+                .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
             println!("formatted {}", file.display());
         }
     }
@@ -238,10 +264,17 @@ fn run_assemble(
     // `.ws` source prefabs compile with the fold setting the program had.
     let opts = place.apply(wirescript::assemble_options(
         &file,
-        if program.settings.no_fold { wirescript::FoldMode::ForceOff } else { wirescript::FoldMode::Auto },
+        if program.settings.no_fold {
+            wirescript::FoldMode::ForceOff
+        } else {
+            wirescript::FoldMode::Auto
+        },
     ));
     let world = wirescript::assemble(&program, &opts)?.world;
-    write_world(&world, &output.unwrap_or_else(|| source.with_extension("brz")))
+    write_world(
+        &world,
+        &output.unwrap_or_else(|| source.with_extension("brz")),
+    )
 }
 
 /// Write `world` to `out_path`, in the format its extension picks: `.brdb` is
@@ -280,12 +313,20 @@ fn run_wirescript(
     };
     let result = wirescript::compile_to_world(input, place.apply(Default::default()))?;
     report_diagnostics(&result.diagnostics, verbose);
-    write_world(&result.world, &output.unwrap_or_else(|| source.with_extension("brz")))?;
+    write_world(
+        &result.world,
+        &output.unwrap_or_else(|| source.with_extension("brz")),
+    )?;
     if dump_ir {
         // Prefab references are re-expressed from the directory the dump is
         // read back in, taken to be the current one.
         let mut program = result.program.clone();
-        wirescript::prepare_program_for_text(&mut program, &file, std::path::Path::new("dump.wsir"), fold_mode)?;
+        wirescript::prepare_program_for_text(
+            &mut program,
+            &file,
+            std::path::Path::new("dump.wsir"),
+            fold_mode,
+        )?;
         wirescript::wsir::write_program(&program, &mut std::io::stdout().lock())?;
     }
     if let Some(ir_path) = emit_ir {
@@ -331,9 +372,16 @@ mod tests {
     #[test]
     fn compile_help_matches_the_code() {
         let mut cmd = Cli::command();
-        let help = cmd.find_subcommand_mut("compile").expect("compile").render_long_help().to_string();
+        let help = cmd
+            .find_subcommand_mut("compile")
+            .expect("compile")
+            .render_long_help()
+            .to_string();
         assert!(!help.contains("stdin"), "{help}");
         assert!(!help.contains("no extension given"), "{help}");
-        assert!(help.contains("Any other extension, or none, writes a `.brz`"), "{help}");
+        assert!(
+            help.contains("Any other extension, or none, writes a `.brz`"),
+            "{help}"
+        );
     }
 }

@@ -18,22 +18,26 @@ pub(super) fn emit_bus(
     let mut brick_ids = Vec::with_capacity(bus.nodes.len());
     for node in &bus.nodes {
         let color = node
-                .color_of
-                .map(|id| match module.nodes.get(&id) {
-                    Some(n) => color_for_node(n, module, wire_target_index),
-                    // The allocator named a node this module doesn't own, so
-                    // the lane can't mirror its colour — say so rather than
-                    // leaving a silently default-coloured lane to explain.
-                    None => {
-                        eprintln!(
-                            "[bus] colour source {id} is not a node of module {}; using the default",
-                            resolve(module.name)
-                        );
-                        Color::default()
-                    }
-                })
-                .unwrap_or_default();
-        let position = Position { x: node.x + 1, y: node.y + 1, z: node.z };
+            .color_of
+            .map(|id| match module.nodes.get(&id) {
+                Some(n) => color_for_node(n, module, wire_target_index),
+                // The allocator named a node this module doesn't own, so
+                // the lane can't mirror its colour — say so rather than
+                // leaving a silently default-coloured lane to explain.
+                None => {
+                    eprintln!(
+                        "[bus] colour source {id} is not a node of module {}; using the default",
+                        resolve(module.name)
+                    );
+                    Color::default()
+                }
+            })
+            .unwrap_or_default();
+        let position = Position {
+            x: node.x + 1,
+            y: node.y + 1,
+            z: node.z,
+        };
         let (brick, brick_id) = rerouter_brick(position, node.rotation.into(), color);
         bricks.push(brick);
         brick_ids.push(brick_id);
@@ -43,10 +47,19 @@ pub(super) fn emit_bus(
 
 /// A rerouter brick at `position` and its id: a 1x1 reroute node carrying the
 /// rerouter component, whose data struct is empty.
-pub(super) fn rerouter_brick(position: Position, rotation: brdb::Rotation, color: Color) -> (brdb::Brick, usize) {
-    let (mut brick, id) =
-        brdb::Brick { asset: BrickType::from("B_1x1_Reroute_Node"), position, color, rotation, ..Default::default() }
-            .with_id_split();
+pub(super) fn rerouter_brick(
+    position: Position,
+    rotation: brdb::Rotation,
+    color: Color,
+) -> (brdb::Brick, usize) {
+    let (mut brick, id) = brdb::Brick {
+        asset: BrickType::from("B_1x1_Reroute_Node"),
+        position,
+        color,
+        rotation,
+        ..Default::default()
+    }
+    .with_id_split();
     // Saved worlds use the component's instance name.
     brick.add_component_box(Box::new(LiteralComponent::new(gc::REROUTER)));
     (brick, id)

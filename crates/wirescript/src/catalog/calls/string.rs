@@ -236,7 +236,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         CallSpec {
             name: "ToCharCode",
             gate_class: gc::STRING_CHAR_TO_CODEPOINT,
-            params: vec![CallParam::req("character", WirePort::Character, Type::String)],
+            params: vec![CallParam::req(
+                "character",
+                WirePort::Character,
+                Type::String,
+            )],
             exec: false,
             outputs: vec![CallOutput::plain(
                 WirePort::Codepoint,

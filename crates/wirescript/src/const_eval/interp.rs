@@ -19,7 +19,7 @@ use crate::ir::Literal;
 
 use super::destructure::bind_destructured;
 use super::error::{ConstError, ConstReason};
-use super::expr::{eval_expr, ConstCtx};
+use super::expr::{ConstCtx, eval_expr};
 
 /// Ceiling on the number of statements executed across an entire
 /// `eval_call` — including everything nested calls execute. Counts down
@@ -50,7 +50,11 @@ pub struct Budget {
 
 impl Default for Budget {
     fn default() -> Self {
-        Budget { steps: MAX_STEPS, depth: MAX_DEPTH, uncertified: false }
+        Budget {
+            steps: MAX_STEPS,
+            depth: MAX_DEPTH,
+            uncertified: false,
+        }
     }
 }
 
@@ -95,7 +99,10 @@ pub fn eval_call(
     budget: &mut Budget,
 ) -> Result<Literal, ConstError> {
     if budget.depth == 0 {
-        return Err(ConstError { reason: ConstReason::BudgetExceeded, range: decl.range.clone() });
+        return Err(ConstError {
+            reason: ConstReason::BudgetExceeded,
+            range: decl.range.clone(),
+        });
     }
     budget.depth -= 1;
 
@@ -116,9 +123,16 @@ pub fn eval_call(
                 range: param.range.clone(),
             });
         };
-        env.insert(param.name.clone(), super::coerce_const_to_type(arg.clone(), &declared(&param.typ), types));
+        env.insert(
+            param.name.clone(),
+            super::coerce_const_to_type(arg.clone(), &declared(&param.typ), types),
+        );
     }
-    let mut call_cx = ConstCtx { module_consts: module, type_args: bound.clone(), ..cx.with_consts(env) };
+    let mut call_cx = ConstCtx {
+        module_consts: module,
+        type_args: bound.clone(),
+        ..cx.with_consts(env)
+    };
 
     // Collected OUTSIDE `call_cx`/`cx.consts` on purpose — see `exec_block`'s
     // doc comment on `Shadowed`. A taken `if` branch's own environment gets
@@ -133,7 +147,11 @@ pub fn eval_call(
     let flow = exec_block(&decl.body, &mut call_cx, &sig, &mut outputs, budget)?.0;
     let result = match decl.outputs.as_slice() {
         [only] => declared(&only.typ),
-        outs => crate::ir::Type::Record(outs.iter().map(|o| (o.name.clone(), declared(&o.typ))).collect()),
+        outs => crate::ir::Type::Record(
+            outs.iter()
+                .map(|o| (o.name.clone(), declared(&o.typ)))
+                .collect(),
+        ),
     };
     let value = match flow {
         // A `return <value>` wins outright — and cannot disagree with
@@ -141,7 +159,9 @@ pub fn eval_call(
         // rejected both ways that could happen: a value returned past an
         // earlier `out` (lowering would wire that `out` instead), and a
         // SCALAR value in a 2+-output mod (lowering wires nothing at all).
-        Flow::Returned { value: Some(value), .. } => Ok(reorder_to_declaration(value, &decl.outputs)),
+        Flow::Returned {
+            value: Some(value), ..
+        } => Ok(reorder_to_declaration(value, &decl.outputs)),
         // Either the body ran off the end or a `return` produced no value —
         // both mean "the result, if any, is whatever the `out` statements
         // collected".
@@ -167,10 +187,17 @@ pub fn eval_call(
 
 /// The types a call's written type arguments name, read in the calling file
 /// with the caller's own type parameters bound.
-pub(super) fn written_type_args(type_args: &[crate::ast::TypeExpr], cx: &ConstCtx) -> Vec<crate::ir::Type> {
+pub(super) fn written_type_args(
+    type_args: &[crate::ast::TypeExpr],
+    cx: &ConstCtx,
+) -> Vec<crate::ir::Type> {
     type_args
         .iter()
-        .map(|te| cx.types.in_file(&te.range().file).resolve_in(te, &cx.type_args))
+        .map(|te| {
+            cx.types
+                .in_file(&te.range().file)
+                .resolve_in(te, &cx.type_args)
+        })
         .collect()
 }
 
@@ -189,12 +216,23 @@ fn type_params_of_call(
     use crate::ir::Type;
     let names: Vec<&String> = decl.type_params.iter().map(|p| &p.name).collect();
     if type_args.len() == names.len() {
-        return names.into_iter().cloned().zip(type_args.iter().cloned()).collect();
+        return names
+            .into_iter()
+            .cloned()
+            .zip(type_args.iter().cloned())
+            .collect();
     }
-    let open: crate::types::infer::Subst = names.iter().map(|n| ((*n).clone(), Type::Param((*n).clone()))).collect();
+    let open: crate::types::infer::Subst = names
+        .iter()
+        .map(|n| ((*n).clone(), Type::Param((*n).clone())))
+        .collect();
     let mut constraints = Vec::new();
     for (param, arg) in decl.inputs.iter().zip(args) {
-        crate::types::mono::collect(&types.resolve_in(&param.typ, &open), &literal_type(arg), &mut constraints);
+        crate::types::mono::collect(
+            &types.resolve_in(&param.typ, &open),
+            &literal_type(arg),
+            &mut constraints,
+        );
     }
     names
         .into_iter()
@@ -223,12 +261,19 @@ fn literal_type(lit: &Literal) -> crate::ir::Type {
         Literal::Rotator { .. } => Type::Rotator,
         Literal::Quat { .. } => Type::Quat,
         Literal::Color { .. } | Literal::LinearColor { .. } => Type::Color,
-        Literal::Array(items) => Type::Array(Box::new(join(items.iter().map(literal_type).collect()))),
+        Literal::Array(items) => {
+            Type::Array(Box::new(join(items.iter().map(literal_type).collect())))
+        }
         Literal::Map(pairs) => Type::Map(
             Box::new(join(pairs.iter().map(|(k, _)| literal_type(k)).collect())),
             Box::new(join(pairs.iter().map(|(_, v)| literal_type(v)).collect())),
         ),
-        Literal::Record(fields) => Type::Record(fields.iter().map(|(n, l)| (n.clone(), literal_type(l))).collect()),
+        Literal::Record(fields) => Type::Record(
+            fields
+                .iter()
+                .map(|(n, l)| (n.clone(), literal_type(l)))
+                .collect(),
+        ),
         _ => Type::Any,
     }
 }
@@ -484,7 +529,10 @@ fn exec_block(
     let mut shadowed: Shadowed = Vec::new();
     for stmt in &block.stmts {
         if budget.steps == 0 {
-            return Err(ConstError { reason: ConstReason::BudgetExceeded, range: stmt.range().clone() });
+            return Err(ConstError {
+                reason: ConstReason::BudgetExceeded,
+                range: stmt.range().clone(),
+            });
         }
         budget.steps -= 1;
 
@@ -529,7 +577,10 @@ fn exec_block(
                     // stops the block so `eval_call` can build from whatever
                     // was collected.
                     return Ok((
-                        Flow::Returned { value: None, range: range.clone() },
+                        Flow::Returned {
+                            value: None,
+                            range: range.clone(),
+                        },
                         shadowed,
                     ));
                 };
@@ -590,7 +641,10 @@ fn exec_block(
                     });
                 }
                 return Ok((
-                    Flow::Returned { value: Some(lit), range: range.clone() },
+                    Flow::Returned {
+                        value: Some(lit),
+                        range: range.clone(),
+                    },
                     shadowed,
                 ));
             }
@@ -609,7 +663,11 @@ fn exec_block(
                 // the branch declares does not leak past the `if`, and the
                 // UNTAKEN block is never touched (does not even need to be
                 // evaluable).
-                let branch = if take_then { Some(&if_stmt.then_block) } else { if_stmt.else_block.as_ref() };
+                let branch = if take_then {
+                    Some(&if_stmt.then_block)
+                } else {
+                    if_stmt.else_block.as_ref()
+                };
                 if let Some(taken) = branch {
                     let mut branch_cx = cx.with_consts(cx.consts.clone());
                     let (result, branch_shadowed) =
@@ -639,15 +697,11 @@ fn exec_block(
                         match prev {
                             // Previously bound in an enclosing scope: put
                             // that value back (mutations included).
-                            Some(value) => {
-                                cx.consts.insert(name, value)
-                            }
+                            Some(value) => cx.consts.insert(name, value),
                             // Previously unbound: the declaration introduced
                             // the name, so it must vanish entirely rather
                             // than linger as an empty/default value.
-                            None => {
-                                cx.consts.remove(name.as_str())
-                            }
+                            None => cx.consts.remove(name.as_str()),
                         };
                     }
                     // A `return` inside the branch stops the ENCLOSING body
@@ -723,7 +777,13 @@ fn exec_call_stmt(es: &ExprStmt, cx: &mut ConstCtx, budget: &mut Budget) -> Resu
         range: es.range.clone(),
     };
 
-    let Expr::Call { callee, args, type_args, .. } = &es.expr else {
+    let Expr::Call {
+        callee,
+        args,
+        type_args,
+        ..
+    } = &es.expr
+    else {
         return Err(unsupported());
     };
 
@@ -750,7 +810,10 @@ fn exec_call_stmt(es: &ExprStmt, cx: &mut ConstCtx, budget: &mut Budget) -> Resu
     let arg_lits = bind_call_args(&target.inputs, args, cx, budget)?;
 
     if budget.depth == 0 {
-        return Err(ConstError { reason: ConstReason::BudgetExceeded, range: es.range.clone() });
+        return Err(ConstError {
+            reason: ConstReason::BudgetExceeded,
+            range: es.range.clone(),
+        });
     }
     let written = written_type_args(type_args, cx);
     eval_call(&target, &arg_lits, &written, &*cx, budget)?;
@@ -797,7 +860,9 @@ fn exec_mutating_method_call(
     };
 
     let updated = match current {
-        Literal::Array(items) => Literal::Array(mutate_array(items, field, args, es, &*cx, budget)?),
+        Literal::Array(items) => {
+            Literal::Array(mutate_array(items, field, args, es, &*cx, budget)?)
+        }
         Literal::Map(pairs) => Literal::Map(mutate_map(pairs, field, args, es, &*cx, budget)?),
         _ => return Err(unsupported()),
     };
@@ -824,12 +889,16 @@ fn mutate_array(
 ) -> Result<Vec<Literal>, ConstError> {
     match field {
         "push" => {
-            let [value] = method_args(&["value"], args, es)?[..] else { unreachable!() };
+            let [value] = method_args(&["value"], args, es)?[..] else {
+                unreachable!()
+            };
             items.push(eval_expr(value, cx, budget)?);
             Ok(items)
         }
         "set" => {
-            let [index, value] = method_args(&["index", "value"], args, es)?[..] else { unreachable!() };
+            let [index, value] = method_args(&["index", "value"], args, es)?[..] else {
+                unreachable!()
+            };
             let idx_lit = eval_expr(index, cx, budget)?;
             let val_lit = eval_expr(value, cx, budget)?;
             match idx_lit {
@@ -838,7 +907,10 @@ fn mutate_array(
                     Ok(items)
                 }
                 Literal::Int(i) => Err(ConstError {
-                    reason: ConstReason::ArrayIndexOutOfRange { index: i, len: items.len() },
+                    reason: ConstReason::ArrayIndexOutOfRange {
+                        index: i,
+                        len: items.len(),
+                    },
                     range: es.range.clone(),
                 }),
                 _ => Err(ConstError {
@@ -852,7 +924,9 @@ fn mutate_array(
             Ok(items)
         }
         "append" => {
-            let [source] = method_args(&["source"], args, es)?[..] else { unreachable!() };
+            let [source] = method_args(&["source"], args, es)?[..] else {
+                unreachable!()
+            };
             match eval_expr(source, cx, budget)? {
                 Literal::Array(mut more) => {
                     items.append(&mut more);
@@ -888,7 +962,9 @@ fn mutate_map(
 ) -> Result<Vec<(Literal, Literal)>, ConstError> {
     match field {
         "set" => {
-            let [key, value] = method_args(&["key", "value"], args, es)?[..] else { unreachable!() };
+            let [key, value] = method_args(&["key", "value"], args, es)?[..] else {
+                unreachable!()
+            };
             let key_lit = eval_expr(key, cx, budget)?;
             let val_lit = eval_expr(value, cx, budget)?;
             match pairs.iter_mut().find(|(k, _)| *k == key_lit) {
@@ -898,7 +974,9 @@ fn mutate_map(
             Ok(pairs)
         }
         "remove" => {
-            let [key] = method_args(&["key"], args, es)?[..] else { unreachable!() };
+            let [key] = method_args(&["key"], args, es)?[..] else {
+                unreachable!()
+            };
             let key_lit = eval_expr(key, cx, budget)?;
             pairs.retain(|(k, _)| *k != key_lit);
             Ok(pairs)
@@ -971,9 +1049,18 @@ pub(super) fn bind_args<'a>(
 
 /// The arguments of a mutating method on a const array or map, bound to the
 /// method's parameter names; each one is required.
-fn method_args<'a>(names: &[&str], args: &'a [CallArg], es: &ExprStmt) -> Result<Vec<&'a Expr>, ConstError> {
-    let Ok(slots) = bind_args(names, 0, args, Arity::Lenient) else { return Err(arity_error(es)) };
-    slots.into_iter().map(|s| s.ok_or_else(|| arity_error(es))).collect()
+fn method_args<'a>(
+    names: &[&str],
+    args: &'a [CallArg],
+    es: &ExprStmt,
+) -> Result<Vec<&'a Expr>, ConstError> {
+    let Ok(slots) = bind_args(names, 0, args, Arity::Lenient) else {
+        return Err(arity_error(es));
+    };
+    slots
+        .into_iter()
+        .map(|s| s.ok_or_else(|| arity_error(es)))
+        .collect()
 }
 
 /// A mutating method call missing a required positional argument (typecheck

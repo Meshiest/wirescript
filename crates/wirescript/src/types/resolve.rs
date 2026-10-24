@@ -23,7 +23,10 @@ use crate::ir::Type;
 /// both are short of this one, so a type that resolves here may still not be
 /// offered in the editor. Adding a primitive means editing those too.
 pub fn primitive(name: &str) -> Option<Type> {
-    PRIMITIVES.iter().find(|(n, _)| *n == name).map(|(_, t)| t.clone())
+    PRIMITIVES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, t)| t.clone())
 }
 
 /// Each primitive type's source spelling and its [`Type`] (see [`primitive`]).
@@ -117,11 +120,17 @@ pub fn substitute_type_expr(te: &TypeExpr, subst: &HashMap<String, TypeExpr>) ->
             range: range.clone(),
         },
         TypeExpr::Tuple { fields, range } => TypeExpr::Tuple {
-            fields: fields.iter().map(|f| substitute_type_expr(f, subst)).collect(),
+            fields: fields
+                .iter()
+                .map(|f| substitute_type_expr(f, subst))
+                .collect(),
             range: range.clone(),
         },
         TypeExpr::Union { options, range } => TypeExpr::Union {
-            options: options.iter().map(|o| substitute_type_expr(o, subst)).collect(),
+            options: options
+                .iter()
+                .map(|o| substitute_type_expr(o, subst))
+                .collect(),
             range: range.clone(),
         },
         TypeExpr::Record { fields, range } => TypeExpr::Record {
@@ -137,7 +146,10 @@ pub fn substitute_type_expr(te: &TypeExpr, subst: &HashMap<String, TypeExpr>) ->
         },
         TypeExpr::Generic { name, args, range } => TypeExpr::Generic {
             name: name.clone(),
-            args: args.iter().map(|a| substitute_type_expr(a, subst)).collect(),
+            args: args
+                .iter()
+                .map(|a| substitute_type_expr(a, subst))
+                .collect(),
             range: range.clone(),
         },
     }
@@ -190,26 +202,39 @@ pub trait TypeNames {
     fn enum_named(&self, name: &str, args: Vec<Type>) -> Option<Type>;
     /// The names the body of an alias read here reads: those where the alias
     /// is declared, with `bindings` for its parameters `params`.
-    fn body_scope<'s>(&'s self, bindings: &'s HashMap<String, Type>, params: &'s [String]) -> Box<dyn TypeNames + 's>;
+    fn body_scope<'s>(
+        &'s self,
+        bindings: &'s HashMap<String, Type>,
+        params: &'s [String],
+    ) -> Box<dyn TypeNames + 's>;
 }
 
 impl TypeNames for ResolveCtx<'_> {
     fn param(&self, name: &str, _: &SourceRange) -> Option<Type> {
-        self.params.iter().any(|p| p == name).then(|| Type::Param(name.to_string()))
+        self.params
+            .iter()
+            .any(|p| p == name)
+            .then(|| Type::Param(name.to_string()))
     }
 
     fn alias(&self, name: &str) -> Option<AliasDef<'_>> {
         if let Some(g) = self.generic_aliases.get(name) {
             return Some(AliasDef::Generic(&g.params, &g.body));
         }
-        self.type_aliases.get(name).map(|t| AliasDef::Resolved(t.clone()))
+        self.type_aliases
+            .get(name)
+            .map(|t| AliasDef::Resolved(t.clone()))
     }
 
     fn enum_named(&self, _: &str, _: Vec<Type>) -> Option<Type> {
         None
     }
 
-    fn body_scope<'s>(&'s self, bindings: &'s HashMap<String, Type>, params: &'s [String]) -> Box<dyn TypeNames + 's> {
+    fn body_scope<'s>(
+        &'s self,
+        bindings: &'s HashMap<String, Type>,
+        params: &'s [String],
+    ) -> Box<dyn TypeNames + 's> {
         // A body reads the aliases where it is declared, with none of the
         // use site's type parameters, when typecheck says where that is;
         // otherwise this scope's, less the parameters the alias binds.
@@ -222,7 +247,12 @@ impl TypeNames for ResolveCtx<'_> {
             }),
             None => Box::new(ResolveCtx { ..*self }),
         };
-        Box::new(BoundAliases { parent, bindings, shadowed: params, declaring: self.declaring_aliases.is_some() })
+        Box::new(BoundAliases {
+            parent,
+            bindings,
+            shadowed: params,
+            declaring: self.declaring_aliases.is_some(),
+        })
     }
 }
 
@@ -248,7 +278,11 @@ impl TypeNames for BoundAliases<'_> {
     fn alias(&self, name: &str) -> Option<AliasDef<'_>> {
         match self.parent.alias(name) {
             generic @ Some(AliasDef::Generic(..)) => generic,
-            other => self.bindings.get(name).map(|t| AliasDef::Resolved(t.clone())).or(other),
+            other => self
+                .bindings
+                .get(name)
+                .map(|t| AliasDef::Resolved(t.clone()))
+                .or(other),
         }
     }
 
@@ -256,11 +290,20 @@ impl TypeNames for BoundAliases<'_> {
         self.parent.enum_named(name, args)
     }
 
-    fn body_scope<'s>(&'s self, bindings: &'s HashMap<String, Type>, params: &'s [String]) -> Box<dyn TypeNames + 's> {
+    fn body_scope<'s>(
+        &'s self,
+        bindings: &'s HashMap<String, Type>,
+        params: &'s [String],
+    ) -> Box<dyn TypeNames + 's> {
         if self.declaring {
             self.parent.body_scope(bindings, params)
         } else {
-            Box::new(BoundAliases { parent: Box::new(Borrowed(self)), bindings, shadowed: params, declaring: false })
+            Box::new(BoundAliases {
+                parent: Box::new(Borrowed(self)),
+                bindings,
+                shadowed: params,
+                declaring: false,
+            })
         }
     }
 }
@@ -281,7 +324,11 @@ impl TypeNames for Borrowed<'_> {
         self.0.enum_named(name, args)
     }
 
-    fn body_scope<'s>(&'s self, bindings: &'s HashMap<String, Type>, params: &'s [String]) -> Box<dyn TypeNames + 's> {
+    fn body_scope<'s>(
+        &'s self,
+        bindings: &'s HashMap<String, Type>,
+        params: &'s [String],
+    ) -> Box<dyn TypeNames + 's> {
         self.0.body_scope(bindings, params)
     }
 }
@@ -361,12 +408,22 @@ fn resolve_type_at_depth(
                 Some(AliasDef::Resolved(t)) => return t,
                 Some(AliasDef::Body(body)) => {
                     if depth >= MAX_ALIAS_DEPTH {
-                        diags.push(Diagnostic::error("WS002", format!("recursive type alias '{name}'"), range.clone()));
+                        diags.push(Diagnostic::error(
+                            "WS002",
+                            format!("recursive type alias '{name}'"),
+                            range.clone(),
+                        ));
                         return Type::Any;
                     }
                     let none = HashMap::default();
                     let scope = cx.body_scope(&none, &[]);
-                    return resolve_type_at_depth(body, scope.as_ref(), diags, depth + 1, in_progress);
+                    return resolve_type_at_depth(
+                        body,
+                        scope.as_ref(),
+                        diags,
+                        depth + 1,
+                        in_progress,
+                    );
                 }
                 None => {}
             }
@@ -394,9 +451,13 @@ fn resolve_type_at_depth(
             }
             distribute_ref(resolved)
         }
-        TypeExpr::Array { inner, .. } => {
-            Type::Array(Box::new(resolve_type_at_depth(inner, cx, diags, depth, in_progress)))
-        }
+        TypeExpr::Array { inner, .. } => Type::Array(Box::new(resolve_type_at_depth(
+            inner,
+            cx,
+            diags,
+            depth,
+            in_progress,
+        ))),
         TypeExpr::Tuple { fields, .. } => Type::Tuple(
             fields
                 .iter()
@@ -412,7 +473,12 @@ fn resolve_type_at_depth(
         TypeExpr::Record { fields, .. } => Type::Record(
             fields
                 .iter()
-                .map(|f| (f.name.clone(), resolve_type_at_depth(&f.typ, cx, diags, depth, in_progress)))
+                .map(|f| {
+                    (
+                        f.name.clone(),
+                        resolve_type_at_depth(&f.typ, cx, diags, depth, in_progress),
+                    )
+                })
                 .collect(),
         ),
         TypeExpr::Generic { name, args, range } => {
@@ -461,10 +527,15 @@ fn resolve_type_at_depth(
                 // Bind each param to its resolved arg and resolve the alias
                 // body in the scope the alias is declared in, where those
                 // bindings stand for its parameters.
-                let bindings: HashMap<String, Type> = params.iter().cloned().zip(resolved_args.iter().cloned()).collect();
+                let bindings: HashMap<String, Type> = params
+                    .iter()
+                    .cloned()
+                    .zip(resolved_args.iter().cloned())
+                    .collect();
                 let scope = cx.body_scope(&bindings, params);
                 in_progress.push((name.clone(), resolved_args));
-                let result = resolve_type_at_depth(body, scope.as_ref(), diags, depth + 1, in_progress);
+                let result =
+                    resolve_type_at_depth(body, scope.as_ref(), diags, depth + 1, in_progress);
                 in_progress.pop();
                 return result;
             }
@@ -472,26 +543,40 @@ fn resolve_type_at_depth(
                 return t;
             }
             match (name.as_str(), args.as_slice()) {
-                ("Array", [v]) => {
-                    Type::Array(Box::new(resolve_type_at_depth(v, cx, diags, depth, in_progress)))
-                }
-                ("Ref", [v]) => {
-                    Type::Ref(Box::new(resolve_type_at_depth(v, cx, diags, depth, in_progress)))
-                }
+                ("Array", [v]) => Type::Array(Box::new(resolve_type_at_depth(
+                    v,
+                    cx,
+                    diags,
+                    depth,
+                    in_progress,
+                ))),
+                ("Ref", [v]) => Type::Ref(Box::new(resolve_type_at_depth(
+                    v,
+                    cx,
+                    diags,
+                    depth,
+                    in_progress,
+                ))),
                 // `Component<PointLight>`: a reference to a component of that type.
-                ("Component", [TypeExpr::Name { name: c, range: c_range }]) => {
-                    match crate::catalog::component_type(c) {
-                        Some(o) => Type::Component(o.class.to_string()),
-                        None => {
-                            diags.push(Diagnostic::error(
+                (
+                    "Component",
+                    [
+                        TypeExpr::Name {
+                            name: c,
+                            range: c_range,
+                        },
+                    ],
+                ) => match crate::catalog::component_type(c) {
+                    Some(o) => Type::Component(o.class.to_string()),
+                    None => {
+                        diags.push(Diagnostic::error(
                                 "WS110",
                                 format!("`Component<{c}>`: `{c}` is not a component type the component gates take"),
                                 c_range.clone(),
                             ));
-                            Type::Any
-                        }
+                        Type::Any
                     }
-                }
+                },
                 ("Map", [k, v]) => {
                     let key = resolve_type_at_depth(k, cx, diags, depth, in_progress);
                     let val = resolve_type_at_depth(v, cx, diags, depth, in_progress);
@@ -549,7 +634,10 @@ fn enum_args(
     in_progress: &mut Vec<(String, Vec<Type>)>,
 ) -> Option<Type> {
     cx.enum_named(name, Vec::new())?;
-    let args = args.iter().map(|a| resolve_type_at_depth(a, cx, diags, depth, in_progress)).collect();
+    let args = args
+        .iter()
+        .map(|a| resolve_type_at_depth(a, cx, diags, depth, in_progress))
+        .collect();
     cx.enum_named(name, args)
 }
 

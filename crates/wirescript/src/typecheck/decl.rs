@@ -27,11 +27,7 @@ fn const_param_placeholder(t: &Type) -> crate::ir::Literal {
 /// name), which is baked into the save as a reference. Spreads and other
 /// values are only meaningful when the array is built at runtime, so they're
 /// rejected here with a pointer to assigning the array in an exec handler.
-fn check_top_level_array_init(
-    ctx: &mut TypeCheckCtx,
-    elements: &[ArrayElem],
-    elem_ty: &Type,
-) {
+fn check_top_level_array_init(ctx: &mut TypeCheckCtx, elements: &[ArrayElem], elem_ty: &Type) {
     for el in elements {
         let e = el.expr();
         let t = ctx.in_pure(|ctx| infer::infer(ctx, e));
@@ -42,7 +38,9 @@ fn check_top_level_array_init(
                 e.range().clone(),
             );
         } else if crate::lower::holds_refs(elem_ty) && crate::lower::ref_shaped(e) {
-            if !coerces_at_a_baked_literal(&t, elem_ty) && !coerces_at_a_baked_literal(&unwrap_ref(&t), elem_ty) {
+            if !coerces_at_a_baked_literal(&t, elem_ty)
+                && !coerces_at_a_baked_literal(&unwrap_ref(&t), elem_ty)
+            {
                 ctx.emit(
                     "WS003",
                     format!(
@@ -210,13 +208,7 @@ pub(super) fn coerces_at_a_baked_literal(got: &Type, want: &Type) -> bool {
 
 /// One side (key or value) of a map literal entry, checked against the map's
 /// declared type for that side.
-fn check_map_entry_side(
-    ctx: &mut TypeCheckCtx,
-    got: &Type,
-    want: &Type,
-    side: &str,
-    at: &Expr,
-) {
+fn check_map_entry_side(ctx: &mut TypeCheckCtx, got: &Type, want: &Type, side: &str, at: &Expr) {
     if coerces_at_a_baked_literal(got, want) {
         return;
     }
@@ -269,10 +261,7 @@ pub(super) fn check_const_map_literal(ctx: &mut TypeCheckCtx, entries: &[MapLitE
         .iter()
         .map(|e| (infer::infer(ctx, &e.key), infer::infer(ctx, &e.value)))
         .collect();
-    let (k, v) = inferred
-        .first()
-        .cloned()
-        .unwrap_or((Type::Any, Type::Any));
+    let (k, v) = inferred.first().cloned().unwrap_or((Type::Any, Type::Any));
     for (entry, (kt, vt)) in entries.iter().zip(inferred.iter()) {
         check_map_entry_side(ctx, kt, &k, "key", &entry.key);
         check_map_entry_side(ctx, vt, &v, "value", &entry.value);
@@ -289,7 +278,11 @@ pub(super) fn infer_let_init(ctx: &mut TypeCheckCtx, l: &crate::ast::LetDecl) ->
     // `let s: T` with no `= value` declares a signal when `T` is `exec`, also
     // through a `type` alias; any other type needs its value.
     if !l.has_initializer()
-        && let Some(te @ TypeExpr::Name { name: type_name, .. }) = &l.typ
+        && let Some(
+            te @ TypeExpr::Name {
+                name: type_name, ..
+            },
+        ) = &l.typ
     {
         let before = ctx.diagnostics.len();
         let resolved = resolve_type_expr(ctx, te);
@@ -324,7 +317,12 @@ pub(super) fn infer_let_init(ctx: &mut TypeCheckCtx, l: &crate::ast::LetDecl) ->
     // `let s: exec` declares a new signal; the parser gives the bare form a
     // placeholder `0` at the declaration's own start. A written initializer
     // would be dropped, since the new signal fires only on `emit s`.
-    if let (Some(TypeExpr::Name { name: type_name, .. }), LetBinding::Ident { name, .. }) = (&l.typ, &l.binding)
+    if let (
+        Some(TypeExpr::Name {
+            name: type_name, ..
+        }),
+        LetBinding::Ident { name, .. },
+    ) = (&l.typ, &l.binding)
         && type_name == "exec"
         && !matches!(&l.value, Expr::IntLit { range, .. } if range.start.offset == l.range.start.offset)
     {
@@ -396,10 +394,7 @@ pub(super) fn decl_no_fold(d: &TopDecl) -> bool {
     }
 }
 
-pub(super) fn check_decl(
-    ctx: &mut TypeCheckCtx,
-    d: &TopDecl,
-) {
+pub(super) fn check_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
     ctx.with_nofold(decl_no_fold(d), |ctx| check_decl_inner(ctx, d));
 }
 
@@ -428,9 +423,13 @@ pub(super) fn check_aggregate_record(ctx: &mut TypeCheckCtx, ty: &Type, range: &
     fn parts(t: &Type) -> Option<Vec<(String, Type)>> {
         match t {
             Type::Record(fields) => Some(fields.clone()),
-            Type::Tuple(elems) => {
-                Some(elems.iter().enumerate().map(|(i, t)| (i.to_string(), t.clone())).collect())
-            }
+            Type::Tuple(elems) => Some(
+                elems
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| (i.to_string(), t.clone()))
+                    .collect(),
+            ),
             _ => None,
         }
     }
@@ -593,9 +592,8 @@ pub(super) fn check_port_record(
         Type::Record(fields) => {
             // Inside a record every enum counts: a record variable stores an enum
             // array field as columns even when it has no payload.
-            let any_columnar = |t: &Type| {
-                matches!(t, Type::Record(_) | Type::Tuple(_) | Type::Enum { .. })
-            };
+            let any_columnar =
+                |t: &Type| matches!(t, Type::Record(_) | Type::Tuple(_) | Type::Enum { .. });
             if let Some((path, k)) = columnar_field(&fields, &any_columnar) {
                 ctx.emit(
                     "WS049",
@@ -614,10 +612,7 @@ pub(super) fn check_port_record(
     }
 }
 
-fn check_decl_inner(
-    ctx: &mut TypeCheckCtx,
-    d: &TopDecl,
-) {
+fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
     // A record used as var/array/map storage must have only storable leaf fields.
     let storage_type = match d {
         TopDecl::Var(v) => Some((ctx.scope.lookup(&v.name).map(|s| s.ty.clone()), &v.range)),
@@ -641,7 +636,10 @@ fn check_decl_inner(
                 };
                 // A name the top level declares again: the initializer reads
                 // the declaration before this one (see `scope::top`).
-                let mut above = ctx.top_names.initializer_read(&v.name, &v.range).map(|at| ctx.top_view(at));
+                let mut above = ctx
+                    .top_names
+                    .initializer_read(&v.name, &v.range)
+                    .map(|at| ctx.top_view(at));
                 // An array-valued `var` declared at top level (no exec context)
                 // is baked into the gate just like an `array` decl — its elements
                 // must be constant literals.
@@ -809,13 +807,7 @@ fn check_decl_inner(
                     // site typed the port. Annotation-versus-port is settled in
                     // registration for a top-level `out`, since every one of
                     // them is a registered site.
-                    check_annotated_port_write(
-                        ctx,
-                        &b.name,
-                        &resolved,
-                        &value_ty,
-                        value.range(),
-                    );
+                    check_annotated_port_write(ctx, &b.name, &resolved, &value_ty, value.range());
                 } else {
                     // An unannotated `out y = a.push(5)` would publish a nothing;
                     // reject a void-mutation `Never`.
@@ -882,10 +874,17 @@ fn check_decl_inner(
             let (evaluated, uncertified) = {
                 let lookup = |n: &str| ctx.resolve_mod(n);
                 let mut budget = crate::const_eval::Budget::default();
-                let evaluated = crate::const_eval::eval_let_value(l, &ctx.const_ctx(Some(&lookup)), &mut budget)
-                    .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit));
+                let evaluated = crate::const_eval::eval_let_value(
+                    l,
+                    &ctx.const_ctx(Some(&lookup)),
+                    &mut budget,
+                )
+                .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit));
                 let certified = evaluated.is_ok()
-                    && crate::const_eval::integer_ops_certified(&l.value, &ctx.certified_const_ctx(Some(&lookup)));
+                    && crate::const_eval::integer_ops_certified(
+                        &l.value,
+                        &ctx.certified_const_ctx(Some(&lookup)),
+                    );
                 (evaluated, !certified)
             };
             let bound = let_binding_type(ctx, l, &t);
@@ -893,7 +892,10 @@ fn check_decl_inner(
             ctx.consts.bound_at_top(&l.range);
             match evaluated {
                 Ok(pairs) => {
-                    let marks = crate::const_scope::Marks { uncertified, ..Default::default() };
+                    let marks = crate::const_scope::Marks {
+                        uncertified,
+                        ..Default::default()
+                    };
                     for (name, lit) in pairs {
                         ctx.consts.record(&name, lit, marks);
                     }
@@ -1036,7 +1038,11 @@ fn check_decl_inner(
             for combo in &combos {
                 let before = ctx.diagnostics.len();
                 check_chip_body(ctx, c, combo);
-                clean.push(!ctx.diagnostics[before..].iter().any(|d| d.severity == Severity::Error));
+                clean.push(
+                    !ctx.diagnostics[before..]
+                        .iter()
+                        .any(|d| d.severity == Severity::Error),
+                );
                 if multi_pass {
                     // Dedup by (code, start offset): the same body error
                     // surfaces once per mask member it's invalid for, but
@@ -1226,21 +1232,31 @@ fn narrow_to_clean_members(
         }
         let mut members: Vec<String> = Vec::new();
         for (combo, ok) in combos.iter().zip(clean) {
-            let Some(t) = combo.get(k).filter(|_| *ok) else { continue };
+            let Some(t) = combo.get(k).filter(|_| *ok) else {
+                continue;
+            };
             let t = crate::analysis::types::type_str(t);
             if !members.contains(&t) {
                 members.push(t);
             }
         }
         for d in diags.iter_mut() {
-            let Some(at) = d.message.find(&written) else { continue };
-            let Some(end) = d.message[at..].find(">`").map(|e| at + e + 2) else { continue };
+            let Some(at) = d.message.find(&written) else {
+                continue;
+            };
+            let Some(end) = d.message[at..].find(">`").map(|e| at + e + 2) else {
+                continue;
+            };
             let narrowed = if members.is_empty() {
                 String::new()
             } else {
                 format!("{written}{}>`", members.join(" | "))
             };
-            let start = if members.is_empty() { d.message[..at].trim_end_matches("; ").len() } else { at };
+            let start = if members.is_empty() {
+                d.message[..at].trim_end_matches("; ").len()
+            } else {
+                at
+            };
             d.message.replace_range(start..end, &narrowed);
         }
     }
@@ -1263,7 +1279,12 @@ pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Typ
         .cloned()
         .chain(combo.iter().cloned())
         .collect();
-    let checked = (c.range.file.clone(), c.range.start.offset, c.range.end.offset, ctx.resolution_subst.clone());
+    let checked = (
+        c.range.file.clone(),
+        c.range.start.offset,
+        c.range.end.offset,
+        ctx.resolution_subst.clone(),
+    );
     ctx.resolutions.checked_bodies.insert(checked);
     // The body reads the top level as its declaration sees it, wherever it
     // is checked from.
@@ -1284,13 +1305,15 @@ pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Typ
     for (tp, ty) in c.type_params.iter().zip(combo.iter()) {
         if tp.bound.is_some() {
             let mask = super::resolve::type_param_mask(ctx, tp);
-            ctx.bounded_type_params.push((tp.name.clone(), mask, ty.clone()));
+            ctx.bounded_type_params
+                .push((tp.name.clone(), mask, ty.clone()));
         }
         if tp.bound.is_none() {
             ctx.unbounded_type_params.push(tp.name.clone());
             for p in &c.inputs {
                 if super::enums::type_expr_mentions(&p.typ, &tp.name) {
-                    ctx.unbounded_typed_params.push((p.range.clone(), tp.name.clone()));
+                    ctx.unbounded_typed_params
+                        .push((p.range.clone(), tp.name.clone()));
                 }
             }
         }
@@ -1335,8 +1358,13 @@ pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Typ
         // being a placeholder already excludes it from the `if`-condition
         // environment either way).
         if p.is_const {
-            let marks = crate::const_scope::Marks { declared: true, placeholder: true, uncertified: false };
-            ctx.consts.record(&p.name, const_param_placeholder(&pt), marks);
+            let marks = crate::const_scope::Marks {
+                declared: true,
+                placeholder: true,
+                uncertified: false,
+            };
+            ctx.consts
+                .record(&p.name, const_param_placeholder(&pt), marks);
         }
         // Decided on the type the parameter names as well as its spelling, so
         // an alias of a ref or an array binds as the type it stands for.
@@ -1368,9 +1396,7 @@ pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Typ
                         crate::collections::HashSet::default();
                     for field in fields {
                         match field {
-                            crate::ast::RecordDestructField::Named {
-                                name, alias, ..
-                            } => {
+                            crate::ast::RecordDestructField::Named { name, alias, .. } => {
                                 let bind_name = alias.as_ref().unwrap_or(name);
                                 let field_ty = if let Type::Record(rec_fields) = &pt {
                                     rec_fields
@@ -1399,9 +1425,7 @@ pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Typ
                                     Type::Record(
                                         rec_fields
                                             .iter()
-                                            .filter(|(k, _)| {
-                                                !consumed.contains(k.as_str())
-                                            })
+                                            .filter(|(k, _)| !consumed.contains(k.as_str()))
                                             .cloned()
                                             .collect(),
                                     )
@@ -1607,22 +1631,31 @@ fn block_has_return(block: &Block) -> bool {
 
 /// Output names set independently of any one path: every `out r = ...`, and
 /// every `emit` inside a nested handler, anonymous chip or loop body.
-fn collect_off_path_assignments(block: &Block, values: &[&str], set: &mut crate::collections::HashSet<String>) {
-    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, cx| {
-        match n {
-            walk::Node::Stmt(Stmt::OutBinding(o)) if values.contains(&o.name.as_str()) => {
-                set.insert(o.name.clone());
+fn collect_off_path_assignments(
+    block: &Block,
+    values: &[&str],
+    set: &mut crate::collections::HashSet<String>,
+) {
+    walk::walk(
+        walk::Node::Block(block),
+        walk::Ctx::default(),
+        &mut |n, cx| {
+            match n {
+                walk::Node::Stmt(Stmt::OutBinding(o)) if values.contains(&o.name.as_str()) => {
+                    set.insert(o.name.clone());
+                }
+                walk::Node::Stmt(Stmt::Emit(e))
+                    if (cx.handler || cx.anon_chip || cx.in_loop)
+                        && values.contains(&e.name.as_str()) =>
+                {
+                    set.insert(e.name.clone());
+                }
+                walk::Node::Stmt(Stmt::ChipDecl(_)) => return false,
+                _ => {}
             }
-            walk::Node::Stmt(Stmt::Emit(e))
-                if (cx.handler || cx.anon_chip || cx.in_loop) && values.contains(&e.name.as_str()) =>
-            {
-                set.insert(e.name.clone());
-            }
-            walk::Node::Stmt(Stmt::ChipDecl(_)) => return false,
-            _ => {}
-        }
-        true
-    });
+            true
+        },
+    );
 }
 
 /// Walk `block` from `set` (the value outputs set so far on this path).
@@ -1635,7 +1668,10 @@ fn walk_paths(
     values: &[&str],
     bad: &mut Option<SourceRange>,
 ) -> Option<crate::collections::HashSet<String>> {
-    fn merge(a: Option<crate::collections::HashSet<String>>, b: Option<crate::collections::HashSet<String>>) -> Option<crate::collections::HashSet<String>> {
+    fn merge(
+        a: Option<crate::collections::HashSet<String>>,
+        b: Option<crate::collections::HashSet<String>>,
+    ) -> Option<crate::collections::HashSet<String>> {
         match (a, b) {
             (None, x) | (x, None) => x,
             (Some(a), Some(b)) => Some(a.intersection(&b).cloned().collect()),
@@ -1647,9 +1683,10 @@ fn walk_paths(
         // and leave through a `return` (WS095). A statement `match`'s arms
         // are its branches, walked below.
         let value_arms = match s {
-            Stmt::ExprStmt(ExprStmt { expr: Expr::MatchExpr { scrutinee, .. }, .. }) => {
-                walk::expr_arm_blocks(walk::Node::Expr(scrutinee))
-            }
+            Stmt::ExprStmt(ExprStmt {
+                expr: Expr::MatchExpr { scrutinee, .. },
+                ..
+            }) => walk::expr_arm_blocks(walk::Node::Expr(scrutinee)),
             _ => walk::expr_arm_blocks(walk::Node::Stmt(s)),
         };
         for b in value_arms {
@@ -1723,11 +1760,15 @@ fn enum_crossing(ctx: &TypeCheckCtx, ty: &Type, boundary: bool) -> Option<String
         Type::Ref(_) => None,
         Type::Enum { name, .. } => {
             let unit = ctx.enum_defs.of(ty).is_some_and(|d| {
-                d.variants.iter().all(|v| matches!(v.payload, crate::typecheck::enums::Payload::Unit))
+                d.variants
+                    .iter()
+                    .all(|v| matches!(v.payload, crate::typecheck::enums::Payload::Unit))
             });
             (!(boundary && unit)).then(|| name.clone())
         }
-        Type::Record(fields) => fields.iter().find_map(|(_, t)| enum_crossing(ctx, t, false)),
+        Type::Record(fields) => fields
+            .iter()
+            .find_map(|(_, t)| enum_crossing(ctx, t, false)),
         Type::Tuple(elems) => elems.iter().find_map(|t| enum_crossing(ctx, t, false)),
         // A top-level port array or map of payload-free enums is one column
         // of tags, which a pin carries as a container ref.

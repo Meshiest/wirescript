@@ -11,13 +11,12 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use wirescript::analysis::text::Ruler;
 use wirescript::analysis::{
-    asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
-    cursor_byte_offset, field_name_at, fill_match_arms_at, fill_record_at, find_asset_refs,
-    find_name_range, format_with, hover_at, prefab_path_fragment, prepare_rename_at, references_at,
-    FormatOptions,
-    references_to_export, rename_edit_text, semantic_tokens, word_at, AssetRef, CrossFile,
-    InlayHintKind, RefNs, RefSite, RefTarget, ResourceEstimate, SemTokenKind, SymbolDef, TextRange,
-    NarrowedReadMap, TypeMap, VarReadContextMap,
+    asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file,
+    cursor_byte_offset, definition_at, field_name_at, fill_match_arms_at, fill_record_at,
+    find_asset_refs, find_name_range, format_with, hover_at, prefab_path_fragment,
+    prepare_rename_at, references_at, references_to_export, rename_edit_text, semantic_tokens,
+    word_at, AssetRef, CrossFile, FormatOptions, InlayHintKind, NarrowedReadMap, RefNs, RefSite,
+    RefTarget, ResourceEstimate, SemTokenKind, SymbolDef, TextRange, TypeMap, VarReadContextMap,
 };
 use wirescript::ast::{ImportKind, LetBinding, Script, TopDecl};
 use wirescript::lexer::KEYWORDS;
@@ -110,7 +109,9 @@ fn ranges_in_files(docs: &HashMap<Url, DocState>, refs: &[(Url, TextRange)]) -> 
         sources.entry(u).or_insert_with(|| source_for(docs, u));
     }
     let rulers: HashMap<&Url, Ruler> = sources.iter().map(|(u, s)| (*u, Ruler::new(s))).collect();
-    refs.iter().map(|(u, r)| text_range_to_lsp(&rulers[u], r)).collect()
+    refs.iter()
+        .map(|(u, r)| text_range_to_lsp(&rulers[u], r))
+        .collect()
 }
 
 /// One [`RefSite`] converted to the LSP-facing [`TextRange`] the edit path
@@ -153,13 +154,20 @@ fn is_field_or_keyword(ast: &Script, source: &str, line: usize, col: usize) -> b
 /// client two edits for the same site.
 fn sort_and_dedup(mut results: Vec<(Url, TextRange)>) -> Vec<(Url, TextRange)> {
     results.sort_by(|a, b| {
-        (a.0.as_str(), a.1.start_line, a.1.start_col, a.1.end_line, a.1.end_col).cmp(&(
-            b.0.as_str(),
-            b.1.start_line,
-            b.1.start_col,
-            b.1.end_line,
-            b.1.end_col,
-        ))
+        (
+            a.0.as_str(),
+            a.1.start_line,
+            a.1.start_col,
+            a.1.end_line,
+            a.1.end_col,
+        )
+            .cmp(&(
+                b.0.as_str(),
+                b.1.start_line,
+                b.1.start_col,
+                b.1.end_line,
+                b.1.end_col,
+            ))
     });
     results.dedup();
     results
@@ -180,7 +188,9 @@ fn top_level_decl_range(
 ) -> Option<wirescript::diagnostic::SourceRange> {
     for d in &ast.decls {
         match d {
-            TopDecl::Chip(c) if ns == RefNs::Value && c.name == name => return Some(c.range.clone()),
+            TopDecl::Chip(c) if ns == RefNs::Value && c.name == name => {
+                return Some(c.range.clone())
+            }
             TopDecl::Fn(f) if ns == RefNs::Value && f.name == name => return Some(f.range.clone()),
             TopDecl::Let(l) if ns == RefNs::Value => {
                 if let LetBinding::Ident { name: n, .. } = &l.binding {
@@ -189,7 +199,9 @@ fn top_level_decl_range(
                     }
                 }
             }
-            TopDecl::Event(e) if ns == RefNs::Value && e.name == name => return Some(e.range.clone()),
+            TopDecl::Event(e) if ns == RefNs::Value && e.name == name => {
+                return Some(e.range.clone())
+            }
             TopDecl::TypeAlias(t) if ns == RefNs::Type && t.name == name => {
                 return Some(t.range.clone());
             }
@@ -218,8 +230,13 @@ fn find_defining_file_sites(
 
     let import_path = doc.pre_resolve_ast.decls.iter().find_map(|d| {
         let TopDecl::Import(imp) = d else { return None };
-        let ImportKind::Named(bindings) = &imp.kind else { return None };
-        bindings.iter().any(|b| b.name == export_name).then(|| imp.path.clone())
+        let ImportKind::Named(bindings) = &imp.kind else {
+            return None;
+        };
+        bindings
+            .iter()
+            .any(|b| b.name == export_name)
+            .then(|| imp.path.clone())
     })?;
 
     let resolved_path = FsLoader.canonical_path(&import_path, &current_file);
@@ -239,7 +256,10 @@ fn find_defining_file_sites(
         .canonicalize()
         .unwrap_or_else(|_| std::path::PathBuf::from(&d_file));
     if let Some((open_uri, open_doc)) = docs.iter().find(|(u, _)| {
-        u.to_file_path().ok().map(|p| std::fs::canonicalize(&p).unwrap_or(p)).as_ref()
+        u.to_file_path()
+            .ok()
+            .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+            .as_ref()
             == Some(&d_canonical)
     }) {
         let decl_range = top_level_decl_range(&open_doc.pre_resolve_ast, export_name, ns)?;
@@ -248,8 +268,13 @@ fn find_defining_file_sites(
         let line = name_range.start.line.saturating_sub(1) as usize;
         let col = name_range.start.col.saturating_sub(1) as usize;
         let open_file = uri_to_file_string(open_uri);
-        let (_target, sites) =
-            references_at(&open_doc.pre_resolve_ast, &open_doc.source, &open_file, line, col)?;
+        let (_target, sites) = references_at(
+            &open_doc.pre_resolve_ast,
+            &open_doc.source,
+            &open_file,
+            line,
+            col,
+        )?;
         return Some((open_uri.clone(), open_doc.source.clone(), sites));
     }
 
@@ -297,7 +322,12 @@ fn collect_references_across_files(
         CrossFile::Local => {
             let results: Vec<(Url, TextRange)> = current_sites
                 .iter()
-                .map(|s| (uri.clone(), ref_site_to_text_range(current_source, &target.name, s)))
+                .map(|s| {
+                    (
+                        uri.clone(),
+                        ref_site_to_text_range(current_source, &target.name, s),
+                    )
+                })
                 .collect();
             return sort_and_dedup(results);
         }
@@ -308,9 +338,11 @@ fn collect_references_across_files(
 
     // The defining file `D`'s own decl + local-use sites.
     let defining = match &target.cross_file {
-        CrossFile::Exported { .. } => {
-            Some((uri.clone(), current_source.to_string(), current_sites.to_vec()))
-        }
+        CrossFile::Exported { .. } => Some((
+            uri.clone(),
+            current_source.to_string(),
+            current_sites.to_vec(),
+        )),
         CrossFile::Imported { .. } => find_defining_file_sites(docs, uri, &export_name, target.ns),
         CrossFile::Local => unreachable!("handled above"),
     };
@@ -320,7 +352,12 @@ fn collect_references_across_files(
         // returning nothing.
         let results: Vec<(Url, TextRange)> = current_sites
             .iter()
-            .map(|s| (uri.clone(), ref_site_to_text_range(current_source, &target.name, s)))
+            .map(|s| {
+                (
+                    uri.clone(),
+                    ref_site_to_text_range(current_source, &target.name, s),
+                )
+            })
             .collect();
         return sort_and_dedup(results);
     };
@@ -335,10 +372,18 @@ fn collect_references_across_files(
     // `export_name` makes that invariant explicit and corruption-proof.
     let mut results: Vec<(Url, TextRange)> = d_sites
         .iter()
-        .map(|s| (d_uri.clone(), ref_site_to_text_range(&d_source, &export_name, s)))
+        .map(|s| {
+            (
+                d_uri.clone(),
+                ref_site_to_text_range(&d_source, &export_name, s),
+            )
+        })
         .collect();
 
-    let d_canonical = d_uri.to_file_path().ok().map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+    let d_canonical = d_uri
+        .to_file_path()
+        .ok()
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
 
     // Every OPEN document that isn't `D` itself: scan for import-specifier +
     // import-bound uses of `export_name`. (`D` naturally yields nothing here
@@ -346,7 +391,10 @@ fn collect_references_across_files(
     // tag — the explicit skip is just to avoid the redundant parse.)
     for (doc_uri, doc_state) in docs.iter() {
         if let Some(dc) = &d_canonical {
-            let doc_canon = doc_uri.to_file_path().ok().map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+            let doc_canon = doc_uri
+                .to_file_path()
+                .ok()
+                .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
             if doc_canon.as_ref() == Some(dc) {
                 continue;
             }
@@ -354,14 +402,20 @@ fn collect_references_across_files(
         let file = uri_to_file_string(doc_uri);
         let ast = wirescript::on_big_stack(|| wirescript::parse(&doc_state.source, &file)).ast;
         for s in references_to_export(&ast, &file, &export_name, target.ns) {
-            results.push((doc_uri.clone(), ref_site_to_text_range(&doc_state.source, &export_name, &s)));
+            results.push((
+                doc_uri.clone(),
+                ref_site_to_text_range(&doc_state.source, &export_name, &s),
+            ));
         }
     }
 
     for_each_unopened_sibling(docs, uri, d_canonical.as_deref(), |entry_uri, file, src| {
         let ast = wirescript::on_big_stack(|| wirescript::parse(&src, &file)).ast;
         for s in references_to_export(&ast, &file, &export_name, target.ns) {
-            results.push((entry_uri.clone(), ref_site_to_text_range(&src, &export_name, &s)));
+            results.push((
+                entry_uri.clone(),
+                ref_site_to_text_range(&src, &export_name, &s),
+            ));
         }
     });
 
@@ -457,13 +511,19 @@ fn collect_atom_references(docs: &HashMap<Url, DocState>, uri: &Url, name: &str)
         let file = uri_to_file_string(doc_uri);
         let ruler = Ruler::new(&doc_state.source);
         for r in wirescript::analysis::atom_references(&doc_state.source, &file, name) {
-            out.push(Location { uri: doc_uri.clone(), range: range_to_lsp(&ruler, &r) });
+            out.push(Location {
+                uri: doc_uri.clone(),
+                range: range_to_lsp(&ruler, &r),
+            });
         }
     }
     for_each_unopened_sibling(docs, uri, None, |entry_uri, file, src| {
         let ruler = Ruler::new(&src);
         for r in wirescript::analysis::atom_references(&src, &file, name) {
-            out.push(Location { uri: entry_uri.clone(), range: range_to_lsp(&ruler, &r) });
+            out.push(Location {
+                uri: entry_uri.clone(),
+                range: range_to_lsp(&ruler, &r),
+            });
         }
     });
     out
@@ -527,10 +587,19 @@ fn scan_prefab_paths(uri: &Url) -> Vec<String> {
 fn prefab_ref_diagnostics(source: &str, file: &str) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let ruler = Ruler::new(source);
-    for r in find_asset_refs(source).into_iter().filter(AssetRef::is_file) {
+    for r in find_asset_refs(source)
+        .into_iter()
+        .filter(AssetRef::is_file)
+    {
         let range = Range {
-            start: Position { line: r.line as u32, character: char_col_to_lsp(&ruler, r.line, r.start_col) },
-            end: Position { line: r.line as u32, character: char_col_to_lsp(&ruler, r.line, r.end_col) },
+            start: Position {
+                line: r.line as u32,
+                character: char_col_to_lsp(&ruler, r.line, r.start_col),
+            },
+            end: Position {
+                line: r.line as u32,
+                character: char_col_to_lsp(&ruler, r.line, r.end_col),
+            },
         };
         // Typecheck reports a bad extension and a `.ws` source it cannot read
         // (WS019); a `.brz` is only read at compile time.
@@ -593,7 +662,10 @@ impl SplitDiagnostics {
     fn extend_deduped(&mut self, other: SplitDiagnostics) {
         fn push_new(into: &mut Vec<Diagnostic>, from: Vec<Diagnostic>) {
             for d in from {
-                if !into.iter().any(|e| e.range == d.range && e.message == d.message) {
+                if !into
+                    .iter()
+                    .any(|e| e.range == d.range && e.message == d.message)
+                {
                     into.push(d);
                 }
             }
@@ -614,9 +686,11 @@ fn to_lsp_diagnostic(ruler: &Ruler, d: &wirescript::diagnostic::Diagnostic) -> D
             _ => DiagnosticSeverity::INFORMATION,
         }),
         code: Some(NumberOrString::String(d.code.clone())),
-        code_description: wirescript::analysis::doc_url(wirescript::analysis::Doc::Diagnostic(&d.code))
-            .and_then(|url| Url::parse(&url).ok())
-            .map(|href| CodeDescription { href }),
+        code_description: wirescript::analysis::doc_url(wirescript::analysis::Doc::Diagnostic(
+            &d.code,
+        ))
+        .and_then(|url| Url::parse(&url).ok())
+        .map(|href| CodeDescription { href }),
         source: Some("wirescript".into()),
         message: d.message.clone(),
         ..Default::default()
@@ -666,11 +740,19 @@ fn split_by_file<'a>(
             .or_insert_with(|| std::fs::read_to_string(&*d.range.file).ok());
         foreign.push((other, d));
     }
-    let rulers: HashMap<&Url, Ruler> =
-        foreign_src.iter().filter_map(|(u, text)| Some((u, Ruler::new(text.as_deref()?)))).collect();
+    let rulers: HashMap<&Url, Ruler> = foreign_src
+        .iter()
+        .filter_map(|(u, text)| Some((u, Ruler::new(text.as_deref()?))))
+        .collect();
     for (other, d) in foreign {
-        let Some(ruler) = rulers.get(&other) else { continue };
-        split.foreign.entry(other).or_default().push(to_lsp_diagnostic(ruler, d));
+        let Some(ruler) = rulers.get(&other) else {
+            continue;
+        };
+        split
+            .foreign
+            .entry(other)
+            .or_default()
+            .push(to_lsp_diagnostic(ruler, d));
     }
     split
 }
@@ -877,12 +959,15 @@ impl Backend {
                 let src_owned = source.to_string();
                 let file_owned = file.clone();
                 let full = tokio::task::spawn_blocking(move || {
-                    wirescript::diagnostics_only(wirescript::CompileInput {
-                        source: &src_owned,
-                        file: &file_owned,
-                        module_name: None,
-                        fold_mode: FoldMode::Auto,
-                    }, &wirescript::FsLoader)
+                    wirescript::diagnostics_only(
+                        wirescript::CompileInput {
+                            source: &src_owned,
+                            file: &file_owned,
+                            module_name: None,
+                            fold_mode: FoldMode::Auto,
+                        },
+                        &wirescript::FsLoader,
+                    )
                 })
                 .await;
                 (full.unwrap_or_default(), None)
@@ -896,12 +981,15 @@ impl Backend {
                 let src_owned = source.to_string();
                 let file_owned = file.clone();
                 let full = tokio::task::spawn_blocking(move || {
-                    wirescript::diagnostics_only(wirescript::CompileInput {
-                        source: &src_owned,
-                        file: &file_owned,
-                        module_name: None,
-                        fold_mode: FoldMode::Auto,
-                    }, &wirescript::FsLoader)
+                    wirescript::diagnostics_only(
+                        wirescript::CompileInput {
+                            source: &src_owned,
+                            file: &file_owned,
+                            module_name: None,
+                            fold_mode: FoldMode::Auto,
+                        },
+                        &wirescript::FsLoader,
+                    )
                 })
                 .await;
                 (full.unwrap_or_default(), Some(e.to_string()))
@@ -937,7 +1025,11 @@ impl Backend {
     /// The text of `uri`'s newest change, which its own debounced handler
     /// may not have analysed yet.
     fn newest_text(&self, uri: &Url) -> Option<String> {
-        self.changes.lock().ok()?.get(uri).map(|(_, text)| text.clone())
+        self.changes
+            .lock()
+            .ok()?
+            .get(uri)
+            .map(|(_, text)| text.clone())
     }
 
     /// Drop what `did_change` recorded for `uri`, when it is opened afresh or
@@ -958,7 +1050,12 @@ impl Backend {
             docs.iter()
                 .filter(|(uri, _)| *uri != changed_uri)
                 .filter(|(_, doc)| doc.imported_files.iter().any(|p| p == &changed))
-                .map(|(uri, doc)| (uri.clone(), self.newest_text(uri).unwrap_or_else(|| doc.source.clone())))
+                .map(|(uri, doc)| {
+                    (
+                        uri.clone(),
+                        self.newest_text(uri).unwrap_or_else(|| doc.source.clone()),
+                    )
+                })
                 .collect()
         };
         for (uri, source) in others {
@@ -994,7 +1091,9 @@ impl Backend {
         for u in stale {
             self.client.publish_diagnostics(u, Vec::new(), None).await;
         }
-        self.client.publish_diagnostics(uri.clone(), own, None).await;
+        self.client
+            .publish_diagnostics(uri.clone(), own, None)
+            .await;
     }
 
     /// Drop `uri`'s claim on the imported files it published to, clearing any
@@ -1081,23 +1180,25 @@ impl LanguageServer for Backend {
                     resolve_provider: Some(false),
                     work_done_progress_options: Default::default(),
                 }),
-                semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
-                    SemanticTokensOptions {
-                        legend: SemanticTokensLegend {
-                            token_types: vec![
-                                SemanticTokenType::TYPE,
-                                SemanticTokenType::FUNCTION,
-                                SemanticTokenType::PARAMETER,
-                                SemanticTokenType::VARIABLE,
-                                SemanticTokenType::NAMESPACE,
-                            ],
-                            token_modifiers: vec![],
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: SemanticTokensLegend {
+                                token_types: vec![
+                                    SemanticTokenType::TYPE,
+                                    SemanticTokenType::FUNCTION,
+                                    SemanticTokenType::PARAMETER,
+                                    SemanticTokenType::VARIABLE,
+                                    SemanticTokenType::NAMESPACE,
+                                ],
+                                token_modifiers: vec![],
+                            },
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            range: Some(false),
+                            work_done_progress_options: Default::default(),
                         },
-                        full: Some(SemanticTokensFullOptions::Bool(true)),
-                        range: Some(false),
-                        work_done_progress_options: Default::default(),
-                    },
-                )),
+                    ),
+                ),
                 ..Default::default()
             },
             ..Default::default()
@@ -1127,8 +1228,14 @@ impl LanguageServer for Backend {
                 let target_uri = Url::from_file_path(&target).ok()?;
                 Some(DocumentLink {
                     range: Range {
-                        start: Position { line: r.line as u32, character: char_col_to_lsp(&ruler, r.line, r.start_col) },
-                        end: Position { line: r.line as u32, character: char_col_to_lsp(&ruler, r.line, r.end_col) },
+                        start: Position {
+                            line: r.line as u32,
+                            character: char_col_to_lsp(&ruler, r.line, r.start_col),
+                        },
+                        end: Position {
+                            line: r.line as u32,
+                            character: char_col_to_lsp(&ruler, r.line, r.end_col),
+                        },
                     },
                     target: Some(target_uri),
                     tooltip: Some("Open prefab file".into()),
@@ -1205,7 +1312,9 @@ impl LanguageServer for Backend {
             Err(_) => return,
         };
         tokio::time::sleep(DEBOUNCE).await;
-        if self.changes.lock().map_or(true, |changes| changes.get(&uri).map(|c| c.0) != Some(generation)) {
+        if self.changes.lock().map_or(true, |changes| {
+            changes.get(&uri).map(|c| c.0) != Some(generation)
+        }) {
             return;
         }
         let split = self.analyze(&uri, &change.text);
@@ -1264,13 +1373,23 @@ impl LanguageServer for Backend {
         let newest = self.newest_text(uri);
         // Listing the document's folder walks the disk, so only a `$./` path
         // completion does it, not every keystroke.
-        let in_prefab_path =
-            |src: &str| prefab_path_fragment(src, line, lsp_col_to_char(src, line, pos.character)).is_some();
+        let in_prefab_path = |src: &str| {
+            prefab_path_fragment(src, line, lsp_col_to_char(src, line, pos.character)).is_some()
+        };
         let wants_paths = match newest.as_deref() {
             Some(src) => in_prefab_path(src),
-            None => self.docs.lock().ok().and_then(|d| d.get(uri).map(|d| in_prefab_path(&d.source))).unwrap_or(false),
+            None => self
+                .docs
+                .lock()
+                .ok()
+                .and_then(|d| d.get(uri).map(|d| in_prefab_path(&d.source)))
+                .unwrap_or(false),
         };
-        let prefab_paths = if wants_paths { scan_prefab_paths(uri) } else { Vec::new() };
+        let prefab_paths = if wants_paths {
+            scan_prefab_paths(uri)
+        } else {
+            Vec::new()
+        };
         let items = match self.docs.lock() {
             Ok(docs) => match docs.get(uri) {
                 Some(doc) => {
@@ -1334,7 +1453,14 @@ impl LanguageServer for Backend {
                     (
                         doc.source.clone(),
                         fill_record_at(&doc.source, &doc.symbols, line, col),
-                        fill_match_arms_at(&doc.source, &doc.symbols, &doc.type_map, &doc.pre_resolve_ast, line, col),
+                        fill_match_arms_at(
+                            &doc.source,
+                            &doc.symbols,
+                            &doc.type_map,
+                            &doc.pre_resolve_ast,
+                            line,
+                            col,
+                        ),
                     )
                 }
                 None => (String::new(), None, None),
@@ -1345,12 +1471,22 @@ impl LanguageServer for Backend {
         let mut actions: Vec<CodeActionOrCommand> = Vec::new();
         if let Some(fill) = record_fill {
             actions.push(insert_quickfix(
-                uri, &source, "Fill record fields", fill.line, fill.col, fill.text,
+                uri,
+                &source,
+                "Fill record fields",
+                fill.line,
+                fill.col,
+                fill.text,
             ));
         }
         if let Some(fill) = match_fill {
             actions.push(insert_quickfix(
-                uri, &source, "Fill missing match arms", fill.line, fill.col, fill.text,
+                uri,
+                &source,
+                "Fill missing match arms",
+                fill.line,
+                fill.col,
+                fill.text,
             ));
         }
 
@@ -1392,8 +1528,10 @@ impl LanguageServer for Backend {
                         &format!("Ignore {code} in this file"),
                         0,
                         0,
-                        format!("// ws-ignore-file:{code}
-"),
+                        format!(
+                            "// ws-ignore-file:{code}
+"
+                        ),
                     ));
                 }
             }
@@ -1457,7 +1595,10 @@ impl LanguageServer for Backend {
                 // `$./file.brz` prefab reference -> jump to the referenced file.
                 if let Some(r) = asset_ref_at(&doc.source, line, col) {
                     if r.is_file() {
-                        let target = wirescript::compile::resolve_prefab_path(&uri_to_file_string(uri), &r.path);
+                        let target = wirescript::compile::resolve_prefab_path(
+                            &uri_to_file_string(uri),
+                            &r.path,
+                        );
                         if let Ok(target_uri) = Url::from_file_path(&target) {
                             if target.is_file() {
                                 return Ok(Some(GotoDefinitionResponse::Scalar(Location {
@@ -1487,12 +1628,16 @@ impl LanguageServer for Backend {
                     if let Some((target, current_sites)) =
                         references_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
                     {
-                        let refs = collect_references_across_files(&docs, uri, &target, &current_sites);
+                        let refs =
+                            collect_references_across_files(&docs, uri, &target, &current_sites);
                         if !refs.is_empty() {
                             let locations: Vec<Location> = refs
                                 .iter()
                                 .zip(ranges_in_files(&docs, &refs))
-                                .map(|((u, _), range)| Location { uri: u.clone(), range })
+                                .map(|((u, _), range)| Location {
+                                    uri: u.clone(),
+                                    range,
+                                })
                                 .collect();
                             return Ok(Some(GotoDefinitionResponse::Array(locations)));
                         }
@@ -1522,7 +1667,11 @@ impl LanguageServer for Backend {
                             // so they are byte columns too.
                             start: Position {
                                 line: loc.start_line as u32,
-                                character: byte_off_to_lsp(&target_src, loc.start_line, loc.start_col),
+                                character: byte_off_to_lsp(
+                                    &target_src,
+                                    loc.start_line,
+                                    loc.start_col,
+                                ),
                             },
                             end: Position {
                                 line: loc.end_line as u32,
@@ -1561,7 +1710,10 @@ impl LanguageServer for Backend {
                     let locations: Vec<Location> = refs
                         .iter()
                         .zip(ranges_in_files(&docs, &refs))
-                        .map(|((u, _), range)| Location { uri: u.clone(), range })
+                        .map(|((u, _), range)| Location {
+                            uri: u.clone(),
+                            range,
+                        })
                         .collect();
                     return Ok(Some(locations));
                 }
@@ -1729,7 +1881,11 @@ impl LanguageServer for Backend {
         let mut prev_start = 0u32;
         for t in &toks {
             let delta_line = t.line - prev_line;
-            let delta_start = if delta_line == 0 { t.start_char - prev_start } else { t.start_char };
+            let delta_start = if delta_line == 0 {
+                t.start_char - prev_start
+            } else {
+                t.start_char
+            };
             data.push(SemanticToken {
                 delta_line,
                 delta_start,
@@ -1772,7 +1928,11 @@ impl LanguageServer for Backend {
                 "expected [uri, outputPath?]",
             ));
         }
-        let destination = if out_path.is_empty() { "the editor" } else { out_path };
+        let destination = if out_path.is_empty() {
+            "the editor"
+        } else {
+            out_path
+        };
 
         let uri = Url::parse(uri_str)
             .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("invalid URI"))?;
@@ -1869,9 +2029,8 @@ impl LanguageServer for Backend {
                             let text = Url::from_file_path(&f)
                                 .ok()
                                 .and_then(|u| {
-                                    docs.as_ref().and_then(|docs| {
-                                        docs.get(&u).map(|s| s.source.clone())
-                                    })
+                                    docs.as_ref()
+                                        .and_then(|docs| docs.get(&u).map(|s| s.source.clone()))
                                 })
                                 .or_else(|| std::fs::read_to_string(&f).ok())
                                 .unwrap_or_default();
@@ -1899,7 +2058,9 @@ impl LanguageServer for Backend {
                         )
                         .await;
                 }
-                return Ok(Some(serde_json::json!({ "ok": false, "diagnostics": items })));
+                return Ok(Some(
+                    serde_json::json!({ "ok": false, "diagnostics": items }),
+                ));
             }
             // Emit / IO failures have no per-source location — keep them as a plain
             // error the extension can pop up.
@@ -1962,7 +2123,9 @@ impl LanguageServer for Backend {
             .await;
 
         if out_path.is_empty() {
-            return Ok(Some(serde_json::json!({ "ok": true, "brz": base64(&result.brz) })));
+            return Ok(Some(
+                serde_json::json!({ "ok": true, "brz": base64(&result.brz) }),
+            ));
         }
         Ok(Some(serde_json::json!({ "ok": true, "path": out_path })))
     }
@@ -2010,7 +2173,10 @@ impl LanguageServer for Backend {
         // The editor's indentation, then whatever `.editorconfig` sets for this
         // file (indentation, print width, line endings, final newline).
         let opts = FormatOptions::default()
-            .indent_with(!params.options.insert_spaces, params.options.tab_size as usize)
+            .indent_with(
+                !params.options.insert_spaces,
+                params.options.tab_size as usize,
+            )
             .with_editorconfig(std::path::Path::new(&uri_to_file_string(uri)));
 
         if let Ok(docs) = self.docs.lock() {
@@ -2025,7 +2191,10 @@ impl LanguageServer for Backend {
                 // clamp it, but a full-document edit should not need them to.
                 let newlines = doc.source.matches('\n').count() as u32;
                 let end = if doc.source.ends_with('\n') {
-                    Position { line: newlines, character: 0 }
+                    Position {
+                        line: newlines,
+                        character: 0,
+                    }
                 } else {
                     let last_line = doc.source.lines().last().unwrap_or("");
                     Position {
@@ -2080,7 +2249,11 @@ fn main() {
     // `block_on` polls its future on the calling thread, and a native main
     // thread's stack is 1 MiB on Windows, so the server goes to a worker.
     #[cfg(not(target_family = "wasm"))]
-    rt.block_on(async { tokio::spawn(serve()).await.expect("language server task panicked") });
+    rt.block_on(async {
+        tokio::spawn(serve())
+            .await
+            .expect("language server task panicked")
+    });
     #[cfg(target_family = "wasm")]
     rt.block_on(serve());
     // `serve` returns on the client's `exit`. Dropping the runtime would wait
@@ -2120,7 +2293,10 @@ fn compile_diagnostic_items(
     diags: &[wirescript::diagnostic::Diagnostic],
     sources: &HashMap<String, String>,
 ) -> Vec<serde_json::Value> {
-    let rulers: HashMap<&str, Ruler> = sources.iter().map(|(f, s)| (f.as_str(), Ruler::new(s))).collect();
+    let rulers: HashMap<&str, Ruler> = sources
+        .iter()
+        .map(|(f, s)| (f.as_str(), Ruler::new(s)))
+        .collect();
     let none = Ruler::new("");
     diags
         .iter()
@@ -2161,7 +2337,10 @@ fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let n = chunk.iter().enumerate().fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
         for i in 0..4 {
             if i <= chunk.len() {
                 out.push(ALPHABET[(n >> (18 - 6 * i)) as usize & 63] as char);
@@ -2238,14 +2417,26 @@ fn build_completions(
     prefab_paths: &[String],
 ) -> Vec<CompletionItem> {
     let ruler = Ruler::new(source);
-    wirescript::analysis::completions(source, symbols, line, col, prefab_paths, &wirescript::typecheck::enums::EnumRegistry::editor_lookup)
-        .into_iter()
-        .map(|c| completion_item(&ruler, line, col, c))
-        .collect()
+    wirescript::analysis::completions(
+        source,
+        symbols,
+        line,
+        col,
+        prefab_paths,
+        &wirescript::typecheck::enums::EnumRegistry::editor_lookup,
+    )
+    .into_iter()
+    .map(|c| completion_item(&ruler, line, col, c))
+    .collect()
 }
 
 /// `c` as an LSP item, its replaced span in UTF-16 columns.
-fn completion_item(ruler: &Ruler, line: usize, col: usize, c: wirescript::analysis::Completion) -> CompletionItem {
+fn completion_item(
+    ruler: &Ruler,
+    line: usize,
+    col: usize,
+    c: wirescript::analysis::Completion,
+) -> CompletionItem {
     use wirescript::analysis::CompletionKind as K;
     let kind = match c.kind {
         K::Text => CompletionItemKind::TEXT,
@@ -2263,9 +2454,15 @@ fn completion_item(ruler: &Ruler, line: usize, col: usize, c: wirescript::analys
         K::File => CompletionItemKind::FILE,
     };
     let text_edit = c.replace_from.map(|from| {
-        let at = |character| Position { line: line as u32, character };
+        let at = |character| Position {
+            line: line as u32,
+            character,
+        };
         CompletionTextEdit::Edit(TextEdit {
-            range: Range { start: at(byte_off_to_lsp(ruler, line, from)), end: at(char_col_to_lsp(ruler, line, col)) },
+            range: Range {
+                start: at(byte_off_to_lsp(ruler, line, from)),
+                end: at(char_col_to_lsp(ruler, line, col)),
+            },
             new_text: c.label.clone(),
         })
     });

@@ -21,7 +21,10 @@ impl Style {
     fn want(self) -> Type {
         match self {
             Style::Color => Type::Color,
-            Style::Material => Type::Enum { name: crate::lower::MATERIAL_ENUM.to_string(), args: vec![] },
+            Style::Material => Type::Enum {
+                name: crate::lower::MATERIAL_ENUM.to_string(),
+                args: vec![],
+            },
         }
     }
 }
@@ -32,7 +35,12 @@ impl Style {
 /// compile-time constant. Runs after the main pass so a runtime value may name
 /// any top-level declaration, including one below it.
 pub(super) fn check_style_exprs(ctx: &mut TypeCheckCtx, script: &Script) {
-    check_pair(ctx, script.module_color.as_ref(), script.module_material.as_ref(), true);
+    check_pair(
+        ctx,
+        script.module_color.as_ref(),
+        script.module_material.as_ref(),
+        true,
+    );
     for d in &script.decls {
         match d {
             TopDecl::Var(v) => {
@@ -45,7 +53,12 @@ pub(super) fn check_style_exprs(ctx: &mut TypeCheckCtx, script: &Script) {
                 check_block(ctx, &c.body);
             }
             TopDecl::AnonChip(ac) => {
-                check_pair(ctx, ac.color_expr.as_ref(), ac.material_expr.as_ref(), false);
+                check_pair(
+                    ctx,
+                    ac.color_expr.as_ref(),
+                    ac.material_expr.as_ref(),
+                    false,
+                );
                 check_block(ctx, &ac.body);
             }
             TopDecl::Handler(h) => check_block(ctx, &h.body),
@@ -70,7 +83,12 @@ fn check_block(ctx: &mut TypeCheckCtx, block: &Block) {
                 check_block(ctx, &c.body);
             }
             Stmt::AnonChip(ac) => {
-                check_pair(ctx, ac.color_expr.as_ref(), ac.material_expr.as_ref(), false);
+                check_pair(
+                    ctx,
+                    ac.color_expr.as_ref(),
+                    ac.material_expr.as_ref(),
+                    false,
+                );
                 check_block(ctx, &ac.body);
             }
             Stmt::If(i) => {
@@ -86,7 +104,12 @@ fn check_block(ctx: &mut TypeCheckCtx, block: &Block) {
     }
 }
 
-fn check_pair(ctx: &mut TypeCheckCtx, color: Option<&Expr>, material: Option<&Expr>, runtime_ok: bool) {
+fn check_pair(
+    ctx: &mut TypeCheckCtx,
+    color: Option<&Expr>,
+    material: Option<&Expr>,
+    runtime_ok: bool,
+) {
     if let Some(e) = color {
         check_one(ctx, Style::Color, e, runtime_ok);
     }

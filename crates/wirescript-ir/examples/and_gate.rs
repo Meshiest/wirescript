@@ -23,9 +23,14 @@ fn main() {
     let program = b.build();
 
     let errors = program.validate();
-    assert!(errors.is_empty(), "the builder made an invalid program: {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "the builder made an invalid program: {errors:?}"
+    );
 
-    let world = assemble(&program, &EmitOptions::default()).expect("assemble").world;
+    let world = assemble(&program, &EmitOptions::default())
+        .expect("assemble")
+        .world;
     let save = Save::read(&world.to_brz_vec().expect("encode"));
     let type_names = save.component_type_names();
     let port_names = save.wire_port_names();
@@ -34,23 +39,33 @@ fn main() {
     let mut components: Vec<String> = Vec::new();
     for (_, _, soa, _) in save.component_chunks() {
         for t in &soa.component_type_counters {
-            components.extend(std::iter::repeat_n(type_name(t.type_index as usize), t.num_instances as usize));
+            components.extend(std::iter::repeat_n(
+                type_name(t.type_index as usize),
+                t.num_instances as usize,
+            ));
         }
     }
     let mut wires: Vec<String> = Vec::new();
     for (_, _, soa) in save.wires() {
         let ends = |field: &str| -> Vec<String> {
-            let Some(BrdbValue::Array(items)) = soa.get(field) else { return Vec::new() };
+            let Some(BrdbValue::Array(items)) = soa.get(field) else {
+                return Vec::new();
+            };
             items
                 .iter()
                 .map(|v| {
-                    let BrdbValue::Struct(s) = v else { panic!("a wire end is a struct") };
+                    let BrdbValue::Struct(s) = v else {
+                        panic!("a wire end is a struct")
+                    };
                     let num = |k: &str| match s.get(k) {
                         Some(BrdbValue::U16(n)) => *n as usize,
                         Some(BrdbValue::U32(n)) => *n as usize,
                         other => panic!("{k}: {other:?}"),
                     };
-                    let port = port_names.get(num("PortIndex")).cloned().unwrap_or_default();
+                    let port = port_names
+                        .get(num("PortIndex"))
+                        .cloned()
+                        .unwrap_or_default();
                     format!("{}.{port}", short(&type_name(num("ComponentTypeIndex"))))
                 })
                 .collect()
@@ -58,13 +73,30 @@ fn main() {
         let sources = ends("LocalWireSources");
         let targets = ends("LocalWireTargets");
         assert_eq!(sources.len(), targets.len());
-        wires.extend(sources.into_iter().zip(targets).map(|(s, t)| format!("{s} -> {t}")));
+        wires.extend(
+            sources
+                .into_iter()
+                .zip(targets)
+                .map(|(s, t)| format!("{s} -> {t}")),
+        );
     }
 
     let count = |class: &str| components.iter().filter(|c| c.as_str() == class).count();
-    assert_eq!(count("BrickComponentType_Expr_LogicalAND"), 1, "{components:?}");
-    assert_eq!(count("BrickComponentType_Internal_MicrochipInput"), 2, "{components:?}");
-    assert_eq!(count("BrickComponentType_Internal_MicrochipOutput"), 1, "{components:?}");
+    assert_eq!(
+        count("BrickComponentType_Expr_LogicalAND"),
+        1,
+        "{components:?}"
+    );
+    assert_eq!(
+        count("BrickComponentType_Internal_MicrochipInput"),
+        2,
+        "{components:?}"
+    );
+    assert_eq!(
+        count("BrickComponentType_Internal_MicrochipOutput"),
+        1,
+        "{components:?}"
+    );
     wires.sort();
     assert_eq!(
         wires,

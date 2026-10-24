@@ -450,7 +450,16 @@ fn return_one_value(ctx: &mut LowerCtx, val_port: PortRef) {
         if let Some(exec) = ctx.current_exec {
             let inner = var_rec.inner_type.clone();
             let var_ref = var_rec.node_id.port(WirePort::VarRef);
-            chain_var_write(ctx, exec, var_ref, inner, val_port, false, SourceRange::default(), Some("ret_set"));
+            chain_var_write(
+                ctx,
+                exec,
+                var_ref,
+                inner,
+                val_port,
+                false,
+                SourceRange::default(),
+                Some("ret_set"),
+            );
         }
     } else if ctx.output_count() == 1 {
         // Single return: wire directly to output
@@ -463,15 +472,19 @@ fn return_one_value(ctx: &mut LowerCtx, val_port: PortRef) {
 /// and anonymous chips included (not loops, nested handlers or declarations).
 pub(super) fn count_return_values(block: &Block) -> usize {
     let mut count = 0;
-    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, cx| {
-        if cx.handler || cx.decl || cx.in_loop {
-            return false;
-        }
-        if let walk::Node::Stmt(Stmt::Return { value: Some(_), .. }) = n {
-            count += 1;
-        }
-        true
-    });
+    walk::walk(
+        walk::Node::Block(block),
+        walk::Ctx::default(),
+        &mut |n, cx| {
+            if cx.handler || cx.decl || cx.in_loop {
+                return false;
+            }
+            if let walk::Node::Stmt(Stmt::Return { value: Some(_), .. }) = n {
+                count += 1;
+            }
+            true
+        },
+    );
     count
 }
 
@@ -480,17 +493,21 @@ pub(super) fn count_return_values(block: &Block) -> usize {
 /// outputs; the call's own path never reaches it.
 pub(super) fn count_handler_return_values(block: &Block) -> usize {
     let mut count = 0;
-    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, cx| {
-        if cx.decl {
-            return false;
-        }
-        if cx.handler
-            && let walk::Node::Stmt(Stmt::Return { value: Some(_), .. }) = n
-        {
-            count += 1;
-        }
-        true
-    });
+    walk::walk(
+        walk::Node::Block(block),
+        walk::Ctx::default(),
+        &mut |n, cx| {
+            if cx.decl {
+                return false;
+            }
+            if cx.handler
+                && let walk::Node::Stmt(Stmt::Return { value: Some(_), .. }) = n
+            {
+                count += 1;
+            }
+            true
+        },
+    );
     count
 }
 
@@ -523,7 +540,10 @@ pub(super) fn block_contains_return(block: &Block) -> bool {
 /// the current frame binds its name to the parameter or module member it
 /// shadows, which is not this declaration's storage.
 fn needs_declaration(ctx: &LowerCtx, name: &str, range: &SourceRange) -> bool {
-    if ctx.unhoisted.contains(&(range.file.clone(), range.start.offset)) {
+    if ctx
+        .unhoisted
+        .contains(&(range.file.clone(), range.start.offset))
+    {
         return true;
     }
     match ctx.lookup_var_current_frame(name) {
@@ -538,8 +558,12 @@ fn needs_declaration(ctx: &LowerCtx, name: &str, range: &SourceRange) -> bool {
 /// through a Branch/Union tree; the exec continues via `current_exec`.
 pub(super) fn lower_expr_stmt(ctx: &mut LowerCtx, e: &Expr) {
     match e {
-        Expr::MatchExpr { scrutinee, arms, range }
-            if ctx.current_exec.is_some() && arms.iter().any(|a| matches!(a.body, MatchBody::Block(_))) =>
+        Expr::MatchExpr {
+            scrutinee,
+            arms,
+            range,
+        } if ctx.current_exec.is_some()
+            && arms.iter().any(|a| matches!(a.body, MatchBody::Block(_))) =>
         {
             lower_match_stmt(ctx, scrutinee, arms, range);
         }
@@ -564,7 +588,9 @@ pub(super) fn match_increment_self<'s>(ctx: &LowerCtx, s: &'s Assign) -> Option<
         return None;
     }
     match &s.value {
-        Expr::BinOp { op, left, right, .. } if op == "+" => {
+        Expr::BinOp {
+            op, left, right, ..
+        } if op == "+" => {
             if same_target(left, &s.target) {
                 return Some((right, false));
             }
@@ -574,8 +600,13 @@ pub(super) fn match_increment_self<'s>(ctx: &LowerCtx, s: &'s Assign) -> Option<
             None
         }
         // `x = x - d` increments by `-d` where both are ints or both floats.
-        Expr::BinOp { op, left, right, .. } if op == "-" && same_target(left, &s.target) => {
-            let (l, r) = (unwrap_ref(&ctx.type_of(left)), unwrap_ref(&ctx.type_of(right)));
+        Expr::BinOp {
+            op, left, right, ..
+        } if op == "-" && same_target(left, &s.target) => {
+            let (l, r) = (
+                unwrap_ref(&ctx.type_of(left)),
+                unwrap_ref(&ctx.type_of(right)),
+            );
             (matches!(l, Type::Int | Type::Float) && l == r).then_some((right.as_ref(), true))
         }
         _ => None,
@@ -587,8 +618,20 @@ pub(super) fn match_increment_self<'s>(ctx: &LowerCtx, s: &'s Assign) -> Option<
 /// integer constant is in `lower_unop`.
 fn negated_literal(ctx: &mut LowerCtx, delta: &Expr, range: &SourceRange) -> Option<PortRef> {
     match delta {
-        Expr::IntLit { value, .. } => Some(raw_literal(ctx, range, Type::Int, Literal::Int(value.wrapping_neg()), None)),
-        Expr::FloatLit { value, .. } => Some(raw_literal(ctx, range, Type::Float, Literal::Float(-value), None)),
+        Expr::IntLit { value, .. } => Some(raw_literal(
+            ctx,
+            range,
+            Type::Int,
+            Literal::Int(value.wrapping_neg()),
+            None,
+        )),
+        Expr::FloatLit { value, .. } => Some(raw_literal(
+            ctx,
+            range,
+            Type::Float,
+            Literal::Float(-value),
+            None,
+        )),
         _ if unwrap_ref(&ctx.type_of(delta)) == Type::Int => {
             let lookup = |n: &str| ctx.resolve_mod(n);
             let cx = ctx.certified_const_ctx(Some(&lookup));
@@ -628,7 +671,13 @@ fn increments_left(s: &Assign, delta: &Expr) -> bool {
 /// increments `x` by it: `d` (`-d`), unless `x` comes first and `d`'s code may
 /// change it. Then `x` (as `target` reads it) is read before `d` runs, and the
 /// sum (difference) is set instead.
-fn increment_value(ctx: &mut LowerCtx, s: &Assign, delta: &Expr, negate: bool, target: Binding) -> (PortRef, bool) {
+fn increment_value(
+    ctx: &mut LowerCtx,
+    s: &Assign,
+    delta: &Expr,
+    negate: bool,
+    target: Binding,
+) -> (PortRef, bool) {
     if !increments_left(s, delta) {
         return (lower_expr(ctx, delta), true);
     }
@@ -640,7 +689,10 @@ fn increment_value(ctx: &mut LowerCtx, s: &Assign, delta: &Expr, negate: bool, t
     let d = ord.port(ctx, delta);
     let delta_port = ord.port_of(ctx, d);
     match ord.value(ctx, t) {
-        Some(Binding::Local(held)) => (crate::lower::ops::binop_gate(ctx, &s.value, held.port, delta_port), false),
+        Some(Binding::Local(held)) => (
+            crate::lower::ops::binop_gate(ctx, &s.value, held.port, delta_port),
+            false,
+        ),
         _ if negate => (negated(ctx, delta, delta_port, &s.range), true),
         _ => (delta_port, true),
     }
@@ -652,7 +704,12 @@ fn increment_value(ctx: &mut LowerCtx, s: &Assign, delta: &Expr, negate: bool, t
 /// field-assignment path so the whole-record decomposition writes each leaf
 /// field identically. A non-buffer write in pure position (no `current_exec`)
 /// is a no-op, matching the caller's own guard.
-pub(super) fn set_scalar_var(ctx: &mut LowerCtx, var_rec: &VarRecord, value_port: PortRef, range: &SourceRange) {
+pub(super) fn set_scalar_var(
+    ctx: &mut LowerCtx,
+    var_rec: &VarRecord,
+    value_port: PortRef,
+    range: &SourceRange,
+) {
     if var_rec.storage == VarStorage::Buffer {
         ctx.connect(value_port, var_rec.node_id.port(WirePort::Input));
         return;
@@ -689,7 +746,10 @@ pub(super) fn rebuild_from_constant(
     match lit {
         Literal::Array(items) => {
             let value = Expr::Array {
-                elements: items.iter().map(|_| ArrayElem::Item(init.clone())).collect(),
+                elements: items
+                    .iter()
+                    .map(|_| ArrayElem::Item(init.clone()))
+                    .collect(),
                 range: at.clone(),
             };
             let mut supply = |ctx: &mut LowerCtx, i: usize| {
@@ -698,17 +758,28 @@ pub(super) fn rebuild_from_constant(
             rebuild_container(ctx, target, name, &value, range, &mut supply);
         }
         Literal::Map(pairs) => {
-            let Some(key_ty) = container_key_type(target) else { return };
+            let Some(key_ty) = container_key_type(target) else {
+                return;
+            };
             let value = Expr::MapLit {
                 entries: pairs
                     .iter()
-                    .map(|_| crate::ast::MapLitEntry { key: init.clone(), value: init.clone(), range: at.clone() })
+                    .map(|_| crate::ast::MapLitEntry {
+                        key: init.clone(),
+                        value: init.clone(),
+                        range: at.clone(),
+                    })
                     .collect(),
                 range: at.clone(),
             };
             let mut supply = |ctx: &mut LowerCtx, i: usize| {
                 let (k, v) = pairs[i].clone();
-                let key = literal_node_range(ctx, &at, key_ty.clone(), crate::const_eval::scalar_in_type(k, &key_ty));
+                let key = literal_node_range(
+                    ctx,
+                    &at,
+                    key_ty.clone(),
+                    crate::const_eval::scalar_in_type(k, &key_ty),
+                );
                 Supplied::Entry(key, literal_element(ctx, target, v, &at))
             };
             rebuild_container(ctx, target, name, &value, range, &mut supply);
@@ -740,7 +811,12 @@ fn column_element_type(v: &VarRecord) -> Type {
 /// One constant element of the container `target` as literal gates: a single
 /// gate for an array or map var, one per column for a record or enum
 /// container (a column the value has no field for takes its type's zero).
-fn literal_element(ctx: &mut LowerCtx, target: &Binding, lit: Literal, at: &SourceRange) -> ElemValue {
+fn literal_element(
+    ctx: &mut LowerCtx,
+    target: &Binding,
+    lit: Literal,
+    at: &SourceRange,
+) -> ElemValue {
     fn record(
         ctx: &mut LowerCtx,
         cols: &HashMap<crate::intern::Sym, Binding>,
@@ -750,7 +826,10 @@ fn literal_element(ctx: &mut LowerCtx, target: &Binding, lit: Literal, at: &Sour
         let mut out = HashMap::default();
         for (k, col) in cols {
             let fname = crate::intern::resolve(*k);
-            let field = fields.iter().find(|(n, _)| *n == fname).map(|(_, l)| l.clone());
+            let field = fields
+                .iter()
+                .find(|(n, _)| *n == fname)
+                .map(|(_, l)| l.clone());
             match col {
                 Binding::Record(sub) => {
                     let sub_fields = match field {
@@ -827,11 +906,16 @@ fn by_output_name(
     value: &Expr,
     names: &[String],
 ) -> HashMap<crate::intern::Sym, Binding> {
-    if names.iter().all(|n| src.contains_key(&crate::intern::intern(n))) {
+    if names
+        .iter()
+        .all(|n| src.contains_key(&crate::intern::intern(n)))
+    {
         return src;
     }
     let order: Vec<String> = match unwrap_ref(&ctx.type_of(value)) {
-        Type::Record(fields) if fields.len() == names.len() => fields.into_iter().map(|(n, _)| n).collect(),
+        Type::Record(fields) if fields.len() == names.len() => {
+            fields.into_iter().map(|(n, _)| n).collect()
+        }
         _ => (0..names.len()).map(|i| i.to_string()).collect(),
     };
     order
@@ -860,7 +944,13 @@ fn return_targets(outputs: &[(String, bool)], arity: usize) -> Vec<String> {
 fn mod_outputs_with_exec(ctx: &LowerCtx, names: &[String]) -> Vec<(String, bool)> {
     names
         .iter()
-        .map(|n| (n.clone(), ctx.lookup_output(n).is_some_and(|o| matches!(o.ty, Type::Exec))))
+        .map(|n| {
+            (
+                n.clone(),
+                ctx.lookup_output(n)
+                    .is_some_and(|o| matches!(o.ty, Type::Exec)),
+            )
+        })
         .collect()
 }
 
@@ -875,8 +965,11 @@ fn lower_chip_return(ctx: &mut LowerCtx, expr: &Expr) {
         return;
     };
     let outputs = ctx.chip_return_outputs.clone();
-    let value_names: Vec<String> =
-        outputs.iter().filter(|(_, exec)| !exec).map(|(n, _)| n.clone()).collect();
+    let value_names: Vec<String> = outputs
+        .iter()
+        .filter(|(_, exec)| !exec)
+        .map(|(n, _)| n.clone())
+        .collect();
     let src = if let [(only, _)] = outputs.as_slice() {
         let mut whole = HashMap::default();
         whole.insert(crate::intern::intern(only), Binding::Record(src));
@@ -899,7 +992,11 @@ fn lower_chip_return(ctx: &mut LowerCtx, expr: &Expr) {
             stored.insert(key, Binding::Var(backing));
             continue;
         }
-        match ctx.scope.get(&crate::lower::context::output_scope_key(name)).cloned() {
+        match ctx
+            .scope
+            .get(&crate::lower::context::output_scope_key(name))
+            .cloned()
+        {
             Some(Binding::Record(pins)) => {
                 if let Binding::Record(fields) = value {
                     wire_record_output_fields(ctx, &pins, &fields, &range);
@@ -985,7 +1082,10 @@ pub(super) fn value_record_fields(
     }
     // `f(c).o` on `-> (o: Opt, q: int)`: that output of the call's outputs.
     if let Expr::FieldAccess { obj, field, .. } = value
-        && matches!(unwrap_ref(&ctx.type_of(value)), Type::Enum { .. } | Type::Record(_))
+        && matches!(
+            unwrap_ref(&ctx.type_of(value)),
+            Type::Enum { .. } | Type::Record(_)
+        )
         && crate::lower::access::called_chip_decl(ctx, obj)
             .is_some_and(|d| d.outputs.len() > 1 && d.outputs.iter().any(|o| o.name == *field))
         && let Some(outputs) = value_record_fields(ctx, obj)
@@ -1041,9 +1141,12 @@ pub(super) fn value_record_fields(
     {
         return None;
     }
-    if let Expr::MatchExpr { scrutinee, arms, range } = value
-        && let Some(rec) =
-            crate::lower::expr::lower_match_expr_record(ctx, scrutinee, arms, range)
+    if let Expr::MatchExpr {
+        scrutinee,
+        arms,
+        range,
+    } = value
+        && let Some(rec) = crate::lower::expr::lower_match_expr_record(ctx, scrutinee, arms, range)
     {
         if let Some(outputs) = ctx.gate_outputs(range) {
             mark_gate_read_choice(ctx, &rec, outputs);
@@ -1065,10 +1168,7 @@ pub(super) fn value_record_fields(
     // then failed too.
     if let Expr::FieldAccess { obj, field, .. } = value
         && crate::catalog::is_var_pseudo_field(field)
-        && matches!(
-            obj.as_ref(),
-            Expr::Call { .. } | Expr::IndexAccess { .. }
-        )
+        && matches!(obj.as_ref(), Expr::Call { .. } | Expr::IndexAccess { .. })
         && let Some(inner) = value_record_fields(ctx, obj)
     {
         // A real `Value` field (`a.pop().Value`) wins over the identity, exactly
@@ -1156,10 +1256,18 @@ pub(super) fn value_record_fields(
         // whose tag is that wire.
         if !matches!(value, Expr::VariantCtor { .. })
             && crate::lower::predeclare::unit_enum_port(ctx, &unwrap_ref(&ctx.type_of(value)))
-            && !ctx.builder.module.nodes.get(&port.node_id).is_some_and(|n| n.gate_class == gc::UNSUPPORTED)
+            && !ctx
+                .builder
+                .module
+                .nodes
+                .get(&port.node_id)
+                .is_some_and(|n| n.gate_class == gc::UNSUPPORTED)
         {
             let mut rec = HashMap::default();
-            rec.insert(crate::intern::intern("__disc"), Binding::Local(LocalRecord { port }));
+            rec.insert(
+                crate::intern::intern("__disc"),
+                Binding::Local(LocalRecord { port }),
+            );
             return Some(rec);
         }
     }
@@ -1169,13 +1277,20 @@ pub(super) fn value_record_fields(
 /// The outputs of `value`, a gate read held on `port`, its gate's first
 /// output (`fs.max()`, `k` after `let k = fs.max()`), each by the name it is
 /// declared with. `None` for any other value.
-fn gate_port_outputs(ctx: &LowerCtx, value: &Expr, port: PortRef) -> Option<HashMap<crate::intern::Sym, Binding>> {
+fn gate_port_outputs(
+    ctx: &LowerCtx,
+    value: &Expr,
+    port: PortRef,
+) -> Option<HashMap<crate::intern::Sym, Binding>> {
     let outputs = ctx.gate_outputs(value.range())?;
     let rec: HashMap<crate::intern::Sym, Binding> = outputs
         .iter()
         .filter_map(|(n, _)| {
             let port = crate::lower::access::resolve_output_field_port(ctx, port.node_id, n)?;
-            Some((crate::intern::intern(n), Binding::Local(LocalRecord { port })))
+            Some((
+                crate::intern::intern(n),
+                Binding::Local(LocalRecord { port }),
+            ))
         })
         .collect();
     (rec.len() == outputs.len()).then_some(rec)
@@ -1232,7 +1347,8 @@ pub(super) fn choice_branch_fields(
     let mut fields = branch_record_fields(ctx, value)?;
     let mut ty = ctx.type_of(value);
     if ctx.gate_outputs(join).is_none()
-        && let Some(Binding::Record(first)) = held_output(ctx, &fields, value.range(), OutputPick::First)
+        && let Some(Binding::Record(first)) =
+            held_output(ctx, &fields, value.range(), OutputPick::First)
     {
         fields = first;
         ty = ctx.one_value_type_at(value.range()).unwrap_or(ty);
@@ -1274,7 +1390,14 @@ pub(super) fn branch_record_fields(
     if fields.len() < 2 {
         return None;
     }
-    let outputs = ctx.builder.module.nodes.get(&port.node_id)?.ports.outputs.len();
+    let outputs = ctx
+        .builder
+        .module
+        .nodes
+        .get(&port.node_id)?
+        .ports
+        .outputs
+        .len();
     if outputs < 2 {
         return None;
     }
@@ -1309,7 +1432,10 @@ pub(in crate::lower) fn mark_gate_read_choice(
             && node.gate_class == gc::SELECT
         {
             node.note = Some(GATE_READ_CHOICE);
-            if let Some((_, ty)) = outputs.iter().find(|(n, _)| crate::intern::intern(n) == *name) {
+            if let Some((_, ty)) = outputs
+                .iter()
+                .find(|(n, _)| crate::intern::intern(n) == *name)
+            {
                 let ports = std::sync::Arc::make_mut(&mut node.ports);
                 let values = ports.inputs.iter_mut().chain(ports.outputs.iter_mut());
                 for p in values.filter(|p| p.name != *sym::B_SELECT_B) {
@@ -1395,12 +1521,19 @@ pub(super) fn select_record_fields(
 fn held_as_stored(lit: &Type, target: &HashMap<crate::intern::Sym, Binding>) -> Type {
     let slot = |k: &str, t: &Type| match target.get(&crate::intern::intern(k)) {
         Some(Binding::Record(inner)) => held_as_stored(t, inner),
-        Some(Binding::Var(v)) if matches!(t, Type::Record(_)) && holds_one_value(&v.inner_type) => v.inner_type.clone(),
+        Some(Binding::Var(v)) if matches!(t, Type::Record(_)) && holds_one_value(&v.inner_type) => {
+            v.inner_type.clone()
+        }
         _ => t.clone(),
     };
     match lit {
         Type::Record(fs) => Type::Record(fs.iter().map(|(k, t)| (k.clone(), slot(k, t))).collect()),
-        Type::Tuple(ts) => Type::Tuple(ts.iter().enumerate().map(|(i, t)| slot(&i.to_string(), t)).collect()),
+        Type::Tuple(ts) => Type::Tuple(
+            ts.iter()
+                .enumerate()
+                .map(|(i, t)| slot(&i.to_string(), t))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -1422,7 +1555,14 @@ fn assign_record(
 ) {
     if let Expr::RecordLit { fields, .. } = value {
         let lit = held_as_stored(&ctx.type_of(value), target_fields);
-        crate::lower::record_assign::assign_literal(ctx, target_fields, path, fields, Slots::Of(&lit), range);
+        crate::lower::record_assign::assign_literal(
+            ctx,
+            target_fields,
+            path,
+            fields,
+            Slots::Of(&lit),
+            range,
+        );
         return;
     }
     let what = "the value assigned here";
@@ -1439,7 +1579,9 @@ fn assign_record(
 /// A record's fields in declaration order: by the storage gate each holds,
 /// which is made in that order, and by name for fields holding none. Hash
 /// order would move with the order names were interned.
-pub(super) fn in_field_order(fields: &HashMap<crate::intern::Sym, Binding>) -> Vec<(crate::intern::Sym, &Binding)> {
+pub(super) fn in_field_order(
+    fields: &HashMap<crate::intern::Sym, Binding>,
+) -> Vec<(crate::intern::Sym, &Binding)> {
     fn first_gate(b: &Binding) -> Option<NodeId> {
         match b {
             Binding::Var(v) => Some(v.node_id),
@@ -1447,7 +1589,8 @@ pub(super) fn in_field_order(fields: &HashMap<crate::intern::Sym, Binding>) -> V
             _ => None,
         }
     }
-    let mut out: Vec<(crate::intern::Sym, &Binding)> = fields.iter().map(|(k, b)| (*k, b)).collect();
+    let mut out: Vec<(crate::intern::Sym, &Binding)> =
+        fields.iter().map(|(k, b)| (*k, b)).collect();
     out.sort_by_cached_key(|(k, b)| {
         let gate = first_gate(b);
         (gate.is_none(), gate, crate::intern::resolve(*k))
@@ -1461,7 +1604,8 @@ pub(super) fn same_storage(a: &Binding, b: &Binding) -> bool {
         (Binding::Var(x), Binding::Var(y)) => x.node_id == y.node_id,
         (Binding::Record(x), Binding::Record(y)) => {
             x.len() == y.len()
-                && x.iter().all(|(k, xb)| y.get(k).is_some_and(|yb| same_storage(xb, yb)))
+                && x.iter()
+                    .all(|(k, xb)| y.get(k).is_some_and(|yb| same_storage(xb, yb)))
         }
         _ => false,
     }
@@ -1517,14 +1661,23 @@ pub(super) fn assign_record_fields(
 
 /// `copyFrom` of the container `src` into the array or map `tvar`; nothing for
 /// a scalar `tvar`.
-pub(super) fn copy_container(ctx: &mut LowerCtx, tvar: &VarRecord, src: &Binding, range: &SourceRange) {
+pub(super) fn copy_container(
+    ctx: &mut LowerCtx,
+    tvar: &VarRecord,
+    src: &Binding,
+    range: &SourceRange,
+) {
     let (gate, port, src_ty) = match tvar.storage {
         VarStorage::Array => (
             gc::ARRAY_COPY_FROM,
             WirePort::ArrayVarRef,
             Type::Array(Box::new(Type::Any)),
         ),
-        VarStorage::Map => (gc::MAP_COPY_FROM, WirePort::MapVarRef, Type::Ref(Box::new(Type::Any))),
+        VarStorage::Map => (
+            gc::MAP_COPY_FROM,
+            WirePort::MapVarRef,
+            Type::Ref(Box::new(Type::Any)),
+        ),
         _ => return,
     };
     let Some(src_ref) = binding_to_port(ctx, src, range) else {
@@ -1533,14 +1686,32 @@ pub(super) fn copy_container(ctx: &mut LowerCtx, tvar: &VarRecord, src: &Binding
     let target = tvar.node_id.port(port);
     let extra = vec![(WirePort::SourceRef, src_ty, src_ref)];
     if tvar.storage == VarStorage::Array {
-        crate::lower::access::array_exec_op(ctx, range, target, gate, extra, vec![], WirePort::ExecOut);
+        crate::lower::access::array_exec_op(
+            ctx,
+            range,
+            target,
+            gate,
+            extra,
+            vec![],
+            WirePort::ExecOut,
+        );
     } else {
-        crate::lower::access::map_exec_op(ctx, range, target, gate, extra, vec![], WirePort::ExecOut);
+        crate::lower::access::map_exec_op(
+            ctx,
+            range,
+            target,
+            gate,
+            extra,
+            vec![],
+            WirePort::ExecOut,
+        );
     }
 }
 
 pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
-    if crate::lower::props::lower_environment_write(ctx, s) || crate::lower::props::lower_component_write(ctx, s) {
+    if crate::lower::props::lower_environment_write(ctx, s)
+        || crate::lower::props::lower_component_write(ctx, s)
+    {
         return;
     }
     let with_map_literals;
@@ -1606,15 +1777,18 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         if !matches!(ctx.type_of(operand), Type::Ref(_)) {
             // `*x = *x + d` is `x = x + d`, so it increments as that does.
             let own = |e: &Expr| match (e, operand.as_ref()) {
-                (Expr::Deref { operand: o, .. }, Expr::Ident { name, .. })
-                    if matches!(o.as_ref(), Expr::Ident { name: n, .. } if n == name) =>
-                {
+                (Expr::Deref { operand: o, .. }, Expr::Ident { name, .. }) if matches!(o.as_ref(), Expr::Ident { name: n, .. } if n == name) => {
                     o.as_ref().clone()
                 }
                 _ => e.clone(),
             };
             let value = match &s.value {
-                Expr::BinOp { op, left, right, range } if op == "+" || op == "-" => Expr::BinOp {
+                Expr::BinOp {
+                    op,
+                    left,
+                    right,
+                    range,
+                } if op == "+" || op == "-" => Expr::BinOp {
                     op: op.clone(),
                     left: Box::new(own(left)),
                     right: Box::new(own(right)),
@@ -1648,7 +1822,10 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
             // The ref is the target, evaluated before the value.
             increment => {
                 let delta = increment.map(|(d, _)| d);
-                let ports = crate::lower::ordered::lower_in_order(ctx, &[operand, delta.unwrap_or(&s.value)]);
+                let ports = crate::lower::ordered::lower_in_order(
+                    ctx,
+                    &[operand, delta.unwrap_or(&s.value)],
+                );
                 (ports[1], ports[0], increment.is_some())
             }
         };
@@ -1664,8 +1841,14 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         // for non-map subscript targets, which reports (WS044) a map target
         // that neither map path could take.
         if let Some(ContainerKind::Map { key: k, value: v }) = ctx.container_kind(obj)
-            && let Some(ContainerSource::Ref(map_ref)) =
-                container_ref(ctx, obj, &ContainerKind::Map { key: k.clone(), value: v.clone() })
+            && let Some(ContainerSource::Ref(map_ref)) = container_ref(
+                ctx,
+                obj,
+                &ContainerKind::Map {
+                    key: k.clone(),
+                    value: v.clone(),
+                },
+            )
         {
             if ctx.current_exec.is_none() {
                 return;
@@ -1673,7 +1856,13 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
             // `m[k] = v` is a mutation — the `const` container rule applies to
             // it exactly as it does to `m.set(k, v)`. Mirrors the array
             // subscript write in `lower_array_set`.
-            if reject_const_container_mutation(ctx, map_ref.node_id, true, "an index write", &s.range) {
+            if reject_const_container_mutation(
+                ctx,
+                map_ref.node_id,
+                true,
+                "an index write",
+                &s.range,
+            ) {
                 return;
             }
             let ports = crate::lower::ordered::lower_in_order(ctx, &[index, &s.value]);
@@ -1769,7 +1958,14 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         && let Some(fields) = resolve_record_columns(ctx, Columns::Array, &s.target)
     {
         let target = Binding::Record(fields);
-        rebuild_container(ctx, &target, "", &s.value, &s.range, &mut lower_in_place(&s.value, true));
+        rebuild_container(
+            ctx,
+            &target,
+            "",
+            &s.value,
+            &s.range,
+            &mut lower_in_place(&s.value, true),
+        );
         return;
     }
     // `m = { k: rec, .. }` on a RECORD map: the map spelling of the branch above.
@@ -1778,7 +1974,14 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         && let Some(fields) = resolve_record_columns(ctx, Columns::Map, &s.target)
     {
         let target = Binding::Record(fields);
-        rebuild_container(ctx, &target, "", &s.value, &s.range, &mut lower_in_place(&s.value, true));
+        rebuild_container(
+            ctx,
+            &target,
+            "",
+            &s.value,
+            &s.range,
+            &mut lower_in_place(&s.value, true),
+        );
         return;
     }
 
@@ -1802,7 +2005,13 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         if ctx.current_exec.is_none() {
             return;
         }
-        assign_record(ctx, &target_fields, &target_path(&s.target), &s.value, &s.range);
+        assign_record(
+            ctx,
+            &target_fields,
+            &target_path(&s.target),
+            &s.value,
+            &s.range,
+        );
         return;
     }
 
@@ -1899,7 +2108,9 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
             return;
         }
         let (value, increment) = match match_increment_self(ctx, s) {
-            Some((delta, negate)) => increment_value(ctx, s, delta, negate, Binding::DynRef(d.clone())),
+            Some((delta, negate)) => {
+                increment_value(ctx, s, delta, negate, Binding::DynRef(d.clone()))
+            }
             None => (lower_expr(ctx, &s.value), false),
         };
         write_through_ref(ctx, d.port, &d.inner_type, value, increment, &s.range);
@@ -1927,7 +2138,8 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
 
     // Optimization: `x = x + <expr>` -> Exec_Var_Increment
     if let Some((delta_expr, negate)) = match_increment_self(ctx, s) {
-        let (delta, increment) = increment_value(ctx, s, delta_expr, negate, Binding::Var(var_rec.clone()));
+        let (delta, increment) =
+            increment_value(ctx, s, delta_expr, negate, Binding::Var(var_rec.clone()));
         if !increment {
             set_scalar_var(ctx, &var_rec, delta, &s.range);
             return;
@@ -1937,7 +2149,16 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         let exec_in = ctx.current_exec.unwrap_or(current_exec);
         let inner = var_rec.inner_type.clone();
         let var_ref = var_rec.node_id.port(WirePort::VarRef);
-        chain_var_write(ctx, exec_in, var_ref, inner, delta, true, s.range.clone(), None);
+        chain_var_write(
+            ctx,
+            exec_in,
+            var_ref,
+            inner,
+            delta,
+            true,
+            s.range.clone(),
+            None,
+        );
         invalidate_var_cache(ctx, &var_rec.node_id);
         return;
     }
@@ -2067,10 +2288,26 @@ pub(super) fn rebuild_container(
             for (i, el) in elements.iter().enumerate().skip(usize::from(keep)) {
                 if let ArrayElem::Spread(e) = el {
                     let arg = [CallArg::Positional(e.clone())];
-                    lower_array_method(ctx, aref, v.inner_type.clone(), "append", &arg, el.range(), value);
+                    lower_array_method(
+                        ctx,
+                        aref,
+                        v.inner_type.clone(),
+                        "append",
+                        &arg,
+                        el.range(),
+                        value,
+                    );
                 } else if let Supplied::Item(ElemValue::Scalar(port)) = supply(ctx, i) {
                     let extra = vec![(WirePort::Value, Type::Any, port)];
-                    array_exec_op(ctx, el.range(), aref, gc::ARRAY_PUSH, extra, vec![], WirePort::ExecOut);
+                    array_exec_op(
+                        ctx,
+                        el.range(),
+                        aref,
+                        gc::ARRAY_PUSH,
+                        extra,
+                        vec![],
+                        WirePort::ExecOut,
+                    );
                 }
             }
         }
@@ -2079,11 +2316,30 @@ pub(super) fn rebuild_container(
                 return;
             }
             let mref = v.node_id.port(WirePort::MapVarRef);
-            map_exec_op(ctx, range, mref, gc::MAP_CLEAR, vec![], vec![], WirePort::ExecOut);
+            map_exec_op(
+                ctx,
+                range,
+                mref,
+                gc::MAP_CLEAR,
+                vec![],
+                vec![],
+                WirePort::ExecOut,
+            );
             for i in 0..entries.len() {
                 if let Supplied::Entry(k, ElemValue::Scalar(val)) = supply(ctx, i) {
-                    let extra = vec![(WirePort::Key, Type::Any, k), (WirePort::Value, Type::Any, val)];
-                    map_exec_op(ctx, range, mref, gc::MAP_SET, extra, vec![], WirePort::ExecOut);
+                    let extra = vec![
+                        (WirePort::Key, Type::Any, k),
+                        (WirePort::Value, Type::Any, val),
+                    ];
+                    map_exec_op(
+                        ctx,
+                        range,
+                        mref,
+                        gc::MAP_SET,
+                        extra,
+                        vec![],
+                        WirePort::ExecOut,
+                    );
                 }
             }
         }
@@ -2098,7 +2354,15 @@ pub(super) fn rebuild_container(
                 let pushed = match supply(ctx, i) {
                     Supplied::Item(ElemValue::Record(src)) => {
                         match fit_record_value(ctx, "this element", el.expr(), cols, src) {
-                            Some(src) => record_array_value_op(ctx, cols, &src, el.range(), gc::ARRAY_PUSH, None).is_some(),
+                            Some(src) => record_array_value_op(
+                                ctx,
+                                cols,
+                                &src,
+                                el.range(),
+                                gc::ARRAY_PUSH,
+                                None,
+                            )
+                            .is_some(),
                             None => true,
                         }
                     }
@@ -2115,7 +2379,9 @@ pub(super) fn rebuild_container(
             for (i, e) in entries.iter().enumerate() {
                 match supply(ctx, i) {
                     Supplied::Entry(k, ElemValue::Record(src)) => {
-                        if let Some(src) = fit_record_value(ctx, "this entry's value", &e.value, cols, src) {
+                        if let Some(src) =
+                            fit_record_value(ctx, "this entry's value", &e.value, cols, src)
+                        {
                             record_set_walk(ctx, Columns::Map, cols, &src, k, range);
                         }
                     }
@@ -2130,12 +2396,14 @@ pub(super) fn rebuild_container(
 
 /// [`rebuild_container`]'s supply for a literal whose elements are lowered
 /// where the rebuild reaches them. `columns` for a record array or map.
-pub(super) fn lower_in_place(value: &Expr, columns: bool) -> impl FnMut(&mut LowerCtx, usize) -> Supplied + '_ {
+pub(super) fn lower_in_place(
+    value: &Expr,
+    columns: bool,
+) -> impl FnMut(&mut LowerCtx, usize) -> Supplied + '_ {
     move |ctx, i| match value {
         Expr::Array { elements, .. } => match &elements[i] {
-            ArrayElem::Item(e) if columns => {
-                value_record_fields(ctx, e).map_or(Supplied::Missing, |r| Supplied::Item(ElemValue::Record(r)))
-            }
+            ArrayElem::Item(e) if columns => value_record_fields(ctx, e)
+                .map_or(Supplied::Missing, |r| Supplied::Item(ElemValue::Record(r))),
             ArrayElem::Item(e) => Supplied::Item(ElemValue::Scalar(lower_expr(ctx, e))),
             ArrayElem::Spread(_) => Supplied::Skip,
         },
@@ -2158,7 +2426,12 @@ pub(super) fn lower_in_place(value: &Expr, columns: bool) -> impl FnMut(&mut Low
 /// place of a `Clear` and an append of itself; later elements are added after
 /// them in order. A self-spread anywhere else would read the array after the
 /// rebuild has cleared or added to it, and is WS088.
-pub(super) fn self_spread(ctx: &mut LowerCtx, node: NodeId, name: &str, elements: &[ArrayElem]) -> bool {
+pub(super) fn self_spread(
+    ctx: &mut LowerCtx,
+    node: NodeId,
+    name: &str,
+    elements: &[ArrayElem],
+) -> bool {
     let is_self = |ctx: &LowerCtx, el: &ArrayElem| {
         matches!(el, ArrayElem::Spread(e)
             if matches!(resolve_field_chain(ctx, e), Some(Binding::Var(v)) if v.node_id == node))
@@ -2428,11 +2701,8 @@ pub(super) fn lower_let_else(ctx: &mut LowerCtx, l: &LetElse) {
     // The one-arm decision tree for the FULL (possibly nested) pattern. Every
     // `Switch` case leads deeper toward the single `Leaf`; every `Fail`/default
     // is a mismatch that routes to the diverging `else`.
-    let decision = crate::lower::matchtree::build(
-        ctx.enums(),
-        &scrut_ty,
-        std::slice::from_ref(&l.pattern),
-    );
+    let decision =
+        crate::lower::matchtree::build(ctx.enums(), &scrut_ty, std::slice::from_ref(&l.pattern));
 
     // The scrutinee's `__disc` + payload-slot record (a NAMED var/let/param
     // through the scope), or a single value. An enum I/O port has no such
@@ -2446,7 +2716,15 @@ pub(super) fn lower_let_else(ctx: &mut LowerCtx, l: &LetElse) {
 
     ctx.current_exec = Some(entry_exec);
     let outer_concats = std::mem::take(&mut ctx.concat_cache);
-    let cont = lower_let_else_decision(ctx, &decision, &root, &l.pattern, &l.else_block, entry_exec, &range);
+    let cont = lower_let_else_decision(
+        ctx,
+        &decision,
+        &root,
+        &l.pattern,
+        &l.else_block,
+        entry_exec,
+        &range,
+    );
     ctx.concat_cache = outer_concats;
     // Continue on the fully-matched path. A decision with no reachable match
     // leaf (should not happen for a well-typed single-variant pattern) leaves
@@ -2479,10 +2757,20 @@ fn lower_let_else_decision(
         }
         // The pattern's value tests (a string pattern, a literal in a
         // payload): pass, and it is a full match; fail, and the `else` runs.
-        Decision::Check { tests, otherwise, .. } => {
+        Decision::Check {
+            tests, otherwise, ..
+        } => {
             ctx.current_exec = Some(entry_exec);
             let Some(cond_port) = lower_value_checks(ctx, root, tests, range) else {
-                return lower_let_else_decision(ctx, &Decision::Leaf(0), root, pattern, else_block, entry_exec, range);
+                return lower_let_else_decision(
+                    ctx,
+                    &Decision::Leaf(0),
+                    root,
+                    pattern,
+                    else_block,
+                    entry_exec,
+                    range,
+                );
             };
             let branch = let_else_branch(ctx, cond_port, entry_exec, range);
             let pre_branch_caches = snapshot_var_caches(ctx);
@@ -2513,12 +2801,26 @@ fn lower_let_else_decision(
             lower_block(ctx, else_block);
             None
         }
-        Decision::Switch { path, cases, default } => {
+        Decision::Switch {
+            path,
+            cases,
+            default,
+        } => {
             ctx.current_exec = Some(entry_exec);
             let disc_port = read_disc_at_path(ctx, root, path, range)
                 .unwrap_or_else(|| synthesise_unsupported_range(ctx, "an enum tag read", range));
             let head_exec = ctx.current_exec.unwrap_or(entry_exec);
-            lower_let_else_switch(ctx, disc_port, cases, default.as_deref(), root, pattern, else_block, head_exec, range)
+            lower_let_else_switch(
+                ctx,
+                disc_port,
+                cases,
+                default.as_deref(),
+                root,
+                pattern,
+                else_block,
+                head_exec,
+                range,
+            )
         }
     }
 }
@@ -2545,7 +2847,9 @@ fn lower_let_else_switch(
         // Past the last case: the default sub-decision (a `Fail` -> `else`), or
         // the `else` directly when there is no default.
         return match default {
-            Some(d) => lower_let_else_decision(ctx, d, root, pattern, else_block, entry_exec, range),
+            Some(d) => {
+                lower_let_else_decision(ctx, d, root, pattern, else_block, entry_exec, range)
+            }
             None => {
                 ctx.current_exec = Some(entry_exec);
                 lower_block(ctx, else_block);
@@ -2576,15 +2880,27 @@ fn lower_let_else_switch(
 
     // MATCHING (ExecOutA): descend toward the leaf - this carries the
     // continuation. Lowered last so `current_exec` ends on the match path.
-    let match_cont =
-        lower_let_else_decision(ctx, sub, root, pattern, else_block, branch.port(WirePort::ExecOutA), range);
+    let match_cont = lower_let_else_decision(
+        ctx,
+        sub,
+        root,
+        pattern,
+        else_block,
+        branch.port(WirePort::ExecOutA),
+        range,
+    );
 
     match_cont.or(else_cont)
 }
 
 /// A `Branch` on `cond_port`, its Exec from the chain head (`entry_exec`, or
 /// past any read lowering the condition added).
-fn let_else_branch(ctx: &mut LowerCtx, cond_port: PortRef, entry_exec: PortRef, range: &SourceRange) -> NodeId {
+fn let_else_branch(
+    ctx: &mut LowerCtx,
+    cond_port: PortRef,
+    entry_exec: PortRef,
+    range: &SourceRange,
+) -> NodeId {
     let branch_exec_in = ctx.current_exec.unwrap_or(entry_exec);
     let branch = ctx.add_gate(AddNodeOpts {
         gate_class: gc::BRANCH,
@@ -2612,7 +2928,11 @@ pub(super) fn lower_match_stmt(
 ) -> PortRef {
     // Mirror `lower_if`'s guard: no exec chain, nothing to thread.
     let Some(entry_exec) = ctx.current_exec else {
-        return synthesise_unsupported_range(ctx, "a `match` with block arms outside an exec chain", range);
+        return synthesise_unsupported_range(
+            ctx,
+            "a `match` with block arms outside an exec chain",
+            range,
+        );
     };
     let scrut_ty = crate::lower::expr::scrutinee_type(ctx, scrutinee);
     let decision = crate::lower::expr::build_arms(ctx, &scrut_ty, arms);
@@ -2683,25 +3003,50 @@ fn lower_decision_stmt(
         // No arm matched (only reachable for a non-exhaustive match, already a
         // WS054): the exec falls through unchanged, running nothing.
         Decision::Fail => Some(entry_exec),
-        Decision::Switch { path, cases, default } => {
+        Decision::Switch {
+            path,
+            cases,
+            default,
+        } => {
             ctx.current_exec = Some(entry_exec);
             let disc_port = read_disc_at_path(ctx, root, path, range)
                 .unwrap_or_else(|| synthesise_unsupported_range(ctx, "an enum tag read", range));
             // Reading `__disc` may have inserted an exec-taking `Var_Get`; the
             // first branch's Exec input picks up from the advanced chain head.
             let head_exec = ctx.current_exec.unwrap_or(entry_exec);
-            lower_switch_cases(ctx, disc_port, cases, default.as_deref(), root, arms, head_exec, range)
+            lower_switch_cases(
+                ctx,
+                disc_port,
+                cases,
+                default.as_deref(),
+                root,
+                arms,
+                head_exec,
+                range,
+            )
         }
         // `if tests && guard { arm } else { otherwise }`, the condition read
         // where the arm's captures are bound, since a guard reads them.
-        Decision::Check { tests, arm, guarded, otherwise } => {
+        Decision::Check {
+            tests,
+            arm,
+            guarded,
+            otherwise,
+        } => {
             ctx.current_exec = Some(entry_exec);
             let arm_ref = &arms[*arm];
             let cond = crate::lower::expr::with_arm_captures(ctx, arm_ref, root, |ctx| {
                 crate::lower::expr::arm_condition(ctx, arm_ref, root, tests, *guarded, range)
             });
             let Some(cond) = cond else {
-                return lower_decision_stmt(ctx, &Decision::Leaf(*arm), root, arms, entry_exec, range);
+                return lower_decision_stmt(
+                    ctx,
+                    &Decision::Leaf(*arm),
+                    root,
+                    arms,
+                    entry_exec,
+                    range,
+                );
             };
             let head_exec = ctx.current_exec.unwrap_or(entry_exec);
             branch_and_join(
@@ -2709,7 +3054,9 @@ fn lower_decision_stmt(
                 cond,
                 head_exec,
                 range,
-                |ctx, exec| lower_decision_stmt(ctx, &Decision::Leaf(*arm), root, arms, exec, range),
+                |ctx, exec| {
+                    lower_decision_stmt(ctx, &Decision::Leaf(*arm), root, arms, exec, range)
+                },
                 |ctx, exec| lower_decision_stmt(ctx, otherwise, root, arms, exec, range),
             )
         }
@@ -2805,7 +3152,8 @@ fn lower_switch_cases(
     ctx.connect(cond_port, branch.port(WirePort::BCond));
 
     // THEN: this case's arm (or nested switch) on ExecOutA.
-    let then_end = lower_decision_stmt(ctx, sub, root, arms, branch.port(WirePort::ExecOutA), range);
+    let then_end =
+        lower_decision_stmt(ctx, sub, root, arms, branch.port(WirePort::ExecOutA), range);
     let then_touched = cache_touched_since(ctx, &pre_branch_caches);
 
     // ELSE: the remaining cases / default on ExecOutB. Drop the THEN chain's
@@ -2901,7 +3249,8 @@ pub(super) fn lower_match_value(
     let saved = ctx.match_value_store.replace(var.clone());
     lower_match_stmt(ctx, scrutinee, arms, range);
     ctx.match_value_store = saved;
-    binding_to_port(ctx, &Binding::Var(var), range).unwrap_or_else(|| synthesise_unsupported_no_warn(ctx, range))
+    binding_to_port(ctx, &Binding::Var(var), range)
+        .unwrap_or_else(|| synthesise_unsupported_no_warn(ctx, range))
 }
 
 /// WS097: an `if` or `match` expression whose value is several wires has no
@@ -2920,7 +3269,11 @@ pub(super) fn report_effectful_aggregate_choice(ctx: &mut LowerCtx, range: &Sour
 /// WS097 for a field read of such an `if` or `match` expression
 /// (`(if c then mk() else p).a`): the read itself is one wire, but the arms
 /// give records, so the arm that acts has nowhere to be confined.
-pub(super) fn report_effectful_aggregate_field_read(ctx: &mut LowerCtx, field: &str, range: &SourceRange) {
+pub(super) fn report_effectful_aggregate_field_read(
+    ctx: &mut LowerCtx,
+    field: &str,
+    range: &SourceRange,
+) {
     ctx.error(
         "WS097",
         format!(
@@ -3000,7 +3353,8 @@ pub(super) fn lower_if_value(
     for id in then_touched.iter().chain(else_touched.iter()) {
         invalidate_var_cache(ctx, id);
     }
-    binding_to_port(ctx, &Binding::Var(var), range).unwrap_or_else(|| synthesise_unsupported_no_warn(ctx, range))
+    binding_to_port(ctx, &Binding::Var(var), range)
+        .unwrap_or_else(|| synthesise_unsupported_no_warn(ctx, range))
 }
 
 /// `cond` resolves (through the current scope) to a `_Literal` gate carrying
@@ -3031,7 +3385,11 @@ fn ident_literal_bool(ctx: &LowerCtx, cond: &Expr) -> Option<bool> {
 
 /// A write to a stored mod output with no exec chain to sequence it on: the
 /// storage is a var, and a var is only written on a chain.
-pub(in crate::lower) fn report_unsequenced_output_write(ctx: &mut LowerCtx, name: &str, range: &SourceRange) {
+pub(in crate::lower) fn report_unsequenced_output_write(
+    ctx: &mut LowerCtx,
+    name: &str,
+    range: &SourceRange,
+) {
     ctx.error(
         "WS007",
         format!(
@@ -3092,7 +3450,12 @@ fn store_mod_output(ctx: &mut LowerCtx, name: &str, value: &Expr, range: &Source
         }
         _ => {
             let mut v = HashMap::default();
-            v.insert(key, Binding::Local(LocalRecord { port: lower_expr(ctx, value) }));
+            v.insert(
+                key,
+                Binding::Local(LocalRecord {
+                    port: lower_expr(ctx, value),
+                }),
+            );
             let mut t = HashMap::default();
             t.insert(key, target);
             assign_record_fields(ctx, &t, &v, range);
@@ -3132,7 +3495,8 @@ pub(super) fn holds_one_value(t: &Type) -> bool {
 pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
     let is_output = ctx.lookup_output(&s.name).is_some()
         || matches!(
-            ctx.scope.get(&crate::lower::context::output_scope_key(&s.name)),
+            ctx.scope
+                .get(&crate::lower::context::output_scope_key(&s.name)),
             Some(Binding::Record(_))
         );
     // Local exec signals resolve to their per-declaration key via the scope,
@@ -3269,7 +3633,10 @@ pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
         // neither has any other value output: an inlined mod's caller reads
         // only its value, and the pin of a scalar `out` carries only its value.
         // An `any` output takes whatever is wired to it, an exec included.
-        let mod_value = ctx.mod_output_types.get(&s.name).is_some_and(|t| !matches!(t, Type::Exec));
+        let mod_value = ctx
+            .mod_output_types
+            .get(&s.name)
+            .is_some_and(|t| !matches!(t, Type::Exec));
         let scalar_value = ctx
             .lookup_output(&s.name)
             .is_some_and(|o| !matches!(unwrap_ref(&o.ty), Type::Exec | Type::Any | Type::Opaque));
@@ -3323,8 +3690,16 @@ fn report_signal_without_chain(ctx: &mut LowerCtx, name: &str, range: &SourceRan
 
 /// Queue an emit of `key` from `src_exec`, logged in `emit_log` so a splice
 /// can tell the emits queued since a point from those queued before it.
-fn queue_emit(ctx: &mut LowerCtx, key: String, src_exec: PortRef, chain: Option<u32>, site: &SourceRange) {
-    ctx.emit_sites.entry(key.clone()).or_insert_with(|| site.clone());
+fn queue_emit(
+    ctx: &mut LowerCtx,
+    key: String,
+    src_exec: PortRef,
+    chain: Option<u32>,
+    site: &SourceRange,
+) {
+    ctx.emit_sites
+        .entry(key.clone())
+        .or_insert_with(|| site.clone());
     let queued = ctx.pending_emits.entry(key.clone()).or_default();
     ctx.emit_log.push((key, queued.len()));
     queued.push((src_exec, chain));
@@ -3456,7 +3831,13 @@ fn payload_store(ctx: &mut LowerCtx, sig: &str, field: &str, ty: Type) -> NodeId
     if let Some(lit) = default_literal_for_var_type(&ty) {
         props.insert(*sym::INITIAL_VALUE, lit);
     }
-    let store = make_scalar_var_gate(ctx, &ty, props, &SourceRange::default(), Some("signal payload store"));
+    let store = make_scalar_var_gate(
+        ctx,
+        &ty,
+        props,
+        &SourceRange::default(),
+        Some("signal payload store"),
+    );
     ctx.exec_signal_payloads
         .entry(sig.to_string())
         .or_default()
@@ -3526,7 +3907,10 @@ fn write_signal_payload(ctx: &mut LowerCtx, sig: &str, value_expr: &Expr) {
         return;
     }
     // A gate read ferries its first output.
-    let ty = unwrap_ref(&ctx.one_value_type_at(value_expr.range()).unwrap_or(Type::Any));
+    let ty = unwrap_ref(
+        &ctx.one_value_type_at(value_expr.range())
+            .unwrap_or(Type::Any),
+    );
     let value_port = lower_expr(ctx, value_expr);
     let store = payload_store(ctx, sig, "", ty.clone());
     chain_var_set(ctx, store, value_port, ty);
@@ -3577,7 +3961,13 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
     // 1. Create a static bool var for the armed flag (initially false)
     let mut armed_props = HashMap::default();
     armed_props.insert(*sym::INITIAL_VALUE, Literal::Bool(false));
-    let armed_id = make_scalar_var_gate(ctx, &Type::Bool, armed_props, &a.range, Some("await armed flag"));
+    let armed_id = make_scalar_var_gate(
+        ctx,
+        &Type::Bool,
+        armed_props,
+        &a.range,
+        Some("await armed flag"),
+    );
 
     // 2. Arm: Var_Set(armed = true) on the current exec chain
     if let Some(exec_in) = ctx.current_exec {
@@ -3593,10 +3983,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             armed_id.port(WirePort::VarRef),
             arm_set.port(WirePort::VarRef),
         );
-        ctx.connect(
-            true_lit,
-            arm_set.port(WirePort::Value),
-        );
+        ctx.connect(true_lit, arm_set.port(WirePort::Value));
         // Exec chain ends here — pre-await code is done
     }
 
@@ -3611,10 +3998,15 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
     // there re-arms as it does at the top level.
     if let Some(key) = signal_name_of(&a.exec_expr).and_then(|sig| ctx.signal_key(sig)) {
         let chain = ctx.builder.current_chain_id;
-        if ctx.exec_branch_depth == 0 || ctx.exec_signal_depths.get(&key) == Some(&ctx.exec_branch_depth) {
+        if ctx.exec_branch_depth == 0
+            || ctx.exec_signal_depths.get(&key) == Some(&ctx.exec_branch_depth)
+        {
             ctx.signal_awaits.entry(key).or_insert((armed_id, chain));
         } else {
-            ctx.branch_awaits.entry(key).or_default().push((armed_id, chain, a.range.clone()));
+            ctx.branch_awaits
+                .entry(key)
+                .or_default()
+                .push((armed_id, chain, a.range.clone()));
         }
     }
 
@@ -3670,10 +4062,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
         armed_id.port(WirePort::VarRef),
         reset_set.port(WirePort::VarRef),
     );
-    ctx.connect(
-        false_lit,
-        reset_set.port(WirePort::Value),
-    );
+    ctx.connect(false_lit, reset_set.port(WirePort::Value));
 
     // 7. Continuation: everything after await runs from reset_set's ExecOut
     ctx.current_exec = Some(reset_set.port(WirePort::ExecOut));
@@ -3739,14 +4128,22 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
     if let Some(ref names) = a.tuple_destructure {
         if is_event_data_gate(ctx, exec_port.node_id) {
             const DATA: [WirePort; 8] = [
-                WirePort::DataOut1, WirePort::DataOut2, WirePort::DataOut3, WirePort::DataOut4,
-                WirePort::DataOut5, WirePort::DataOut6, WirePort::DataOut7, WirePort::DataOut8,
+                WirePort::DataOut1,
+                WirePort::DataOut2,
+                WirePort::DataOut3,
+                WirePort::DataOut4,
+                WirePort::DataOut5,
+                WirePort::DataOut6,
+                WirePort::DataOut7,
+                WirePort::DataOut8,
             ];
             for (i, local) in names.iter().enumerate() {
                 if let Some(&port) = DATA.get(i) {
                     ctx.scope.insert(
                         local,
-                        Binding::Local(LocalRecord { port: exec_port.node_id.port(port) }),
+                        Binding::Local(LocalRecord {
+                            port: exec_port.node_id.port(port),
+                        }),
                     );
                 }
             }
@@ -3777,10 +4174,8 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
                 continue;
             };
             let val_port = signal_payload_get(ctx, store, ty);
-            ctx.scope.insert(
-                &local,
-                Binding::Local(LocalRecord { port: val_port }),
-            );
+            ctx.scope
+                .insert(&local, Binding::Local(LocalRecord { port: val_port }));
         }
     }
 }
@@ -3843,7 +4238,10 @@ pub(super) fn flush_pending_emits(ctx: &mut LowerCtx) {
             // guarded by the armed flag.
             let awaited = ctx.signal_awaits.get(&name).copied();
             for (armed_var, chain, range) in ctx.branch_awaits.remove(&name).unwrap_or_default() {
-                if entries.iter().any(|(p, c)| *c == chain && p.node_id > armed_var) {
+                if entries
+                    .iter()
+                    .any(|(p, c)| *c == chain && p.node_id > armed_var)
+                {
                     ctx.warn_code(
                         "WS118",
                         "this `await` sits inside an `if`, but its signal is declared outside \
@@ -3870,7 +4268,11 @@ pub(super) fn flush_pending_emits(ctx: &mut LowerCtx) {
                 let union_out = build_exec_union(ctx, direct.into_iter().map(|(p, _)| p).collect());
                 ctx.connect(union_out, hub.port(next_hub_port));
             }
-        } else if ctx.scope.get(&crate::lower::context::output_scope_key(&name)).is_some() {
+        } else if ctx
+            .scope
+            .get(&crate::lower::context::output_scope_key(&name))
+            .is_some()
+        {
             // An output with no single pin (a record or enum) has nothing an
             // exec can drive; `lower_emit` routes every write to one elsewhere.
             let range = ctx.emit_sites.get(&name).cloned().unwrap_or_default();
@@ -3919,8 +4321,11 @@ fn splice_single_input_unions(ctx: &mut LowerCtx, hubs: &[NodeId]) {
     let set: HashSet<NodeId> = hubs.iter().copied().collect();
     let mut feeds = HashMap::default();
     count(&ctx.builder.module, &set, &mut feeds);
-    let single: HashMap<NodeId, PortRef> =
-        feeds.into_iter().filter(|(_, (n, _))| *n == 1).map(|(hub, (_, src))| (hub, src)).collect();
+    let single: HashMap<NodeId, PortRef> = feeds
+        .into_iter()
+        .filter(|(_, (n, _))| *n == 1)
+        .map(|(hub, (_, src))| (hub, src))
+        .collect();
     if single.is_empty() {
         return;
     }
@@ -3947,7 +4352,13 @@ fn splice_single_input_unions(ctx: &mut LowerCtx, hubs: &[NodeId]) {
 /// await's flag on the emit path, sequenced upstream of the signal hub.
 /// Mirrors the arm built in `lower_await` step 2.
 fn build_arm_set(ctx: &mut LowerCtx, armed_var: NodeId) -> NodeId {
-    let true_lit = raw_literal(ctx, &SourceRange::default(), Type::Bool, Literal::Bool(true), None);
+    let true_lit = raw_literal(
+        ctx,
+        &SourceRange::default(),
+        Type::Bool,
+        Literal::Bool(true),
+        None,
+    );
     let arm_set = ctx.add_gate(AddNodeOpts {
         gate_class: gc::VAR_SET,
         source_range: SourceRange::default(),
@@ -3959,10 +4370,7 @@ fn build_arm_set(ctx: &mut LowerCtx, armed_var: NodeId) -> NodeId {
         armed_var.port(WirePort::VarRef),
         arm_set.port(WirePort::VarRef),
     );
-    ctx.connect(
-        true_lit,
-        arm_set.port(WirePort::Value),
-    );
+    ctx.connect(true_lit, arm_set.port(WirePort::Value));
     arm_set
 }
 
@@ -4024,7 +4432,9 @@ fn report_default_beside_emit(ctx: &mut LowerCtx, name: &str, value: &Expr, rang
     // With no other write, the output is stored only because this one comes
     // after an early exit (a `return`, `break` or `continue`) that has no exec
     // chain to run on, which typecheck already rejects.
-    if !ctx.emitted_outputs.contains(name) && ctx.output_write_sites.get(name).is_some_and(|n| *n < 2) {
+    if !ctx.emitted_outputs.contains(name)
+        && ctx.output_write_sites.get(name).is_some_and(|n| *n < 2)
+    {
         ctx.error(
             crate::diagnostic::INTERNAL_ERROR,
             format!("`out {name} = ...` follows an early exit with no exec chain to store it on"),
@@ -4039,17 +4449,23 @@ fn report_default_beside_emit(ctx: &mut LowerCtx, name: &str, value: &Expr, rang
     };
     let value_ty = unwrap_ref(&ctx.type_of(value));
     let default = match &value_ty {
-        Type::Enum { name: en, .. } => match ctx.enum_defs.of(&value_ty).and_then(|d| d.variants.first()) {
-            Some(v) => Some(format!("`out {name} = {en}.{}`", v.name)),
-            None => Some(format!("`out {name} = {en}.<variant>`")),
-        },
+        Type::Enum { name: en, .. } => {
+            match ctx.enum_defs.of(&value_ty).and_then(|d| d.variants.first()) {
+                Some(v) => Some(format!("`out {name} = {en}.{}`", v.name)),
+                None => Some(format!("`out {name} = {en}.<variant>`")),
+            }
+        }
         Type::Record(_) | Type::Tuple(_) => None,
         _ if ctx.output_tag(name).is_some() => Some("one of its variants".to_string()),
         _ => Some(format!("`out {name} = 0`")),
     };
     let fix = match default {
-        Some(d) => format!("Give this one a constant default ({d}) and let the other write change it, or remove it"),
-        None => format!("A record output takes no default beside another write: set it with `emit {name} = ...` on a handler's chain, or remove this one"),
+        Some(d) => format!(
+            "Give this one a constant default ({d}) and let the other write change it, or remove it"
+        ),
+        None => format!(
+            "A record output takes no default beside another write: set it with `emit {name} = ...` on a handler's chain, or remove this one"
+        ),
     };
     ctx.error(
         "WS013",
@@ -4074,7 +4490,10 @@ fn drive_enum_output(ctx: &mut LowerCtx, name: &str, value: &Expr, range: &Sourc
         return;
     };
     let fields = one_enum_value(ctx, value, fields);
-    let Some(tag) = enum_disc(&fields).cloned().and_then(|b| binding_to_port(ctx, &b, value.range())) else {
+    let Some(tag) = enum_disc(&fields)
+        .cloned()
+        .and_then(|b| binding_to_port(ctx, &b, value.range()))
+    else {
         report_lowered_to_nothing(ctx, &what, value);
         return;
     };
@@ -4160,7 +4579,8 @@ pub(super) fn lower_out_binding(
     }
     if matches!(ctx.type_of(value), Type::Enum { .. })
         && !matches!(
-            ctx.scope.get(&crate::lower::context::output_scope_key(name)),
+            ctx.scope
+                .get(&crate::lower::context::output_scope_key(name)),
             Some(Binding::Record(_))
         )
     {
@@ -4362,11 +4782,16 @@ fn stash_out_record(
             d.file != v.file || v.start.offset < d.start.offset || v.end.offset > d.end.offset
         });
     let (fix, at) = match declared {
-        Some(decl) => {
-            (format!("Annotate its declaration so each field gets its own pin: `out {name}: {spelled}`"), decl)
-        }
+        Some(decl) => (
+            format!(
+                "Annotate its declaration so each field gets its own pin: `out {name}: {spelled}`"
+            ),
+            decl,
+        ),
         None => (
-            format!("Annotate the output so each field gets its own pin: `out {name}: {spelled} = ...`"),
+            format!(
+                "Annotate the output so each field gets its own pin: `out {name}: {spelled} = ...`"
+            ),
             value.range().clone(),
         ),
     };
@@ -4431,7 +4856,8 @@ pub(super) fn one_enum_value(
     src: HashMap<crate::intern::Sym, Binding>,
 ) -> HashMap<crate::intern::Sym, Binding> {
     if enum_disc(&src).is_none()
-        && let Some(Binding::Record(first)) = held_output(ctx, &src, value.range(), OutputPick::First)
+        && let Some(Binding::Record(first)) =
+            held_output(ctx, &src, value.range(), OutputPick::First)
         && enum_disc(&first).is_some()
     {
         return first;
@@ -4449,7 +4875,11 @@ pub(super) fn fit_record_value(
     target: &HashMap<crate::intern::Sym, Binding>,
     src: HashMap<crate::intern::Sym, Binding>,
 ) -> Option<HashMap<crate::intern::Sym, Binding>> {
-    let src = if enum_disc(target).is_some() { one_enum_value(ctx, value, src) } else { src };
+    let src = if enum_disc(target).is_some() {
+        one_enum_value(ctx, value, src)
+    } else {
+        src
+    };
     let src = match ctx.checked_type_at(value.range()) {
         Some(checked) => held_reads_where_one_value(checked, src, Slot::Storage(target)),
         None => src,
@@ -4512,12 +4942,18 @@ pub(super) fn held_reads_where_one_value(
 ) -> HashMap<crate::intern::Sym, Binding> {
     let fields: Vec<(String, Type)> = match unwrap_ref(checked) {
         Type::Record(fs) => fs,
-        Type::Tuple(ts) => ts.into_iter().enumerate().map(|(i, t)| (i.to_string(), t)).collect(),
+        Type::Tuple(ts) => ts
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| (i.to_string(), t))
+            .collect(),
         _ => return src,
     };
     for (name, ty) in fields {
         let key = crate::intern::intern(&name);
-        let Some(Binding::Record(inner)) = src.get(&key).cloned() else { continue };
+        let Some(Binding::Record(inner)) = src.get(&key).cloned() else {
+            continue;
+        };
         match (unwrap_ref(&ty), slot.field(&name)) {
             (Type::Outputs(outputs), Some(FieldSlot::One)) => {
                 if let Some(first) = inner.get(&crate::intern::intern(&outputs[0].0)).cloned() {
@@ -4525,7 +4961,10 @@ pub(super) fn held_reads_where_one_value(
                 }
             }
             (inner_ty @ (Type::Record(_) | Type::Tuple(_)), Some(FieldSlot::Record(nested))) => {
-                src.insert(key, Binding::Record(held_reads_where_one_value(&inner_ty, inner, nested)));
+                src.insert(
+                    key,
+                    Binding::Record(held_reads_where_one_value(&inner_ty, inner, nested)),
+                );
             }
             _ => {}
         }
@@ -4564,7 +5003,10 @@ fn shares_a_field(
 /// wire with no fields to split, which the program can fix (WS003); anything
 /// else is a compiler bug.
 fn report_lowered_to_nothing(ctx: &mut LowerCtx, what: &str, value: &Expr) {
-    if matches!(unwrap_ref(&crate::lower::call::lowered_arg_type(ctx, value)), Type::Any | Type::Opaque) {
+    if matches!(
+        unwrap_ref(&crate::lower::call::lowered_arg_type(ctx, value)),
+        Type::Any | Type::Opaque
+    ) {
         ctx.error(
             "WS003",
             format!(

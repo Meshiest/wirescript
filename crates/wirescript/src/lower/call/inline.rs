@@ -26,7 +26,12 @@ fn one_value_of_read(
     let Some(ty) = param_ty.filter(|t| crate::lower::context::takes_one_value(t)) else {
         return ReadArg::Whole(fields);
     };
-    match crate::lower::context::held_output(ctx, &fields, at, crate::lower::context::OutputPick::First) {
+    match crate::lower::context::held_output(
+        ctx,
+        &fields,
+        at,
+        crate::lower::context::OutputPick::First,
+    ) {
         Some(Binding::Record(first)) => ReadArg::Record(first),
         Some(first) if crate::lower::stmt::holds_one_value(&unwrap_ref(ty)) => {
             match crate::lower::access::binding_to_port(ctx, &first, at) {
@@ -88,7 +93,10 @@ pub(in crate::lower) fn lower_chip_call_inline(
     // for a non-generic mod declared outside every generic body, which pushes
     // nothing.
     let lexical_frame = match &own_frame {
-        Some(own) => Some(ctx.body_frame(chip_decl, Some(own)).unwrap_or_else(|| own.clone())),
+        Some(own) => Some(
+            ctx.body_frame(chip_decl, Some(own))
+                .unwrap_or_else(|| own.clone()),
+        ),
         None => ctx.body_frame(chip_decl, None),
     };
 
@@ -107,7 +115,13 @@ pub(in crate::lower) fn lower_chip_call_inline(
     let mut bound = ArgSlots::default();
     let mut aliases: HashSet<String> = HashSet::default();
     for (i, param) in chip_decl.inputs.iter().enumerate() {
-        bound.bind(&mut in_order, &val_bindings, &record_bindings, &aliases, _range);
+        bound.bind(
+            &mut in_order,
+            &val_bindings,
+            &record_bindings,
+            &aliases,
+            _range,
+        );
         in_order.next(ctx);
         // An omitted argument takes the parameter's default value.
         let Some(arg_expr) = positional_args.get(i).copied().or(param.default.as_ref()) else {
@@ -117,7 +131,11 @@ pub(in crate::lower) fn lower_chip_call_inline(
         // A record typecheck rejected for a parameter of one value (WS003)
         // gives it nothing, so the body reports nothing more about it.
         let r = arg_expr.range();
-        if ctx.resolutions.rejected_record_args.contains(&(r.file.clone(), r.start.offset, r.end.offset)) {
+        if ctx.resolutions.rejected_record_args.contains(&(
+            r.file.clone(),
+            r.start.offset,
+            r.end.offset,
+        )) {
             let port = crate::lower::expr::synthesise_unsupported_no_warn(ctx, r);
             val_bindings.push((param.name.clone(), port, Type::Any));
             continue;
@@ -144,9 +162,11 @@ pub(in crate::lower) fn lower_chip_call_inline(
         if let Some(Binding::Record(fields)) = resolve_field_chain(ctx, record_arg).cloned() {
             let param_ty = ctx.declared_type(chip_decl, &param.typ, lexical_frame.as_ref());
             match one_value_of_read(ctx, param_ty.as_ref(), fields, record_arg.range()) {
-                ReadArg::Port(port) => {
-                    val_bindings.push((param.name.clone(), port, ctx.resolve_local_type(&param.typ)))
-                }
+                ReadArg::Port(port) => val_bindings.push((
+                    param.name.clone(),
+                    port,
+                    ctx.resolve_local_type(&param.typ),
+                )),
                 ReadArg::Record(first) => record_bindings.push((param.name.clone(), first)),
                 ReadArg::Whole(fields) => {
                     // A gate read held in a field the parameter's type holds
@@ -182,9 +202,12 @@ pub(in crate::lower) fn lower_chip_call_inline(
         // one value, made as in every other place for one value (below).
         let one_value_choice = matches!(record_arg, Expr::IfExpr { .. } | Expr::MatchExpr { .. })
             && ctx.gate_outputs(record_arg.range()).is_some()
-            && ctx.declared_type(chip_decl, &param.typ, lexical_frame.as_ref()).is_some_and(|t| {
-                crate::lower::context::takes_one_value(&t) && crate::lower::stmt::holds_one_value(&unwrap_ref(&t))
-            });
+            && ctx
+                .declared_type(chip_decl, &param.typ, lexical_frame.as_ref())
+                .is_some_and(|t| {
+                    crate::lower::context::takes_one_value(&t)
+                        && crate::lower::stmt::holds_one_value(&unwrap_ref(&t))
+                });
         if !one_value_choice
             && matches!(
                 record_arg,
@@ -196,18 +219,22 @@ pub(in crate::lower) fn lower_chip_call_inline(
                     | Expr::As { .. }
             )
             && (ctx.record_or_tuple_fields(&param.typ).is_some()
-            || matches!(
-                unwrap_ref(&ctx.type_of(record_arg)),
-                Type::Enum { .. } | Type::Record(_) | Type::Tuple(_)
-            ))
+                || matches!(
+                    unwrap_ref(&ctx.type_of(record_arg)),
+                    Type::Enum { .. } | Type::Record(_) | Type::Tuple(_)
+                ))
             && let Some(fields) = crate::lower::stmt::value_record_fields(ctx, record_arg)
         {
             let param_ty = ctx.declared_type(chip_decl, &param.typ, lexical_frame.as_ref());
             match one_value_of_read(ctx, param_ty.as_ref(), fields, record_arg.range()) {
-                ReadArg::Port(port) => {
-                    val_bindings.push((param.name.clone(), port, ctx.resolve_local_type(&param.typ)))
+                ReadArg::Port(port) => val_bindings.push((
+                    param.name.clone(),
+                    port,
+                    ctx.resolve_local_type(&param.typ),
+                )),
+                ReadArg::Record(fields) | ReadArg::Whole(fields) => {
+                    record_bindings.push((param.name.clone(), fields))
                 }
-                ReadArg::Record(fields) | ReadArg::Whole(fields) => record_bindings.push((param.name.clone(), fields)),
             }
             continue;
         }
@@ -249,12 +276,18 @@ pub(in crate::lower) fn lower_chip_call_inline(
                         if lexical_frame.is_some() {
                             ctx.mono_stack.pop();
                         }
-                        let (storage, inner_type) =
-                            super::context::container_binding(ctx.ref_storage(Some(chip_decl), pt), &t)
-                                .expect("gated by ref_storage");
+                        let (storage, inner_type) = super::context::container_binding(
+                            ctx.ref_storage(Some(chip_decl), pt),
+                            &t,
+                        )
+                        .expect("gated by ref_storage");
                         dyn_bindings.push((
                             param.name.clone(),
-                            DynRefRecord { port, storage, inner_type },
+                            DynRefRecord {
+                                port,
+                                storage,
+                                inner_type,
+                            },
                         ));
                     }
                     // An array/map literal: its immutable container gate when
@@ -296,14 +329,33 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 if param.is_const {
                     let lookup = |n: &str| ctx.resolve_mod(n);
                     let mut budget = crate::const_eval::Budget::default();
-                    let evaluated =
-                        crate::const_eval::eval_expr(arg_expr, &ctx.const_ctx(Some(&lookup)), &mut budget);
+                    let evaluated = crate::const_eval::eval_expr(
+                        arg_expr,
+                        &ctx.const_ctx(Some(&lookup)),
+                        &mut budget,
+                    );
                     if let Ok(lit) = evaluated {
-                        let (lit, ty) = match ctx.declared_type(chip_decl, &param.typ, lexical_frame.as_ref()) {
-                            Some(ty) => (crate::const_eval::coerce_const_to_type(lit, &ty, ctx.consts.types()), ty),
+                        let (lit, ty) = match ctx.declared_type(
+                            chip_decl,
+                            &param.typ,
+                            lexical_frame.as_ref(),
+                        ) {
+                            Some(ty) => (
+                                crate::const_eval::coerce_const_to_type(
+                                    lit,
+                                    &ty,
+                                    ctx.consts.types(),
+                                ),
+                                ty,
+                            ),
                             None => (lit, unwrap_ref(&ctx.type_of(arg_expr))),
                         };
-                        const_bindings.push((param.name.clone(), lit, unwrap_ref(&ty), budget.uncertified));
+                        const_bindings.push((
+                            param.name.clone(),
+                            lit,
+                            unwrap_ref(&ty),
+                            budget.uncertified,
+                        ));
                         continue;
                     }
                 }
@@ -370,12 +422,24 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 range: e.range().clone(),
             })
             .collect();
-        bound.bind(&mut in_order, &val_bindings, &record_bindings, &aliases, _range);
+        bound.bind(
+            &mut in_order,
+            &val_bindings,
+            &record_bindings,
+            &aliases,
+            _range,
+        );
         in_order.next(ctx);
         let record = lower_record_lit(ctx, &rest_fields, Slots::Unknown);
         record_bindings.push((rest_name.clone(), record));
     }
-    bound.bind(&mut in_order, &val_bindings, &record_bindings, &aliases, _range);
+    bound.bind(
+        &mut in_order,
+        &val_bindings,
+        &record_bindings,
+        &aliases,
+        _range,
+    );
     let held = in_order.finish(ctx);
     bound.fixed(&held, &mut val_bindings, &mut record_bindings);
     // `exec = trigger` named arg: run this mod's body off the given trigger
@@ -431,10 +495,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
     // siblings/vars/consts by bare name rather than through the ambient scope
     // (which holds whatever namespace lowered last). Params/refs/inputs are
     // inserted below and shadow these, as they must. See `LowerCtx::ns_mod_scopes`.
-    let ns_key = (
-        chip_decl.range.file.clone(),
-        chip_decl.range.start.offset,
-    );
+    let ns_key = (chip_decl.range.file.clone(), chip_decl.range.start.offset);
     let ns_scope = ctx.ns_mod_scopes.get(&ns_key).cloned();
     if let Some(ns_scope) = &ns_scope {
         for (name, binding) in ns_scope.iter() {
@@ -446,9 +507,20 @@ pub(in crate::lower) fn lower_chip_call_inline(
         // Every entry here is a `const` PARAMETER (see the `param.is_const`
         // gate above) — mark it declared so an `if`-condition inside this
         // inlined body naming the param is eligible for the widened elision.
-        let marks = crate::const_scope::Marks { declared: true, placeholder: false, uncertified };
+        let marks = crate::const_scope::Marks {
+            declared: true,
+            placeholder: false,
+            uncertified,
+        };
         ctx.consts.record(&name, lit.clone(), marks);
-        crate::lower::predeclare::bind_shadowing_const_param(ctx, &name, lit, ty, _range, &chip_decl.body);
+        crate::lower::predeclare::bind_shadowing_const_param(
+            ctx,
+            &name,
+            lit,
+            ty,
+            _range,
+            &chip_decl.body,
+        );
     }
 
     for (name, rec) in ref_bindings {
@@ -533,7 +605,8 @@ pub(in crate::lower) fn lower_chip_call_inline(
     // rebind. A constant container has no member binding
     // until a runtime read builds its gate, so it is recorded wherever the
     // frame binds nothing else of its name.
-    if let (Some(ns_scope), Some(ns_consts)) = (&ns_scope, ctx.ns_mod_consts.get(&ns_key).cloned()) {
+    if let (Some(ns_scope), Some(ns_consts)) = (&ns_scope, ctx.ns_mod_consts.get(&ns_key).cloned())
+    {
         for (name, lit, marks) in ns_consts.iter() {
             let kept = match (ns_scope.get(name), ctx.scope.get_current(name)) {
                 (Some(member), Some(now)) => crate::lower::context::same_binding(member, now),
@@ -571,9 +644,15 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 Stmt::Var(v) if hoist_or_defer(ctx, stmts, at, &v.name, &v.range) => {
                     ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v))
                 }
-                Stmt::Array(a) if hoist_or_defer(ctx, stmts, at, &a.name, &a.range) => pre_declare_array(ctx, a),
-                Stmt::Map(m) if hoist_or_defer(ctx, stmts, at, &m.name, &m.range) => pre_declare_map(ctx, m),
-                Stmt::Buffer(b) if hoist_or_defer(ctx, stmts, at, &b.name, &b.range) => pre_declare_buffer(ctx, b),
+                Stmt::Array(a) if hoist_or_defer(ctx, stmts, at, &a.name, &a.range) => {
+                    pre_declare_array(ctx, a)
+                }
+                Stmt::Map(m) if hoist_or_defer(ctx, stmts, at, &m.name, &m.range) => {
+                    pre_declare_map(ctx, m)
+                }
+                Stmt::Buffer(b) if hoist_or_defer(ctx, stmts, at, &b.name, &b.range) => {
+                    pre_declare_buffer(ctx, b)
+                }
                 // Recurse into nested blocks for CHIP NAMES ONLY (their
                 // forward-reference visibility), NOT for storage. A `var`/
                 // `array`/`map`/`buffer` inside an `if` is block-scoped: it must
@@ -655,7 +734,11 @@ pub(in crate::lower) fn lower_chip_call_inline(
         .outputs
         .iter()
         .map(|o| {
-            let ty = if is_exec_type(ctx, &o.typ) { Type::Exec } else { ctx.resolve_local_type(&o.typ) };
+            let ty = if is_exec_type(ctx, &o.typ) {
+                Type::Exec
+            } else {
+                ctx.resolve_local_type(&o.typ)
+            };
             (o.name.clone(), ty)
         })
         .collect();
@@ -687,7 +770,8 @@ pub(in crate::lower) fn lower_chip_call_inline(
             n >= 1 && (n + num_return_values + handler_returns >= 2 || w.branch || w.handler)
         })
     };
-    let use_storage = num_return_values > 1 || handler_returns >= 1 || value_outputs.iter().any(needs);
+    let use_storage =
+        num_return_values > 1 || handler_returns >= 1 || value_outputs.iter().any(needs);
     // The outputs the storage holds: every value output when a `return` writes
     // them all, otherwise only the ones that need it. Any other output keeps
     // its own wire (or record) beside them.
@@ -698,7 +782,8 @@ pub(in crate::lower) fn lower_chip_call_inline(
     } else {
         value_outputs.iter().filter(|o| needs(o)).cloned().collect()
     };
-    let saved_emit_storage = std::mem::replace(&mut ctx.mod_emit_storage, stored.iter().cloned().collect());
+    let saved_emit_storage =
+        std::mem::replace(&mut ctx.mod_emit_storage, stored.iter().cloned().collect());
     if use_storage && chip_decl.outputs.len() > 1 {
         // Several outputs: one storage field per output, keyed by its name, so
         // each `return (..)` stores every output and the caller reads the
@@ -778,11 +863,16 @@ pub(in crate::lower) fn lower_chip_call_inline(
     } else {
         stored
             .iter()
-            .filter(|o| num_return_values >= 1 || writes.get(*o).is_some_and(|w| w.plain || w.branch))
+            .filter(|o| {
+                num_return_values >= 1 || writes.get(*o).is_some_and(|w| w.plain || w.branch)
+            })
             .cloned()
             .collect()
     };
-    let saved_unsequenced = std::mem::replace(&mut ctx.mod_unsequenced, unsequenced.iter().cloned().collect());
+    let saved_unsequenced = std::mem::replace(
+        &mut ctx.mod_unsequenced,
+        unsequenced.iter().cloned().collect(),
+    );
     let saved_subst = std::mem::replace(&mut ctx.resolution_subst, body_subst);
     lower_block(ctx, &chip_decl.body);
     ctx.resolution_subst = saved_subst;
@@ -883,7 +973,8 @@ pub(in crate::lower) fn lower_chip_call_inline(
     {
         // Several outputs with storage: the stored ones read the storage, and
         // an output bound only by `out` keeps its own source.
-        let mut record = gathered_outputs(ctx, chip_decl, &out_records, inline_output_ids, wire_start);
+        let mut record =
+            gathered_outputs(ctx, chip_decl, &out_records, inline_output_ids, wire_start);
         record.extend(rec);
         Some(record)
     } else if let Some(rec) = ret_record_clone.clone() {
@@ -910,7 +1001,13 @@ pub(in crate::lower) fn lower_chip_call_inline(
         // field), so the stash is the record itself, as a returned one is.
         Some(rec.clone())
     } else if chip_decl.outputs.len() > 1 {
-        Some(gathered_outputs(ctx, chip_decl, &out_records, inline_output_ids, wire_start))
+        Some(gathered_outputs(
+            ctx,
+            chip_decl,
+            &out_records,
+            inline_output_ids,
+            wire_start,
+        ))
     } else {
         None
     };
@@ -919,7 +1016,13 @@ pub(in crate::lower) fn lower_chip_call_inline(
     if let Some(mut rec) = ctx.pending_inline_record.take() {
         use crate::lower::ref_fields::{FieldKind, rebind_fields, rebind_ref_fields};
         if by_field {
-            rebind_ref_fields(ctx, &chip_decl.outputs[0].typ, &mut rec, FieldKind::Value, _range);
+            rebind_ref_fields(
+                ctx,
+                &chip_decl.outputs[0].typ,
+                &mut rec,
+                FieldKind::Value,
+                _range,
+            );
         } else {
             let outputs: Vec<crate::ast::RecordTypeField> = chip_decl
                 .outputs
@@ -1014,7 +1117,10 @@ pub(in crate::lower) fn lower_chip_call_inline(
         // A stored output with no chain to choose its write on: say so once,
         // in those words, rather than as a branch `return`.
         if num_return_values == 0 && !stored.is_empty() {
-            if !ctx.diagnostics[body_diag_mark..].iter().any(|d| d.code == "WS007") {
+            if !ctx.diagnostics[body_diag_mark..]
+                .iter()
+                .any(|d| d.code == "WS007")
+            {
                 crate::lower::stmt::report_unsequenced_output_write(ctx, &stored[0], _range);
             }
             return crate::lower::expr::synthesise_unsupported_no_warn(ctx, _range);
@@ -1089,10 +1195,16 @@ impl ArgSlots {
         range: &SourceRange,
     ) {
         for (name, port, _) in &vals[self.vals.len()..] {
-            self.vals.push(args.bind(Binding::Local(LocalRecord { port: *port }), name, range, None));
+            self.vals.push(args.bind(
+                Binding::Local(LocalRecord { port: *port }),
+                name,
+                range,
+                None,
+            ));
         }
         for (name, rec) in &records[self.records.len()..] {
-            let slot = (!aliases.contains(name)).then(|| args.bind(Binding::Record(rec.clone()), name, range, None));
+            let slot = (!aliases.contains(name))
+                .then(|| args.bind(Binding::Record(rec.clone()), name, range, None));
             self.records.push(slot);
         }
     }
@@ -1155,7 +1267,11 @@ fn count_output_writes(
     in_handler: bool,
     writes: &mut HashMap<String, OutputWrites>,
 ) {
-    let start = walk::Ctx { branch: in_branch, handler: in_handler, ..walk::Ctx::default() };
+    let start = walk::Ctx {
+        branch: in_branch,
+        handler: in_handler,
+        ..walk::Ctx::default()
+    };
     walk::walk(walk::Node::Block(block), start, &mut |n, cx| {
         let (name, emit) = match n {
             walk::Node::Stmt(Stmt::Emit(e)) if e.value.is_some() => (&e.name, true),
@@ -1179,7 +1295,6 @@ fn count_output_writes(
     });
 }
 
-
 /// The caller's record of a multi-output inline call from its outputs' own
 /// sources: a record output's field map (`out_records`), otherwise the value
 /// wired into its internal output node.
@@ -1196,7 +1311,10 @@ fn gathered_outputs(
         // output node (a record has no single port), so take its field map
         // and nest it: `r.card.cardtype` then resolves through both hops.
         if let Some(rec) = out_records.get(&out.name) {
-            record.insert(crate::intern::intern(&out.name), Binding::Record(rec.clone()));
+            record.insert(
+                crate::intern::intern(&out.name),
+                Binding::Record(rec.clone()),
+            );
             continue;
         }
         let Some(&out_id) = inline_output_ids.get(i) else {
@@ -1207,7 +1325,10 @@ fn gathered_outputs(
             .find(|w| w.target.node_id == out_id && w.target.port == WirePort::RerInput)
             .map(|w| w.source)
         {
-            record.insert(crate::intern::intern(&out.name), Binding::Local(LocalRecord { port: src }));
+            record.insert(
+                crate::intern::intern(&out.name),
+                Binding::Local(LocalRecord { port: src }),
+            );
         }
     }
     record
@@ -1215,10 +1336,17 @@ fn gathered_outputs(
 
 /// Record every storage var of an output a pure call could not write, so its
 /// first read reports WS007.
-fn register_unsequenced(ctx: &mut LowerCtx, binding: &Binding, name: &str, range: &SourceRange, call: usize) {
+fn register_unsequenced(
+    ctx: &mut LowerCtx,
+    binding: &Binding,
+    name: &str,
+    range: &SourceRange,
+    call: usize,
+) {
     match binding {
         Binding::Var(var) => {
-            ctx.unsequenced_reads.insert(var.node_id, (name.to_string(), range.clone(), call));
+            ctx.unsequenced_reads
+                .insert(var.node_id, (name.to_string(), range.clone(), call));
         }
         Binding::Record(fields) => {
             for b in fields.values() {

@@ -29,9 +29,9 @@ mod options;
 mod scan;
 mod split;
 
-pub use options::{FormatOptions, LineEnding, DEFAULT_PRINT_WIDTH};
+pub use options::{DEFAULT_PRINT_WIDTH, FormatOptions, LineEnding};
 
-use scan::{classify, code_end, interp_len, Carry, Class};
+use scan::{Carry, Class, classify, code_end, interp_len};
 
 /// What the character at char column `col` of `line` is part of, for editor
 /// features that act on code only.
@@ -59,7 +59,11 @@ pub(crate) fn text_kind_at(source: &str, line: usize, col: usize) -> TextKind {
             Some(Class::Str) => {
                 // The string's run starts at its opening quote; walk it to see
                 // whether `col` falls in one of its `${...}`.
-                let mut j = (0..col).rev().find(|&k| class[k] != Class::Str).map_or(0, |k| k + 1) + 1;
+                let mut j = (0..col)
+                    .rev()
+                    .find(|&k| class[k] != Class::Str)
+                    .map_or(0, |k| k + 1)
+                    + 1;
                 while j < col {
                     let len = interp_len(&chars, j);
                     if len > 0 {
@@ -82,12 +86,28 @@ pub(crate) fn text_kind_at(source: &str, line: usize, col: usize) -> TextKind {
 /// Format `source` with `tab` as one level of indentation and every other
 /// option at its default.
 pub fn format_wirescript(source: &str, tab: &str) -> String {
-    format_with(source, &FormatOptions { indent: tab.to_string(), ..FormatOptions::default() })
+    format_with(
+        source,
+        &FormatOptions {
+            indent: tab.to_string(),
+            ..FormatOptions::default()
+        },
+    )
 }
 
 pub fn format_with(source: &str, opts: &FormatOptions) -> String {
-    let eol = opts.end_of_line.unwrap_or_else(|| LineEnding::dominant_in(source));
-    let mut f = Formatter { opts, lines: Vec::new(), stack: Vec::new(), prev_blank: false, prev: String::new(), ignore_next: false, carry: Carry::Code };
+    let eol = opts
+        .end_of_line
+        .unwrap_or_else(|| LineEnding::dominant_in(source));
+    let mut f = Formatter {
+        opts,
+        lines: Vec::new(),
+        stack: Vec::new(),
+        prev_blank: false,
+        prev: String::new(),
+        ignore_next: false,
+        carry: Carry::Code,
+    };
     for raw in source.split('\n') {
         f.line(raw.strip_suffix('\r').unwrap_or(raw));
     }
@@ -131,7 +151,11 @@ impl Formatter<'_> {
             let (class, carry) = classify(&chars, self.carry);
             self.carry = carry;
             scan_brackets(&chars, &class, 0, &mut self.stack);
-            self.lines.push(if in_prefab { raw.to_string() } else { raw.trim_end().to_string() });
+            self.lines.push(if in_prefab {
+                raw.to_string()
+            } else {
+                raw.trim_end().to_string()
+            });
             self.prev_blank = false;
             self.prev = raw.trim().to_string();
             return;
@@ -152,14 +176,17 @@ impl Formatter<'_> {
         let raw_code_end = code_end(&raw_class);
         let comment: String = raw_chars[raw_code_end..].iter().collect();
         let has_code = raw_chars[..raw_code_end].iter().any(|c| !c.is_whitespace());
-        let marker = comment.starts_with("//") && !comment.starts_with("///") && comment.trim_start_matches('/').trim() == "fmt-ignore";
+        let marker = comment.starts_with("//")
+            && !comment.starts_with("///")
+            && comment.trim_start_matches('/').trim() == "fmt-ignore";
 
         // `// fmt-ignore`: this line (trailing marker) or the one after a
         // standalone marker stays exactly as written.
         if std::mem::take(&mut self.ignore_next) || (marker && has_code) {
             let code = &raw_chars[..raw_code_end];
             let closers = leading_closers(code);
-            self.stack.truncate(self.stack.len().saturating_sub(closers));
+            self.stack
+                .truncate(self.stack.len().saturating_sub(closers));
             scan_brackets(code, &raw_class[..raw_code_end], closers, &mut self.stack);
             self.lines.push(raw.to_string());
             self.prev = raw_trimmed.to_string();
@@ -186,14 +213,17 @@ impl Formatter<'_> {
         }
 
         if self.stack.is_empty()
-            && ["in ", "out ", "var "].iter().any(|kw| trimmed.starts_with(kw) && self.prev.starts_with(kw))
+            && ["in ", "out ", "var "]
+                .iter()
+                .any(|kw| trimmed.starts_with(kw) && self.prev.starts_with(kw))
             && self.lines.last().is_some_and(|l| l.is_empty())
         {
             self.lines.pop();
         }
 
         let closers = leading_closers(code);
-        self.stack.truncate(self.stack.len().saturating_sub(closers));
+        self.stack
+            .truncate(self.stack.len().saturating_sub(closers));
         // An `else` after a line ending in `}` is the statement form (`else if`
         // on its own line); only the expression form continues a line.
         let statement_else = self.prev.ends_with('}');
@@ -231,7 +261,9 @@ impl Formatter<'_> {
 
 /// How many of the line's first characters are closing brackets.
 fn leading_closers(code: &[char]) -> usize {
-    code.iter().take_while(|c| matches!(c, '}' | ')' | ']')).count()
+    code.iter()
+        .take_while(|c| matches!(c, '}' | ')' | ']'))
+        .count()
 }
 
 /// Push and pop the code's brackets on `stack`, skipping its first `skip`
@@ -294,7 +326,10 @@ fn normalize_spacing(chars: &[char], class: &[Class]) -> String {
             while j < chars.len() && matches!(chars[j], ' ' | '\t') && class[j] == Class::Code {
                 j += 1;
             }
-            if chars.get(j).is_some_and(|next| !matches!(next, ')' | ']' | '}')) {
+            if chars
+                .get(j)
+                .is_some_and(|next| !matches!(next, ')' | ']' | '}'))
+            {
                 out.push(' ');
             }
             i = j;
@@ -313,25 +348,37 @@ fn normalize_spacing(chars: &[char], class: &[Class]) -> String {
 
 /// `line` starts with `word` followed by whitespace or nothing.
 fn starts_with_word(line: &str, word: &str) -> bool {
-    line.strip_prefix(word).is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
+    line.strip_prefix(word)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
 }
 
 /// A statement-form `else` that can join the `}` above it: `else`, `else {`,
 /// but not `else if`.
 fn is_plain_else(line: &str) -> bool {
-    let Some(rest) = line.strip_prefix("else") else { return false };
+    let Some(rest) = line.strip_prefix("else") else {
+        return false;
+    };
     if !(rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace() || c == '{')) {
         return false;
     }
     let after = rest.trim_start();
-    !(after.strip_prefix("if").is_some_and(|r| !r.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')) && after.len() < rest.len())
+    !(after
+        .strip_prefix("if")
+        .is_some_and(|r| !r.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+        && after.len() < rest.len())
 }
 
 /// The line starts with a binary operator followed by whitespace or `(`: it
 /// continues the expression on the line above.
 fn starts_with_binary_op(line: &str) -> bool {
-    const OPS: [&str; 21] = ["&&", "||", "^^", "==", "!=", "<=", ">=", "<<", ">>", "**", "..", "&", "|", "^", "+", "-", "*", "/", "%", "<", ">"];
-    OPS.iter().any(|op| line.strip_prefix(op).is_some_and(|rest| rest.starts_with(|c: char| c.is_whitespace() || c == '(')))
+    const OPS: [&str; 21] = [
+        "&&", "||", "^^", "==", "!=", "<=", ">=", "<<", ">>", "**", "..", "&", "|", "^", "+", "-",
+        "*", "/", "%", "<", ">",
+    ];
+    OPS.iter().any(|op| {
+        line.strip_prefix(op)
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_whitespace() || c == '('))
+    })
 }
 
 #[cfg(test)]

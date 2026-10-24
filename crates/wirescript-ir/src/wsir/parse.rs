@@ -14,8 +14,8 @@ use crate::intern::{Sym, intern, resolve, sym};
 use crate::ir::module_tree::{ModuleTree, nest_bodies};
 use crate::ir::port_registry::WirePort;
 use crate::ir::{
-    GateIO, LayoutMode, Literal, Module, Node, NodeId, NodeKind, PortRef, PortSpec, Program, ProgramSettings,
-    ROOT_SCOPE_ID, ScopeInfo, SourceComment, SourceMap, StyleValue, Type, Wire,
+    GateIO, LayoutMode, Literal, Module, Node, NodeId, NodeKind, PortRef, PortSpec, Program,
+    ProgramSettings, ROOT_SCOPE_ID, ScopeInfo, SourceComment, SourceMap, StyleValue, Type, Wire,
 };
 
 /// A parse or resolution error: where, what was found, what was expected.
@@ -31,7 +31,11 @@ pub struct ParseError {
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}:{}: {} (found {})", self.file, self.line, self.col, self.message, self.found)
+        write!(
+            f,
+            "{}:{}:{}: {} (found {})",
+            self.file, self.line, self.col, self.message, self.found
+        )
     }
 }
 
@@ -179,7 +183,18 @@ struct Parser<'a> {
 
 type R<T> = Result<T, ParseError>;
 
-const NODE_META: &[&str] = &["id", "scope", "chain", "chip", "label", "color", "material", "layout_after", "kind", "note"];
+const NODE_META: &[&str] = &[
+    "id",
+    "scope",
+    "chain",
+    "chip",
+    "label",
+    "color",
+    "material",
+    "layout_after",
+    "kind",
+    "note",
+];
 
 impl<'a> Parser<'a> {
     // ---------- token helpers ----------
@@ -194,7 +209,10 @@ impl<'a> Parser<'a> {
 
     fn at(&self) -> At {
         let t = &self.toks[self.pos];
-        At { line: t.line, col: t.col }
+        At {
+            line: t.line,
+            col: t.col,
+        }
     }
 
     fn bump(&mut self) -> Tok<'a> {
@@ -217,7 +235,13 @@ impl<'a> Parser<'a> {
     }
 
     fn err_at(&self, at: At, found: impl Into<String>, message: impl Into<String>) -> ParseError {
-        ParseError { file: self.file.to_string(), line: at.line, col: at.col, found: found.into(), message: message.into() }
+        ParseError {
+            file: self.file.to_string(),
+            line: at.line,
+            col: at.col,
+            found: found.into(),
+            message: message.into(),
+        }
     }
 
     fn is_punct(&self, c: u8) -> bool {
@@ -250,7 +274,11 @@ impl<'a> Parser<'a> {
     }
 
     fn expect_punct(&mut self, c: u8) -> R<()> {
-        if self.eat_punct(c) { Ok(()) } else { Err(self.err_here(format!("`{}`", c as char))) }
+        if self.eat_punct(c) {
+            Ok(())
+        } else {
+            Err(self.err_here(format!("`{}`", c as char)))
+        }
     }
 
     fn is_ident(&self, word: &str) -> bool {
@@ -376,7 +404,9 @@ impl<'a> Parser<'a> {
                     Tok::Ident(w) => defaults::LAYOUT_MODES.iter().find(|(s, _)| s == w),
                     _ => None,
                 };
-                let Some((_, mode)) = found else { return Err(self.err_here("`dag`, `code` or `cube`")) };
+                let Some((_, mode)) = found else {
+                    return Err(self.err_here("`dag`, `code` or `cube`"));
+                };
                 self.dirs.layout = *mode;
                 self.bump();
             }
@@ -432,7 +462,13 @@ impl<'a> Parser<'a> {
         let col = self.expect_uint("a column number")?;
         self.expect_punct(b',')?;
         let text = self.expect_str("the comment text")?;
-        let mut c = SourceComment { line, col, text, own_line: false, in_array: false };
+        let mut c = SourceComment {
+            line,
+            col,
+            text,
+            own_line: false,
+            in_array: false,
+        };
         while self.eat_punct(b',') {
             match self.expect_ident("`own_line` or `in_array`")? {
                 "own_line" => c.own_line = true,
@@ -484,7 +520,11 @@ impl<'a> Parser<'a> {
                 Tok::MetaKw(kw @ ("inputs" | "outputs")) => {
                     self.bump();
                     let list = self.id_list()?;
-                    let slot = if kw == "inputs" { &mut self.mods[mi].inputs } else { &mut self.mods[mi].outputs };
+                    let slot = if kw == "inputs" {
+                        &mut self.mods[mi].inputs
+                    } else {
+                        &mut self.mods[mi].outputs
+                    };
                     *slot = Some(list);
                 }
                 Tok::MetaKw("wire_order") => {
@@ -495,7 +535,11 @@ impl<'a> Parser<'a> {
                     self.mods[mi].wire_order = Some((list, at));
                 }
                 Tok::Eof => return Err(self.err_here("`}` to close the module")),
-                _ => return Err(self.err_here("a node (`%name = ...` or `out %name`), module metadata, or `}`")),
+                _ => {
+                    return Err(self.err_here(
+                        "a node (`%name = ...` or `out %name`), module metadata, or `}`",
+                    ));
+                }
             }
         }
     }
@@ -528,14 +572,23 @@ impl<'a> Parser<'a> {
         self.bump();
         self.expect_punct(b'(')?;
         let word = self.expect_ident("a scope kind")?;
-        let Some(&(_, named, make)) = defaults::SCOPE_KINDS.iter().find(|(w, _, _)| *w == word) else {
+        let Some(&(_, named, make)) = defaults::SCOPE_KINDS.iter().find(|(w, _, _)| *w == word)
+        else {
             self.pos -= 1;
             return Err(self.err_here(
                 "a scope kind: ModuleRoot, ChipBody, HandlerBody, IfGroup, IfCond, IfThen, IfElse or Block",
             ));
         };
-        let kind = make(if named { self.expect_str("the scope's name")? } else { String::new() });
-        let mut info = ScopeInfo { kind, source_range: SourceRange::default(), parent: None };
+        let kind = make(if named {
+            self.expect_str("the scope's name")?
+        } else {
+            String::new()
+        });
+        let mut info = ScopeInfo {
+            kind,
+            source_range: SourceRange::default(),
+            parent: None,
+        };
         while self.eat_punct(b',') {
             if self.eat_ident("parent") {
                 self.expect_punct(b':')?;
@@ -559,7 +612,14 @@ impl<'a> Parser<'a> {
 
     // ---------- nodes ----------
 
-    fn new_node(&mut self, mi: usize, name: &'a str, at: At, form: Form, class: &'static str) -> usize {
+    fn new_node(
+        &mut self,
+        mi: usize,
+        name: &'a str,
+        at: At,
+        form: Form,
+        class: &'static str,
+    ) -> usize {
         let idx = self.nodes.len();
         self.nodes.push(PNode {
             name,
@@ -661,7 +721,9 @@ impl<'a> Parser<'a> {
         if self.eat_punct(b'=') {
             let at = self.at();
             let op = self.operand()?;
-            self.nodes[idx].operands.push((WirePort::RerInput.as_str(), op, at));
+            self.nodes[idx]
+                .operands
+                .push((WirePort::RerInput.as_str(), op, at));
         }
         self.tail(idx)
     }
@@ -695,7 +757,11 @@ impl<'a> Parser<'a> {
             },
             _ => false,
         };
-        if starts_type { Ok(Some(self.ty()?)) } else { Ok(None) }
+        if starts_type {
+            Ok(Some(self.ty()?))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Whether the `{` under the cursor opens attributes rather than a chip
@@ -739,7 +805,11 @@ impl<'a> Parser<'a> {
                 return Err(self.err_here("a value `%name`"));
             }
         };
-        let port = if self.eat_punct(b'.') { Some(self.port_name()?) } else { None };
+        let port = if self.eat_punct(b'.') {
+            Some(self.port_name()?)
+        } else {
+            None
+        };
         Ok(PRef { name, port, at })
     }
 
@@ -770,7 +840,9 @@ impl<'a> Parser<'a> {
                 }
             };
             let val = if p.eat_punct(b'=') {
-                let nodes = !quoted && defaults::annotation_by_key(&key).is_some_and(|(_, kind)| kind == AnnValue::Nodes);
+                let nodes = !quoted
+                    && defaults::annotation_by_key(&key)
+                        .is_some_and(|(_, kind)| kind == AnnValue::Nodes);
                 match p.peek().clone() {
                     _ if nodes => p.node_refs()?,
                     Tok::Value(_) => PAttrVal::Ref(p.port_ref()?),
@@ -783,7 +855,12 @@ impl<'a> Parser<'a> {
             } else {
                 PAttrVal::Flag
             };
-            Ok(PAttr { key, quoted, val, at })
+            Ok(PAttr {
+                key,
+                quoted,
+                val,
+                at,
+            })
         })?;
         self.nodes[idx].attrs.extend(attrs);
         Ok(())
@@ -869,9 +946,11 @@ impl<'a> Parser<'a> {
                 }
                 "kind" => {
                     let word = self.expect_ident("a node kind")?;
-                    let Some(&(_, kind)) = defaults::NODE_KINDS.iter().find(|(w, _)| *w == word) else {
+                    let Some(&(_, kind)) = defaults::NODE_KINDS.iter().find(|(w, _)| *w == word)
+                    else {
                         self.pos -= 1;
-                        return Err(self.err_here("a node kind: gate, event, chip, input, output or coerce"));
+                        return Err(self
+                            .err_here("a node kind: gate, event, chip, input, output or coerce"));
                     };
                     self.nodes[idx].kind_meta = Some(kind);
                 }
@@ -889,20 +968,27 @@ impl<'a> Parser<'a> {
         self.bump();
         self.expect_punct(b'(')?;
         // `loc(line:col ...)` is in the entry file, `source_filename`.
-        let file = match self.peek().clone() {
-            Tok::Str(s) => {
-                self.bump();
-                self.expect_punct(b':')?;
-                self.file_arc(&s)
-            }
-            Tok::Int(_) => match self.dirs.source_file.clone() {
-                Some(f) => self.file_arc(&f),
-                None => return Err(self.err_here("a quoted file name; `loc(line:col)` needs a `source_filename` directive")),
-            },
-            _ => return Err(self.err_here("a quoted file name or `line:col`")),
-        };
+        let file =
+            match self.peek().clone() {
+                Tok::Str(s) => {
+                    self.bump();
+                    self.expect_punct(b':')?;
+                    self.file_arc(&s)
+                }
+                Tok::Int(_) => match self.dirs.source_file.clone() {
+                    Some(f) => self.file_arc(&f),
+                    None => return Err(self.err_here(
+                        "a quoted file name; `loc(line:col)` needs a `source_filename` directive",
+                    )),
+                },
+                _ => return Err(self.err_here("a quoted file name or `line:col`")),
+            };
         let start = self.pos_value()?;
-        let end = if self.eat_ident("to") { self.pos_value()? } else { start };
+        let end = if self.eat_ident("to") {
+            self.pos_value()?
+        } else {
+            start
+        };
         self.expect_punct(b')')?;
         Ok(SourceRange { file, start, end })
     }
@@ -921,7 +1007,11 @@ impl<'a> Parser<'a> {
         let line = self.expect_uint("a line number")?;
         self.expect_punct(b':')?;
         let col = self.expect_uint("a column number")?;
-        let offset = if self.eat_punct(b'+') { self.expect_usize("a byte offset")? } else { 0 };
+        let offset = if self.eat_punct(b'+') {
+            self.expect_usize("a byte offset")?
+        } else {
+            0
+        };
         Ok(Pos { offset, line, col })
     }
 
@@ -1036,7 +1126,10 @@ impl<'a> Parser<'a> {
                         self.expect_punct(b',')?;
                         let asset_name = self.expect_str("the asset name")?;
                         self.expect_punct(b')')?;
-                        Ok(Literal::Asset { asset_type, asset_name })
+                        Ok(Literal::Asset {
+                            asset_type,
+                            asset_name,
+                        })
                     }
                     word::PREFAB | word::NESTED_PREFAB | word::PREFAB_BYTES => {
                         self.expect_punct(b'(')?;
@@ -1047,7 +1140,9 @@ impl<'a> Parser<'a> {
                             word::PREFAB => Literal::PrefabRef { path: s },
                             word::NESTED_PREFAB => Literal::NestedPrefab { source: s },
                             _ => Literal::PrefabBytes(
-                                super::base64::decode(&s).map_err(|e| self.err_at(at, "the prefab bytes", e))?.into(),
+                                super::base64::decode(&s)
+                                    .map_err(|e| self.err_at(at, "the prefab bytes", e))?
+                                    .into(),
                             ),
                         })
                     }
@@ -1119,12 +1214,16 @@ impl<'a> Parser<'a> {
         Ok(match word {
             "map" => {
                 let a = self.ty_args()?;
-                let [k, v]: [Type; 2] = a.try_into().map_err(|_| self.err_here("`map<K, V>` with two types"))?;
+                let [k, v]: [Type; 2] = a
+                    .try_into()
+                    .map_err(|_| self.err_here("`map<K, V>` with two types"))?;
                 Type::Map(Box::new(k), Box::new(v))
             }
             "array" => {
                 let a = self.ty_args()?;
-                let [t]: [Type; 1] = a.try_into().map_err(|_| self.err_here("`array<T>` with one type"))?;
+                let [t]: [Type; 1] = a
+                    .try_into()
+                    .map_err(|_| self.err_here("`array<T>` with one type"))?;
                 Type::Array(Box::new(t))
             }
             "union" => Type::Union(self.ty_args()?),
@@ -1165,7 +1264,11 @@ impl<'a> Parser<'a> {
         let mut by_name: HashMap<&'a str, usize> = HashMap::default();
         for (i, n) in self.nodes.iter().enumerate() {
             if by_name.insert(n.name, i).is_some() {
-                return Err(self.err_at(n.at, format!("`%{}`", n.name), "a value of this name is already defined"));
+                return Err(self.err_at(
+                    n.at,
+                    format!("`%{}`", n.name),
+                    "a value of this name is already defined",
+                ));
             }
         }
 
@@ -1175,19 +1278,24 @@ impl<'a> Parser<'a> {
         let mut seen: HashMap<NodeId, usize> = HashMap::default();
         for (i, n) in self.nodes.iter().enumerate() {
             let id = if n.name.bytes().all(|b| b.is_ascii_digit()) {
-                n.name
-                    .parse::<u32>()
-                    .map_err(|_| self.err_at(n.at, format!("`%{}`", n.name), "node id out of range"))?
+                n.name.parse::<u32>().map_err(|_| {
+                    self.err_at(n.at, format!("`%{}`", n.name), "node id out of range")
+                })?
             } else if let Some(id) = n.id_meta {
                 id
             } else {
-                prev.checked_add(1).ok_or_else(|| self.err_at(n.at, format!("`%{}`", n.name), "node id out of range"))?
+                prev.checked_add(1).ok_or_else(|| {
+                    self.err_at(n.at, format!("`%{}`", n.name), "node id out of range")
+                })?
             };
             if let Some(&other) = seen.get(&NodeId(id)) {
                 return Err(self.err_at(
                     n.at,
                     format!("`%{}`", n.name),
-                    format!("node id {id} is already taken by `%{}`", self.nodes[other].name),
+                    format!(
+                        "node id {id} is already taken by `%{}`",
+                        self.nodes[other].name
+                    ),
                 ));
             }
             seen.insert(NodeId(id), i);
@@ -1218,11 +1326,19 @@ impl<'a> Parser<'a> {
             let mut port_label_given = false;
             let mut nolabel = false;
             for a in &n.attrs {
-                let ann = if a.quoted { None } else { defaults::annotation_by_key(&a.key) };
+                let ann = if a.quoted {
+                    None
+                } else {
+                    defaults::annotation_by_key(&a.key)
+                };
                 let bad = |what: &str| self.err_at(a.at, format!("`{}`", a.key), what.to_string());
                 match (ann, &a.val) {
-                    (None, PAttrVal::Flag) if !a.quoted && a.key == defaults::NO_LABEL => nolabel = true,
-                    (None, PAttrVal::Flag) => return Err(bad("expected `=` and a value after this attribute key")),
+                    (None, PAttrVal::Flag) if !a.quoted && a.key == defaults::NO_LABEL => {
+                        nolabel = true
+                    }
+                    (None, PAttrVal::Flag) => {
+                        return Err(bad("expected `=` and a value after this attribute key"));
+                    }
                     (None, PAttrVal::Lit(l)) => {
                         let key = intern(&a.key);
                         if key == *sym::PORT_LABEL {
@@ -1231,32 +1347,59 @@ impl<'a> Parser<'a> {
                         props.insert(key, l.clone());
                     }
                     (None, PAttrVal::Word(w)) => {
-                        return Err(self.err_at(a.at, format!("`{w}`"), "expected a literal value; quote a string"));
+                        return Err(self.err_at(
+                            a.at,
+                            format!("`{w}`"),
+                            "expected a literal value; quote a string",
+                        ));
                     }
                     (None, PAttrVal::Ref(_) | PAttrVal::Refs(_) | PAttrVal::RefMap(_)) => {
-                        return Err(bad("only `handle_target` and `handle_targets` take values `%name`; others take a literal"));
+                        return Err(bad(
+                            "only `handle_target` and `handle_targets` take values `%name`; others take a literal",
+                        ));
                     }
                     (Some((prop, kind)), val) => {
                         let lit = match (kind, val) {
                             (AnnValue::Flag, PAttrVal::Flag) => Literal::Bool(true),
-                            (AnnValue::Str, PAttrVal::Lit(Literal::String(s))) => Literal::String(s.clone()),
+                            (AnnValue::Str, PAttrVal::Lit(Literal::String(s))) => {
+                                Literal::String(s.clone())
+                            }
                             (AnnValue::Word, PAttrVal::Word(w)) => Literal::String(w.to_string()),
-                            (AnnValue::Word, PAttrVal::Lit(Literal::String(s))) => Literal::String(s.clone()),
-                            (AnnValue::Node, PAttrVal::Ref(r)) => Literal::Int(i64::from(ids[lookup(r.name, r.at)?].0)),
+                            (AnnValue::Word, PAttrVal::Lit(Literal::String(s))) => {
+                                Literal::String(s.clone())
+                            }
+                            (AnnValue::Node, PAttrVal::Ref(r)) => {
+                                Literal::Int(i64::from(ids[lookup(r.name, r.at)?].0))
+                            }
                             (AnnValue::Nodes, PAttrVal::Refs(rs)) => Literal::Array(
-                                rs.iter().map(|r| Ok(Literal::Int(i64::from(ids[lookup(r.name, r.at)?].0)))).collect::<R<_>>()?,
+                                rs.iter()
+                                    .map(|r| {
+                                        Ok(Literal::Int(i64::from(ids[lookup(r.name, r.at)?].0)))
+                                    })
+                                    .collect::<R<_>>()?,
                             ),
                             (AnnValue::Nodes, PAttrVal::RefMap(es)) => Literal::Map(
                                 es.iter()
-                                    .map(|(k, r)| Ok((k.clone(), Literal::Int(i64::from(ids[lookup(r.name, r.at)?].0)))))
+                                    .map(|(k, r)| {
+                                        Ok((
+                                            k.clone(),
+                                            Literal::Int(i64::from(ids[lookup(r.name, r.at)?].0)),
+                                        ))
+                                    })
                                     .collect::<R<_>>()?,
                             ),
                             (_, PAttrVal::Lit(l)) => l.clone(),
-                            (AnnValue::Flag, _) => return Err(bad("a flag; write it with no value")),
+                            (AnnValue::Flag, _) => {
+                                return Err(bad("a flag; write it with no value"));
+                            }
                             (AnnValue::Str, _) => return Err(bad("expected a string value")),
-                            (AnnValue::Word, _) => return Err(bad("expected `left`, `right`, `top` or `bottom`")),
+                            (AnnValue::Word, _) => {
+                                return Err(bad("expected `left`, `right`, `top` or `bottom`"));
+                            }
                             (AnnValue::Node, _) => return Err(bad("expected a value `%name`")),
-                            (AnnValue::Nodes, _) => return Err(bad("expected `[%a, ...]` or `map[k => %a, ...]`")),
+                            (AnnValue::Nodes, _) => {
+                                return Err(bad("expected `[%a, ...]` or `map[k => %a, ...]`"));
+                            }
                         };
                         props.insert(intern(prop), lit);
                     }
@@ -1278,7 +1421,9 @@ impl<'a> Parser<'a> {
             });
             let ports = match (&n.sig, n.form) {
                 (Some(s), _) => s.clone(),
-                (None, Form::In | Form::Out) => GateIO::pin(n.pin_type.clone().unwrap_or(Type::Any)),
+                (None, Form::In | Form::Out) => {
+                    GateIO::pin(n.pin_type.clone().unwrap_or(Type::Any))
+                }
                 (None, _) => defaults::default_ports(n.class, props.get(&*sym::VALUE)),
             };
             let chip_id = match &n.chip {
@@ -1314,10 +1459,13 @@ impl<'a> Parser<'a> {
             let mut round: Vec<usize> = pending.iter().copied().collect();
             round.sort_unstable();
             for i in round {
-                let src = self.nodes[i].operands.iter().find_map(|(_, op, _)| match op {
-                    POperand::Ref(r) => Some(r),
-                    POperand::Lit(_) => None,
-                });
+                let src = self.nodes[i]
+                    .operands
+                    .iter()
+                    .find_map(|(_, op, _)| match op {
+                        POperand::Ref(r) => Some(r),
+                        POperand::Lit(_) => None,
+                    });
                 let Some(r) = src else {
                     pending.remove(&i);
                     continue;
@@ -1343,14 +1491,23 @@ impl<'a> Parser<'a> {
             if n.sig.is_some() || matches!(n.form, Form::In | Form::Out) {
                 continue;
             }
-            if !built[i].ports.inputs.iter().any(|p| matches!(p.ty, Type::Any)) {
+            if !built[i]
+                .ports
+                .inputs
+                .iter()
+                .any(|p| matches!(p.ty, Type::Any))
+            {
                 continue;
             }
             let mut ports: Option<GateIO> = None;
             for (port, op, _) in &n.operands {
                 let POperand::Ref(r) = op else { continue };
-                let Some(&si) = by_name.get(r.name) else { continue };
-                let Some(t) = defaults::output_type(&built[si].ports, r.port) else { continue };
+                let Some(&si) = by_name.get(r.name) else {
+                    continue;
+                };
+                let Some(t) = defaults::output_type(&built[si].ports, r.port) else {
+                    continue;
+                };
                 let current = ports.get_or_insert_with(|| (*built[i].ports).clone());
                 defaults::infer_any_input(current, intern(port), t);
             }
@@ -1368,21 +1525,38 @@ impl<'a> Parser<'a> {
                 let si = lookup(r.name, r.at)?;
                 let source_port = self.output_port(&built[si], &self.nodes[si], r)?;
                 wires.push(Wire {
-                    source: PortRef { node_id: ids[si], port: source_port },
-                    target: PortRef { node_id: ids[i], port: target_port },
+                    source: PortRef {
+                        node_id: ids[si],
+                        port: source_port,
+                    },
+                    target: PortRef {
+                        node_id: ids[i],
+                        port: target_port,
+                    },
                 });
             }
             for r in &n.layout_after {
                 let src = id_of(r)?;
                 wires.push(Wire {
-                    source: PortRef { node_id: src, port: WirePort::Layout },
-                    target: PortRef { node_id: ids[i], port: WirePort::Layout },
+                    source: PortRef {
+                        node_id: src,
+                        port: WirePort::Layout,
+                    },
+                    target: PortRef {
+                        node_id: ids[i],
+                        port: WirePort::Layout,
+                    },
                 });
             }
         }
 
         // Which module stores each wire.
-        let module_of_id: HashMap<NodeId, usize> = self.nodes.iter().enumerate().map(|(i, n)| (ids[i], n.module)).collect();
+        let module_of_id: HashMap<NodeId, usize> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (ids[i], n.module))
+            .collect();
         let mut lists: Vec<Vec<usize>> = vec![Vec::new(); self.mods.len()];
         let mut claimed = vec![false; wires.len()];
         for (mi, m) in self.mods.iter().enumerate() {
@@ -1393,11 +1567,18 @@ impl<'a> Parser<'a> {
                         return Err(self.err_at(
                             *at,
                             format!("`{w}`"),
-                            format!("`!wire_order` names wire {w}, but the file has {} wires", wires.len()),
+                            format!(
+                                "`!wire_order` names wire {w}, but the file has {} wires",
+                                wires.len()
+                            ),
                         ));
                     }
                     if std::mem::replace(&mut claimed[w], true) {
-                        return Err(self.err_at(*at, format!("`{w}`"), "`!wire_order` lists this wire twice"));
+                        return Err(self.err_at(
+                            *at,
+                            format!("`{w}`"),
+                            "`!wire_order` lists this wire twice",
+                        ));
                     }
                     lists[mi].push(w);
                 }
@@ -1437,22 +1618,45 @@ impl<'a> Parser<'a> {
                 if let Some(r) = &self.nodes[ni].label {
                     let si = lookup(r.name, r.at)?;
                     let port = self.output_port(&built[si], &self.nodes[si], r)?;
-                    m.dynamic_labels.insert(ids[ni], PortRef { node_id: ids[si], port });
+                    m.dynamic_labels.insert(
+                        ids[ni],
+                        PortRef {
+                            node_id: ids[si],
+                            port,
+                        },
+                    );
                 }
                 if let Some(r) = &self.nodes[ni].color {
                     let si = lookup(r.name, r.at)?;
                     let port = self.output_port(&built[si], &self.nodes[si], r)?;
-                    m.dynamic_colors.insert(ids[ni], PortRef { node_id: ids[si], port });
+                    m.dynamic_colors.insert(
+                        ids[ni],
+                        PortRef {
+                            node_id: ids[si],
+                            port,
+                        },
+                    );
                 }
                 if let Some(r) = &self.nodes[ni].material {
                     let si = lookup(r.name, r.at)?;
                     let port = self.output_port(&built[si], &self.nodes[si], r)?;
-                    m.dynamic_materials.insert(ids[ni], PortRef { node_id: ids[si], port });
+                    m.dynamic_materials.insert(
+                        ids[ni],
+                        PortRef {
+                            node_id: ids[si],
+                            port,
+                        },
+                    );
                 }
             }
             m.wires = lists[mi].iter().map(|&w| wires[w]).collect();
             let ordered = |kind: NodeKind| -> Vec<NodeId> {
-                let mut v: Vec<NodeId> = pm.nodes.iter().filter(|&&ni| built[ni].kind == kind).map(|&ni| ids[ni]).collect();
+                let mut v: Vec<NodeId> = pm
+                    .nodes
+                    .iter()
+                    .filter(|&&ni| built[ni].kind == kind)
+                    .map(|&ni| ids[ni])
+                    .collect();
                 v.sort();
                 v
             };
@@ -1469,7 +1673,10 @@ impl<'a> Parser<'a> {
                 if let Some(r) = &dirs.label_from {
                     let si = lookup(r.name, r.at)?;
                     let port = self.output_port(&built[si], &self.nodes[si], r)?;
-                    m.root_dynamic_label = Some(PortRef { node_id: ids[si], port });
+                    m.root_dynamic_label = Some(PortRef {
+                        node_id: ids[si],
+                        port,
+                    });
                 }
                 let style = |s: &Option<PStyle<'a>>| -> R<Option<StyleValue>> {
                     Ok(match s {
@@ -1477,7 +1684,10 @@ impl<'a> Parser<'a> {
                         Some(PStyle::Wired(r)) => {
                             let si = lookup(r.name, r.at)?;
                             let port = self.output_port(&built[si], &self.nodes[si], r)?;
-                            Some(StyleValue::Wired(PortRef { node_id: ids[si], port }))
+                            Some(StyleValue::Wired(PortRef {
+                                node_id: ids[si],
+                                port,
+                            }))
                         }
                         None => None,
                     })
@@ -1490,7 +1700,11 @@ impl<'a> Parser<'a> {
         let bodies = (1..self.mods.len())
             .map(|mi| {
                 let chip = self.mods[mi].chip_node.expect("only the root has no chip");
-                (ids[chip], mi, self.tree.parent(mi).expect("only the root has no parent"))
+                (
+                    ids[chip],
+                    mi,
+                    self.tree.parent(mi).expect("only the root has no parent"),
+                )
             })
             .collect();
         let module = nest_bodies(modules, bodies);
@@ -1503,7 +1717,11 @@ impl<'a> Parser<'a> {
             no_fold: dirs.no_fold,
             module_doc: dirs.doc,
             source_map: dirs.source.map(|(file, line_indent)| {
-                Arc::new(SourceMap { file: Arc::from(file), line_indent, comments: dirs.comments })
+                Arc::new(SourceMap {
+                    file: Arc::from(file),
+                    line_indent,
+                    comments: dirs.comments,
+                })
             }),
         };
         Ok(Program { module, settings })
@@ -1539,7 +1757,13 @@ impl<'a> Parser<'a> {
     /// output when it has exactly one.
     fn output_port(&self, node: &Node, pn: &PNode<'a>, r: &PRef<'a>) -> R<WirePort> {
         let outs: Vec<&str> = node.ports.outputs.iter().map(|p| resolve(p.name)).collect();
-        let list = || if outs.is_empty() { "none".to_string() } else { outs.join(", ") };
+        let list = || {
+            if outs.is_empty() {
+                "none".to_string()
+            } else {
+                outs.join(", ")
+            }
+        };
         match r.port {
             Some(p) => match WirePort::try_from_name(p) {
                 Some(wp) if outs.contains(&p) => Ok(wp),
@@ -1555,7 +1779,11 @@ impl<'a> Parser<'a> {
                 )),
             },
             None if outs.len() == 1 => WirePort::try_from_name(outs[0]).ok_or_else(|| {
-                self.err_at(r.at, format!("`%{}`", r.name), format!("output port `{}` is not a known wire port", outs[0]))
+                self.err_at(
+                    r.at,
+                    format!("`%{}`", r.name),
+                    format!("output port `{}` is not a known wire port", outs[0]),
+                )
             }),
             None => Err(self.err_at(
                 r.at,

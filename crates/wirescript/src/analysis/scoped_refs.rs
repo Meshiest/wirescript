@@ -51,11 +51,11 @@
 //! See `docs/superpowers/plans/2026-08-12-scoped-rename-name-resolution.md`
 //! for the LSP/WASM wiring layered on top of this module.
 
-use crate::ast::*;
 use crate::ast::walk;
+use crate::ast::*;
 use crate::collections::{HashMap, HashSet};
 use crate::diagnostic::{Pos, SourceRange};
-use crate::ir::plane::{for_slots, plane_spec, ForSlot, LoopKind};
+use crate::ir::plane::{ForSlot, LoopKind, for_slots, plane_spec};
 use std::sync::OnceLock;
 
 #[cfg(test)]
@@ -270,7 +270,11 @@ fn name_prefix_span(name: &str, range: &SourceRange) -> SourceRange {
 pub(crate) fn builtin_type_names() -> &'static HashSet<&'static str> {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
     SET.get_or_init(|| {
-        crate::types::resolve::PRIMITIVES.iter().map(|(n, _)| *n).chain(["Map", "Ref", "Array"]).collect()
+        crate::types::resolve::PRIMITIVES
+            .iter()
+            .map(|(n, _)| *n)
+            .chain(["Map", "Ref", "Array"])
+            .collect()
     })
 }
 
@@ -294,7 +298,11 @@ pub(crate) fn build_scope_model(script: &Script) -> ScopeModel {
             _ => crate::scope::top::ReadAt::code(d.range()),
         })
         .collect();
-    let mut model = ScopeModel { top, top_reads, ..Default::default() };
+    let mut model = ScopeModel {
+        top,
+        top_reads,
+        ..Default::default()
+    };
     let mut walker = Walker { model: &mut model };
     walker.walk_script(script);
     widen_hoisted_out_bindings(script, &mut model);
@@ -403,12 +411,8 @@ fn collect_anon_chip_outs(
             Stmt::LetElse(l) => {
                 collect_anon_chip_outs(&l.else_block.stmts, Some(&l.else_block.range), out)
             }
-            Stmt::Handler(h) => {
-                collect_anon_chip_outs(&h.body.stmts, Some(&h.body.range), out)
-            }
-            Stmt::ChipDecl(c) => {
-                collect_anon_chip_outs(&c.body.stmts, Some(&c.body.range), out)
-            }
+            Stmt::Handler(h) => collect_anon_chip_outs(&h.body.stmts, Some(&h.body.range), out),
+            Stmt::ChipDecl(c) => collect_anon_chip_outs(&c.body.stmts, Some(&c.body.range), out),
             _ => {}
         }
     }
@@ -419,10 +423,7 @@ fn collect_anon_chip_outs(
 /// claim, shared with them so this third system agrees by construction. Every
 /// one of them is file-wide: `register_handler_outputs` runs from the top-level
 /// dispatch, with no frame pushed for the handler body.
-fn collect_hoisted_handler_outs(
-    block: &Block,
-    out: &mut Vec<(SourceRange, Option<SourceRange>)>,
-) {
+fn collect_hoisted_handler_outs(block: &Block, out: &mut Vec<(SourceRange, Option<SourceRange>)>) {
     for o in crate::ast::handler_port_sites(block) {
         out.push((o.range.clone(), None));
     }
@@ -532,8 +533,12 @@ impl<'a> Walker<'a> {
     /// only their nested `TypeExpr`s do — so they just recurse.
     fn walk_type_expr(&mut self, t: &TypeExpr) {
         match t {
-            TypeExpr::Name { name, range } => self.push_type_use(name.clone(), range.clone(), false),
-            TypeExpr::Ref { inner, .. } | TypeExpr::Array { inner, .. } => self.walk_type_expr(inner),
+            TypeExpr::Name { name, range } => {
+                self.push_type_use(name.clone(), range.clone(), false)
+            }
+            TypeExpr::Ref { inner, .. } | TypeExpr::Array { inner, .. } => {
+                self.walk_type_expr(inner)
+            }
             TypeExpr::Tuple { fields, .. } => {
                 for f in fields {
                     self.walk_type_expr(f);
@@ -547,7 +552,9 @@ impl<'a> Walker<'a> {
             TypeExpr::Record { fields, .. } => {
                 for f in fields {
                     // The field's own name is never a rename target.
-                    self.model.field_name_spans.push(name_prefix_span(&f.name, &f.range));
+                    self.model
+                        .field_name_spans
+                        .push(name_prefix_span(&f.name, &f.range));
                     self.walk_type_expr(&f.typ);
                 }
             }
@@ -561,7 +568,14 @@ impl<'a> Walker<'a> {
     }
 
     fn walk_script(&mut self, script: &Script) {
-        for e in [&script.module_label, &script.module_color, &script.module_material].into_iter().flatten() {
+        for e in [
+            &script.module_label,
+            &script.module_color,
+            &script.module_material,
+        ]
+        .into_iter()
+        .flatten()
+        {
             self.walk_expr(e);
         }
         for d in &script.decls {
@@ -586,26 +600,53 @@ impl<'a> Walker<'a> {
                 );
             }
             TopDecl::Var(v) => {
-                self.push(v.name.clone(), RefNs::Value, v.range.clone(), None, "var", false, true);
+                self.push(
+                    v.name.clone(),
+                    RefNs::Value,
+                    v.range.clone(),
+                    None,
+                    "var",
+                    false,
+                    true,
+                );
                 if let Some(t) = &v.typ {
                     self.walk_type_expr(t);
                 }
                 if let Some(e) = &v.init {
                     self.walk_expr(e);
                 }
-                for e in [&v.label_expr, &v.color_expr, &v.material_expr].into_iter().flatten() {
+                for e in [&v.label_expr, &v.color_expr, &v.material_expr]
+                    .into_iter()
+                    .flatten()
+                {
                     self.walk_expr(e);
                 }
             }
             TopDecl::Array(a) => {
-                self.push(a.name.clone(), RefNs::Value, a.range.clone(), None, "array", false, true);
+                self.push(
+                    a.name.clone(),
+                    RefNs::Value,
+                    a.range.clone(),
+                    None,
+                    "array",
+                    false,
+                    true,
+                );
                 self.walk_type_expr(&a.element_type);
                 for el in &a.init {
                     self.walk_expr(el.expr());
                 }
             }
             TopDecl::Map(m) => {
-                self.push(m.name.clone(), RefNs::Value, m.range.clone(), None, "map", false, true);
+                self.push(
+                    m.name.clone(),
+                    RefNs::Value,
+                    m.range.clone(),
+                    None,
+                    "map",
+                    false,
+                    true,
+                );
                 self.walk_type_expr(&m.key_type);
                 self.walk_type_expr(&m.value_type);
                 if let Some(e) = &m.init {
@@ -613,7 +654,15 @@ impl<'a> Walker<'a> {
                 }
             }
             TopDecl::Buffer(b) => {
-                self.push(b.name.clone(), RefNs::Value, b.range.clone(), None, "buffer", false, true);
+                self.push(
+                    b.name.clone(),
+                    RefNs::Value,
+                    b.range.clone(),
+                    None,
+                    "buffer",
+                    false,
+                    true,
+                );
                 if let Some(t) = &b.typ {
                     self.walk_type_expr(t);
                 }
@@ -623,21 +672,45 @@ impl<'a> Walker<'a> {
             TopDecl::Chip(c) => self.register_chip(c, None, true),
             TopDecl::AnonChip(ac) => self.walk_anon_chip(ac, None, None),
             TopDecl::Event(e) => {
-                self.push(e.name.clone(), RefNs::Value, e.range.clone(), None, "event", true, true);
+                self.push(
+                    e.name.clone(),
+                    RefNs::Value,
+                    e.range.clone(),
+                    None,
+                    "event",
+                    true,
+                    true,
+                );
                 match &e.captured {
                     Some(h) => self.register_handler(h),
                     None => self.walk_expr(&e.source),
                 }
             }
             TopDecl::In(d) => {
-                self.push(d.name.clone(), RefNs::Value, d.range.clone(), None, "in", false, true);
+                self.push(
+                    d.name.clone(),
+                    RefNs::Value,
+                    d.range.clone(),
+                    None,
+                    "in",
+                    false,
+                    true,
+                );
                 self.walk_type_expr(&d.typ);
                 if let Some(e) = &d.label_expr {
                     self.walk_expr(e);
                 }
             }
             TopDecl::Out(o) => {
-                self.push(o.name.clone(), RefNs::Value, o.range.clone(), None, "out", false, true);
+                self.push(
+                    o.name.clone(),
+                    RefNs::Value,
+                    o.range.clone(),
+                    None,
+                    "out",
+                    false,
+                    true,
+                );
                 if let Some(t) = &o.typ {
                     self.walk_type_expr(t);
                 }
@@ -702,15 +775,39 @@ impl<'a> Walker<'a> {
         };
         for b in bindings {
             let local = b.alias.clone().unwrap_or_else(|| b.name.clone());
-            self.push(local.clone(), RefNs::Value, b.range.clone(), None, "import", false, false);
+            self.push(
+                local.clone(),
+                RefNs::Value,
+                b.range.clone(),
+                None,
+                "import",
+                false,
+                false,
+            );
             self.mark_last_import_export(b.name.clone());
-            self.push(local, RefNs::Type, b.range.clone(), None, "import", false, false);
+            self.push(
+                local,
+                RefNs::Type,
+                b.range.clone(),
+                None,
+                "import",
+                false,
+                false,
+            );
             self.mark_last_import_export(b.name.clone());
         }
     }
 
     fn register_fn(&mut self, f: &FnDecl) {
-        self.push(f.name.clone(), RefNs::Value, f.range.clone(), None, "fn", true, true);
+        self.push(
+            f.name.clone(),
+            RefNs::Value,
+            f.range.clone(),
+            None,
+            "fn",
+            true,
+            true,
+        );
         let scope = f.body.range().clone();
         for p in &f.params {
             self.register_param(p, scope.clone());
@@ -729,7 +826,15 @@ impl<'a> Walker<'a> {
     /// which precede the body in source order.
     fn register_chip(&mut self, c: &ChipDecl, scope: Option<SourceRange>, importable: bool) {
         let kind = c.kind_label();
-        self.push(c.name.clone(), RefNs::Value, c.range.clone(), scope, kind, importable, true);
+        self.push(
+            c.name.clone(),
+            RefNs::Value,
+            c.range.clone(),
+            scope,
+            kind,
+            importable,
+            true,
+        );
         for tp in &c.type_params {
             self.register_type_param(tp, c.range.clone());
         }
@@ -740,7 +845,10 @@ impl<'a> Walker<'a> {
         for o in &c.outputs {
             self.walk_type_expr(&o.typ);
         }
-        for e in [&c.label_expr, &c.color_expr, &c.material_expr].into_iter().flatten() {
+        for e in [&c.label_expr, &c.color_expr, &c.material_expr]
+            .into_iter()
+            .flatten()
+        {
             self.walk_expr(e);
         }
         self.walk_block(&c.body);
@@ -753,7 +861,15 @@ impl<'a> Walker<'a> {
     fn register_type_alias(&mut self, t: &TypeAliasDecl) {
         // `TypeAliasDecl.range` spans the whole `type X = …` decl (no
         // name-only span) -> coarse.
-        self.push(t.name.clone(), RefNs::Type, t.range.clone(), None, "type", true, true);
+        self.push(
+            t.name.clone(),
+            RefNs::Type,
+            t.range.clone(),
+            None,
+            "type",
+            true,
+            true,
+        );
         for tp in &t.type_params {
             self.register_type_param(tp, t.range.clone());
         }
@@ -767,7 +883,15 @@ impl<'a> Walker<'a> {
     /// reference (e.g. `Numeric`), not a binding, so it's walked as a use,
     /// not registered.
     fn register_type_param(&mut self, tp: &TypeParam, scope: SourceRange) {
-        self.push(tp.name.clone(), RefNs::Type, tp.range.clone(), Some(scope), "typeparam", false, true);
+        self.push(
+            tp.name.clone(),
+            RefNs::Type,
+            tp.range.clone(),
+            Some(scope),
+            "typeparam",
+            false,
+            true,
+        );
         if let Some(bound) = &tp.bound {
             self.walk_type_expr(bound);
         }
@@ -783,7 +907,15 @@ impl<'a> Walker<'a> {
         self.walk_type_expr(&p.typ);
         match &p.pattern {
             // Plain param: `p.range` is the whole param span -> coarse.
-            None => self.push(p.name.clone(), RefNs::Value, p.range.clone(), Some(scope), "param", false, true),
+            None => self.push(
+                p.name.clone(),
+                RefNs::Value,
+                p.range.clone(),
+                Some(scope),
+                "param",
+                false,
+                true,
+            ),
             Some(ParamPattern::Record { fields, rest }) => {
                 for f in fields {
                     match f {
@@ -793,28 +925,68 @@ impl<'a> Walker<'a> {
                         // `{ x }` is shorthand: rename expands to `{ x: new }`.
                         RecordDestructField::Named { name, alias, range } => {
                             let bound = alias.clone().unwrap_or_else(|| name.clone());
-                            self.push(bound, RefNs::Value, range.clone(), Some(scope.clone()), "param", false, true);
+                            self.push(
+                                bound,
+                                RefNs::Value,
+                                range.clone(),
+                                Some(scope.clone()),
+                                "param",
+                                false,
+                                true,
+                            );
                             self.mark_last_shorthand(alias.is_none());
                         }
                         // `...rest` spans the `...` too -> coarse, not shorthand.
                         RecordDestructField::Rest { name, range } => {
-                            self.push(name.clone(), RefNs::Value, range.clone(), Some(scope.clone()), "param", false, true);
+                            self.push(
+                                name.clone(),
+                                RefNs::Value,
+                                range.clone(),
+                                Some(scope.clone()),
+                                "param",
+                                false,
+                                true,
+                            );
                         }
                     }
                 }
                 // The pattern-level `...rest` binder has no name span of its
                 // own here, so it borrows the whole-param range -> coarse.
                 if let Some(r) = rest {
-                    self.push(r.clone(), RefNs::Value, p.range.clone(), Some(scope), "param", false, true);
+                    self.push(
+                        r.clone(),
+                        RefNs::Value,
+                        p.range.clone(),
+                        Some(scope),
+                        "param",
+                        false,
+                        true,
+                    );
                 }
             }
             // Tuple param names all share the one whole-param range -> coarse.
             Some(ParamPattern::Tuple { names, rest }) => {
                 for n in names {
-                    self.push(n.clone(), RefNs::Value, p.range.clone(), Some(scope.clone()), "param", false, true);
+                    self.push(
+                        n.clone(),
+                        RefNs::Value,
+                        p.range.clone(),
+                        Some(scope.clone()),
+                        "param",
+                        false,
+                        true,
+                    );
                 }
                 if let Some(r) = rest {
-                    self.push(r.clone(), RefNs::Value, p.range.clone(), Some(scope), "param", false, true);
+                    self.push(
+                        r.clone(),
+                        RefNs::Value,
+                        p.range.clone(),
+                        Some(scope),
+                        "param",
+                        false,
+                        true,
+                    );
                 }
             }
         }
@@ -834,7 +1006,9 @@ impl<'a> Walker<'a> {
             // `on go` / `on MyEvent` — the whole trigger IS the name token
             // (`parser.rs`'s `parse_trigger_atom` gives it a name-only span),
             // so this is a precise use, exactly like `Expr::Ident`.
-            Trigger::Ident { name, range } => self.push_use(name.clone(), range.clone(), false, false),
+            Trigger::Ident { name, range } => {
+                self.push_use(name.clone(), range.clone(), false, false)
+            }
             // `on split.Forward` — `range` spans `obj.field` exactly like
             // `Expr::FieldAccess` (`parse_trigger_atom` builds it the same
             // way: `name_tok.start` to `field_tok.end`), so `field_suffix_span`
@@ -846,7 +1020,9 @@ impl<'a> Walker<'a> {
             // `field_name_spans`, not a `Use`.
             Trigger::Field { obj, field, range } => {
                 self.push_use(obj.clone(), range.clone(), false, true);
-                self.model.field_name_spans.push(field_suffix_span(field, range));
+                self.model
+                    .field_name_spans
+                    .push(field_suffix_span(field, range));
             }
             Trigger::Not { inner, .. } => self.walk_trigger(inner),
             Trigger::Union { parts, .. } => {
@@ -868,7 +1044,15 @@ impl<'a> Walker<'a> {
         }
         for hp in &h.params {
             // `HandlerParam.range` is the capture name token -> precise.
-            self.push(hp.name.clone(), RefNs::Value, hp.range.clone(), Some(scope.clone()), "capture", false, false);
+            self.push(
+                hp.name.clone(),
+                RefNs::Value,
+                hp.range.clone(),
+                Some(scope.clone()),
+                "capture",
+                false,
+                false,
+            );
             // Optional explicit type annotation (`-> (a: int, b: float)`,
             // custom-event data outputs); `None` for events with fixed
             // built-in data types.
@@ -896,13 +1080,29 @@ impl<'a> Walker<'a> {
     /// `(field, local)` pair binds the LOCAL name, same coarse range.
     fn register_await(&mut self, a: &AwaitStmt, scope: Option<SourceRange>) {
         if let Some(name) = &a.binding {
-            self.push(name.clone(), RefNs::Value, a.range.clone(), scope.clone(), "await", false, true);
+            self.push(
+                name.clone(),
+                RefNs::Value,
+                a.range.clone(),
+                scope.clone(),
+                "await",
+                false,
+                true,
+            );
         }
         if let Some(fields) = &a.destructure {
             // Each destructured local borrows the whole `await` stmt range
             // (no per-name span), so several can share it -> coarse.
             for (_field, local) in fields {
-                self.push(local.clone(), RefNs::Value, a.range.clone(), scope.clone(), "await", false, true);
+                self.push(
+                    local.clone(),
+                    RefNs::Value,
+                    a.range.clone(),
+                    scope.clone(),
+                    "await",
+                    false,
+                    true,
+                );
             }
         }
         if let Some(e) = &a.value_expr {
@@ -920,22 +1120,52 @@ impl<'a> Walker<'a> {
         }
         match &l.binding {
             // `LetBinding::Ident.range` is the name token only -> precise.
-            LetBinding::Ident { name, range } => {
-                self.push(name.clone(), RefNs::Value, range.clone(), scope, "let", importable, false)
-            }
+            LetBinding::Ident { name, range } => self.push(
+                name.clone(),
+                RefNs::Value,
+                range.clone(),
+                scope,
+                "let",
+                importable,
+                false,
+            ),
             // Tuple/record shorthand names all share the one container range
             // -> coarse (this is exactly the tie the cursor dispatch breaks).
             LetBinding::Tuple { names, rest, range } => {
                 for n in names {
-                    self.push(n.clone(), RefNs::Value, range.clone(), scope.clone(), "let", importable, true);
+                    self.push(
+                        n.clone(),
+                        RefNs::Value,
+                        range.clone(),
+                        scope.clone(),
+                        "let",
+                        importable,
+                        true,
+                    );
                 }
                 if let Some(r) = rest {
-                    self.push(r.clone(), RefNs::Value, range.clone(), scope, "let", importable, true);
+                    self.push(
+                        r.clone(),
+                        RefNs::Value,
+                        range.clone(),
+                        scope,
+                        "let",
+                        importable,
+                        true,
+                    );
                 }
             }
             LetBinding::Record { names, range } => {
                 for n in names {
-                    self.push(n.clone(), RefNs::Value, range.clone(), scope.clone(), "let", importable, true);
+                    self.push(
+                        n.clone(),
+                        RefNs::Value,
+                        range.clone(),
+                        scope.clone(),
+                        "let",
+                        importable,
+                        true,
+                    );
                 }
             }
             // `RecordDestructField::Named.range` spans `src: bound` / `x `
@@ -947,11 +1177,27 @@ impl<'a> Walker<'a> {
                     match f {
                         RecordDestructField::Named { name, alias, range } => {
                             let bound = alias.clone().unwrap_or_else(|| name.clone());
-                            self.push(bound, RefNs::Value, range.clone(), scope.clone(), "let", importable, true);
+                            self.push(
+                                bound,
+                                RefNs::Value,
+                                range.clone(),
+                                scope.clone(),
+                                "let",
+                                importable,
+                                true,
+                            );
                             self.mark_last_shorthand(alias.is_none());
                         }
                         RecordDestructField::Rest { name, range } => {
-                            self.push(name.clone(), RefNs::Value, range.clone(), scope.clone(), "let", importable, true);
+                            self.push(
+                                name.clone(),
+                                RefNs::Value,
+                                range.clone(),
+                                scope.clone(),
+                                "let",
+                                importable,
+                                true,
+                            );
                         }
                     }
                 }
@@ -967,8 +1213,16 @@ impl<'a> Walker<'a> {
     /// chip shares (`scope`), visible from `visible_from` on (the chip's start
     /// for a chip in a body, everywhere for one at the top level), whichever
     /// of its statements reads it.
-    fn walk_anon_chip(&mut self, ac: &AnonChipDecl, scope: Option<SourceRange>, visible_from: Option<usize>) {
-        for e in [&ac.label_expr, &ac.color_expr, &ac.material_expr].into_iter().flatten() {
+    fn walk_anon_chip(
+        &mut self,
+        ac: &AnonChipDecl,
+        scope: Option<SourceRange>,
+        visible_from: Option<usize>,
+    ) {
+        for e in [&ac.label_expr, &ac.color_expr, &ac.material_expr]
+            .into_iter()
+            .flatten()
+        {
             self.walk_expr(e);
         }
         for s in &ac.body.stmts {
@@ -980,8 +1234,10 @@ impl<'a> Walker<'a> {
             }
             let from = self.model.bindings.len();
             self.walk_stmt(s, &ac.body.range);
-            if matches!(s, Stmt::Var(_) | Stmt::Buffer(_) | Stmt::Array(_) | Stmt::Map(_))
-                && let Some(b) = self.model.bindings.get_mut(from)
+            if matches!(
+                s,
+                Stmt::Var(_) | Stmt::Buffer(_) | Stmt::Array(_) | Stmt::Map(_)
+            ) && let Some(b) = self.model.bindings.get_mut(from)
             {
                 b.home = scope.is_none().then(|| ac.range.clone());
                 b.scope = scope.clone();
@@ -992,7 +1248,10 @@ impl<'a> Walker<'a> {
             if let (None, Stmt::Let(l)) = (&scope, s) {
                 let names = crate::const_eval::bound_names(&l.binding);
                 for b in &mut self.model.bindings[from..] {
-                    if b.ns == RefNs::Value && b.scope.as_ref() == Some(&ac.body.range) && names.contains(&b.name) {
+                    if b.ns == RefNs::Value
+                        && b.scope.as_ref() == Some(&ac.body.range)
+                        && names.contains(&b.name)
+                    {
                         b.home = Some(ac.range.clone());
                         b.scope = None;
                     }
@@ -1021,7 +1280,15 @@ impl<'a> Walker<'a> {
     fn walk_stmt(&mut self, s: &Stmt, scope: &SourceRange) {
         match s {
             Stmt::Var(v) => {
-                self.push(v.name.clone(), RefNs::Value, v.range.clone(), Some(scope.clone()), "var", false, true);
+                self.push(
+                    v.name.clone(),
+                    RefNs::Value,
+                    v.range.clone(),
+                    Some(scope.clone()),
+                    "var",
+                    false,
+                    true,
+                );
                 self.visible_after(self.model.bindings.len() - 1, &v.range);
                 if let Some(t) = &v.typ {
                     self.walk_type_expr(t);
@@ -1029,26 +1296,53 @@ impl<'a> Walker<'a> {
                 if let Some(e) = &v.init {
                     self.walk_expr(e);
                 }
-                for e in [&v.label_expr, &v.color_expr, &v.material_expr].into_iter().flatten() {
+                for e in [&v.label_expr, &v.color_expr, &v.material_expr]
+                    .into_iter()
+                    .flatten()
+                {
                     self.walk_expr(e);
                 }
             }
             Stmt::Buffer(b) => {
-                self.push(b.name.clone(), RefNs::Value, b.range.clone(), Some(scope.clone()), "buffer", false, true);
+                self.push(
+                    b.name.clone(),
+                    RefNs::Value,
+                    b.range.clone(),
+                    Some(scope.clone()),
+                    "buffer",
+                    false,
+                    true,
+                );
                 if let Some(t) = &b.typ {
                     self.walk_type_expr(t);
                 }
                 self.walk_expr(&b.init);
             }
             Stmt::Array(a) => {
-                self.push(a.name.clone(), RefNs::Value, a.range.clone(), Some(scope.clone()), "array", false, true);
+                self.push(
+                    a.name.clone(),
+                    RefNs::Value,
+                    a.range.clone(),
+                    Some(scope.clone()),
+                    "array",
+                    false,
+                    true,
+                );
                 self.walk_type_expr(&a.element_type);
                 for el in &a.init {
                     self.walk_expr(el.expr());
                 }
             }
             Stmt::Map(m) => {
-                self.push(m.name.clone(), RefNs::Value, m.range.clone(), Some(scope.clone()), "map", false, true);
+                self.push(
+                    m.name.clone(),
+                    RefNs::Value,
+                    m.range.clone(),
+                    Some(scope.clone()),
+                    "map",
+                    false,
+                    true,
+                );
                 self.walk_type_expr(&m.key_type);
                 self.walk_type_expr(&m.value_type);
                 if let Some(e) = &m.init {
@@ -1068,14 +1362,30 @@ impl<'a> Walker<'a> {
                 self.walk_block(&l.else_block);
             }
             Stmt::In(d) => {
-                self.push(d.name.clone(), RefNs::Value, d.range.clone(), Some(scope.clone()), "in", false, true);
+                self.push(
+                    d.name.clone(),
+                    RefNs::Value,
+                    d.range.clone(),
+                    Some(scope.clone()),
+                    "in",
+                    false,
+                    true,
+                );
                 self.walk_type_expr(&d.typ);
                 if let Some(e) = &d.label_expr {
                     self.walk_expr(e);
                 }
             }
             Stmt::OutBinding(ob) => {
-                self.push(ob.name.clone(), RefNs::Value, ob.range.clone(), Some(scope.clone()), "out", false, true);
+                self.push(
+                    ob.name.clone(),
+                    RefNs::Value,
+                    ob.range.clone(),
+                    Some(scope.clone()),
+                    "out",
+                    false,
+                    true,
+                );
                 if let Some(t) = &ob.typ {
                     self.walk_type_expr(t);
                 }
@@ -1087,7 +1397,9 @@ impl<'a> Walker<'a> {
                 }
             }
             Stmt::Handler(h) => self.register_handler(h),
-            Stmt::AnonChip(ac) => self.walk_anon_chip(ac, Some(scope.clone()), Some(ac.range.start.offset)),
+            Stmt::AnonChip(ac) => {
+                self.walk_anon_chip(ac, Some(scope.clone()), Some(ac.range.start.offset))
+            }
             Stmt::ChipDecl(c) => self.register_chip(c, Some(scope.clone()), false),
             Stmt::IfLet(i) => {
                 self.walk_if_let(&i.pattern, &i.scrutinee, &i.then_block, &i.else_block)
@@ -1129,9 +1441,7 @@ impl<'a> Walker<'a> {
             | Stmt::ExprStmt(_)
             | Stmt::Return { .. }
             | Stmt::Break { .. }
-            | Stmt::Continue { .. } => {
-                self.walk_children(walk::Node::Stmt(s), scope)
-            }
+            | Stmt::Continue { .. } => self.walk_children(walk::Node::Stmt(s), scope),
         }
     }
 
@@ -1162,7 +1472,9 @@ impl<'a> Walker<'a> {
                 // element to destructure). Names come from `ir::plane`'s table;
                 // one not in it binds nothing here, matching typecheck's WS076 refusal.
                 ForSlot::RangeSlotNames => {
-                    let ForPat::Record { fields, .. } = pat else { continue };
+                    let ForPat::Record { fields, .. } = pat else {
+                        continue;
+                    };
                     let slot_labels = plane_spec(LoopKind::CountFor).slot_labels;
                     for field in fields {
                         let RecordDestructField::Named { name, alias, range } = field else {
@@ -1173,7 +1485,15 @@ impl<'a> Walker<'a> {
                             continue;
                         }
                         let bound = alias.clone().unwrap_or_else(|| name.clone());
-                        self.push(bound, RefNs::Value, range.clone(), body_scope.clone(), "for", false, true);
+                        self.push(
+                            bound,
+                            RefNs::Value,
+                            range.clone(),
+                            body_scope.clone(),
+                            "for",
+                            false,
+                            true,
+                        );
                         self.mark_last_shorthand(alias.is_none());
                     }
                 }
@@ -1195,7 +1515,15 @@ impl<'a> Walker<'a> {
                 start: f.range.end,
                 end: s.end,
             });
-            self.push(name.clone(), RefNs::Value, name_range.clone(), after_loop, "for", false, false);
+            self.push(
+                name.clone(),
+                RefNs::Value,
+                name_range.clone(),
+                after_loop,
+                "for",
+                false,
+                false,
+            );
         }
     }
 
@@ -1206,19 +1534,41 @@ impl<'a> Walker<'a> {
         match pat {
             ForPat::Ignore(_) => {}
             // `ForPat::Name`'s range is the name token only -> precise.
-            ForPat::Name(name, range) => {
-                self.push(name.clone(), RefNs::Value, range.clone(), scope, "for", false, false)
-            }
+            ForPat::Name(name, range) => self.push(
+                name.clone(),
+                RefNs::Value,
+                range.clone(),
+                scope,
+                "for",
+                false,
+                false,
+            ),
             ForPat::Record { fields, .. } => {
                 for field in fields {
                     match field {
                         RecordDestructField::Named { name, alias, range } => {
                             let bound = alias.clone().unwrap_or_else(|| name.clone());
-                            self.push(bound, RefNs::Value, range.clone(), scope.clone(), "for", false, true);
+                            self.push(
+                                bound,
+                                RefNs::Value,
+                                range.clone(),
+                                scope.clone(),
+                                "for",
+                                false,
+                                true,
+                            );
                             self.mark_last_shorthand(alias.is_none());
                         }
                         RecordDestructField::Rest { name, range } => {
-                            self.push(name.clone(), RefNs::Value, range.clone(), scope.clone(), "for", false, true);
+                            self.push(
+                                name.clone(),
+                                RefNs::Value,
+                                range.clone(),
+                                scope.clone(),
+                                "for",
+                                false,
+                                true,
+                            );
                         }
                     }
                 }
@@ -1251,7 +1601,12 @@ impl<'a> Walker<'a> {
     /// binding.
     fn walk_expr(&mut self, e: &Expr) {
         match e {
-            Expr::Call { callee, args, type_args, .. } => {
+            Expr::Call {
+                callee,
+                args,
+                type_args,
+                ..
+            } => {
                 self.walk_expr(callee);
                 for a in args {
                     match a {
@@ -1267,14 +1622,20 @@ impl<'a> Walker<'a> {
             Expr::FieldAccess { obj, field, range } => {
                 // The field half of `obj.field` is never a rename target
                 // (record fields are a deliberate deferral).
-                self.model.field_name_spans.push(field_suffix_span(field, range));
+                self.model
+                    .field_name_spans
+                    .push(field_suffix_span(field, range));
                 self.walk_expr(obj);
             }
             Expr::As { value, ty, .. } => {
                 self.walk_expr(value);
                 self.walk_type_expr(ty);
             }
-            Expr::BlockExpr { stmts, value, range } => {
+            Expr::BlockExpr {
+                stmts,
+                value,
+                range,
+            } => {
                 self.walk_stmts(stmts, range.clone());
                 self.walk_expr(value);
             }
@@ -1284,7 +1645,9 @@ impl<'a> Walker<'a> {
                         // The KEY half of `name: value` is never a rename
                         // target (only the value side is a use).
                         RecordLitField::Named { name, value, range } => {
-                            self.model.field_name_spans.push(name_prefix_span(name, range));
+                            self.model
+                                .field_name_spans
+                                .push(name_prefix_span(name, range));
                             self.walk_expr(value);
                         }
                         RecordLitField::Spread { value, .. } => self.walk_expr(value),
@@ -1332,7 +1695,9 @@ impl<'a> Walker<'a> {
                 for f in fields {
                     match f {
                         RecordLitField::Named { name, value, range } => {
-                            self.model.field_name_spans.push(name_prefix_span(name, range));
+                            self.model
+                                .field_name_spans
+                                .push(name_prefix_span(name, range));
                             self.walk_expr(value);
                         }
                         RecordLitField::Spread { value, .. } => self.walk_expr(value),
@@ -1362,7 +1727,15 @@ impl<'a> Walker<'a> {
         match pattern {
             Pattern::Wildcard(_) | Pattern::Literal { .. } | Pattern::Range { .. } => {}
             Pattern::Binding { name, range } => {
-                self.push(name.clone(), RefNs::Value, range.clone(), scope, "capture", false, false);
+                self.push(
+                    name.clone(),
+                    RefNs::Value,
+                    range.clone(),
+                    scope,
+                    "capture",
+                    false,
+                    false,
+                );
             }
             Pattern::Concat { parts: pats, .. } | Pattern::Or { alts: pats, .. } => {
                 for p in pats {
@@ -1440,7 +1813,13 @@ fn range_len(r: &SourceRange) -> usize {
 /// use whose name matches nothing in its namespace (a builtin type name, an
 /// undefined global) is left `resolved: None` — not a rename target.
 fn resolve_uses(model: &mut ScopeModel) {
-    let ScopeModel { bindings, uses, top, top_reads, .. } = model;
+    let ScopeModel {
+        bindings,
+        uses,
+        top,
+        top_reads,
+        ..
+    } = model;
     // Each name's bindings in each namespace, in binding order.
     let mut named: HashMap<(RefNs, &str), Vec<usize>> = HashMap::default();
     for (i, b) in bindings.iter().enumerate() {
@@ -1450,9 +1829,15 @@ fn resolve_uses(model: &mut ScopeModel) {
     // nest and each read starts at most a byte before its declaration, so of
     // the reads starting at or before the use only the last two can hold it;
     // the earlier one is checked first, as a search in order would.
-    let in_order = top_reads.windows(2).all(|w| w[0].range.start.offset <= w[1].range.start.offset);
+    let in_order = top_reads
+        .windows(2)
+        .all(|w| w[0].range.start.offset <= w[1].range.start.offset);
     let read_around = |r: &SourceRange| {
-        let linear = || top_reads.iter().find(|t| crate::scope::top::within(&t.range, r));
+        let linear = || {
+            top_reads
+                .iter()
+                .find(|t| crate::scope::top::within(&t.range, r))
+        };
         if !in_order {
             return linear();
         }
@@ -1462,7 +1847,11 @@ fn resolve_uses(model: &mut ScopeModel) {
             .flatten()
             .map(|k| &top_reads[k])
             .find(|t| crate::scope::top::within(&t.range, r));
-        debug_assert_eq!(found.map(|t| &t.range), linear().map(|t| &t.range), "top-level read for {r:?}");
+        debug_assert_eq!(
+            found.map(|t| &t.range),
+            linear().map(|t| &t.range),
+            "top-level read for {r:?}"
+        );
         found
     };
     for u in uses.iter_mut() {
@@ -1492,12 +1881,19 @@ fn resolve_uses(model: &mut ScopeModel) {
         // The top-level declaration the use is written in, as the top level is
         // read from it: a `mod` or `chip` as a body, which names a top-level
         // `let` declared below it, anything else as code.
-        let read = read_around(&u.range).cloned().unwrap_or_else(|| crate::scope::top::ReadAt::code(&u.range));
-        let same_name = named.get(&(u.ns, u.name.as_str())).map(Vec::as_slice).unwrap_or_default();
+        let read = read_around(&u.range)
+            .cloned()
+            .unwrap_or_else(|| crate::scope::top::ReadAt::code(&u.range));
+        let same_name = named
+            .get(&(u.ns, u.name.as_str()))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         for b in same_name.iter().map(|&i| &bindings[i]) {
             let hoisted = read.body && b.scope.is_none() && b.home.is_none();
             if !hoisted
-                && b.visible_from.is_some_and(|at| b.name_range.file == u.range.file && u.range.start.offset < at)
+                && b.visible_from.is_some_and(|at| {
+                    b.name_range.file == u.range.file && u.range.start.offset < at
+                })
             {
                 continue;
             }
@@ -1783,7 +2179,6 @@ pub struct SemSpan {
     pub coarse: bool,
 }
 
-
 /// Record one [`SemSpan`], deduped by `(start line, start col)` — several
 /// candidate sites (a use and its own declaration, or several coarse
 /// container-sharing bindings) can legitimately share one span, and the LSP
@@ -1797,7 +2192,12 @@ fn record_sem_span(
     coarse: bool,
 ) {
     if seen.insert((range.start.line, range.start.col)) {
-        spans.push(SemSpan { range, name, kind, coarse });
+        spans.push(SemSpan {
+            range,
+            name,
+            kind,
+            coarse,
+        });
     }
 }
 
@@ -1854,12 +2254,24 @@ pub fn semantic_tokens(script: &Script) -> Vec<SemSpan> {
             continue;
         }
         match u.ns {
-            RefNs::Type => {
-                record_sem_span(&mut spans, &mut seen, u.range.clone(), u.name.clone(), SemTokenKind::Type, u.coarse)
-            }
+            RefNs::Type => record_sem_span(
+                &mut spans,
+                &mut seen,
+                u.range.clone(),
+                u.name.clone(),
+                SemTokenKind::Type,
+                u.coarse,
+            ),
             RefNs::Value => {
                 if u.resolved.is_some() {
-                    record_sem_span(&mut spans, &mut seen, u.range.clone(), u.name.clone(), SemTokenKind::Variable, u.coarse);
+                    record_sem_span(
+                        &mut spans,
+                        &mut seen,
+                        u.range.clone(),
+                        u.name.clone(),
+                        SemTokenKind::Variable,
+                        u.coarse,
+                    );
                 }
             }
         }
@@ -1873,7 +2285,14 @@ pub fn semantic_tokens(script: &Script) -> Vec<SemSpan> {
             RefNs::Type => SemTokenKind::Type,
             RefNs::Value => SemTokenKind::Variable,
         };
-        record_sem_span(&mut spans, &mut seen, b.name_range.clone(), b.name.clone(), kind, b.coarse);
+        record_sem_span(
+            &mut spans,
+            &mut seen,
+            b.name_range.clone(),
+            b.name.clone(),
+            kind,
+            b.coarse,
+        );
     }
 
     spans
@@ -1914,14 +2333,21 @@ pub fn semantic_tokens(script: &Script) -> Vec<SemSpan> {
 /// Returns an empty `Vec` when `script` has no `import { export_name }` (or
 /// `import { export_name as … }`) specifier — e.g. when called speculatively
 /// against a sibling file that doesn't import the renamed symbol at all.
-pub fn references_to_export(script: &Script, file: &str, export_name: &str, ns: RefNs) -> Vec<RefSite> {
+pub fn references_to_export(
+    script: &Script,
+    file: &str,
+    export_name: &str,
+    ns: RefNs,
+) -> Vec<RefSite> {
     let _ = file;
     let model = build_scope_model(script);
     let mut sites = Vec::new();
 
     for d in &script.decls {
         let TopDecl::Import(imp) = d else { continue };
-        let ImportKind::Named(bindings) = &imp.kind else { continue };
+        let ImportKind::Named(bindings) = &imp.kind else {
+            continue;
+        };
         for b in bindings {
             if b.name != export_name {
                 continue;

@@ -6,7 +6,7 @@
 //! find-references is a plain name match (no scope resolution).
 
 use crate::diagnostic::SourceRange;
-use crate::lexer::{lex, TokenKind, TokenValue};
+use crate::lexer::{TokenKind, TokenValue, lex};
 
 /// One `:name` atom occurrence: its name, the `int` it hashes to, and its span.
 pub struct AtomRef {
@@ -30,7 +30,11 @@ fn all_atoms(source: &str, file: &str) -> Vec<AtomRef> {
             Some(AtomRef {
                 value: crate::hash::atom_hash(&name),
                 name,
-                range: SourceRange { file: file.into(), start: t.start, end: t.end },
+                range: SourceRange {
+                    file: file.into(),
+                    start: t.start,
+                    end: t.end,
+                },
             })
         })
         .collect()

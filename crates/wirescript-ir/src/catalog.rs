@@ -178,7 +178,10 @@ impl GateSpec {
     /// shows (an omniport-only one such as `TicksToWait`) never affects the
     /// size. `None` for a gate without variants. When no variant shows them
     /// all, the largest is the closest fit.
-    pub fn pick_variant<'a>(&self, used: impl IntoIterator<Item = (bool, &'a str)>) -> Option<usize> {
+    pub fn pick_variant<'a>(
+        &self,
+        used: impl IntoIterator<Item = (bool, &'a str)>,
+    ) -> Option<usize> {
         let last = self.variants.len().checked_sub(1)?;
         let shown_by = |v: &GateVariant, out: bool, port: &str| {
             let list = if out { &v.outputs } else { &v.inputs };
@@ -291,7 +294,9 @@ impl Catalog {
     /// layout ports expose each axis as an individually-wireable float.
     /// Unknown classes answer `true`, as in [`Catalog::is_wire_input`].
     pub fn has_wire_port(&self, gate_class: &str, side: crate::ir::PortSide, port: &str) -> bool {
-        let Some(spec) = self.find_by_class(gate_class) else { return true };
+        let Some(spec) = self.find_by_class(gate_class) else {
+            return true;
+        };
         let ports = match side {
             crate::ir::PortSide::Input => &spec.component.inputs,
             crate::ir::PortSide::Output => &spec.component.outputs,
@@ -299,7 +304,10 @@ impl Catalog {
         ports.iter().any(|p| p.name == port)
             || port.split_once('.').is_some_and(|(base, sub)| {
                 ports.iter().any(|p| {
-                    p.name == base && p.composite.as_ref().is_some_and(|c| c.sub_ports.iter().any(|s| s == sub))
+                    p.name == base
+                        && p.composite
+                            .as_ref()
+                            .is_some_and(|c| c.sub_ports.iter().any(|s| s == sub))
                 })
             })
     }
@@ -348,9 +356,15 @@ pub fn component_types() -> &'static [ComponentTypeOption] {
             .components
             .iter()
             .map(|c| {
-                let inv = default_catalog().find_by_class(&c.option).map(|g| &g.component);
+                let inv = default_catalog()
+                    .find_by_class(&c.option)
+                    .map(|g| &g.component);
                 ComponentTypeOption {
-                    name: c.label.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect(),
+                    name: c
+                        .label
+                        .chars()
+                        .filter(|ch| ch.is_ascii_alphanumeric())
+                        .collect(),
                     class: &c.option,
                     display_name: &c.label,
                     category: inv.map_or("", |c| c.category.as_str()),
@@ -426,7 +440,11 @@ pub fn scalar_config_field(gate_class: &str, field: &str) -> Option<&'static Con
         .config
         .iter()
         .find(|c| c.name == field)?;
-    matches!(prop.ty.as_str(), "bool" | "int" | "float" | "string" | "enum").then_some(prop)
+    matches!(
+        prop.ty.as_str(),
+        "bool" | "int" | "float" | "string" | "enum"
+    )
+    .then_some(prop)
 }
 
 /// A gate's settable scalar config properties (bool/int/float/string/enum), for

@@ -35,7 +35,11 @@ pub(in crate::lower) enum RefArg {
     Unbound,
 }
 
-pub(in crate::lower) fn classify_ref_arg(ctx: &LowerCtx, param_storage: Option<VarStorage>, arg: &Expr) -> RefArg {
+pub(in crate::lower) fn classify_ref_arg(
+    ctx: &LowerCtx,
+    param_storage: Option<VarStorage>,
+    arg: &Expr,
+) -> RefArg {
     // `&x` always names x's own storage.
     if let Expr::RefOf { operand, .. } = arg {
         return classify_named(ctx, param_storage, operand).unwrap_or_else(|| ref_value(ctx, arg));
@@ -77,7 +81,9 @@ fn classify_named(ctx: &LowerCtx, param_storage: Option<VarStorage>, arg: &Expr)
         // A var HOLDING a container ref (`cur: *int[]`) is not the container,
         // nor is a var holding a scalar ref its target: their value is the ref.
         Binding::Var(v) if wants_container && v.storage == VarStorage::Var => None,
-        Binding::Var(v) if v.storage == VarStorage::Var && matches!(v.inner_type, Type::Ref(_)) => None,
+        Binding::Var(v) if v.storage == VarStorage::Var && matches!(v.inner_type, Type::Ref(_)) => {
+            None
+        }
         Binding::Var(v) => Some(RefArg::Static(v)),
         Binding::Input(inp) => Some(RefArg::Input(inp)),
         Binding::DynRef(d) => Some(RefArg::Forward(d)),
@@ -114,7 +120,8 @@ pub(super) fn resolve_caller_captures(
                     let field_sym = crate::intern::intern(&field.name);
                     // A var holding a ref is a ref value: it crosses on the pin.
                     if let Some(b @ Binding::Var(var_rec)) = rec_fields.get(&field_sym)
-                        && (var_rec.storage != VarStorage::Var || crate::lower::ref_fields::binds_place(b))
+                        && (var_rec.storage != VarStorage::Var
+                            || crate::lower::ref_fields::binds_place(b))
                     {
                         let port_name = format!("{}_{}", param.name, field.name);
                         captures.insert(port_name, var_rec.clone());
@@ -127,7 +134,10 @@ pub(super) fn resolve_caller_captures(
             // way the inline-mod binder takes it, for a `*T[]` param too.
             let arg = deref_arg(arg_expr);
             materialize_const_container(ctx, arg);
-            if matches!(ctx.declared_shape(Some(chip_decl), &param.typ), TypeExpr::Array { .. }) {
+            if matches!(
+                ctx.declared_shape(Some(chip_decl), &param.typ),
+                TypeExpr::Array { .. }
+            ) {
                 if let Some(rec) = materialize_literal_container(ctx, arg, &param.name) {
                     captures.insert(param.name.clone(), rec);
                     continue;

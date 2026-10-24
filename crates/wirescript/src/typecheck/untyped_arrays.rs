@@ -23,8 +23,13 @@ pub(super) fn inferable_element(t: &Type) -> bool {
 pub(super) fn type_constant_elements(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
     for d in decls {
         let TopDecl::Var(v) = d else { continue };
-        let (None, Some(Expr::Array { elements, .. })) = (&v.typ, &v.init) else { continue };
-        if elements.iter().all(|el| matches!(el, ArrayElem::Item(e) if literal_expr_type(e).is_some())) {
+        let (None, Some(Expr::Array { elements, .. })) = (&v.typ, &v.init) else {
+            continue;
+        };
+        if elements
+            .iter()
+            .all(|el| matches!(el, ArrayElem::Item(e) if literal_expr_type(e).is_some()))
+        {
             continue;
         }
         let types: Option<Vec<Type>> = elements
@@ -55,7 +60,8 @@ pub(super) fn type_constant_elements(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) 
         if let Some(elem) = types.and_then(widening_join_all)
             && inferable_element(&elem)
         {
-            ctx.scope.set_type(&v.name, Type::Ref(Box::new(Type::Array(Box::new(elem)))));
+            ctx.scope
+                .set_type(&v.name, Type::Ref(Box::new(Type::Array(Box::new(elem)))));
         }
     }
 }
@@ -81,9 +87,9 @@ fn named_value<'a>(decls: &'a [TopDecl], mut e: &'a Expr) -> &'a Expr {
 /// such literals (`[...[]]`).
 fn spreads_only_empty(e: &Expr) -> bool {
     match e {
-        Expr::Array { elements, .. } => {
-            elements.iter().all(|el| matches!(el, ArrayElem::Spread(s) if spreads_only_empty(s)))
-        }
+        Expr::Array { elements, .. } => elements
+            .iter()
+            .all(|el| matches!(el, ArrayElem::Spread(s) if spreads_only_empty(s))),
         _ => false,
     }
 }
@@ -115,7 +121,10 @@ pub(super) fn declare(ctx: &mut TypeCheckCtx, v: &VarDecl) {
         _ => return,
     };
     let at = &v.range;
-    if ctx.untyped_reported.insert((at.file.clone(), at.start.offset)) {
+    if ctx
+        .untyped_reported
+        .insert((at.file.clone(), at.start.offset))
+    {
         ctx.emit("WS098", message, at.clone());
     }
 }

@@ -8,15 +8,16 @@
 
 use std::sync::Arc;
 
-use crate::ast::{ArrayElem, CallArg, ChipDecl, Expr, InterpPart, MatchArm, MatchBody, RecordLitField};
+use crate::ast::{
+    ArrayElem, CallArg, ChipDecl, Expr, InterpPart, MatchArm, MatchBody, RecordLitField,
+};
 use crate::collections::HashMap;
 use crate::diagnostic::SourceRange;
 use crate::ir::{Literal, Type};
 use crate::lower::fold::eval::{self as fold_eval, Value};
 use crate::lower::matchtree::{self, ConstOutcome};
 use crate::lower::{
-    eval_const_binop, eval_const_unop, expr_to_literal_in,
-    fold_constructor, ConstEnv,
+    ConstEnv, eval_const_binop, eval_const_unop, expr_to_literal_in, fold_constructor,
 };
 use crate::typecheck::enums::EnumDef;
 
@@ -91,13 +92,21 @@ impl ModDups {
         top: Arc<crate::scope::top::TopNames>,
         values: Arc<crate::lower::DupConsts>,
     ) -> Self {
-        Self { base, top, values, at: Default::default() }
+        Self {
+            base,
+            top,
+            values,
+            at: Default::default(),
+        }
     }
 
     /// The constants the body of a `const mod` declared at `decl` reads.
     fn of(&self, decl: &SourceRange) -> Arc<ConstEnv> {
         let key = (decl.file.clone(), decl.start.offset);
-        let mut at = self.at.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut at = self
+            .at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(env) = at.get(&key) {
             return env.clone();
         }
@@ -105,7 +114,11 @@ impl ModDups {
         let read = crate::scope::top::ReadAt::body(decl);
         for (name, decls) in self.top.dups() {
             let own = decls[0].range.file == decl.file;
-            let seen = if own { self.top.visible_decl(name, &read).flatten() } else { None };
+            let seen = if own {
+                self.top.visible_decl(name, &read).flatten()
+            } else {
+                None
+            };
             match seen.and_then(|d| self.values.get(&crate::lower::dup_key(d, name))) {
                 Some(lit) => out.insert(name.to_string(), lit.clone()),
                 None => out.remove(name),
@@ -249,9 +262,12 @@ fn enum_head<'e>(cx: &ConstCtx, head: &'e Expr) -> Option<&'e str> {
     match head {
         Expr::Ident { name, .. } => (!cx.consts.binds(name.as_str())).then_some(name.as_str()),
         Expr::FieldAccess { obj, field, .. } => {
-            let Expr::Ident { name: ns, range } = obj.as_ref() else { return None };
-            (!cx.consts.binds(ns.as_str()) && cx.enum_defs.namespaced(&range.file, ns, field).is_some())
-                .then_some(field.as_str())
+            let Expr::Ident { name: ns, range } = obj.as_ref() else {
+                return None;
+            };
+            (!cx.consts.binds(ns.as_str())
+                && cx.enum_defs.namespaced(&range.file, ns, field).is_some())
+            .then_some(field.as_str())
         }
         _ => None,
     }
@@ -346,12 +362,14 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
         // the result.
         Expr::RecordLit { fields, .. } => {
             let mut entries: Vec<(String, Literal)> = Vec::new();
-            let upsert = |entries: &mut Vec<(String, Literal)>, name: String, value: Literal| {
-                match entries.iter_mut().find(|(n, _)| *n == name) {
+            let upsert =
+                |entries: &mut Vec<(String, Literal)>, name: String, value: Literal| match entries
+                    .iter_mut()
+                    .find(|(n, _)| *n == name)
+                {
                     Some(existing) => existing.1 = value,
                     None => entries.push((name, value)),
-                }
-            };
+                };
             for f in fields {
                 match f {
                     RecordLitField::Named { name, value, .. } => {
@@ -361,7 +379,10 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
                     // `{ x }` is sugar for `{ x: x }` — resolve `name` as a
                     // plain identifier the same way the expanded form would.
                     RecordLitField::Shorthand { name, range } => {
-                        let ident = Expr::Ident { name: name.clone(), range: range.clone() };
+                        let ident = Expr::Ident {
+                            name: name.clone(),
+                            range: range.clone(),
+                        };
                         let v = eval_expr(&ident, cx, budget)?;
                         upsert(&mut entries, name.clone(), v);
                     }
@@ -557,7 +578,11 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
         // (every arm is a bare name or `_`), or the cited names identify more
         // than one declared enum. Refusing is always safe -- it only costs
         // this optimization, never a wrong value.
-        Expr::MatchExpr { scrutinee, arms, range } => {
+        Expr::MatchExpr {
+            scrutinee,
+            arms,
+            range,
+        } => {
             let scrut_lit = eval_expr(scrutinee, cx, budget)?;
             // A single value is typed by its literal. An enum: prefer the enum
             // the SCRUTINEE names directly (`Dir.E`) so an all-unit match folds;
@@ -569,19 +594,27 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
                 Literal::String(_) => Some(Type::String),
                 Literal::Record(_) => scrutinee_enum_expr(cx, scrutinee)
                     .or_else(|| cx.enum_defs.citing_arms(arms))
-                    .map(|edef| Type::Enum { name: edef.name.clone(), args: vec![] }),
+                    .map(|edef| Type::Enum {
+                        name: edef.name.clone(),
+                        args: vec![],
+                    }),
                 _ => None,
             };
             if let Some(scrut_ty) = scrut_ty {
                 let arm_patterns: Vec<crate::ast::Pattern> =
                     arms.iter().map(|a| a.pattern.clone()).collect();
                 let guarded: Vec<bool> = arms.iter().map(|a| a.guard.is_some()).collect();
-                let enums = crate::typecheck::patterns::Enums { defs: &cx.enum_defs, types: &cx.types };
+                let enums = crate::typecheck::patterns::Enums {
+                    defs: &cx.enum_defs,
+                    types: &cx.types,
+                };
                 let decision = matchtree::build_guarded(enums, &scrut_ty, &arm_patterns, &guarded);
                 let mut at = &decision;
                 loop {
                     match matchtree::resolve_const(at, &scrut_lit) {
-                        ConstOutcome::Arm(i) => return eval_match_arm_body(&arms[i], &scrut_lit, cx, budget),
+                        ConstOutcome::Arm(i) => {
+                            return eval_match_arm_body(&arms[i], &scrut_lit, cx, budget);
+                        }
                         ConstOutcome::Fail => {
                             return Err(ConstError {
                                 reason: ConstReason::Unsupported("a non-exhaustive const match"),
@@ -591,7 +624,8 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
                         // A guard sees the arm's captures, as its body does.
                         ConstOutcome::Guard { arm, otherwise } => {
                             let Some(guard) = &arms[arm].guard else { break };
-                            let inner_cx = cx.with_consts(arm_capture_consts(&arms[arm], &scrut_lit, cx));
+                            let inner_cx =
+                                cx.with_consts(arm_capture_consts(&arms[arm], &scrut_lit, cx));
                             match eval_expr(guard, &inner_cx, budget)? {
                                 Literal::Bool(true) => {
                                     return eval_match_arm_body(&arms[arm], &scrut_lit, cx, budget);
@@ -664,11 +698,7 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
         // law is byte-identical to `expr_to_literal_impl`'s own, so this
         // cannot disagree with the fast path above, only reach further than
         // it (through a mod call the fast path can't see).
-        Expr::UnOp {
-            op,
-            operand,
-            range,
-        } => {
+        Expr::UnOp { op, operand, range } => {
             let v = eval_expr(operand, cx, budget)?;
             if op == crate::catalog::operators::op::NEG && v == Literal::Int(i64::MIN) {
                 budget.uncertified = true;
@@ -789,7 +819,10 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
             // A non-const decl (or no decl at all) falls through to
             // `reason_for` below, which already reports `NotAConstMod` for
             // any non-constructor named call.
-            if let Expr::Ident { name, range: name_range } = callee.as_ref()
+            if let Expr::Ident {
+                name,
+                range: name_range,
+            } = callee.as_ref()
                 && let Some(lookup) = cx.lookup_mod
                 && let Some(decl) = lookup(name)
                 && decl.is_const
@@ -812,7 +845,11 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
         // construction still lowers fine at runtime through
         // `lower::expr::lower_enum_ctor` either way.
         Expr::VariantCtor { path, fields, .. } => {
-            if let Expr::FieldAccess { obj, field: variant, .. } = path.as_ref()
+            if let Expr::FieldAccess {
+                obj,
+                field: variant,
+                ..
+            } = path.as_ref()
                 && let Some(enum_name) = enum_head(cx, obj)
                 && let Some(def) = cx.enum_defs.expression_path(enum_name)
                 && let Some(vdef) = def.variants.iter().find(|v| &v.name == variant)
@@ -824,7 +861,10 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
                         RecordLitField::Named { name, value, .. } => (name.clone(), value.clone()),
                         RecordLitField::Shorthand { name, range } => (
                             name.clone(),
-                            Expr::Ident { name: name.clone(), range: range.clone() },
+                            Expr::Ident {
+                                name: name.clone(),
+                                range: range.clone(),
+                            },
                         ),
                         RecordLitField::Spread { .. } => {
                             folded = false;
@@ -917,7 +957,11 @@ fn eval_match_arm_body(
 /// The caller's constants plus `arm`'s captures, read off the compile-time
 /// scrutinee `scrut_lit` (`matchtree::capture_literal`, the literal-value twin
 /// of the lowering's capture binding).
-fn arm_capture_consts(arm: &MatchArm, scrut_lit: &Literal, cx: &ConstCtx) -> crate::const_scope::ConstNames {
+fn arm_capture_consts(
+    arm: &MatchArm,
+    scrut_lit: &Literal,
+    cx: &ConstCtx,
+) -> crate::const_scope::ConstNames {
     let mut captures = Vec::new();
     matchtree::collect_captures(&arm.pattern, &mut Vec::new(), &mut captures);
     let mut consts = cx.consts.clone();
@@ -1045,7 +1089,11 @@ fn eval_discriminant(
     // discriminant. `obj` here names a TYPE, not a value, so it is never
     // evaluated. Shadow-guarded like the namespaced-const check above: a
     // const binding shadowing the enum's name wins.
-    if let Expr::FieldAccess { obj: enum_obj, field: variant, .. } = obj
+    if let Expr::FieldAccess {
+        obj: enum_obj,
+        field: variant,
+        ..
+    } = obj
         && let Some(enum_name) = enum_head(cx, enum_obj)
         && let Some(def) = cx.enum_defs.expression_path(enum_name)
         && let Some(vdef) = def.variants.iter().find(|v| &v.name == variant)
@@ -1057,9 +1105,10 @@ fn eval_discriminant(
     // storage, the same key this evaluator's own construction folds
     // (below) write, so both agree on where the tag lives.
     match eval_expr(obj, cx, budget) {
-        Ok(Literal::Record(entries)) => {
-            entries.into_iter().find(|(n, _)| n == "__disc").map(|(_, v)| Ok(v))
-        }
+        Ok(Literal::Record(entries)) => entries
+            .into_iter()
+            .find(|(n, _)| n == "__disc")
+            .map(|(_, v)| Ok(v)),
         Ok(_) => None,
         Err(err) => Some(Err(err)),
     }
@@ -1168,7 +1217,10 @@ fn eval_enum_from_int(
 /// A type alias named after a variant is not seen here, but using such a
 /// name in bare value/call position is itself a typecheck error, so no CLEAN
 /// program reaches this fold with such a shadow.
-fn resolve_bare_variant_enum<'c>(cx: &'c ConstCtx, name: &str) -> Option<&'c crate::typecheck::enums::EnumDef> {
+fn resolve_bare_variant_enum<'c>(
+    cx: &'c ConstCtx,
+    name: &str,
+) -> Option<&'c crate::typecheck::enums::EnumDef> {
     crate::typecheck::enums::resolve_bare_variant_enum(&cx.enum_defs, name, |n| {
         cx.consts.binds(n)
             || cx.enum_defs.expression_path(n).is_some()
@@ -1272,7 +1324,8 @@ fn eval_method_call(
     }
 
     let names: Vec<&str> = spec.params.iter().map(|p| p.name).collect();
-    let Ok(mut slots) = super::interp::bind_args(&names, 1, args, super::interp::Arity::Lenient) else {
+    let Ok(mut slots) = super::interp::bind_args(&names, 1, args, super::interp::Arity::Lenient)
+    else {
         unreachable!("lenient binding refuses nothing")
     };
     slots[0] = slots[0].or(Some(obj));
@@ -1341,7 +1394,9 @@ fn eval_interp(
         // path, so this function must not re-wrap or re-explain it.
         let lit = eval_expr(expr, cx, budget)?;
         Value::from_literal(&lit).ok_or_else(|| ConstError {
-            reason: ConstReason::Refused("this interpolated value has no certified constant text form".to_string()),
+            reason: ConstReason::Refused(
+                "this interpolated value has no certified constant text form".to_string(),
+            ),
             range: expr.range().clone(),
         })
     })?;
@@ -1427,10 +1482,18 @@ fn reason_for(e: &Expr, cx: &ConstCtx) -> (ConstReason, SourceRange) {
                 // own callee is not a `const mod` — so evaluation never
                 // descended to it. This distinction must be checked rather
                 // than assumed.
-                Expr::Ident { name, range: name_range } => {
-                    let decl = cx.lookup_mod.and_then(|lookup| lookup(name)).filter(|decl| decl.is_const);
+                Expr::Ident {
+                    name,
+                    range: name_range,
+                } => {
+                    let decl = cx
+                        .lookup_mod
+                        .and_then(|lookup| lookup(name))
+                        .filter(|decl| decl.is_const);
                     let reason = match decl {
-                        Some(decl) if cx.imports.user_mod_answers(&decl.range, &name_range.file) => {
+                        Some(decl)
+                            if cx.imports.user_mod_answers(&decl.range, &name_range.file) =>
+                        {
                             ConstReason::NestedConstModCall(name.clone())
                         }
                         Some(_) => ConstReason::UnnamedConstMod(name.clone()),
@@ -1441,20 +1504,27 @@ fn reason_for(e: &Expr, cx: &ConstCtx) -> (ConstReason, SourceRange) {
                 _ => (ConstReason::Unsupported("this call"), e.range().clone()),
             }
         }
-        Expr::InterpLit { .. } => {
-            (ConstReason::Unsupported("string interpolation"), e.range().clone())
-        }
+        Expr::InterpLit { .. } => (
+            ConstReason::Unsupported("string interpolation"),
+            e.range().clone(),
+        ),
         Expr::IndexAccess { .. } => (ConstReason::Unsupported("indexing"), e.range().clone()),
-        Expr::IfExpr { .. } => {
-            (ConstReason::Unsupported("an `if` expression"), e.range().clone())
-        }
-        Expr::RecordLit { .. } => {
-            (ConstReason::Unsupported("a record literal"), e.range().clone())
-        }
+        Expr::IfExpr { .. } => (
+            ConstReason::Unsupported("an `if` expression"),
+            e.range().clone(),
+        ),
+        Expr::RecordLit { .. } => (
+            ConstReason::Unsupported("a record literal"),
+            e.range().clone(),
+        ),
         Expr::FieldAccess { .. } => (ConstReason::Unsupported("field access"), e.range().clone()),
-        Expr::VariantCtor { .. } => {
-            (ConstReason::Unsupported("a variant construction"), e.range().clone())
-        }
-        _ => (ConstReason::Unsupported("this expression"), e.range().clone()),
+        Expr::VariantCtor { .. } => (
+            ConstReason::Unsupported("a variant construction"),
+            e.range().clone(),
+        ),
+        _ => (
+            ConstReason::Unsupported("this expression"),
+            e.range().clone(),
+        ),
     }
 }

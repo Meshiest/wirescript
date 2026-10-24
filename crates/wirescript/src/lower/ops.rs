@@ -1,6 +1,6 @@
 use super::*;
-use crate::lower::fold::eval::{FORMAT_SLOTS, interp_groups};
 use crate::catalog::operators::OpRule;
+use crate::lower::fold::eval::{FORMAT_SLOTS, interp_groups};
 
 /// The operator rule for the CURRENT monomorph. Non-generic bodies read the
 /// baked `op_resolutions` map, including one inlined from a generic caller:
@@ -39,10 +39,12 @@ fn mono_op_rule(ctx: &LowerCtx, e: &Expr, op: &str, operand_ports: &[PortRef]) -
     let tys: Vec<Type> = port_types()
         .into_iter()
         .enumerate()
-        .map(|(i, port)| match operands.get(i).map(|x| operand_type(&ctx.type_of(x))) {
-            Some(t) if !matches!(t, Type::Any) => t,
-            _ => port,
-        })
+        .map(
+            |(i, port)| match operands.get(i).map(|x| operand_type(&ctx.type_of(x))) {
+                Some(t) if !matches!(t, Type::Any) => t,
+                _ => port,
+            },
+        )
         .collect();
     crate::catalog::operators::resolve_op(op, &tys)
         .cloned()
@@ -70,7 +72,8 @@ pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     }
     // A brick or ref compared with `null` compares with the port left empty,
     // which holds that type's null reference: no literal spells one.
-    let null_ref = |x: &Expr| matches!(x, Expr::NullLit { .. }) && ctx.type_of(x).ref_kind().is_some();
+    let null_ref =
+        |x: &Expr| matches!(x, Expr::NullLit { .. }) && ctx.type_of(x).ref_kind().is_some();
     if null_ref(left) || null_ref(right) {
         let (left_port, right_port) = if null_ref(left) {
             (None, Some(lower_expr(ctx, right)))
@@ -84,12 +87,22 @@ pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
 }
 
 /// The gate of the binary operator `e` over its lowered operands.
-pub(super) fn binop_gate(ctx: &mut LowerCtx, e: &Expr, left_port: PortRef, right_port: PortRef) -> PortRef {
+pub(super) fn binop_gate(
+    ctx: &mut LowerCtx,
+    e: &Expr,
+    left_port: PortRef,
+    right_port: PortRef,
+) -> PortRef {
     binop_gate_of(ctx, e, Some(left_port), Some(right_port))
 }
 
 /// [`binop_gate`], an operand of `None` leaving its input unwired.
-fn binop_gate_of(ctx: &mut LowerCtx, e: &Expr, left_port: Option<PortRef>, right_port: Option<PortRef>) -> PortRef {
+fn binop_gate_of(
+    ctx: &mut LowerCtx,
+    e: &Expr,
+    left_port: Option<PortRef>,
+    right_port: Option<PortRef>,
+) -> PortRef {
     let Expr::BinOp { op, range, .. } = e else {
         return synthesise_unsupported(ctx, e);
     };
@@ -130,9 +143,7 @@ fn binop_gate_of(ctx: &mut LowerCtx, e: &Expr, left_port: Option<PortRef>, right
                 PortSpec::new(in_a_sym, left_ty),
                 PortSpec::new(in_b_sym, right_ty),
             ],
-            outputs: vec![
-                PortSpec::new(out_sym, rule.result.clone()),
-            ],
+            outputs: vec![PortSpec::new(out_sym, rule.result.clone())],
         },
         note: None,
         ..Default::default()
@@ -260,9 +271,7 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                         PortSpec::new(in_a_sym, lhs_ty.clone()),
                         PortSpec::new(in_b_sym, rhs_ty.clone()),
                     ],
-                    outputs: vec![
-                        PortSpec::new(out_sym, out_ty.clone()),
-                    ],
+                    outputs: vec![PortSpec::new(out_sym, out_ty.clone())],
                 },
                 note: None,
                 ..Default::default()
@@ -279,7 +288,11 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     // names, in every fold mode: the game's MathNegate answers an integer
     // with a float. One computed through an integer operation the certified
     // fold table has no result for keeps its gates.
-    if op == "-" && ctx.op_for(e).is_some_and(|r| r.operands.first() == Some(&Type::Int)) {
+    if op == "-"
+        && ctx
+            .op_for(e)
+            .is_some_and(|r| r.operands.first() == Some(&Type::Int))
+    {
         let lookup = |n: &str| ctx.resolve_mod(n);
         let cx = ctx.certified_const_ctx(Some(&lookup));
         let mut budget = crate::const_eval::Budget::default();
@@ -302,12 +315,8 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         gate_class: rule.gate_class,
         source_range: range.clone(),
         ports: GateIO {
-            inputs: vec![
-                PortSpec::new(in_a_sym, rule.operands[0].clone()),
-            ],
-            outputs: vec![
-                PortSpec::new(out_sym, rule.result.clone()),
-            ],
+            inputs: vec![PortSpec::new(in_a_sym, rule.operands[0].clone())],
+            outputs: vec![PortSpec::new(out_sym, rule.result.clone())],
         },
         note: None,
         ..Default::default()
@@ -328,7 +337,10 @@ pub(super) fn build_format_text(
         .map(|i| PortSpec::new(FORMAT_SLOTS[i].sym(), Type::Any))
         .collect();
     let mut props = HashMap::default();
-    props.insert(intern_static("FormatString"), Literal::String(format_string));
+    props.insert(
+        intern_static("FormatString"),
+        Literal::String(format_string),
+    );
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::STRING_FORMAT_TEXT,
         source_range: range.clone(),
@@ -386,7 +398,9 @@ pub(super) fn lower_interp(
     let Ok(groups) = interp_groups(parts, |_| Ok::<_, std::convert::Infallible>(ports.next()));
     let outs: Vec<PortRef> = groups
         .into_iter()
-        .map(|(fmt, slots)| build_format_text(ctx, fmt, slots.into_iter().flatten().collect(), range))
+        .map(|(fmt, slots)| {
+            build_format_text(ctx, fmt, slots.into_iter().flatten().collect(), range)
+        })
         .collect();
     concat_string_ports(ctx, outs, range)
 }

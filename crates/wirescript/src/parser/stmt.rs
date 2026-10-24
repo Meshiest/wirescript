@@ -8,7 +8,10 @@ impl<'a> Parser<'a> {
         if !self.enter_nesting() {
             self.leave_nesting(1);
             let end = self.peek().end;
-            return Block { stmts: Vec::new(), range: self.make_range(start, end) };
+            return Block {
+                stmts: Vec::new(),
+                range: self.make_range(start, end),
+            };
         }
         self.eat_newlines();
         let mut stmts: Vec<Stmt> = Vec::new();
@@ -29,7 +32,8 @@ impl<'a> Parser<'a> {
                     let decl_start = s.range().start.offset;
                     let file: std::sync::Arc<str> = self.file.into();
                     if decl_start != stmt_start.offset {
-                        self.doc_comments.insert((file.clone(), decl_start), doc.clone());
+                        self.doc_comments
+                            .insert((file.clone(), decl_start), doc.clone());
                     }
                     self.doc_comments.insert((file, stmt_start.offset), doc);
                 }
@@ -79,7 +83,11 @@ impl<'a> Parser<'a> {
                         t2.start,
                     );
                 }
-                let mut s = if kw("for") { self.parse_for_stmt() } else { self.parse_let_for() };
+                let mut s = if kw("for") {
+                    self.parse_for_stmt()
+                } else {
+                    self.parse_let_for()
+                };
                 if let Stmt::For(f) = &mut s {
                     f.sliced = anns.sliced.is_some();
                     f.label = anns.label.map(|(l, _)| l);
@@ -116,8 +124,7 @@ impl<'a> Parser<'a> {
                             r.end,
                         );
                     }
-                    if let TopDecl::In(i) = self.parse_in_decl(side, label, label_expr, invisible)
-                    {
+                    if let TopDecl::In(i) = self.parse_in_decl(side, label, label_expr, invisible) {
                         return Some(Stmt::In(i));
                     }
                     return None;
@@ -146,11 +153,7 @@ impl<'a> Parser<'a> {
                 match decl {
                     TopDecl::AnonChip(ac) => {
                         if let Some(r) = &anns.nofold {
-                            self.warn(
-                                "@nofold has no effect on an anonymous chip",
-                                r.start,
-                                r.end,
-                            );
+                            self.warn("@nofold has no effect on an anonymous chip", r.start, r.end);
                         }
                         return Some(Stmt::AnonChip(ac));
                     }
@@ -173,13 +176,17 @@ impl<'a> Parser<'a> {
                 anns.side.is_none() && anns.closed.is_none() && anns.invisible.is_none();
             let styled = anns.color.is_some() || anns.material.is_some();
             let var_ann_ok = no_side_closed_invisible
-                && (anns.nofold.is_some() || anns.label.is_some() || anns.label_expr.is_some() || styled);
+                && (anns.nofold.is_some()
+                    || anns.label.is_some()
+                    || anns.label_expr.is_some()
+                    || styled);
             let bare_nofold = no_side_closed_invisible
                 && anns.nofold.is_some()
                 && anns.label.is_none()
                 && anns.label_expr.is_none()
                 && !styled;
-            if (var_ann_ok && (kw("var") || is_static_var)) || (bare_nofold && (kw("let") || kw("on")))
+            if (var_ann_ok && (kw("var") || is_static_var))
+                || (bare_nofold && (kw("let") || kw("on")))
             {
                 let no_fold = anns.nofold.is_some();
                 let label = anns.label.map(|(l, _)| l);
@@ -861,7 +868,10 @@ impl<'a> Parser<'a> {
             let right = self.parse_range_operand();
             let end = right.range().end;
             return ForSource::Range(RangeSource {
-                extent: RangeExtent::Bounds { start: left, end: right },
+                extent: RangeExtent::Bounds {
+                    start: left,
+                    end: right,
+                },
                 step: None,
                 reversed: false,
                 range: self.make_range(start, end),
@@ -902,25 +912,34 @@ impl<'a> Parser<'a> {
         // no separate method-call node in this AST.
         loop {
             let is_step = match &cur {
-                Expr::Call { callee, args, type_args, .. } if type_args.is_empty() => {
-                    match callee.as_ref() {
-                        Expr::FieldAccess { field, .. }
-                            if field == "step"
-                                && args.len() == 1
-                                && matches!(args[0], CallArg::Positional(_)) =>
-                        {
-                            Some(true)
-                        }
-                        Expr::FieldAccess { field, .. } if field == "rev" && args.is_empty() => {
-                            Some(false)
-                        }
-                        _ => None,
+                Expr::Call {
+                    callee,
+                    args,
+                    type_args,
+                    ..
+                } if type_args.is_empty() => match callee.as_ref() {
+                    Expr::FieldAccess { field, .. }
+                        if field == "step"
+                            && args.len() == 1
+                            && matches!(args[0], CallArg::Positional(_)) =>
+                    {
+                        Some(true)
                     }
-                }
+                    Expr::FieldAccess { field, .. } if field == "rev" && args.is_empty() => {
+                        Some(false)
+                    }
+                    _ => None,
+                },
                 _ => None,
             };
             let Some(is_step) = is_step else { break };
-            let Expr::Call { callee, args, range, .. } = cur else {
+            let Expr::Call {
+                callee,
+                args,
+                range,
+                ..
+            } = cur
+            else {
                 unreachable!("shape just matched above")
             };
             let Expr::FieldAccess { obj, .. } = *callee else {
@@ -940,7 +959,9 @@ impl<'a> Parser<'a> {
         }
 
         match cur {
-            Expr::BinOp { op, left, right, .. } if op == ".." => {
+            Expr::BinOp {
+                op, left, right, ..
+            } if op == ".." => {
                 // Each peel overwrites the one below it rather than combining
                 // with it, so a repeated method silently keeps the innermost.
                 if let Some((method, range)) = peeled
@@ -959,7 +980,10 @@ impl<'a> Parser<'a> {
                     );
                 }
                 Ok(RangeSource {
-                    extent: RangeExtent::Bounds { start: *left, end: *right },
+                    extent: RangeExtent::Bounds {
+                        start: *left,
+                        end: *right,
+                    },
                     step,
                     reversed,
                     range: self.make_range(start, end),

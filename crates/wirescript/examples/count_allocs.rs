@@ -39,7 +39,9 @@ fn snap(label: &str, last: &mut (u64, u64)) {
 }
 
 fn main() {
-    let file = std::env::args().nth(1).expect("usage: count_allocs <file.ws>");
+    let file = std::env::args()
+        .nth(1)
+        .expect("usage: count_allocs <file.ws>");
     let source = std::fs::read_to_string(&file).expect("read source");
     let mut last = (0u64, 0u64);
 
@@ -71,8 +73,12 @@ fn main() {
     snap("layout", &mut last);
 
     let mut opts = wirescript::EmitOptions::default();
-    opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(&file, wirescript::lower::FoldMode::Auto));
-    let world = wirescript::build_world(&lowered.module, &Default::default(), &lr, &opts).expect("emit");
+    opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(
+        &file,
+        wirescript::lower::FoldMode::Auto,
+    ));
+    let world =
+        wirescript::build_world(&lowered.module, &Default::default(), &lr, &opts).expect("emit");
     snap("build_world", &mut last);
 
     let unsaved = world.to_unsaved().expect("to_unsaved");

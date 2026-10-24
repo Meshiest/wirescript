@@ -103,13 +103,17 @@ impl<'a> Parser<'a> {
                 anns.side.is_none() && anns.closed.is_none() && anns.invisible.is_none();
             let styled = anns.color.is_some() || anns.material.is_some();
             let var_ann_ok = no_side_closed_invisible
-                && (anns.nofold.is_some() || anns.label.is_some() || anns.label_expr.is_some() || styled);
+                && (anns.nofold.is_some()
+                    || anns.label.is_some()
+                    || anns.label_expr.is_some()
+                    || styled);
             let bare_nofold = no_side_closed_invisible
                 && anns.nofold.is_some()
                 && anns.label.is_none()
                 && anns.label_expr.is_none()
                 && !styled;
-            if (var_ann_ok && (kw("var") || is_static_var)) || (bare_nofold && (kw("let") || kw("on")))
+            if (var_ann_ok && (kw("var") || is_static_var))
+                || (bare_nofold && (kw("let") || kw("on")))
             {
                 let no_fold = anns.nofold.is_some();
                 let label = anns.label.map(|(l, _)| l);
@@ -561,7 +565,8 @@ impl<'a> Parser<'a> {
         // A literal (`let "go " .. dest = cmd else`) or a name followed by `..`
         // (`let name .. ".ws" = file else`) starts a pattern too: neither
         // begins a plain binding.
-        let ident_then = |p: &Self, text: &str| p.peek().kind == TokenKind::Ident && p.peek_at(1).text == text;
+        let ident_then =
+            |p: &Self, text: &str| p.peek().kind == TokenKind::Ident && p.peek_at(1).text == text;
         if (self.peek().kind == TokenKind::Ident
             && matches!(self.peek_at(1).kind, TokenKind::LParen | TokenKind::LBrace))
             || self.at_literal_pattern()
@@ -652,7 +657,10 @@ impl<'a> Parser<'a> {
                 let expr_range = expr.range().clone();
                 let synth_name = format!("_on_expr_{}", self.expr_trigger_counter);
                 self.expr_trigger_counter += 1;
-                let trigger = Trigger::Ident { name: synth_name.clone(), range: expr_range.clone() };
+                let trigger = Trigger::Ident {
+                    name: synth_name.clone(),
+                    range: expr_range.clone(),
+                };
                 let has_exec_arg = expr_call_has_exec_arg(&expr);
                 let mut params = Vec::new();
                 if self.match_tok(TokenKind::Arrow, None).is_some() {
@@ -661,7 +669,10 @@ impl<'a> Parser<'a> {
                 let body = self.parse_block();
                 // Queued after the body, which drains the queue into itself.
                 self.pending_stmts.push(Stmt::Let(LetDecl {
-                    binding: LetBinding::Ident { name: synth_name.clone(), range: expr_range.clone() },
+                    binding: LetBinding::Ident {
+                        name: synth_name.clone(),
+                        range: expr_range.clone(),
+                    },
                     typ: None,
                     value: expr,
                     no_fold: false,
@@ -671,7 +682,10 @@ impl<'a> Parser<'a> {
                 let range = self.make_range(start, body.range.end);
                 return TopDecl::Event(EventDecl {
                     name,
-                    source: Expr::Ident { name: synth_name, range: expr_range },
+                    source: Expr::Ident {
+                        name: synth_name,
+                        range: expr_range,
+                    },
                     captured: Some(Handler {
                         trigger,
                         params,
@@ -926,9 +940,11 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::Colon, None);
         let full_type = self.parse_type();
         let (key_type, value_type) = match full_type {
-            TypeExpr::Generic { name: gname, mut args, .. }
-                if gname == "Map" && args.len() == 2 =>
-            {
+            TypeExpr::Generic {
+                name: gname,
+                mut args,
+                ..
+            } if gname == "Map" && args.len() == 2 => {
                 let value_type = args.pop().unwrap();
                 let key_type = args.pop().unwrap();
                 (key_type, value_type)
@@ -941,7 +957,10 @@ impl<'a> Parser<'a> {
                     r.end,
                 );
                 // Recover with `any` key/value so parsing continues.
-                let anyt = |r: SourceRange| TypeExpr::Name { name: "any".into(), range: r };
+                let anyt = |r: SourceRange| TypeExpr::Name {
+                    name: "any".into(),
+                    range: r,
+                };
                 (anyt(other.range().clone()), anyt(other.range().clone()))
             }
         };
@@ -1227,7 +1246,9 @@ impl<'a> Parser<'a> {
 
     /// `mod name<T>(params) -> outputs { body }`, or the same after `fn`.
     fn parse_mod_or_fn_decl(&mut self, is_const: bool, is_fn: bool) -> TopDecl {
-        let start = self.expect(TokenKind::Kw, Some(if is_fn { "fn" } else { "mod" })).start;
+        let start = self
+            .expect(TokenKind::Kw, Some(if is_fn { "fn" } else { "mod" }))
+            .start;
         let name = self.expect(TokenKind::Ident, None).text;
         let type_params = self.parse_type_params();
         let (mut inputs, rest) = self.parse_param_list();

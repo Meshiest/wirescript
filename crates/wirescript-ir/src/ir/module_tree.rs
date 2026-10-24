@@ -14,7 +14,10 @@ pub struct ModuleTree {
 impl ModuleTree {
     /// A tree holding only the root, index 0.
     pub fn new() -> Self {
-        Self { parent: vec![None], depth: vec![0] }
+        Self {
+            parent: vec![None],
+            depth: vec![0],
+        }
     }
 
     /// Add a module inside `parent`; returns its index.
@@ -58,7 +61,11 @@ pub fn nest_bodies(modules: Vec<Module>, mut bodies: Vec<(NodeId, usize, usize)>
     bodies.sort_by_key(|&(_, body, _)| std::cmp::Reverse(body));
     for (chip, body, parent) in bodies {
         let child = modules[body].take().expect("each body moves once");
-        modules[parent].as_mut().expect("parents move after their bodies").chips.insert(chip, child);
+        modules[parent]
+            .as_mut()
+            .expect("parents move after their bodies")
+            .chips
+            .insert(chip, child);
     }
     modules[0].take().expect("the root never moves")
 }

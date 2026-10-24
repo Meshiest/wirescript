@@ -1,4 +1,3 @@
-
 use serde::Serialize;
 use wirescript::analysis::text::{Ruler, byte_col_to_editor, editor_col_to_char};
 use wirescript::analysis::{
@@ -73,7 +72,11 @@ pub struct LocationOut {
 fn location_out(source: &str, loc: Location) -> LocationOut {
     let same_file = loc.file.is_none();
     let conv = |line: usize, col: usize| {
-        if same_file { byte_col_to_editor(source, line, col) } else { col }
+        if same_file {
+            byte_col_to_editor(source, line, col)
+        } else {
+            col
+        }
     };
     LocationOut {
         start_col: conv(loc.start_line, loc.start_col),
@@ -101,7 +104,12 @@ pub fn diagnostics(source: &str, files_json: &str) -> String {
     // clean and lowers to an `_Unsupported` placeholder is a dead circuit, and
     // stopping at typecheck hid every one of them while `wirescript_compile`
     // went on to succeed and hand the user the `.brz`.
-    let input = wirescript::CompileInput { source, file: "editor", module_name: None, fold_mode: wirescript::FoldMode::Auto };
+    let input = wirescript::CompileInput {
+        source,
+        file: "editor",
+        module_name: None,
+        fold_mode: wirescript::FoldMode::Auto,
+    };
     let ruler = Ruler::new(source);
     let diags: Vec<DiagnosticOut> = wirescript::diagnostics_only(input, &loader)
         .iter()
@@ -254,8 +262,13 @@ pub fn references_with_files(
     // The playground is single-file, so `_files_json` is unused — `references_at`
     // only ever returns same-file sites (cross-file rename lives in the LSP).
     let parsed = parse(source, "editor");
-    let (target, sites) =
-        references_at(&parsed.ast, source, "editor", line as usize, editor_col_to_char(source, line as usize, col as usize))?;
+    let (target, sites) = references_at(
+        &parsed.ast,
+        source,
+        "editor",
+        line as usize,
+        editor_col_to_char(source, line as usize, col as usize),
+    )?;
     let ruler = Ruler::new(source);
     let refs: Vec<LocationOut> = sites
         .into_iter()
@@ -302,7 +315,8 @@ struct WorkspaceSymbol {
 }
 
 pub fn workspace_symbols(files_json: &str) -> String {
-    let files: wirescript::collections::HashMap<String, String> = serde_json::from_str(files_json).unwrap_or_default();
+    let files: wirescript::collections::HashMap<String, String> =
+        serde_json::from_str(files_json).unwrap_or_default();
     let _empty_tmap: TypeMap = TypeMap::default();
     let mut syms = Vec::new();
     for (path, source) in &files {
@@ -344,7 +358,12 @@ pub fn inlay_hints(source: &str, files_json: &str) -> String {
     let loader = make_loader(files_json);
     let resolved = resolve(source, "editor", &loader);
     let tc = typecheck_with_inference(&resolved.ast, "editor").0;
-    let hints = wirescript::analysis::collect_inlay_hints(source, &resolved.ast, &tc.type_of_expr, "editor");
+    let hints = wirescript::analysis::collect_inlay_hints(
+        source,
+        &resolved.ast,
+        &tc.type_of_expr,
+        "editor",
+    );
     let ruler = Ruler::new(source);
     let out: Vec<InlayHintOut> = hints
         .into_iter()

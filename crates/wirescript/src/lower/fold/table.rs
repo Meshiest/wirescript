@@ -41,16 +41,34 @@ pub(crate) enum InVariant {
 pub(crate) enum CaseValue {
     /// int/float/bool/str/tmpl raw text, as recorded.
     Scalar(String),
-    Vector { x: f64, y: f64, z: f64 },
-    Rotator { pitch: f64, yaw: f64, roll: f64 },
-    Quat { x: f64, y: f64, z: f64, w: f64 },
+    Vector {
+        x: f64,
+        y: f64,
+        z: f64,
+    },
+    Rotator {
+        pitch: f64,
+        yaw: f64,
+        roll: f64,
+    },
+    Quat {
+        x: f64,
+        y: f64,
+        z: f64,
+        w: f64,
+    },
     /// Linear-space components — `MakeColorSRGB`/`MakeColorHex`'s certified
     /// gamma law lives in `eval.rs`, not here; this just stores whatever
     /// constructor text appeared (`Color(r,g,b[,a])`), and an omitted alpha
     /// defaults to fully opaque (`1.0`) — never observably distinguishable
     /// in any certified case (every case using a 3-arg `Color(...)` operand
     /// either never reads alpha at all, or the case output doesn't render).
-    Color { r: f64, g: f64, b: f64, a: f64 },
+    Color {
+        r: f64,
+        g: f64,
+        b: f64,
+        a: f64,
+    },
 }
 
 #[allow(dead_code)] // read by the certified-semantics replay tests
@@ -77,7 +95,10 @@ pub(crate) struct Case {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum AnnihilatorKind { AndFalse, OrTrue }
+pub(crate) enum AnnihilatorKind {
+    AndFalse,
+    OrTrue,
+}
 
 pub(crate) struct CertifiedTable {
     gates: HashMap<String, GateEntry>,
@@ -112,12 +133,21 @@ struct RawGate {
     rules: Vec<RawRule>,
 }
 #[derive(serde::Deserialize)]
-struct RawCase { inputs: Vec<RawInput>, output: RawVal }
+struct RawCase {
+    inputs: Vec<RawInput>,
+    output: RawVal,
+}
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
-enum RawInput { Unwired(String), Val(RawVal) }
+enum RawInput {
+    Unwired(String),
+    Val(RawVal),
+}
 #[derive(serde::Deserialize)]
-struct RawVal { variant: String, value: String }
+struct RawVal {
+    variant: String,
+    value: String,
+}
 #[derive(serde::Deserialize)]
 struct RawRule {
     kind: String,
@@ -162,9 +192,9 @@ fn split_ctor(raw: &str) -> (&str, Vec<f64>) {
     let nums: Vec<f64> = inner
         .split(',')
         .map(|tok| {
-            tok.trim().parse::<f64>().unwrap_or_else(|e| {
-                panic!("malformed composite component {tok:?} in {raw:?}: {e}")
-            })
+            tok.trim()
+                .parse::<f64>()
+                .unwrap_or_else(|e| panic!("malformed composite component {tok:?} in {raw:?}: {e}"))
         })
         .collect();
     (name, nums)
@@ -178,22 +208,40 @@ fn parse_composite(variant: InVariant, raw: &str) -> CaseValue {
     match variant {
         InVariant::Vector => {
             assert_eq!(n.len(), 3, "Vec(...) must have 3 components: {raw:?}");
-            CaseValue::Vector { x: n[0], y: n[1], z: n[2] }
+            CaseValue::Vector {
+                x: n[0],
+                y: n[1],
+                z: n[2],
+            }
         }
         InVariant::Rotator => {
             assert_eq!(n.len(), 3, "Rotation(...) must have 3 components: {raw:?}");
-            CaseValue::Rotator { pitch: n[0], yaw: n[1], roll: n[2] }
+            CaseValue::Rotator {
+                pitch: n[0],
+                yaw: n[1],
+                roll: n[2],
+            }
         }
         InVariant::Quat => {
             assert_eq!(n.len(), 4, "Quat(...) must have 4 components: {raw:?}");
-            CaseValue::Quat { x: n[0], y: n[1], z: n[2], w: n[3] }
+            CaseValue::Quat {
+                x: n[0],
+                y: n[1],
+                z: n[2],
+                w: n[3],
+            }
         }
         InVariant::Color => {
             assert!(
                 n.len() == 3 || n.len() == 4,
                 "Color(...) must have 3 or 4 components: {raw:?}"
             );
-            CaseValue::Color { r: n[0], g: n[1], b: n[2], a: n.get(3).copied().unwrap_or(1.0) }
+            CaseValue::Color {
+                r: n[0],
+                g: n[1],
+                b: n[2],
+                a: n.get(3).copied().unwrap_or(1.0),
+            }
         }
         _ => unreachable!("parse_composite only called for composite variants"),
     }
@@ -214,34 +262,57 @@ impl CertifiedTable {
                     annihilator: None,
                 };
                 for c in g.cases {
-                    let inputs: Vec<CaseInput> = c.inputs.iter().map(|i| match i {
-                        RawInput::Unwired(s) => {
-                            assert_eq!(s, "unwired", "unexpected bare input {s:?}");
-                            CaseInput { variant: InVariant::Unwired, value: None }
-                        }
-                        RawInput::Val(v) => {
-                            let variant = parse_variant(&v.variant);
-                            let value = match variant {
-                                InVariant::Vector | InVariant::Rotator
-                                | InVariant::Quat | InVariant::Color => {
-                                    parse_composite(variant, &v.value)
+                    let inputs: Vec<CaseInput> = c
+                        .inputs
+                        .iter()
+                        .map(|i| match i {
+                            RawInput::Unwired(s) => {
+                                assert_eq!(s, "unwired", "unexpected bare input {s:?}");
+                                CaseInput {
+                                    variant: InVariant::Unwired,
+                                    value: None,
                                 }
-                                _ => CaseValue::Scalar(v.value.clone()),
-                            };
-                            CaseInput { variant, value: Some(value) }
-                        }
-                    }).collect();
-                    entry.signatures.insert(inputs.iter().map(|i| i.variant).collect());
-                    entry.cases.push(Case { inputs, output_value: c.output.value });
+                            }
+                            RawInput::Val(v) => {
+                                let variant = parse_variant(&v.variant);
+                                let value = match variant {
+                                    InVariant::Vector
+                                    | InVariant::Rotator
+                                    | InVariant::Quat
+                                    | InVariant::Color => parse_composite(variant, &v.value),
+                                    _ => CaseValue::Scalar(v.value.clone()),
+                                };
+                                CaseInput {
+                                    variant,
+                                    value: Some(value),
+                                }
+                            }
+                        })
+                        .collect();
+                    entry
+                        .signatures
+                        .insert(inputs.iter().map(|i| i.variant).collect());
+                    entry.cases.push(Case {
+                        inputs,
+                        output_value: c.output.value,
+                    });
                 }
                 for r in &g.rules {
-                    if r.kind != "annihilator" { continue; }
+                    if r.kind != "annihilator" {
+                        continue;
+                    }
                     let (w, res) = (r.when.as_ref(), r.result.as_ref());
-                    let (Some(w), Some(res)) = (w, res) else { continue };
+                    let (Some(w), Some(res)) = (w, res) else {
+                        continue;
+                    };
                     // Whitelist only — anything else in rules is ignored, never
                     // trusted (spec: rules are the annihilator allowlist).
-                    entry.annihilator = match (w.variant.as_str(), w.value.as_str(),
-                                               res.variant.as_str(), res.value.as_str()) {
+                    entry.annihilator = match (
+                        w.variant.as_str(),
+                        w.value.as_str(),
+                        res.variant.as_str(),
+                        res.value.as_str(),
+                    ) {
                         ("bool", "false", "bool", "false") => Some(AnnihilatorKind::AndFalse),
                         ("bool", "true", "bool", "true") => Some(AnnihilatorKind::OrTrue),
                         _ => None,
@@ -249,12 +320,17 @@ impl CertifiedTable {
                 }
                 gates.insert(class, entry);
             }
-            CertifiedTable { gates, render: raw.render }
+            CertifiedTable {
+                gates,
+                render: raw.render,
+            }
         })
     }
 
     pub(crate) fn covers(&self, gate_class: &str, sig: &[InVariant]) -> bool {
-        self.gates.get(gate_class).is_some_and(|g| g.signatures.contains(sig))
+        self.gates
+            .get(gate_class)
+            .is_some_and(|g| g.signatures.contains(sig))
     }
     #[allow(dead_code)] // replay tests
     pub(crate) fn cases(&self, gate_class: &str) -> &[Case] {

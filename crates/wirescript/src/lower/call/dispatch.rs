@@ -25,11 +25,7 @@ fn receiver_has_runtime_container(ctx: &LowerCtx, obj: &Expr) -> bool {
 /// as a literal source gate. The method-call analogue of
 /// `access::const_fold_index_access`, sharing its `wire_type_of_literal` +
 /// `literal_node_range` pair so both agree on which literals have a wire form.
-fn const_fold_container_call(
-    ctx: &mut LowerCtx,
-    e: &Expr,
-    range: &SourceRange,
-) -> Option<PortRef> {
+fn const_fold_container_call(ctx: &mut LowerCtx, e: &Expr, range: &SourceRange) -> Option<PortRef> {
     let lit = {
         let lookup = |n: &str| ctx.resolve_mod(n);
         let mut budget = crate::const_eval::Budget::default();
@@ -49,7 +45,11 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         } => (callee, args, type_args, range),
         _ => return synthesise_unsupported(ctx, e),
     };
-    if let Expr::Ident { name, range: name_range } = callee.as_ref() {
+    if let Expr::Ident {
+        name,
+        range: name_range,
+    } = callee.as_ref()
+    {
         // User-defined chips/mods shadow builtins of the same name, so a program
         // can define e.g. `chip Toggle` without colliding with the builtin.
         if let Some(chip_decl) = ctx.call_target_chip(name, &name_range.file).cloned() {
@@ -69,7 +69,9 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             let mut input_wires: Vec<(&'static str, &Type, &Expr)> = Vec::new();
             for (surf, port, ty) in &evt.input_named {
                 for arg in args {
-                    if let CallArg::Named { name: an, value, .. } = arg
+                    if let CallArg::Named {
+                        name: an, value, ..
+                    } = arg
                         && an.eq_ignore_ascii_case(surf)
                     {
                         input_wires.push((port, ty, value));
@@ -180,12 +182,20 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         // A nested column (`qs.p.x`) climbs to the root record array, so every
         // column of the row moves with the key.
         if field == "sort"
-            && let Expr::FieldAccess { obj: base, field: keyfield, .. } = obj.as_ref()
+            && let Expr::FieldAccess {
+                obj: base,
+                field: keyfield,
+                ..
+            } = obj.as_ref()
             && is_record_array_kind(ctx, base)
         {
             let mut root: &Expr = base;
             let mut path = vec![keyfield.clone()];
-            while let Expr::FieldAccess { obj: parent, field: seg, .. } = root
+            while let Expr::FieldAccess {
+                obj: parent,
+                field: seg,
+                ..
+            } = root
                 && is_record_array_kind(ctx, parent)
             {
                 path.insert(0, seg.clone());
@@ -198,29 +208,31 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             }
         }
         match ctx.method_target(e) {
-            Some(MethodTarget::Container { kind, method }) => match container_ref(ctx, obj, &kind) {
-                Some(ContainerSource::Ref(port)) => {
-                    return match kind {
-                        ContainerKind::Array { elem } => {
-                            lower_array_method(ctx, port, elem, &method, args, range, e)
-                        }
-                        ContainerKind::Map { .. } => {
-                            lower_map_method(ctx, port, kind.as_type(), &method, args, range, e)
-                        }
-                    };
+            Some(MethodTarget::Container { kind, method }) => {
+                match container_ref(ctx, obj, &kind) {
+                    Some(ContainerSource::Ref(port)) => {
+                        return match kind {
+                            ContainerKind::Array { elem } => {
+                                lower_array_method(ctx, port, elem, &method, args, range, e)
+                            }
+                            ContainerKind::Map { .. } => {
+                                lower_map_method(ctx, port, kind.as_type(), &method, args, range, e)
+                            }
+                        };
+                    }
+                    Some(ContainerSource::Columns(fields)) => {
+                        return match kind {
+                            ContainerKind::Array { .. } => {
+                                lower_record_array_method(ctx, &fields, &method, args, range, e)
+                            }
+                            ContainerKind::Map { .. } => {
+                                lower_record_map_method(ctx, &fields, &method, args, range, e)
+                            }
+                        };
+                    }
+                    None => {}
                 }
-                Some(ContainerSource::Columns(fields)) => {
-                    return match kind {
-                        ContainerKind::Array { .. } => {
-                            lower_record_array_method(ctx, &fields, &method, args, range, e)
-                        }
-                        ContainerKind::Map { .. } => {
-                            lower_record_map_method(ctx, &fields, &method, args, range, e)
-                        }
-                    };
-                }
-                None => {}
-            },
+            }
             Some(MethodTarget::Builtin(name)) => {
                 if let Some(spec) = find_call(&name) {
                     // A named-target receiver (`entity.SendCustomEvent(…)`) binds the
@@ -271,7 +283,11 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         if crate::catalog::arrays::is_array_method(field)
             || crate::catalog::maps::is_map_method(field)
         {
-            report_unresolved_container(ctx, &format!("`.{field}()` is an array/map method"), range);
+            report_unresolved_container(
+                ctx,
+                &format!("`.{field}()` is an array/map method"),
+                range,
+            );
         }
     }
     synthesise_unsupported(ctx, e)
@@ -316,5 +332,10 @@ fn event_config_props_from_call_args(
 
 /// Whether typecheck resolved `e` as an array of records.
 fn is_record_array_kind(ctx: &LowerCtx, e: &Expr) -> bool {
-    matches!(ctx.container_kind(e), Some(ContainerKind::Array { elem: Type::Record(_) }))
+    matches!(
+        ctx.container_kind(e),
+        Some(ContainerKind::Array {
+            elem: Type::Record(_)
+        })
+    )
 }

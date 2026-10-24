@@ -21,9 +21,17 @@ pub(in crate::lower) struct ConstFold {
 /// an `int` parameter the integer it names.
 pub(super) fn const_arg_literal(ctx: &LowerCtx, e: &Expr) -> Option<(Type, Literal)> {
     match e {
-        Expr::IntLit { value, .. } => Some(crate::lower::expr::constant_literal(ctx, e, Literal::Int(*value))),
+        Expr::IntLit { value, .. } => Some(crate::lower::expr::constant_literal(
+            ctx,
+            e,
+            Literal::Int(*value),
+        )),
         Expr::AtomLit { value, .. } => Some((Type::Int, Literal::Int(*value))),
-        Expr::FloatLit { value, .. } => Some(crate::lower::expr::constant_literal(ctx, e, Literal::Float(*value))),
+        Expr::FloatLit { value, .. } => Some(crate::lower::expr::constant_literal(
+            ctx,
+            e,
+            Literal::Float(*value),
+        )),
         Expr::BoolLit { value, .. } if ctx.type_of(e) == Type::Int => {
             Some((Type::Int, Literal::Int(i64::from(*value))))
         }
@@ -53,7 +61,15 @@ pub(super) fn fold_const_chip_input(ctx: &mut LowerCtx, chip_node_id: NodeId, fo
     props.insert(*sym::VALUE, fold.value.clone());
     let lit_id = NodeId::fresh();
     let ports = GateIO::source(fold.ty.clone());
-    let lit = crate::ir::Node::new(lit_id, NodeKind::Gate, gc::LITERAL, ports, props, Some(pin_node), None);
+    let lit = crate::ir::Node::new(
+        lit_id,
+        NodeKind::Gate,
+        gc::LITERAL,
+        ports,
+        props,
+        Some(pin_node),
+        None,
+    );
     child.nodes.insert(lit_id, lit);
     // Everything the pin fed now reads the literal directly.
     for w in &mut child.wires {

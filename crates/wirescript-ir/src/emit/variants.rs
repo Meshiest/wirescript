@@ -108,7 +108,9 @@ pub(super) fn dynamic_type_name(ty: Option<&crate::ir::Type>) -> &'static str {
         // Handle storage is kind-strict in game: a component_handle container
         // keeps var, array and map refs and components; a brick_handle one
         // keeps bricks.
-        Some(Type::Ref(_) | Type::Array(_) | Type::Map(_, _) | Type::Component(_)) => "component_handle",
+        Some(Type::Ref(_) | Type::Array(_) | Type::Map(_, _) | Type::Component(_)) => {
+            "component_handle"
+        }
         Some(Type::Brick) => "brick_handle",
         // `any`: each element a `WireValue`, keeping its own kind (the game's
         // Any Value).
@@ -263,7 +265,12 @@ pub(super) fn map_from_type(ty: &crate::ir::Type) -> DynMap {
 pub(super) fn map_from_literals(map: DynMap, entries: &[(Literal, Literal)]) -> DynMap {
     let entries = entries
         .iter()
-        .map(|(k, v)| (wire_value_as(map.key_type, k), wire_value_as(map.value_type, v)))
+        .map(|(k, v)| {
+            (
+                wire_value_as(map.key_type, k),
+                wire_value_as(map.value_type, v),
+            )
+        })
         .collect();
     DynMap { entries, ..map }
 }
@@ -275,7 +282,10 @@ pub(super) fn array_from_literals(elem: Option<&crate::ir::Type>, lits: &[Litera
     let element_type = dynamic_type_name(elem);
     DynArray {
         element_type,
-        values: lits.iter().map(|l| wire_value_as(element_type, l)).collect(),
+        values: lits
+            .iter()
+            .map(|l| wire_value_as(element_type, l))
+            .collect(),
     }
 }
 

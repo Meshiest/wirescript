@@ -13,9 +13,20 @@ pub(crate) const ENVIRONMENT: &str = "Environment";
 /// `Environment.<env>.<property>`, if `e` spells one: the environment's name
 /// and the property's.
 pub(crate) fn environment_path(e: &Expr) -> Option<(&str, &str)> {
-    let Expr::FieldAccess { obj, field, .. } = e else { return None };
-    let Expr::FieldAccess { obj: base, field: env, .. } = obj.as_ref() else { return None };
-    let Expr::Ident { name, .. } = base.as_ref() else { return None };
+    let Expr::FieldAccess { obj, field, .. } = e else {
+        return None;
+    };
+    let Expr::FieldAccess {
+        obj: base,
+        field: env,
+        ..
+    } = obj.as_ref()
+    else {
+        return None;
+    };
+    let Expr::Ident { name, .. } = base.as_ref() else {
+        return None;
+    };
     (name == ENVIRONMENT).then_some((env.as_str(), field.as_str()))
 }
 
@@ -44,7 +55,10 @@ pub(crate) enum PropertyError {
 /// The environment a program names `label` (the game's picker label without
 /// spaces: `Sky`, `Ground`, `Lighting`).
 pub(crate) fn environment_by_label(label: &str) -> Option<&'static properties::Environment> {
-    properties::property_map().environments.iter().find(|e| squash(&e.label) == label)
+    properties::property_map()
+        .environments
+        .iter()
+        .find(|e| squash(&e.label) == label)
 }
 
 fn squash(s: &str) -> String {
@@ -53,11 +67,18 @@ fn squash(s: &str) -> String {
 
 /// The environment names a program can write, in the map's order.
 pub(crate) fn environment_names() -> Vec<String> {
-    properties::property_map().environments.iter().map(|e| squash(&e.label)).collect()
+    properties::property_map()
+        .environments
+        .iter()
+        .map(|e| squash(&e.label))
+        .collect()
 }
 
 /// Resolve `Environment.<env>.<property>`.
-pub(crate) fn resolve_environment(env: &str, property: &str) -> Result<ResolvedProperty, PropertyError> {
+pub(crate) fn resolve_environment(
+    env: &str,
+    property: &str,
+) -> Result<ResolvedProperty, PropertyError> {
     let Some(e) = environment_by_label(env) else {
         return Err(PropertyError::Unknown(format!(
             "`{ENVIRONMENT}.{env}` names no environment; there are {}",
@@ -74,9 +95,18 @@ pub(crate) fn resolve_environment(env: &str, property: &str) -> Result<ResolvedP
     resolved(&e.option, p, &format!("{ENVIRONMENT}.{env}.{property}"))
 }
 
-fn resolved(owner: &'static str, p: &'static properties::Property, shown: &str) -> Result<ResolvedProperty, PropertyError> {
+fn resolved(
+    owner: &'static str,
+    p: &'static properties::Property,
+    shown: &str,
+) -> Result<ResolvedProperty, PropertyError> {
     match properties::property_type(p) {
-        PropertyType::Value(ty) => Ok(ResolvedProperty { owner, name: &p.name, ty, enum_type: None }),
+        PropertyType::Value(ty) => Ok(ResolvedProperty {
+            owner,
+            name: &p.name,
+            ty,
+            enum_type: None,
+        }),
         PropertyType::Enum(_) => Ok(ResolvedProperty {
             owner,
             name: &p.name,
@@ -128,13 +158,19 @@ pub(super) fn infer_environment_read(ctx: &mut TypeCheckCtx, e: &Expr) -> Option
 
 /// `Environment.<env>` with no property: name one.
 pub(super) fn environment_without_property(ctx: &mut TypeCheckCtx, e: &Expr) -> bool {
-    let Expr::FieldAccess { obj, field, range } = e else { return false };
-    if !matches!(obj.as_ref(), Expr::Ident { name, .. } if name == ENVIRONMENT) || !environment_unshadowed(ctx) {
+    let Expr::FieldAccess { obj, field, range } = e else {
+        return false;
+    };
+    if !matches!(obj.as_ref(), Expr::Ident { name, .. } if name == ENVIRONMENT)
+        || !environment_unshadowed(ctx)
+    {
         return false;
     }
     ctx.emit(
         "WS110",
-        format!("`{ENVIRONMENT}.{field}` needs a property to read: `{ENVIRONMENT}.{field}.<property>`"),
+        format!(
+            "`{ENVIRONMENT}.{field}` needs a property to read: `{ENVIRONMENT}.{field}.<property>`"
+        ),
         range.clone(),
     );
     true
@@ -144,7 +180,8 @@ pub(super) fn environment_without_property(ctx: &mut TypeCheckCtx, e: &Expr) -> 
 /// returning whether it was one. The value must fit the property's type; an
 /// enum property also takes a constant member of its enum.
 pub(super) fn check_property_write(ctx: &mut TypeCheckCtx, target: &Expr, value: &Expr) -> bool {
-    let Some((env, property)) = environment_path(target).filter(|_| environment_unshadowed(ctx)) else {
+    let Some((env, property)) = environment_path(target).filter(|_| environment_unshadowed(ctx))
+    else {
         return check_component_write(ctx, target, value);
     };
     match resolve_environment(env, property) {
@@ -172,7 +209,9 @@ pub(crate) fn enum_member_of(enum_type: &str, value: &Expr) -> Option<i64> {
     match value {
         Expr::Ident { name, .. } => crate::catalog::enum_member_value(enum_type, name),
         Expr::FieldAccess { obj, field, .. } => match obj.as_ref() {
-            Expr::Ident { name, .. } if crate::catalog::game_enum_schema_type(name) == Some(enum_type) => {
+            Expr::Ident { name, .. }
+                if crate::catalog::game_enum_schema_type(name) == Some(enum_type) =>
+            {
                 crate::catalog::builtin_game_enums()
                     .into_iter()
                     .find(|e| e.schema_type == enum_type)
@@ -186,10 +225,15 @@ pub(crate) fn enum_member_of(enum_type: &str, value: &Expr) -> Option<i64> {
 }
 
 /// Resolve property `property` of a component of type `class`.
-pub(crate) fn resolve_component(class: &str, property: &str) -> Result<ResolvedProperty, PropertyError> {
+pub(crate) fn resolve_component(
+    class: &str,
+    property: &str,
+) -> Result<ResolvedProperty, PropertyError> {
     let name = crate::catalog::component_name(class);
     let Some(c) = properties::component(class) else {
-        return Err(PropertyError::Unknown(format!("`{name}` is not a component type the component gates take")));
+        return Err(PropertyError::Unknown(format!(
+            "`{name}` is not a component type the component gates take"
+        )));
     };
     let Some(p) = c.property(property) else {
         let names: Vec<&str> = c.properties.iter().map(|p| p.name.as_str()).collect();
@@ -203,7 +247,12 @@ pub(crate) fn resolve_component(class: &str, property: &str) -> Result<ResolvedP
 
 /// Type `obj.field` read off a component reference of type `class`. A read
 /// runs the Get Component Property gate, so it needs an exec context.
-pub(super) fn infer_component_read(ctx: &mut TypeCheckCtx, class: &str, field: &str, range: &SourceRange) -> Type {
+pub(super) fn infer_component_read(
+    ctx: &mut TypeCheckCtx,
+    class: &str,
+    field: &str,
+    range: &SourceRange,
+) -> Type {
     if ctx.exec_mode() != ExecMode::Exec {
         ctx.emit(
             "WS007",
@@ -224,7 +273,9 @@ pub(super) fn infer_component_read(ctx: &mut TypeCheckCtx, class: &str, field: &
 /// whether it was one. The receiver is typed here; for any other receiver its
 /// diagnostics are dropped so the ordinary assignment check reports them once.
 pub(super) fn check_component_write(ctx: &mut TypeCheckCtx, target: &Expr, value: &Expr) -> bool {
-    let Expr::FieldAccess { obj, field, range } = target else { return false };
+    let Expr::FieldAccess { obj, field, range } = target else {
+        return false;
+    };
     let mark = ctx.diagnostics.len();
     let Type::Component(class) = crate::types::mono::unwrap_ref(&infer::infer(ctx, obj)) else {
         ctx.diagnostics.truncate(mark);
@@ -243,7 +294,14 @@ pub(super) fn check_component_write(ctx: &mut TypeCheckCtx, target: &Expr, value
 /// The component class a `$Component/<name>` argument names, for Get/Add
 /// Component. `None` for anything else.
 pub(crate) fn component_type_arg(e: &Expr) -> Option<&'static str> {
-    let Expr::AssetRef { asset_type, asset_name, .. } = e else { return None };
+    let Expr::AssetRef {
+        asset_type,
+        asset_name,
+        ..
+    } = e
+    else {
+        return None;
+    };
     if asset_type != crate::analysis::assets::COMPONENT {
         return None;
     }

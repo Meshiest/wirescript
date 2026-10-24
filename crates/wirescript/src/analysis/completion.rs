@@ -2,9 +2,9 @@
 //! these items to its own completion type.
 
 use super::{
-    char_col_to_byte, collection_kind, cursor_byte_offset, find_enclosing_call, member_receiver_at, named_arg_value,
-    param_names, receiver_methods, record_field_names, resolve_symbol, swizzle_fields, type_str, user_receiver_methods,
-    CollectionKind, SymbolDef,
+    CollectionKind, SymbolDef, char_col_to_byte, collection_kind, cursor_byte_offset,
+    find_enclosing_call, member_receiver_at, named_arg_value, param_names, receiver_methods,
+    record_field_names, resolve_symbol, swizzle_fields, type_str, user_receiver_methods,
 };
 use crate::catalog::arrays::ARRAY_METHODS;
 use crate::catalog::calls::calls;
@@ -14,7 +14,10 @@ use crate::lexer::KEYWORDS;
 
 /// How an editor finds the enum named by the text it completes. Only an
 /// editor's build has one, so the engine is handed it.
-pub type EnumLookup = dyn for<'r> Fn(&'r crate::typecheck::enums::EnumRegistry, &str) -> Option<&'r crate::typecheck::enums::EnumDef>;
+pub type EnumLookup = dyn for<'r> Fn(
+    &'r crate::typecheck::enums::EnumRegistry,
+    &str,
+) -> Option<&'r crate::typecheck::enums::EnumDef>;
 
 /// What a completion offers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -73,7 +76,11 @@ fn member_completions(
         return found
             .into_iter()
             .map(|(label, detail)| Completion {
-                kind: if label == "Remove" { CompletionKind::Method } else { CompletionKind::Property },
+                kind: if label == "Remove" {
+                    CompletionKind::Method
+                } else {
+                    CompletionKind::Property
+                },
                 label,
                 detail: Some(detail),
                 ..Default::default()
@@ -180,11 +187,11 @@ fn member_completions(
         // (via `push_type_members`) exactly as a directly-typed value would.
         // An ambiguous or unknown bare name yields no owner and falls through
         // unchanged.
-        if let Some(owner) = crate::typecheck::enums::resolve_bare_variant_enum(
-            &enum_registry,
-            var_name,
-            |n| lookup(&enum_registry, n).is_some(),
-        ) {
+        if let Some(owner) =
+            crate::typecheck::enums::resolve_bare_variant_enum(&enum_registry, var_name, |n| {
+                lookup(&enum_registry, n).is_some()
+            })
+        {
             push_type_members(&owner.name, &mut items);
             if !items.is_empty() {
                 return items;
@@ -314,9 +321,7 @@ fn namespace_member_kind(kind: &str) -> CompletionKind {
 /// skipping the reparse in that case returns the exact same registry
 /// (`build_registry` only reads `TopDecl::Enum` entries out of `decls`) that
 /// a full parse would, at zero cost for the common no-enum file.
-fn enum_registry_from_source(
-    source: &str,
-) -> crate::typecheck::enums::EnumRegistry {
+fn enum_registry_from_source(source: &str) -> crate::typecheck::enums::EnumRegistry {
     if !source.contains("enum ") {
         return crate::typecheck::enums::build_registry(&[]);
     }
@@ -424,9 +429,10 @@ pub fn match_arm_head_scrutinee_at(source: &str, line: usize, col: usize) -> Opt
         // body, so a later `{` in it (a record literal) is not the arm block.
         if !matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'{')
             && let Some(Frame::MatchArms { state, .. }) = stack.last_mut()
-                && *state == ArmState::AwaitingBody {
-                    *state = ArmState::InBody;
-                }
+            && *state == ArmState::AwaitingBody
+        {
+            *state = ArmState::InBody;
+        }
         match c {
             b'"' | b'\'' => {
                 in_string = Some(c);
@@ -443,10 +449,16 @@ pub fn match_arm_head_scrutinee_at(source: &str, line: usize, col: usize) -> Opt
             b'{' => {
                 if let Some(start) = pending_match_start.take() {
                     let scrutinee = prefix[start..i].trim().to_string();
-                    stack.push(Frame::MatchArms { scrutinee, state: ArmState::Head });
+                    stack.push(Frame::MatchArms {
+                        scrutinee,
+                        state: ArmState::Head,
+                    });
                 } else if matches!(
                     stack.last(),
-                    Some(Frame::MatchArms { state: ArmState::AwaitingBody, .. })
+                    Some(Frame::MatchArms {
+                        state: ArmState::AwaitingBody,
+                        ..
+                    })
                 ) {
                     stack.push(Frame::ArmBlock);
                 } else {
@@ -457,9 +469,10 @@ pub fn match_arm_head_scrutinee_at(source: &str, line: usize, col: usize) -> Opt
             b'}' => {
                 let popped = stack.pop();
                 if matches!(popped, Some(Frame::ArmBlock))
-                    && let Some(Frame::MatchArms { state, .. }) = stack.last_mut() {
-                        *state = ArmState::Head;
-                    }
+                    && let Some(Frame::MatchArms { state, .. }) = stack.last_mut()
+                {
+                    *state = ArmState::Head;
+                }
                 i += 1;
             }
             b'(' | b'[' => {
@@ -496,9 +509,10 @@ pub fn match_arm_head_scrutinee_at(source: &str, line: usize, col: usize) -> Opt
     }
 
     match stack.last() {
-        Some(Frame::MatchArms { scrutinee, state: ArmState::Head }) if !scrutinee.is_empty() => {
-            Some(scrutinee.clone())
-        }
+        Some(Frame::MatchArms {
+            scrutinee,
+            state: ArmState::Head,
+        }) if !scrutinee.is_empty() => Some(scrutinee.clone()),
         _ => None,
     }
 }
@@ -671,15 +685,17 @@ pub fn completions(
     // isn't itself a call, but its arm head can sit inside one lexically
     // (`foo(x = match s { <here> })`), and the arm-head reading must win.
     if let Some(scrutinee) = match_arm_head_scrutinee_at(source, line, col)
-        && let Some(ty) = resolve_symbol(symbols, source, &scrutinee, line, col).and_then(|s| s.ty.as_deref()) {
-            let registry = enum_registry_from_source(source);
-            if let Some(def) = lookup(&registry, ty) {
-                push_variant_completions(&mut items, def);
-                if !items.is_empty() {
-                    return items;
-                }
+        && let Some(ty) =
+            resolve_symbol(symbols, source, &scrutinee, line, col).and_then(|s| s.ty.as_deref())
+    {
+        let registry = enum_registry_from_source(source);
+        if let Some(def) = lookup(&registry, ty) {
+            push_variant_completions(&mut items, def);
+            if !items.is_empty() {
+                return items;
             }
         }
+    }
 
     // Named params inside a function call: `Call(<here>)`.
     if let Some(call_name) = find_enclosing_call(source, line, col) {
@@ -692,12 +708,15 @@ pub fn completions(
                 // Enum config value — works for both a hand-coded param
                 // (`justify = …`) and a raw config field (`Justification = …`),
                 // resolved through the unified call+event helper.
-                if let Some(et) = crate::catalog::config_enum_for_named_arg(
-                    call_name.as_str(),
-                    param_name,
-                ) {
+                if let Some(et) =
+                    crate::catalog::config_enum_for_named_arg(call_name.as_str(), param_name)
+                {
                     push_enum_member_completions(&mut items, et, value_so_far);
-                    push_qualified_builtin_game_enum_variant_completions(&mut items, et, value_so_far);
+                    push_qualified_builtin_game_enum_variant_completions(
+                        &mut items,
+                        et,
+                        value_so_far,
+                    );
                     if !items.is_empty() {
                         return items;
                     }
@@ -711,21 +730,21 @@ pub fn completions(
                     if !crate::catalog::is_wire_input(spec.gate_class, param.port.as_str())
                         && let Some(asset_ty) =
                             crate::analysis::asset_type_for_port(param.port.as_str())
-                        {
-                            for name in crate::analysis::asset_names(asset_ty) {
-                                let full = format!("${asset_ty}/{name}");
-                                items.push(Completion {
-                                    label: full.clone(),
-                                    kind: CompletionKind::Constant,
-                                    detail: Some(format!("{asset_ty} asset")),
-                                    insert_text: Some(full),
-                                    ..Default::default()
-                                });
-                            }
-                            if !items.is_empty() {
-                                return items;
-                            }
+                    {
+                        for name in crate::analysis::asset_names(asset_ty) {
+                            let full = format!("${asset_ty}/{name}");
+                            items.push(Completion {
+                                label: full.clone(),
+                                kind: CompletionKind::Constant,
+                                detail: Some(format!("{asset_ty} asset")),
+                                insert_text: Some(full),
+                                ..Default::default()
+                            });
                         }
+                        if !items.is_empty() {
+                            return items;
+                        }
+                    }
                 }
             }
             // Argument-NAME completions: only when NOT completing a value. In a
@@ -738,7 +757,10 @@ pub fn completions(
                 let receiver_param = spec
                     .receiver
                     .is_some()
-                    .then(|| spec.receiver_target_param().or(spec.params.first().map(|p| p.name)))
+                    .then(|| {
+                        spec.receiver_target_param()
+                            .or(spec.params.first().map(|p| p.name))
+                    })
                     .flatten();
                 for p in &spec.params {
                     if Some(p.name) == receiver_param {
@@ -795,13 +817,13 @@ pub fn completions(
             if let Some((param_name, value_so_far)) = value_ctx.as_ref()
                 && let Some(et) =
                     crate::catalog::config_enum_for_named_arg(call_name.as_str(), param_name)
-                {
-                    push_enum_member_completions(&mut items, et, value_so_far);
-                    push_qualified_builtin_game_enum_variant_completions(&mut items, et, value_so_far);
-                    if !items.is_empty() {
-                        return items;
-                    }
+            {
+                push_enum_member_completions(&mut items, et, value_so_far);
+                push_qualified_builtin_game_enum_variant_completions(&mut items, et, value_so_far);
+                if !items.is_empty() {
+                    return items;
                 }
+            }
             // Argument-NAME completions only when NOT completing a value; in a
             // value slot, fall through to the in-scope identifier list below.
             if value_ctx.is_none() {
@@ -815,10 +837,9 @@ pub fn completions(
                     });
                 }
                 for (surf, field) in &evt.config_named {
-                    let ty_label =
-                        crate::catalog::config_field_enum_type(evt.gate_class, field)
-                            .map(str::to_string)
-                            .unwrap_or_else(|| "config".to_string());
+                    let ty_label = crate::catalog::config_field_enum_type(evt.gate_class, field)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| "config".to_string());
                     items.push(Completion {
                         label: format!("{surf} = "),
                         kind: CompletionKind::Field,
@@ -993,8 +1014,18 @@ pub fn completions(
     }
 
     for ty in &[
-        "int", "float", "bool", "string", "entity", "controller", "character", "vector",
-        "rotator", "color", "brick", "exec",
+        "int",
+        "float",
+        "bool",
+        "string",
+        "entity",
+        "controller",
+        "character",
+        "vector",
+        "rotator",
+        "color",
+        "brick",
+        "exec",
     ] {
         items.push(Completion {
             label: ty.to_string(),

@@ -27,7 +27,9 @@ use std::sync::Arc;
 use super::build::{AddNodeOpts, ModuleBuilder};
 use super::module_tree::{ModuleTree, nest_bodies};
 use super::port_registry::WirePort;
-use super::{GateIO, Literal, NodeId, NodeKind, PortRef, PortSide, Program, ProgramSettings, Type, Wire};
+use super::{
+    GateIO, Literal, NodeId, NodeKind, PortRef, PortSide, Program, ProgramSettings, Type, Wire,
+};
 use crate::collections::HashMap;
 use crate::intern::{intern, resolve};
 use crate::wsir::defaults;
@@ -44,9 +46,19 @@ pub enum BuildError {
     #[error("{0} is not a node of this program")]
     UnknownNode(NodeId),
     #[error("{node} ({class}) has no {side} port `{port}`; its {side} ports are: {}", super::validate::port_list(.valid))]
-    UnknownPort { node: NodeId, class: String, side: PortSide, port: String, valid: Vec<String> },
+    UnknownPort {
+        node: NodeId,
+        class: String,
+        side: PortSide,
+        port: String,
+        valid: Vec<String>,
+    },
     #[error("{node}.{port} already has a wire into it, from {from}")]
-    FanIn { node: NodeId, port: String, from: String },
+    FanIn {
+        node: NodeId,
+        port: String,
+        from: String,
+    },
 }
 
 /// Builds a [`Program`]. Node ids count up from 1 in creation order.
@@ -123,25 +135,54 @@ impl ProgramBuilder {
     /// `BrickComponentType_` prefix), with the inventory's ports.
     pub fn gate(&mut self, m: ModuleRef, class: &str) -> Result<NodeId, BuildError> {
         let class = defaults::resolve_class(class);
-        if crate::catalog::default_catalog().find_by_class(class).is_none() {
+        if crate::catalog::default_catalog()
+            .find_by_class(class)
+            .is_none()
+        {
             return Err(BuildError::UnknownClass(class.to_string()));
         }
         let ports = defaults::default_ports(class, None);
-        Ok(self.add(m, defaults::default_kind(class), AddNodeOpts { gate_class: class, ports, ..Default::default() }))
+        Ok(self.add(
+            m,
+            defaults::default_kind(class),
+            AddNodeOpts {
+                gate_class: class,
+                ports,
+                ..Default::default()
+            },
+        ))
     }
 
     /// A gate of any class with the ports given: a pseudo-class such as
     /// `_Literal`, or ports typed more narrowly than the inventory's.
     pub fn gate_with_ports(&mut self, m: ModuleRef, class: &str, ports: GateIO) -> NodeId {
         let class = defaults::resolve_class(class);
-        self.add(m, defaults::default_kind(class), AddNodeOpts { gate_class: class, ports, ..Default::default() })
+        self.add(
+            m,
+            defaults::default_kind(class),
+            AddNodeOpts {
+                gate_class: class,
+                ports,
+                ..Default::default()
+            },
+        )
     }
 
     /// A chip in module `m`: its node, and the module that is its body.
     pub fn chip(&mut self, m: ModuleRef) -> (NodeId, ModuleRef) {
-        let id = self.add(m, NodeKind::Chip, AddNodeOpts { gate_class: defaults::CHIP_CLASS, ..Default::default() });
+        let id = self.add(
+            m,
+            NodeKind::Chip,
+            AddNodeOpts {
+                gate_class: defaults::CHIP_CLASS,
+                ..Default::default()
+            },
+        );
         let body = self.tree.push(m.0);
-        self.modules.push(ModuleBuilder::new(&defaults::default_chip_module_name(id.0)));
+        self.modules
+            .push(ModuleBuilder::new(&defaults::default_chip_module_name(
+                id.0,
+            )));
         self.chips.insert(id, body);
         (id, ModuleRef(body))
     }
@@ -149,13 +190,20 @@ impl ProgramBuilder {
     /// Give `node` a name the text form writes it by.
     pub fn name(&mut self, node: NodeId, name: &str) {
         if let Some(&m) = self.home.get(&node) {
-            self.modules[m].module.value_names.insert(node, intern(name));
+            self.modules[m]
+                .module
+                .value_names
+                .insert(node, intern(name));
         }
     }
 
     fn node_mut(&mut self, node: NodeId) -> Result<&mut super::Node, BuildError> {
         let m = *self.home.get(&node).ok_or(BuildError::UnknownNode(node))?;
-        Ok(self.modules[m].module.nodes.get_mut(&node).expect("home lists only added nodes"))
+        Ok(self.modules[m]
+            .module
+            .nodes
+            .get_mut(&node)
+            .expect("home lists only added nodes"))
     }
 
     fn node(&self, node: NodeId) -> Result<&super::Node, BuildError> {
@@ -175,9 +223,19 @@ impl ProgramBuilder {
     /// ports must exist, and an input takes one wire. An input typed `any`
     /// takes the type of what feeds it when the program is built, as in the
     /// text form.
-    pub fn wire(&mut self, from: NodeId, from_port: &str, to: NodeId, to_port: &str) -> Result<(), BuildError> {
+    pub fn wire(
+        &mut self,
+        from: NodeId,
+        from_port: &str,
+        to: NodeId,
+        to_port: &str,
+    ) -> Result<(), BuildError> {
         let unknown = |n: &super::Node, side: PortSide, port: &str| {
-            let ports = if side == PortSide::Input { &n.ports.inputs } else { &n.ports.outputs };
+            let ports = if side == PortSide::Input {
+                &n.ports.inputs
+            } else {
+                &n.ports.outputs
+            };
             BuildError::UnknownPort {
                 node: n.id,
                 class: n.gate_class.to_string(),
@@ -187,16 +245,26 @@ impl ProgramBuilder {
             }
         };
         let src = self.node(from)?;
-        if !src.ports.outputs.iter().any(|p| resolve(p.name) == from_port) {
+        if !src
+            .ports
+            .outputs
+            .iter()
+            .any(|p| resolve(p.name) == from_port)
+        {
             return Err(unknown(src, PortSide::Output, from_port));
         }
-        let source_port = WirePort::try_from_name(from_port).ok_or_else(|| unknown(src, PortSide::Output, from_port))?;
+        let source_port = WirePort::try_from_name(from_port)
+            .ok_or_else(|| unknown(src, PortSide::Output, from_port))?;
         let dst = self.node(to)?;
         if !dst.ports.inputs.iter().any(|p| resolve(p.name) == to_port) {
             return Err(unknown(dst, PortSide::Input, to_port));
         }
-        let target_port = WirePort::try_from_name(to_port).ok_or_else(|| unknown(dst, PortSide::Input, to_port))?;
-        let target = PortRef { node_id: to, port: target_port };
+        let target_port = WirePort::try_from_name(to_port)
+            .ok_or_else(|| unknown(dst, PortSide::Input, to_port))?;
+        let target = PortRef {
+            node_id: to,
+            port: target_port,
+        };
         if let Some(prev) = self.fed.get(&target) {
             return Err(BuildError::FanIn {
                 node: to,
@@ -204,7 +272,10 @@ impl ProgramBuilder {
                 from: format!("{}.{}", prev.node_id, prev.port),
             });
         }
-        let source = PortRef { node_id: from, port: source_port };
+        let source = PortRef {
+            node_id: from,
+            port: source_port,
+        };
         self.fed.insert(target, source);
         let home = self.tree.common_module(self.home[&from], self.home[&to]);
         self.modules[home].connect(source, target);
@@ -215,10 +286,18 @@ impl ProgramBuilder {
     pub fn layout_after(&mut self, before: NodeId, after: NodeId) -> Result<(), BuildError> {
         self.node(before)?;
         self.node(after)?;
-        let home = self.tree.common_module(self.home[&before], self.home[&after]);
+        let home = self
+            .tree
+            .common_module(self.home[&before], self.home[&after]);
         self.modules[home].module.wires.push(Wire {
-            source: PortRef { node_id: before, port: WirePort::Layout },
-            target: PortRef { node_id: after, port: WirePort::Layout },
+            source: PortRef {
+                node_id: before,
+                port: WirePort::Layout,
+            },
+            target: PortRef {
+                node_id: after,
+                port: WirePort::Layout,
+            },
         });
         Ok(())
     }
@@ -231,19 +310,30 @@ impl ProgramBuilder {
         let mut wires: Vec<(PortRef, PortRef)> = self.fed.iter().map(|(t, s)| (*t, *s)).collect();
         wires.sort_by_key(|(t, _)| (t.node_id, t.port.as_str()));
         let out_ty = |b: &Self, p: PortRef| {
-            b.node(p.node_id).ok()?.ports.outputs.iter().find(|o| o.name == p.port.sym()).map(|o| o.ty.clone())
+            b.node(p.node_id)
+                .ok()?
+                .ports
+                .outputs
+                .iter()
+                .find(|o| o.name == p.port.sym())
+                .map(|o| o.ty.clone())
         };
         let any_pin = GateIO::pin(Type::Any);
         let is_pin = |n: &super::Node| matches!(n.kind, NodeKind::Input | NodeKind::Output);
         loop {
             let mut changed = false;
             for (target, source) in &wires {
-                let Ok(n) = self.node(target.node_id) else { continue };
+                let Ok(n) = self.node(target.node_id) else {
+                    continue;
+                };
                 if target.port != WirePort::RerInput || !is_pin(n) || *n.ports != any_pin {
                     continue;
                 }
-                let Some(ty) = out_ty(self, *source).filter(|t| *t != Type::Any) else { continue };
-                self.node_mut(target.node_id).expect("found above").ports = Arc::new(GateIO::pin(ty));
+                let Some(ty) = out_ty(self, *source).filter(|t| *t != Type::Any) else {
+                    continue;
+                };
+                self.node_mut(target.node_id).expect("found above").ports =
+                    Arc::new(GateIO::pin(ty));
                 changed = true;
             }
             if !changed {
@@ -251,11 +341,15 @@ impl ProgramBuilder {
             }
         }
         for (target, source) in &wires {
-            let Ok(n) = self.node(target.node_id) else { continue };
+            let Ok(n) = self.node(target.node_id) else {
+                continue;
+            };
             if is_pin(n) {
                 continue;
             }
-            let Some(ty) = out_ty(self, *source) else { continue };
+            let Some(ty) = out_ty(self, *source) else {
+                continue;
+            };
             let node = self.node_mut(target.node_id).expect("found above");
             defaults::infer_any_input(Arc::make_mut(&mut node.ports), target.port.sym(), ty);
         }
@@ -264,8 +358,15 @@ impl ProgramBuilder {
     /// The finished program.
     pub fn build(mut self) -> Program {
         self.infer_types();
-        let bodies = self.chips.iter().map(|(&chip, &body)| (chip, body, self.home[&chip])).collect();
+        let bodies = self
+            .chips
+            .iter()
+            .map(|(&chip, &body)| (chip, body, self.home[&chip]))
+            .collect();
         let module = nest_bodies(self.modules.into_iter().map(|b| b.module).collect(), bodies);
-        Program { module, settings: self.settings }
+        Program {
+            module,
+            settings: self.settings,
+        }
     }
 }

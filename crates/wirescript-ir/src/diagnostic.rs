@@ -72,7 +72,11 @@ impl Diagnostic {
 
     /// [`Diagnostic::location`], naming `file` when the range names none.
     pub fn location_or(&self, file: &str) -> String {
-        let named = if self.range.file.is_empty() { file.into() } else { display_path(&self.range.file) };
+        let named = if self.range.file.is_empty() {
+            file.into()
+        } else {
+            display_path(&self.range.file)
+        };
         format!("{named}:{}:{}", self.range.start.line, self.range.start.col)
     }
 
@@ -84,7 +88,11 @@ impl Diagnostic {
             range,
         }
     }
-    pub fn warning(code: impl Into<String>, message: impl Into<String>, range: SourceRange) -> Self {
+    pub fn warning(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        range: SourceRange,
+    ) -> Self {
         Self {
             severity: Severity::Warning,
             code: code.into(),
@@ -93,4 +101,3 @@ impl Diagnostic {
         }
     }
 }
-

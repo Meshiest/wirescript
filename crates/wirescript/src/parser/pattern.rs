@@ -38,7 +38,8 @@ impl<'a> Parser<'a> {
         let first = self.parse_dotdot_pattern();
         // An alternative may continue on the next line, led by its `|`: no
         // arm or payload position starts with one.
-        let continues = |p: &Self| p.peek_non_nl().kind == TokenKind::Op && p.peek_non_nl().text == "|";
+        let continues =
+            |p: &Self| p.peek_non_nl().kind == TokenKind::Op && p.peek_non_nl().text == "|";
         if !continues(self) {
             return first;
         }
@@ -51,7 +52,10 @@ impl<'a> Parser<'a> {
             alts.push(self.parse_dotdot_pattern());
         }
         let end = alts.last().map(|p| p.range().end).unwrap_or(start);
-        Pattern::Or { alts, range: self.make_range(start, end) }
+        Pattern::Or {
+            alts,
+            range: self.make_range(start, end),
+        }
     }
 
     /// One alternative: an atom, or atoms joined by `..`. Joined numbers are a
@@ -63,22 +67,28 @@ impl<'a> Parser<'a> {
             return first;
         }
         let start = first.range().start;
-        let is_number = |p: &Pattern| {
-            matches!(p, Pattern::Literal { expr, .. } if matches!(**expr, Expr::IntLit { .. } | Expr::FloatLit { .. }))
-        };
+        let is_number = |p: &Pattern| matches!(p, Pattern::Literal { expr, .. } if matches!(**expr, Expr::IntLit { .. } | Expr::FloatLit { .. }));
         if is_number(&first) {
             self.advance();
             let hi = self.parse_pattern_atom();
             let end = hi.range().end;
             let range = self.make_range(start, end);
             return match (first, hi) {
-                (Pattern::Literal { expr: lo, .. }, hi @ Pattern::Literal { .. }) if is_number(&hi) => {
-                    let Pattern::Literal { expr: hi, .. } = hi else { unreachable!() };
+                (Pattern::Literal { expr: lo, .. }, hi @ Pattern::Literal { .. })
+                    if is_number(&hi) =>
+                {
+                    let Pattern::Literal { expr: hi, .. } = hi else {
+                        unreachable!()
+                    };
                     Pattern::Range { lo, hi, range }
                 }
                 (_, hi) => {
                     let r = hi.range().clone();
-                    self.error("a range pattern's end must be a number literal", r.start, r.end);
+                    self.error(
+                        "a range pattern's end must be a number literal",
+                        r.start,
+                        r.end,
+                    );
                     Pattern::Wildcard(range)
                 }
             };
@@ -88,7 +98,11 @@ impl<'a> Parser<'a> {
             parts.push(self.parse_pattern_atom());
         }
         let end = parts.last().map(|p| p.range().end).unwrap_or(start);
-        Pattern::Concat { parts, template: false, range: self.make_range(start, end) }
+        Pattern::Concat {
+            parts,
+            template: false,
+            range: self.make_range(start, end),
+        }
     }
 
     fn parse_pattern_atom(&mut self) -> Pattern {
@@ -99,7 +113,10 @@ impl<'a> Parser<'a> {
                 self.parse_primary()
             };
             let range = expr.range().clone();
-            return Pattern::Literal { expr: Box::new(expr), range };
+            return Pattern::Literal {
+                expr: Box::new(expr),
+                range,
+            };
         }
         if self.check(TokenKind::StrInterp, None) {
             return self.parse_template_pattern();
@@ -121,7 +138,10 @@ impl<'a> Parser<'a> {
             out.push(match part {
                 InterpPart::Lit(value) if value.is_empty() => continue,
                 InterpPart::Lit(value) => Pattern::Literal {
-                    expr: Box::new(Expr::StringLit { value, range: range.clone() }),
+                    expr: Box::new(Expr::StringLit {
+                        value,
+                        range: range.clone(),
+                    }),
                     range: range.clone(),
                 },
                 InterpPart::Expr(e) => match *e {
@@ -129,7 +149,10 @@ impl<'a> Parser<'a> {
                     Expr::Ident { name, range } => Pattern::Binding { name, range },
                     other => {
                         let range = other.range().clone();
-                        Pattern::Literal { expr: Box::new(other), range }
+                        Pattern::Literal {
+                            expr: Box::new(other),
+                            range,
+                        }
                     }
                 },
             });
@@ -138,7 +161,11 @@ impl<'a> Parser<'a> {
         if let [Pattern::Binding { .. } | Pattern::Wildcard(_)] = out.as_slice() {
             return out.pop().expect("one part");
         }
-        Pattern::Concat { parts: out, template: true, range }
+        Pattern::Concat {
+            parts: out,
+            template: true,
+            range,
+        }
     }
 
     fn parse_name_pattern(&mut self) -> Pattern {
@@ -213,7 +240,10 @@ impl<'a> Parser<'a> {
             return Pattern::Variant {
                 enum_path,
                 variant: name_tok.text,
-                sub: VariantPattern::Named { fields, ignore_rest },
+                sub: VariantPattern::Named {
+                    fields,
+                    ignore_rest,
+                },
                 range: self.make_range(start, end),
             };
         }

@@ -16,7 +16,9 @@ fn main() {
 }
 
 fn run() {
-    let file = std::env::args().nth(1).expect("usage: profile_stages <file.ws>");
+    let file = std::env::args()
+        .nth(1)
+        .expect("usage: profile_stages <file.ws>");
     let source = std::fs::read_to_string(&file).expect("read source");
 
     let t = Instant::now();
@@ -71,14 +73,20 @@ fn run() {
     // The engine the program asks for (`@layout("code")`, `@layout("cube")`).
     let settings = wirescript::program_settings(&resolved, &file);
     let t = Instant::now();
-    let lr = wirescript::layout::layout_with_opts(&lowered.module, &wirescript::LayoutOptions::for_program(&settings));
+    let lr = wirescript::layout::layout_with_opts(
+        &lowered.module,
+        &wirescript::LayoutOptions::for_program(&settings),
+    );
     eprintln!("layout:                      {:>8.2?}", t.elapsed());
 
     let mut opts = EmitOptions::default();
-    opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(&file, wirescript::lower::FoldMode::Auto));
+    opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(
+        &file,
+        wirescript::lower::FoldMode::Auto,
+    ));
     let t = Instant::now();
-    let world = wirescript::build_world(&lowered.module, &Default::default(), &lr, &opts)
-        .expect("emit");
+    let world =
+        wirescript::build_world(&lowered.module, &Default::default(), &lr, &opts).expect("emit");
     eprintln!("build_world:                 {:>8.2?}", t.elapsed());
 
     let t = Instant::now();

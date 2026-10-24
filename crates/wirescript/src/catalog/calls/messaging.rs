@@ -48,7 +48,12 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
     // the game could not show) pulses `Declined` (`on r.Declined { ... }`).
     m.insert(
         "ShowMessageBox",
-        dialog("ShowMessageBox", gc::PLAYERSTATE_SHOW_MESSAGE_BOX, "OkClicked", None),
+        dialog(
+            "ShowMessageBox",
+            gc::PLAYERSTATE_SHOW_MESSAGE_BOX,
+            "OkClicked",
+            None,
+        ),
     );
     m.insert(
         "ShowOkCancelBox",

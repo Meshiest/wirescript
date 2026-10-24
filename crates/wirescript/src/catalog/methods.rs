@@ -111,17 +111,32 @@ impl MethodArg {
 
 /// A required value argument.
 pub const fn val(name: &'static str, port: WirePort, ty: ArgTy) -> MethodArg {
-    MethodArg { name, port, kind: ArgKind::Value(ty), optional: false }
+    MethodArg {
+        name,
+        port,
+        kind: ArgKind::Value(ty),
+        optional: false,
+    }
 }
 
 /// An optional value argument; the gate input stays unwired when it is omitted.
 pub const fn opt(name: &'static str, port: WirePort, ty: ArgTy) -> MethodArg {
-    MethodArg { name, port, kind: ArgKind::Value(ty), optional: true }
+    MethodArg {
+        name,
+        port,
+        kind: ArgKind::Value(ty),
+        optional: true,
+    }
 }
 
 /// A required argument of the given kind.
 pub const fn arg(name: &'static str, port: WirePort, kind: ArgKind) -> MethodArg {
-    MethodArg { name, port, kind, optional: false }
+    MethodArg {
+        name,
+        port,
+        kind,
+        optional: false,
+    }
 }
 
 /// How a container method lowers.
@@ -164,8 +179,11 @@ pub fn shown_signature(name: &str, lowering: &Lowering) -> String {
         "length" => "() -> int".to_string(),
         "sortMultiple" => "(other, ..., descending?)".to_string(),
         _ => {
-            let args: Vec<String> =
-                lowering.args().iter().map(|a| format!("{}{}", a.name, if a.optional { "?" } else { "" })).collect();
+            let args: Vec<String> = lowering
+                .args()
+                .iter()
+                .map(|a| format!("{}{}", a.name, if a.optional { "?" } else { "" }))
+                .collect();
             format!("({})", args.join(", "))
         }
     }
@@ -173,7 +191,11 @@ pub fn shown_signature(name: &str, lowering: &Lowering) -> String {
 
 /// A `Generic` lowering with no port type overrides.
 pub const fn generic(args: &'static [MethodArg], result: WirePort) -> Lowering {
-    Lowering::Generic { args, result, port_types: &[] }
+    Lowering::Generic {
+        args,
+        result,
+        port_types: &[],
+    }
 }
 
 /// The type a call of a container method gives on a receiver of `kind`: its
@@ -183,7 +205,9 @@ pub const fn generic(args: &'static [MethodArg], result: WirePort) -> Lowering {
 /// lowering reads `Value` first.
 pub fn method_return_type(gate: &str, lowering: &Lowering, kind: &ContainerKind) -> Type {
     let (result, port_types) = match lowering {
-        Lowering::Generic { result, port_types, .. } => (*result, *port_types),
+        Lowering::Generic {
+            result, port_types, ..
+        } => (*result, *port_types),
         Lowering::Custom => (WirePort::Value, &[][..]),
     };
     Type::call_result(
@@ -213,8 +237,12 @@ pub fn gate_outputs(
         ContainerKind::Array { elem } => elem,
         ContainerKind::Map { value, .. } => value,
     };
-    let inputs: crate::collections::HashSet<&str> =
-        spec.component.inputs.iter().map(|p| p.name.as_str()).collect();
+    let inputs: crate::collections::HashSet<&str> = spec
+        .component
+        .inputs
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
     let mut outs: Vec<(WirePort, Type)> = spec
         .component
         .outputs
@@ -239,13 +267,25 @@ pub fn gate_outputs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::storage::{access, Access};
+    use crate::catalog::storage::{Access, access};
 
     /// Every `(name, gate, mutates, lowering, receiver port)` in both tables.
-    fn entries() -> Vec<(&'static str, &'static str, bool, &'static Lowering, WirePort)> {
-        let arrays = super::super::arrays::ARRAY_METHODS
-            .iter()
-            .map(|m| (m.name, m.gate, m.mutates, &m.lowering, WirePort::ArrayVarRef));
+    fn entries() -> Vec<(
+        &'static str,
+        &'static str,
+        bool,
+        &'static Lowering,
+        WirePort,
+    )> {
+        let arrays = super::super::arrays::ARRAY_METHODS.iter().map(|m| {
+            (
+                m.name,
+                m.gate,
+                m.mutates,
+                &m.lowering,
+                WirePort::ArrayVarRef,
+            )
+        });
         let maps = super::super::maps::MAP_METHODS
             .iter()
             .map(|m| (m.name, m.gate, m.mutates, &m.lowering, WirePort::MapVarRef));
@@ -260,10 +300,23 @@ mod tests {
             let spec = crate::catalog::default_catalog()
                 .find_by_class(gate)
                 .unwrap_or_else(|| panic!("`{name}`: gate {gate} is not in the catalog"));
-            let has = |ports: &[crate::catalog::Port], p: WirePort| ports.iter().any(|q| q.name == p.as_str());
-            let Lowering::Generic { args, result, port_types } = lowering else { continue };
+            let has = |ports: &[crate::catalog::Port], p: WirePort| {
+                ports.iter().any(|q| q.name == p.as_str())
+            };
+            let Lowering::Generic {
+                args,
+                result,
+                port_types,
+            } = lowering
+            else {
+                continue;
+            };
             for a in *args {
-                assert!(has(&spec.component.inputs, a.port), "`{name}`: {} is not an input of {gate}", a.port);
+                assert!(
+                    has(&spec.component.inputs, a.port),
+                    "`{name}`: {} is not an input of {gate}",
+                    a.port
+                );
             }
             for (p, _) in *port_types {
                 assert!(
@@ -271,7 +324,10 @@ mod tests {
                     "`{name}`: override {p} is not a port of {gate}"
                 );
             }
-            assert!(has(&spec.component.outputs, *result), "`{name}`: result {result} is not an output of {gate}");
+            assert!(
+                has(&spec.component.outputs, *result),
+                "`{name}`: result {result} is not an output of {gate}"
+            );
         }
     }
 

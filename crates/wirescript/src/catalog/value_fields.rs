@@ -16,7 +16,10 @@ pub const VALUE_FIELDS: &[(&str, &[&str])] = &[
 
 /// The components of the type a program names `ty` (`"vector"`), or none.
 pub fn fields_of_named(ty: &str) -> &'static [&'static str] {
-    VALUE_FIELDS.iter().find(|(n, _)| *n == ty).map_or(&[], |(_, fields)| fields)
+    VALUE_FIELDS
+        .iter()
+        .find(|(n, _)| *n == ty)
+        .map_or(&[], |(_, fields)| fields)
 }
 
 /// The components of `ty`, or none.
@@ -33,7 +36,9 @@ pub fn fields_of(ty: &Type) -> &'static [&'static str] {
 /// Whether `name` spells the component `field`: the same word, its first
 /// letter in either case.
 fn spells(name: &str, field: &str) -> bool {
-    let (Some(n), Some(f)) = (name.chars().next(), field.chars().next()) else { return false };
+    let (Some(n), Some(f)) = (name.chars().next(), field.chars().next()) else {
+        return false;
+    };
     (n == f || n == f.to_ascii_uppercase()) && name[n.len_utf8()..] == field[f.len_utf8()..]
 }
 
@@ -44,7 +49,9 @@ pub fn field_of(ty: &Type, name: &str) -> Option<&'static str> {
 
 /// Whether `name` spells a component of any struct-valued type.
 pub fn is_field_name(name: &str) -> bool {
-    VALUE_FIELDS.iter().any(|(_, fields)| fields.iter().any(|f| spells(name, f)))
+    VALUE_FIELDS
+        .iter()
+        .any(|(_, fields)| fields.iter().any(|f| spells(name, f)))
 }
 
 #[cfg(test)]

@@ -151,7 +151,11 @@ pub(super) fn place_edge_pins(
         let node = &module.nodes[&pin_id];
         let is_output = node.kind == NodeKind::Output;
         // In source order already (`build_adjacency`).
-        let neighbors = if is_output { &adjacency.producers } else { &adjacency.consumers };
+        let neighbors = if is_output {
+            &adjacency.producers
+        } else {
+            &adjacency.consumers
+        };
         let page_idx = neighbors
             .get(&pin_id)
             .into_iter()

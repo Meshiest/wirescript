@@ -70,7 +70,10 @@ impl Instances {
 pub(super) fn capture_env(ctx: &mut TypeCheckCtx, c: &ChipDecl) {
     let id = decl_id(&c.range);
     let prefix = ctx.resolution_subst.clone();
-    ctx.instances.decls.entry(id.clone()).or_insert_with(|| Arc::new(c.clone()));
+    ctx.instances
+        .decls
+        .entry(id.clone())
+        .or_insert_with(|| Arc::new(c.clone()));
     ctx.instances.prefix_len.insert(id.clone(), prefix.len());
     let env = DeclEnv {
         view: ctx.scope.capture_view(),
@@ -90,18 +93,33 @@ pub(super) fn capture_env(ctx: &mut TypeCheckCtx, c: &ChipDecl) {
 /// A call at `call` instantiates the generic declared at `decl` with
 /// `type_args`: record them for lowering, and queue that body unless it has
 /// been checked already.
-pub(super) fn demand(ctx: &mut TypeCheckCtx, decl: &SourceRange, type_args: Vec<Type>, call: &SourceRange) {
+pub(super) fn demand(
+    ctx: &mut TypeCheckCtx,
+    decl: &SourceRange,
+    type_args: Vec<Type>,
+    call: &SourceRange,
+) {
     let call_key = ctx.resolution_key(call);
-    ctx.resolutions.call_type_args.insert(call_key, type_args.clone());
+    ctx.resolutions
+        .call_type_args
+        .insert(call_key, type_args.clone());
     let id = decl_id(decl);
     // A declaration not checked yet is a top-level one, whose key has no
     // prefix: a declaration inside a body is checked before any call to it.
-    let len = ctx.instances.prefix_len.get(&id).copied().unwrap_or(0).min(ctx.resolution_subst.len());
+    let len = ctx
+        .instances
+        .prefix_len
+        .get(&id)
+        .copied()
+        .unwrap_or(0)
+        .min(ctx.resolution_subst.len());
     let mut key = ctx.resolution_subst[..len].to_vec();
     key.extend(type_args);
     let key: Arc<[Type]> = key.into();
     let body = (id.0.clone(), id.1, id.2, key.clone());
-    if !ctx.resolutions.checked_bodies.contains(&body) && ctx.instances.queued.insert((id.clone(), key.clone())) {
+    if !ctx.resolutions.checked_bodies.contains(&body)
+        && ctx.instances.queued.insert((id.clone(), key.clone()))
+    {
         ctx.instances.queue.push_back((id, key, call.clone()));
     }
 }
@@ -112,13 +130,26 @@ pub(super) fn demand(ctx: &mut TypeCheckCtx, decl: &SourceRange, type_args: Vec<
 pub(super) fn check_demanded(ctx: &mut TypeCheckCtx) {
     let mut reported: Option<crate::collections::HashSet<(String, Arc<str>, usize)>> = None;
     while let Some((id, key, call)) = ctx.instances.queue.pop_front() {
-        if ctx.resolutions.checked_bodies.contains(&(id.0.clone(), id.1, id.2, key.clone())) {
+        if ctx
+            .resolutions
+            .checked_bodies
+            .contains(&(id.0.clone(), id.1, id.2, key.clone()))
+        {
             continue;
         }
-        let len = ctx.instances.prefix_len.get(&id).copied().unwrap_or(0).min(key.len());
+        let len = ctx
+            .instances
+            .prefix_len
+            .get(&id)
+            .copied()
+            .unwrap_or(0)
+            .min(key.len());
         let (Some(decl), Some(env)) = (
             ctx.instances.decls.get(&id).cloned(),
-            ctx.instances.envs.get(&(id.clone(), Arc::from(&key[..len]))).cloned(),
+            ctx.instances
+                .envs
+                .get(&(id.clone(), Arc::from(&key[..len])))
+                .cloned(),
         ) else {
             continue;
         };
@@ -128,11 +159,23 @@ pub(super) fn check_demanded(ctx: &mut TypeCheckCtx) {
             ctx.instances.queue.clear();
             return;
         }
-        ctx.instances.demanded.push((id.0.clone(), id.1, id.2, key.clone()));
+        ctx.instances
+            .demanded
+            .push((id.0.clone(), id.1, id.2, key.clone()));
         let reported = reported.get_or_insert_with(|| {
-            ctx.diagnostics.iter().map(|d| (d.code.clone(), d.range.file.clone(), d.range.start.offset)).collect()
+            ctx.diagnostics
+                .iter()
+                .map(|d| (d.code.clone(), d.range.file.clone(), d.range.start.offset))
+                .collect()
         });
-        check_instantiation(ctx, &decl, &env, Arc::from(&key[..len]), &key[len..], reported);
+        check_instantiation(
+            ctx,
+            &decl,
+            &env,
+            Arc::from(&key[..len]),
+            &key[len..],
+            reported,
+        );
     }
 }
 
@@ -142,9 +185,19 @@ pub(super) fn check_demanded(ctx: &mut TypeCheckCtx) {
 /// that demand the most of them.
 fn over_budget_message(ctx: &TypeCheckCtx, next: (DeclId, Arc<[Type]>)) -> String {
     let mut per_decl: HashMap<DeclId, usize> = HashMap::default();
-    let mut seen: crate::collections::HashSet<(DeclId, Arc<[Type]>)> = crate::collections::HashSet::default();
-    let checked = ctx.instances.demanded.iter().map(|(f, s, e, k)| ((f.clone(), *s, *e), k.clone()));
-    let pending = std::iter::once(next).chain(ctx.instances.queue.iter().map(|(id, k, _)| (id.clone(), k.clone())));
+    let mut seen: crate::collections::HashSet<(DeclId, Arc<[Type]>)> =
+        crate::collections::HashSet::default();
+    let checked = ctx
+        .instances
+        .demanded
+        .iter()
+        .map(|(f, s, e, k)| ((f.clone(), *s, *e), k.clone()));
+    let pending = std::iter::once(next).chain(
+        ctx.instances
+            .queue
+            .iter()
+            .map(|(id, k, _)| (id.clone(), k.clone())),
+    );
     for (id, key) in checked.chain(pending) {
         if seen.insert((id.clone(), key)) {
             *per_decl.entry(id).or_default() += 1;
@@ -157,11 +210,20 @@ fn over_budget_message(ctx: &TypeCheckCtx, next: (DeclId, Arc<[Type]>)) -> Strin
         .iter()
         .take(3)
         .map(|(id, n)| {
-            let name = ctx.instances.decls.get(id).map(|d| d.name.as_str()).unwrap_or("?");
+            let name = ctx
+                .instances
+                .decls
+                .get(id)
+                .map(|d| d.name.as_str())
+                .unwrap_or("?");
             format!("`{name}` {n}")
         })
         .collect();
-    let more = if ranked.len() > top.len() { ", ..." } else { "" };
+    let more = if ranked.len() > top.len() {
+        ", ..."
+    } else {
+        ""
+    };
     format!(
         "calls of generic mods and chips demand at least {total} distinct type-argument \
          combinations beyond the ones their bounds already cover ({}{more}), over the limit of \
@@ -203,8 +265,11 @@ fn check_instantiation(
     super::decl::check_chip_body(ctx, decl, combo);
     super::shadow::close_body(ctx, decl);
     let new = ctx.diagnostics.split_off(before);
-    ctx.diagnostics
-        .extend(new.into_iter().filter(|d| reported.insert((d.code.clone(), d.range.file.clone(), d.range.start.offset))));
+    ctx.diagnostics.extend(
+        new.into_iter().filter(|d| {
+            reported.insert((d.code.clone(), d.range.file.clone(), d.range.start.offset))
+        }),
+    );
 
     ctx.exec_stack.pop();
     ctx.expected_ty = expected_ty;

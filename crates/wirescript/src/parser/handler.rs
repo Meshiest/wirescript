@@ -353,7 +353,11 @@ impl<'a> Parser<'a> {
     /// capture's bindings. `trigger` is the already-parsed handler trigger (used
     /// to reject records on custom events and, for records, to resolve field
     /// names against `catalog::events::find_event`'s data order).
-    pub(super) fn parse_handler_arrow_pattern(&mut self, trigger: &Trigger, params: &mut Vec<HandlerParam>) {
+    pub(super) fn parse_handler_arrow_pattern(
+        &mut self,
+        trigger: &Trigger,
+        params: &mut Vec<HandlerParam>,
+    ) {
         // `params` is always empty on entry: the trigger-args loop above
         // never produces params (there is no inline data-param parsing), so
         // there is nothing here to guard against.
@@ -361,7 +365,10 @@ impl<'a> Parser<'a> {
             Trigger::Ident { name, .. } => Some(name.as_str()),
             _ => None,
         };
-        let is_custom = matches!(trigger_name, Some("CustomEvent") | Some("GlobalCustomEvent"));
+        let is_custom = matches!(
+            trigger_name,
+            Some("CustomEvent") | Some("GlobalCustomEvent")
+        );
         let event_spec = trigger_name.and_then(crate::catalog::events::find_event);
 
         if self.check(TokenKind::LParen, None) {
@@ -552,9 +559,14 @@ impl<'a> Parser<'a> {
     /// handler head names (`on name {`, `on name -> (..)`, `on name()`),
     /// consuming the name, its ranges moved to where it is written: the name
     /// and where it is, the trigger and the config args.
-    fn event_alias_at_head(&mut self) -> Option<((String, SourceRange), Trigger, Vec<HandlerConfigArg>)> {
+    fn event_alias_at_head(
+        &mut self,
+    ) -> Option<((String, SourceRange), Trigger, Vec<HandlerConfigArg>)> {
         if self.peek().kind != TokenKind::Ident
-            || !matches!(self.peek_at(1).kind, TokenKind::LBrace | TokenKind::Arrow | TokenKind::LParen)
+            || !matches!(
+                self.peek_at(1).kind,
+                TokenKind::LBrace | TokenKind::Arrow | TokenKind::LParen
+            )
         {
             return None;
         }
@@ -580,7 +592,10 @@ impl<'a> Parser<'a> {
             return config;
         }
         while !self.check(TokenKind::RParen, None) && self.peek().kind != TokenKind::Eof {
-            if self.check(TokenKind::Ident, None) && self.peek_at(1).kind == TokenKind::Op && self.peek_at(1).text == "=" {
+            if self.check(TokenKind::Ident, None)
+                && self.peek_at(1).kind == TokenKind::Op
+                && self.peek_at(1).text == "="
+            {
                 let name = self.expect(TokenKind::Ident, None).text;
                 self.expect(TokenKind::Op, Some("="));
                 let value = self.parse_expr();

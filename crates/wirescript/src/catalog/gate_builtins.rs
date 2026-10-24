@@ -73,17 +73,30 @@ pub fn method_for(name: &str) -> Option<&'static str> {
 /// expressions) and for non-builtins.
 pub fn statement_usage_hint(name: &str) -> Option<&'static str> {
     Some(match name {
-        SET_VARIABLE => "`SetVariable(variable, value)` is an exec statement that sets a variable \
-                         (shorthand for `v = x`); it has no return value",
-        SET_ARRAY_ELEMENT => "`SetArrayElement(array, index, value)` is an exec statement that sets \
-                              an array element (shorthand for `a[i] = x`); it has no return value",
-        INCREMENT_VARIABLE => "`IncrementVariable(variable, amount)` is an exec statement that adds \
-                               to a variable (shorthand for `v = v + x`); it has no return value",
+        SET_VARIABLE => {
+            "`SetVariable(variable, value)` is an exec statement that sets a variable \
+                         (shorthand for `v = x`); it has no return value"
+        }
+        SET_ARRAY_ELEMENT => {
+            "`SetArrayElement(array, index, value)` is an exec statement that sets \
+                              an array element (shorthand for `a[i] = x`); it has no return value"
+        }
+        INCREMENT_VARIABLE => {
+            "`IncrementVariable(variable, amount)` is an exec statement that adds \
+                               to a variable (shorthand for `v = v + x`); it has no return value"
+        }
         _ => return None,
     })
 }
 
 /// Every callable gate-builtin name, for editor completion.
 pub fn all() -> impl Iterator<Item = &'static str> {
-    [GET_VARIABLE, SET_VARIABLE, INCREMENT_VARIABLE, SET_ARRAY_ELEMENT].into_iter().chain(METHODS.iter().map(|(n, _)| *n))
+    [
+        GET_VARIABLE,
+        SET_VARIABLE,
+        INCREMENT_VARIABLE,
+        SET_ARRAY_ELEMENT,
+    ]
+    .into_iter()
+    .chain(METHODS.iter().map(|(n, _)| *n))
 }

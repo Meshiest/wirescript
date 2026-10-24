@@ -13,14 +13,18 @@ use crate::intern::{resolve, sym};
 use crate::ir::module_tree::ModuleTree;
 use crate::ir::port_registry::WirePort;
 use crate::ir::{
-    GateIO, LayoutMode, Literal, Module, Node, NodeId, NodeKind, PortSpec, Program, ScopeInfo, ScopeKind, SourceRange,
-    StyleValue, Type, Wire,
+    GateIO, LayoutMode, Literal, Module, Node, NodeId, NodeKind, PortSpec, Program, ScopeInfo,
+    ScopeKind, SourceRange, StyleValue, Type, Wire,
 };
 
 /// Write `program` as `.wsir` text.
 pub fn write_program<W: Write>(program: &Program, out: &mut W) -> io::Result<()> {
     let plan = Plan::build(program)?;
-    let mut w = Writer { out, plan: &plan, main_file: program.settings.source_file.as_deref() };
+    let mut w = Writer {
+        out,
+        plan: &plan,
+        main_file: program.settings.source_file.as_deref(),
+    };
     w.file(program)
 }
 
@@ -35,8 +39,15 @@ pub fn check_fixed_point(program: &Program, text: &str) -> Result<(), String> {
         return Ok(());
     }
     let (a, b): (Vec<&str>, Vec<&str>) = (again.split('\n').collect(), text.split('\n').collect());
-    let line = a.iter().zip(&b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len())) + 1;
-    Err(format!("writing the parsed program does not give the same text (first difference at line {line})"))
+    let line = a
+        .iter()
+        .zip(&b)
+        .position(|(x, y)| x != y)
+        .unwrap_or(a.len().min(b.len()))
+        + 1;
+    Err(format!(
+        "writing the parsed program does not give the same text (first difference at line {line})"
+    ))
 }
 
 pub fn program_to_string(program: &Program) -> io::Result<String> {
@@ -66,8 +77,14 @@ enum Form {
 }
 
 enum Operand<'p> {
-    Wire { port: WirePort, wire: &'p Wire },
-    Lit { port: &'static str, lit: &'p Literal },
+    Wire {
+        port: WirePort,
+        wire: &'p Wire,
+    },
+    Lit {
+        port: &'static str,
+        lit: &'p Literal,
+    },
 }
 
 struct NodePlan<'p> {
@@ -113,9 +130,15 @@ impl<'p> Plan<'p> {
         by_id.sort();
         for id in &by_id {
             let np = &plan.nodes[id];
-            let given = plan.mods[np.module].module.value_names.get(id).map(|s| resolve(*s).to_string());
+            let given = plan.mods[np.module]
+                .module
+                .value_names
+                .get(id)
+                .map(|s| resolve(*s).to_string());
             let name = given
-                .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+                .filter(|n| {
+                    !n.is_empty() && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                })
                 .filter(|n| !n.bytes().all(|b| b.is_ascii_digit()))
                 .or_else(|| source_name(np.node))
                 .and_then(|base| {
@@ -142,11 +165,16 @@ impl<'p> Plan<'p> {
             plan.plan_operands(id, wires)?;
         }
         if let Some((id, _)) = incoming.into_iter().next() {
-            return Err(invalid(format!("a wire targets {id}, which is not a node of this program")));
+            return Err(invalid(format!(
+                "a wire targets {id}, which is not a node of this program"
+            )));
         }
         for w in plan.mods.iter().flat_map(|m| &m.module.wires) {
             if !plan.nodes.contains_key(&w.source.node_id) {
-                return Err(invalid(format!("a wire comes from {}, which is not a node of this program", w.source.node_id)));
+                return Err(invalid(format!(
+                    "a wire comes from {}, which is not a node of this program",
+                    w.source.node_id
+                )));
             }
         }
 
@@ -175,24 +203,42 @@ impl<'p> Plan<'p> {
         }
         for (n, w) in by_number.iter().enumerate() {
             let w = w.expect("every wire is numbered once");
-            let home = plan.tree.common_module(plan.nodes[&w.source.node_id].module, plan.nodes[&w.target.node_id].module);
+            let home = plan.tree.common_module(
+                plan.nodes[&w.source.node_id].module,
+                plan.nodes[&w.target.node_id].module,
+            );
             default_lists[home].push(n);
         }
         for (mi, m) in plan.mods.iter().enumerate() {
             for host in m.module.dynamic_labels.keys() {
                 if plan.nodes.get(host).is_none_or(|np| np.module != mi) {
-                    return Err(invalid(format!("dynamic label on {host}, which is not a node of its module")));
+                    return Err(invalid(format!(
+                        "dynamic label on {host}, which is not a node of its module"
+                    )));
                 }
             }
-            for host in m.module.dynamic_colors.keys().chain(m.module.dynamic_materials.keys()) {
+            for host in m
+                .module
+                .dynamic_colors
+                .keys()
+                .chain(m.module.dynamic_materials.keys())
+            {
                 if plan.nodes.get(host).is_none_or(|np| np.module != mi) {
-                    return Err(invalid(format!("dynamic style on {host}, which is not a node of its module")));
+                    return Err(invalid(format!(
+                        "dynamic style on {host}, which is not a node of its module"
+                    )));
                 }
             }
         }
         for (mi, m) in plan.mods.iter().enumerate() {
-            let actual: Vec<usize> = m.module.wires.iter().map(|w| number[&(w as *const Wire)]).collect();
-            plan.wire_order.push((actual != default_lists[mi]).then_some(actual));
+            let actual: Vec<usize> = m
+                .module
+                .wires
+                .iter()
+                .map(|w| number[&(w as *const Wire)])
+                .collect();
+            plan.wire_order
+                .push((actual != default_lists[mi]).then_some(actual));
         }
         Ok(plan)
     }
@@ -210,7 +256,14 @@ impl<'p> Plan<'p> {
             self.order.push(id);
             self.nodes.insert(
                 id,
-                NodePlan { node, module: mi, form: Form::Gate, pin_type: None, operands: Vec::new(), layout_after: Vec::new() },
+                NodePlan {
+                    node,
+                    module: mi,
+                    form: Form::Gate,
+                    pin_type: None,
+                    operands: Vec::new(),
+                    layout_after: Vec::new(),
+                },
             );
             if let Some(child) = m.chips.get(&id) {
                 self.chip_module.insert(id, self.mods.len());
@@ -237,7 +290,11 @@ impl<'p> Plan<'p> {
             if let Some(prev) = by_port.insert(w.target.port, w) {
                 return Err(invalid(format!(
                     "fan-in: {id}.{} is fed by both {}.{} and {}.{}",
-                    w.target.port, prev.source.node_id, prev.source.port, w.source.node_id, w.source.port
+                    w.target.port,
+                    prev.source.node_id,
+                    prev.source.port,
+                    w.source.node_id,
+                    w.source.port
                 )));
             }
         }
@@ -247,7 +304,8 @@ impl<'p> Plan<'p> {
         let mut used_props: HashSet<crate::intern::Sym> = HashSet::default();
         for p in &node.ports.inputs {
             let name = resolve(p.name);
-            match WirePort::try_from_name(name).and_then(|wp| by_port.remove(&wp).map(|w| (wp, w))) {
+            match WirePort::try_from_name(name).and_then(|wp| by_port.remove(&wp).map(|w| (wp, w)))
+            {
                 Some((port, wire)) => operands.push(Operand::Wire { port, wire }),
                 None => {
                     if let Some(lit) = node.properties.get(&p.name) {
@@ -259,7 +317,10 @@ impl<'p> Plan<'p> {
         }
         let mut rest: Vec<(WirePort, &Wire)> = by_port.into_iter().collect();
         rest.sort_by_key(|(p, _)| p.as_str());
-        operands.extend(rest.into_iter().map(|(port, wire)| Operand::Wire { port, wire }));
+        operands.extend(
+            rest.into_iter()
+                .map(|(port, wire)| Operand::Wire { port, wire }),
+        );
 
         let is_chip = self.chip_module.contains_key(&id);
         let pin_type = pin_pattern(&node.ports);
@@ -278,7 +339,11 @@ impl<'p> Plan<'p> {
         };
         let np = self.nodes.get_mut(&id).unwrap();
         np.form = form;
-        np.pin_type = if matches!(form, Form::In | Form::Out) { pin_type } else { None };
+        np.pin_type = if matches!(form, Form::In | Form::Out) {
+            pin_type
+        } else {
+            None
+        };
         np.operands = operands;
         np.layout_after = layout_after;
         Ok(())
@@ -292,7 +357,9 @@ impl<'p> Plan<'p> {
 /// The type `T` when `ports` are exactly a pin's `(RER_Input: T) -> (RER_Output: T)`.
 fn pin_pattern(ports: &GateIO) -> Option<Type> {
     match (ports.inputs.as_slice(), ports.outputs.as_slice()) {
-        ([i], [o]) if i.name == *sym::RER_INPUT && o.name == *sym::RER_OUTPUT && i.ty == o.ty => Some(i.ty.clone()),
+        ([i], [o]) if i.name == *sym::RER_INPUT && o.name == *sym::RER_OUTPUT && i.ty == o.ty => {
+            Some(i.ty.clone())
+        }
         _ => None,
     }
 }
@@ -309,7 +376,16 @@ fn source_name(node: &Node) -> Option<String> {
     } else {
         pick(*sym::NAME_LABEL).or_else(|| pick(*sym::BINDING_NAME))
     }?;
-    let name: String = raw.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
+    let name: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     (!name.is_empty() && !name.bytes().all(|b| b.is_ascii_digit())).then_some(name)
 }
 
@@ -336,7 +412,10 @@ impl<W: Write> Writer<'_, '_, W> {
             writeln!(self.out)?;
         }
         if s.layout != LayoutMode::default() {
-            let (w, _) = defaults::LAYOUT_MODES.iter().find(|(_, m)| *m == s.layout).expect("every layout has a word");
+            let (w, _) = defaults::LAYOUT_MODES
+                .iter()
+                .find(|(_, m)| *m == s.layout)
+                .expect("every layout has a word");
             writeln!(self.out, "layout = {w}")?;
         }
         if s.invisible {
@@ -363,7 +442,10 @@ impl<W: Write> Writer<'_, '_, W> {
             self.port_ref(p.node_id, p.port)?;
             writeln!(self.out)?;
         }
-        for (key, value) in [("color", &root.root_style.color), ("material", &root.root_style.material)] {
+        for (key, value) in [
+            ("color", &root.root_style.color),
+            ("material", &root.root_style.material),
+        ] {
             match value {
                 Some(StyleValue::Baked(lit)) => {
                     write!(self.out, "{key} = ")?;
@@ -384,7 +466,8 @@ impl<W: Write> Writer<'_, '_, W> {
             write!(self.out, ", indent: [")?;
             for (i, n) in sm.line_indent.iter().enumerate() {
                 if i > 0 {
-                    self.out.write_all(if i % 32 == 0 { b",\n  " } else { b", " })?;
+                    self.out
+                        .write_all(if i % 32 == 0 { b",\n  " } else { b", " })?;
                 }
                 write!(self.out, "{n}")?;
             }
@@ -438,7 +521,10 @@ impl<W: Write> Writer<'_, '_, W> {
         scope_ids.sort();
         let default_root = ScopeInfo::root(ScopeKind::ModuleRoot);
         if !m.scopes.contains_key(&crate::ir::ROOT_SCOPE_ID) {
-            return Err(invalid(format!("module {} has no root scope", resolve(m.name))));
+            return Err(invalid(format!(
+                "module {} has no root scope",
+                resolve(m.name)
+            )));
         }
         for sid in scope_ids {
             let s = &m.scopes[sid];
@@ -457,8 +543,16 @@ impl<W: Write> Writer<'_, '_, W> {
             }
             writeln!(self.out, ")")?;
         }
-        for (kw, list, kind) in [("inputs", &m.inputs, NodeKind::Input), ("outputs", &m.outputs, NodeKind::Output)] {
-            let mut default: Vec<NodeId> = m.nodes.iter().filter(|(_, n)| n.kind == kind).map(|(id, _)| *id).collect();
+        for (kw, list, kind) in [
+            ("inputs", &m.inputs, NodeKind::Input),
+            ("outputs", &m.outputs, NodeKind::Output),
+        ] {
+            let mut default: Vec<NodeId> = m
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.kind == kind)
+                .map(|(id, _)| *id)
+                .collect();
             default.sort();
             if *list != default {
                 self.indent(depth)?;
@@ -472,7 +566,8 @@ impl<W: Write> Writer<'_, '_, W> {
             write!(self.out, "!wire_order(")?;
             for (i, n) in list.iter().enumerate() {
                 if i > 0 {
-                    self.out.write_all(if i % 32 == 0 { b",\n" } else { b", " })?;
+                    self.out
+                        .write_all(if i % 32 == 0 { b",\n" } else { b", " })?;
                     if i % 32 == 0 {
                         self.indent(depth + 1)?;
                     }
@@ -502,7 +597,8 @@ impl<W: Write> Writer<'_, '_, W> {
     fn id_list(&mut self, ids: &[NodeId]) -> io::Result<()> {
         for (i, id) in ids.iter().enumerate() {
             if i > 0 {
-                self.out.write_all(if i % 16 == 0 { b",\n      " } else { b", " })?;
+                self.out
+                    .write_all(if i % 16 == 0 { b",\n      " } else { b", " })?;
             }
             self.node_ref(*id)?;
         }
@@ -518,7 +614,10 @@ impl<W: Write> Writer<'_, '_, W> {
     }
 
     fn port_ref(&mut self, id: NodeId, port: WirePort) -> io::Result<()> {
-        let name = self.plan.name(id).ok_or_else(|| invalid(format!("reference to {id}, not a node of this program")))?;
+        let name = self
+            .plan
+            .name(id)
+            .ok_or_else(|| invalid(format!("reference to {id}, not a node of this program")))?;
         write!(self.out, "%{name}")?;
         let src = &self.plan.nodes[&id].node.ports.outputs;
         if !(src.len() == 1 && src[0].name == port.sym()) {
@@ -638,9 +737,12 @@ impl<W: Write> Writer<'_, '_, W> {
             _ => {
                 // What the parser gives a gate with no signature: its default
                 // ports, each `any` input typed by the wire feeding it.
-                let mut d = defaults::default_ports(node.gate_class, node.properties.get(&*sym::VALUE));
+                let mut d =
+                    defaults::default_ports(node.gate_class, node.properties.get(&*sym::VALUE));
                 for op in &np.operands {
-                    let Operand::Wire { port, wire } = op else { continue };
+                    let Operand::Wire { port, wire } = op else {
+                        continue;
+                    };
                     let src = &plan.nodes[&wire.source.node_id].node.ports;
                     if let Some(t) = src.find_output(wire.source.port.sym()) {
                         defaults::infer_any_input(&mut d, port.sym(), t.ty.clone());
@@ -753,22 +855,36 @@ impl<W: Write> Writer<'_, '_, W> {
     fn attr(&mut self, prop: &str, v: &Literal) -> io::Result<(String, String)> {
         if let Some((key, kind)) = defaults::annotation_by_prop(prop) {
             match (kind, v) {
-                (AnnValue::Flag, Literal::Bool(true)) => return Ok((key.to_string(), String::new())),
+                (AnnValue::Flag, Literal::Bool(true)) => {
+                    return Ok((key.to_string(), String::new()));
+                }
                 (AnnValue::Str, Literal::String(_)) => return Ok((key.to_string(), lit_string(v))),
-                (AnnValue::Word, Literal::String(s)) if is_ident(s) && !defaults::is_literal_word(s) => return Ok((key.to_string(), s.clone())),
-                (AnnValue::Node, Literal::Int(n)) if u32::try_from(*n).is_ok_and(|n| self.plan.name(NodeId(n)).is_some()) => {
+                (AnnValue::Word, Literal::String(s))
+                    if is_ident(s) && !defaults::is_literal_word(s) =>
+                {
+                    return Ok((key.to_string(), s.clone()));
+                }
+                (AnnValue::Node, Literal::Int(n))
+                    if u32::try_from(*n).is_ok_and(|n| self.plan.name(NodeId(n)).is_some()) =>
+                {
                     let n = NodeId(*n as u32);
                     return Ok((key.to_string(), format!("%{}", self.plan.names[&n])));
                 }
                 (AnnValue::Nodes, Literal::Array(ids)) => {
-                    if let Some(names) = ids.iter().map(|id| self.node_name(id)).collect::<Option<Vec<_>>>() {
+                    if let Some(names) = ids
+                        .iter()
+                        .map(|id| self.node_name(id))
+                        .collect::<Option<Vec<_>>>()
+                    {
                         return Ok((key.to_string(), format!("[{}]", names.join(", "))));
                     }
                 }
                 (AnnValue::Nodes, Literal::Map(entries)) => {
                     let entries = entries
                         .iter()
-                        .map(|(k, id)| Some(format!("{} => {}", lit_string(k), self.node_name(id)?)))
+                        .map(|(k, id)| {
+                            Some(format!("{} => {}", lit_string(k), self.node_name(id)?))
+                        })
                         .collect::<Option<Vec<_>>>();
                     if let Some(entries) = entries {
                         return Ok((key.to_string(), format!("map[{}]", entries.join(", "))));
@@ -800,7 +916,11 @@ fn is_empty_range(r: &SourceRange) -> bool {
 }
 
 fn kind_name(k: NodeKind) -> &'static str {
-    defaults::NODE_KINDS.iter().find(|(_, n)| *n == k).map(|(w, _)| *w).expect("every node kind has a word")
+    defaults::NODE_KINDS
+        .iter()
+        .find(|(_, n)| *n == k)
+        .map(|(w, _)| *w)
+        .expect("every node kind has a word")
 }
 
 fn scope_kind<W: Write>(out: &mut W, k: &ScopeKind) -> io::Result<()> {
@@ -852,7 +972,12 @@ pub(super) fn string<W: Write>(out: &mut W, s: &str) -> io::Result<()> {
 
 pub(super) fn float<W: Write>(out: &mut W, f: f64) -> io::Result<()> {
     if f.is_nan() {
-        write!(out, "{}{}", if f.is_sign_negative() { "-" } else { "" }, word::NAN)
+        write!(
+            out,
+            "{}{}",
+            if f.is_sign_negative() { "-" } else { "" },
+            word::NAN
+        )
     } else if f.is_infinite() {
         write!(out, "{}{}", if f < 0.0 { "-" } else { "" }, word::INF)
     } else {
@@ -912,7 +1037,10 @@ pub(super) fn literal<W: Write>(out: &mut W, lit: &Literal) -> io::Result<()> {
             }
             write!(out, "}}")
         }
-        Literal::Asset { asset_type, asset_name } => {
+        Literal::Asset {
+            asset_type,
+            asset_name,
+        } => {
             write!(out, "{}(", word::ASSET)?;
             string(out, asset_type)?;
             write!(out, ", ")?;
@@ -978,7 +1106,9 @@ pub(super) fn ty<W: Write>(out: &mut W, t: &Type) -> io::Result<()> {
             write!(out, "*")?;
             ty(out, inner)
         }
-        Type::Array(inner) if matches!(inner.as_ref(), Type::Ref(_)) => list(out, "array", std::slice::from_ref(inner)),
+        Type::Array(inner) if matches!(inner.as_ref(), Type::Ref(_)) => {
+            list(out, "array", std::slice::from_ref(inner))
+        }
         Type::Array(inner) => {
             ty(out, inner)?;
             write!(out, "[]")
@@ -1014,7 +1144,11 @@ pub(super) fn ty<W: Write>(out: &mut W, t: &Type) -> io::Result<()> {
     }
 }
 
-pub(super) fn loc<W: Write>(out: &mut W, r: &SourceRange, main_file: Option<&str>) -> io::Result<()> {
+pub(super) fn loc<W: Write>(
+    out: &mut W,
+    r: &SourceRange,
+    main_file: Option<&str>,
+) -> io::Result<()> {
     write!(out, "loc(")?;
     if main_file != Some(&*r.file) {
         string(out, &r.file)?;
@@ -1036,5 +1170,9 @@ pub(super) fn loc<W: Write>(out: &mut W, r: &SourceRange, main_file: Option<&str
 /// A port name: bare when it is an identifier, quoted otherwise (DisplayText's
 /// `Position.X` sub-ports are not).
 fn port_name<W: Write>(out: &mut W, name: &str) -> io::Result<()> {
-    if is_ident(name) { out.write_all(name.as_bytes()) } else { string(out, name) }
+    if is_ident(name) {
+        out.write_all(name.as_bytes())
+    } else {
+        string(out, name)
+    }
 }

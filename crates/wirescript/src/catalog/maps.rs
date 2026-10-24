@@ -5,12 +5,12 @@
 //! curated display strings and its [`Lowering`], which `lower::access` builds
 //! the gate from.
 
-use crate::ir::gate_class as gc;
 use crate::ir::Type;
+use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
 use crate::types::container::ContainerKind;
 
-use super::methods::{arg, generic, opt, val, ArgKind, ArgTy, Lowering};
+use super::methods::{ArgKind, ArgTy, Lowering, arg, generic, opt, val};
 
 /// One map method: surface name, the gate it lowers to, curated display, and
 /// how it lowers. Its typed parameters are derived from the lowering's
@@ -39,7 +39,10 @@ impl MapMethod {
 
     /// The method's typed parameters on a `Map<key, value>`.
     pub fn params(&self, key: &Type, value: &Type) -> Vec<crate::types::signature::Param> {
-        self.lowering.params(&ContainerKind::Map { key: key.clone(), value: value.clone() })
+        self.lowering.params(&ContainerKind::Map {
+            key: key.clone(),
+            value: value.clone(),
+        })
     }
 
     /// Build the [`CallSignature`](crate::types::signature::CallSignature) for a call
@@ -58,18 +61,88 @@ use WirePort as P;
 
 /// Every method callable on a map, in a stable display order.
 pub static MAP_METHODS: &[MapMethod] = &[
-    MapMethod { name: "get", mutates: false, gate: gc::MAP_GET, doc: "Read the value at key; gives its Value (default) and Found", lowering: generic(&[val("key", P::Key, Key)], P::Value) },
-    MapMethod { name: "set", mutates: true, gate: gc::MAP_SET, doc: "Insert or overwrite the value at key", lowering: generic(&[val("key", P::Key, Key), val("value", P::Value, MapValue)], P::ExecOut) },
-    MapMethod { name: "has", mutates: false, gate: gc::MAP_HAS, doc: "Whether the map contains key", lowering: generic(&[val("key", P::Key, Key)], P::BFound) },
-    MapMethod { name: "remove", mutates: true, gate: gc::MAP_REMOVE, doc: "Remove key; gives whether it was present", lowering: generic(&[val("key", P::Key, Key)], P::BFound) },
-    MapMethod { name: "clear", mutates: true, gate: gc::MAP_CLEAR, doc: "Remove all entries", lowering: generic(&[], P::ExecOut) },
-    MapMethod { name: "copyFrom", mutates: true, gate: gc::MAP_COPY_FROM, doc: "Replace contents with a copy of another map", lowering: generic(&[arg("source", P::SourceRef, ArgKind::MapRef)], P::ExecOut) },
-    MapMethod { name: "length", mutates: false, gate: gc::MAP_GET_LENGTH, doc: "Number of entries", lowering: generic(&[], P::Length) },
+    MapMethod {
+        name: "get",
+        mutates: false,
+        gate: gc::MAP_GET,
+        doc: "Read the value at key; gives its Value (default) and Found",
+        lowering: generic(&[val("key", P::Key, Key)], P::Value),
+    },
+    MapMethod {
+        name: "set",
+        mutates: true,
+        gate: gc::MAP_SET,
+        doc: "Insert or overwrite the value at key",
+        lowering: generic(
+            &[val("key", P::Key, Key), val("value", P::Value, MapValue)],
+            P::ExecOut,
+        ),
+    },
+    MapMethod {
+        name: "has",
+        mutates: false,
+        gate: gc::MAP_HAS,
+        doc: "Whether the map contains key",
+        lowering: generic(&[val("key", P::Key, Key)], P::BFound),
+    },
+    MapMethod {
+        name: "remove",
+        mutates: true,
+        gate: gc::MAP_REMOVE,
+        doc: "Remove key; gives whether it was present",
+        lowering: generic(&[val("key", P::Key, Key)], P::BFound),
+    },
+    MapMethod {
+        name: "clear",
+        mutates: true,
+        gate: gc::MAP_CLEAR,
+        doc: "Remove all entries",
+        lowering: generic(&[], P::ExecOut),
+    },
+    MapMethod {
+        name: "copyFrom",
+        mutates: true,
+        gate: gc::MAP_COPY_FROM,
+        doc: "Replace contents with a copy of another map",
+        lowering: generic(&[arg("source", P::SourceRef, ArgKind::MapRef)], P::ExecOut),
+    },
+    MapMethod {
+        name: "length",
+        mutates: false,
+        gate: gc::MAP_GET_LENGTH,
+        doc: "Number of entries",
+        lowering: generic(&[], P::Length),
+    },
     // `keys`/`values` fill a caller-supplied destination array in place; the
     // `destArray: K[]`/`V[]` array is a PARAMETER, and the call itself has no
     // value (`Never`, `map_return_type`).
-    MapMethod { name: "keys", mutates: false, gate: gc::MAP_GET_KEYS, doc: "Fill an array with the map's keys; a brick key whose brick is gone is skipped unless includeDead", lowering: generic(&[arg("destArray", P::ArrayVarRef, ArgKind::DestArray(Key)), opt("includeDead", P::BIncludeDead, Bool)], P::ExecOut) },
-    MapMethod { name: "values", mutates: false, gate: gc::MAP_GET_VALUES, doc: "Fill an array with the map's values", lowering: generic(&[arg("destArray", P::ArrayVarRef, ArgKind::DestArray(MapValue))], P::ExecOut) },
+    MapMethod {
+        name: "keys",
+        mutates: false,
+        gate: gc::MAP_GET_KEYS,
+        doc: "Fill an array with the map's keys; a brick key whose brick is gone is skipped unless includeDead",
+        lowering: generic(
+            &[
+                arg("destArray", P::ArrayVarRef, ArgKind::DestArray(Key)),
+                opt("includeDead", P::BIncludeDead, Bool),
+            ],
+            P::ExecOut,
+        ),
+    },
+    MapMethod {
+        name: "values",
+        mutates: false,
+        gate: gc::MAP_GET_VALUES,
+        doc: "Fill an array with the map's values",
+        lowering: generic(
+            &[arg(
+                "destArray",
+                P::ArrayVarRef,
+                ArgKind::DestArray(MapValue),
+            )],
+            P::ExecOut,
+        ),
+    },
 ];
 
 pub fn map_methods() -> &'static [MapMethod] {
@@ -101,8 +174,15 @@ pub fn map_return_type(method: &str, key: &Type, value: &Type) -> Option<Type> {
         return Some(Type::call_result(vec![("Value".into(), value.clone())]));
     }
     let m = map_method(method)?;
-    let kind = ContainerKind::Map { key: key.clone(), value: value.clone() };
-    Some(super::methods::method_return_type(m.gate, &m.lowering, &kind))
+    let kind = ContainerKind::Map {
+        key: key.clone(),
+        value: value.clone(),
+    };
+    Some(super::methods::method_return_type(
+        m.gate,
+        &m.lowering,
+        &kind,
+    ))
 }
 
 #[cfg(test)]

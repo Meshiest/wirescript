@@ -228,7 +228,7 @@ mod tests {
     /// exist.
     #[test]
     fn plane_specs_match_the_live_dump() {
-        use crate::catalog::{default_catalog, Port};
+        use crate::catalog::{Port, default_catalog};
         use crate::collections::HashSet;
 
         let catalog = default_catalog();
@@ -237,11 +237,18 @@ mod tests {
             ports.iter().map(|p| p.name.as_str()).collect()
         }
 
-        for kind in [LoopKind::CountFor, LoopKind::ForEachArray, LoopKind::ForEachMap] {
+        for kind in [
+            LoopKind::CountFor,
+            LoopKind::ForEachArray,
+            LoopKind::ForEachMap,
+        ] {
             let s = plane_spec(kind);
 
             let shell = catalog.find_by_class(s.shell_class).unwrap_or_else(|| {
-                panic!("{kind:?}: shell_class {:?} not found in the dump", s.shell_class)
+                panic!(
+                    "{kind:?}: shell_class {:?} not found in the dump",
+                    s.shell_class
+                )
             });
             assert_eq!(
                 shell.brick_asset, s.brick_asset,
@@ -268,7 +275,10 @@ mod tests {
             );
 
             let entry = catalog.find_by_class(s.entry_class).unwrap_or_else(|| {
-                panic!("{kind:?}: entry_class {:?} not found in the dump", s.entry_class)
+                panic!(
+                    "{kind:?}: entry_class {:?} not found in the dump",
+                    s.entry_class
+                )
             });
             assert_eq!(
                 entry.brick_asset, s.entry_brick_asset,
@@ -321,15 +331,31 @@ mod tests {
     fn function_plane_spec_matches_the_live_dump() {
         let catalog = crate::catalog::default_catalog();
         let s = function_plane_spec();
-        let shell = catalog.find_by_class(s.shell_class).expect("shell class in the dump");
+        let shell = catalog
+            .find_by_class(s.shell_class)
+            .expect("shell class in the dump");
         assert_eq!(shell.brick_asset, s.brick_asset);
-        let outs: Vec<&str> = shell.component.outputs.iter().map(|p| p.name.as_str()).collect();
+        let outs: Vec<&str> = shell
+            .component
+            .outputs
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
         assert_eq!(outs, vec!["Definition"]);
-        let entry = catalog.find_by_class(s.entry_class).expect("entry class in the dump");
+        let entry = catalog
+            .find_by_class(s.entry_class)
+            .expect("entry class in the dump");
         assert_eq!(entry.brick_asset, s.entry_brick_asset);
         assert!(catalog.find_by_class(gc::FUNCTION_INPUT).is_some());
-        let output = catalog.find_by_class(gc::FUNCTION_OUTPUT).expect("FunctionOutput in the dump");
-        let ins: Vec<&str> = output.component.inputs.iter().map(|p| p.name.as_str()).collect();
+        let output = catalog
+            .find_by_class(gc::FUNCTION_OUTPUT)
+            .expect("FunctionOutput in the dump");
+        let ins: Vec<&str> = output
+            .component
+            .inputs
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
         assert_eq!(ins, vec!["Value"]);
         assert!(output.component.outputs.is_empty());
         assert!(gc::is_plane_shell(s.shell_class));
@@ -339,7 +365,11 @@ mod tests {
     /// and an ordinary microchip must not.
     #[test]
     fn every_shell_class_has_a_spec() {
-        for kind in [LoopKind::CountFor, LoopKind::ForEachArray, LoopKind::ForEachMap] {
+        for kind in [
+            LoopKind::CountFor,
+            LoopKind::ForEachArray,
+            LoopKind::ForEachMap,
+        ] {
             let s = plane_spec(kind);
             assert!(
                 gc::is_plane_shell(s.shell_class),

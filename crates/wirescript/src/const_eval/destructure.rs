@@ -118,7 +118,10 @@ pub(crate) fn bind_destructured(
             }
             Ok(out)
         }
-        LetBinding::RecordDestruct { fields: pattern, range } => {
+        LetBinding::RecordDestruct {
+            fields: pattern,
+            range,
+        } => {
             let Literal::Record(record_fields) = value else {
                 return Err(not_a_record(range));
             };
@@ -189,9 +192,7 @@ pub(crate) fn bind_destructured(
 pub(crate) fn bound_names(binding: &LetBinding) -> Vec<String> {
     match binding {
         LetBinding::Ident { name, .. } => vec![name.clone()],
-        LetBinding::Tuple { names, rest, .. } => {
-            names.iter().chain(rest.iter()).cloned().collect()
-        }
+        LetBinding::Tuple { names, rest, .. } => names.iter().chain(rest.iter()).cloned().collect(),
         LetBinding::Record { names, .. } => names.clone(),
         LetBinding::RecordDestruct { fields, .. } => fields
             .iter()

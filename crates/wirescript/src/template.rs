@@ -265,9 +265,20 @@ fn stamp_module(
 }
 
 /// A host -> source map with both ends renamed by `remap`.
-fn remap_hosts(map: &HashMap<NodeId, PortRef>, remap: &impl Fn(NodeId) -> NodeId) -> HashMap<NodeId, PortRef> {
+fn remap_hosts(
+    map: &HashMap<NodeId, PortRef>,
+    remap: &impl Fn(NodeId) -> NodeId,
+) -> HashMap<NodeId, PortRef> {
     map.iter()
-        .map(|(host, port)| (remap(*host), PortRef { node_id: remap(port.node_id), port: port.port }))
+        .map(|(host, port)| {
+            (
+                remap(*host),
+                PortRef {
+                    node_id: remap(port.node_id),
+                    port: port.port,
+                },
+            )
+        })
         .collect()
 }
 

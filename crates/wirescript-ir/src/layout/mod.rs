@@ -51,9 +51,7 @@ pub const Z_PLANE: i32 = 2;
 fn is_pseudo_storage(node: &Node) -> bool {
     matches!(
         node.gate_class,
-        "BrickComponentType_Var"
-            | "BrickComponentType_BufferTicks"
-            | "BrickComponentType_ArrayVar"
+        "BrickComponentType_Var" | "BrickComponentType_BufferTicks" | "BrickComponentType_ArrayVar"
     )
 }
 
@@ -91,19 +89,38 @@ pub struct Extent {
 impl Extent {
     /// Covers nothing; the first box sets it.
     pub const EMPTY: Extent = Extent {
-        min: IntVec3 { x: i32::MAX, y: i32::MAX, z: i32::MAX },
-        max: IntVec3 { x: i32::MIN, y: i32::MIN, z: i32::MIN },
+        min: IntVec3 {
+            x: i32::MAX,
+            y: i32::MAX,
+            z: i32::MAX,
+        },
+        max: IntVec3 {
+            x: i32::MIN,
+            y: i32::MIN,
+            z: i32::MIN,
+        },
     };
 
     /// Covers the one point `(x, y, z)`.
     pub fn point(x: i32, y: i32, z: i32) -> Self {
-        Extent { min: IntVec3 { x, y, z }, max: IntVec3 { x, y, z } }
+        Extent {
+            min: IntVec3 { x, y, z },
+            max: IntVec3 { x, y, z },
+        }
     }
 
     /// Grow to cover the box from `(x, y, z)` that is `w` by `h` by `d`.
     pub fn add(&mut self, (x, y, z): (i32, i32, i32), (w, h, d): (i32, i32, i32)) {
-        self.min = IntVec3 { x: self.min.x.min(x), y: self.min.y.min(y), z: self.min.z.min(z) };
-        self.max = IntVec3 { x: self.max.x.max(x + w), y: self.max.y.max(y + h), z: self.max.z.max(z + d) };
+        self.min = IntVec3 {
+            x: self.min.x.min(x),
+            y: self.min.y.min(y),
+            z: self.min.z.min(z),
+        };
+        self.max = IntVec3 {
+            x: self.max.x.max(x + w),
+            y: self.max.y.max(y + h),
+            z: self.max.z.max(z + d),
+        };
     }
 
     pub fn is_empty(&self) -> bool {
@@ -113,8 +130,16 @@ impl Extent {
     /// Moved by `dx`, `dy` in the plane.
     pub fn shifted(self, dx: i32, dy: i32) -> Self {
         Extent {
-            min: IntVec3 { x: self.min.x + dx, y: self.min.y + dy, z: self.min.z },
-            max: IntVec3 { x: self.max.x + dx, y: self.max.y + dy, z: self.max.z },
+            min: IntVec3 {
+                x: self.min.x + dx,
+                y: self.min.y + dy,
+                z: self.min.z,
+            },
+            max: IntVec3 {
+                x: self.max.x + dx,
+                y: self.max.y + dy,
+                z: self.max.z,
+            },
         }
     }
 }
@@ -312,7 +337,14 @@ fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> Lay
         let fh = hsy * 2;
         let hsz = brick_half_height(node);
 
-        placements.insert(**id, Placement { x, y, z: layer_base + hsz });
+        placements.insert(
+            **id,
+            Placement {
+                x,
+                y,
+                z: layer_base + hsz,
+            },
+        );
         extent.add((x, y, layer_base), (fw, fh, 2 * hsz));
         row_height = row_height.max(fh);
         layer_depth = layer_depth.max(2 * hsz);
@@ -379,8 +411,14 @@ fn order_function_ports(module: &Module, result: &mut LayoutResult) {
     use crate::ir::gate_class as gc;
     let port_order = crate::intern::intern("PortOrder");
     for (id, child) in &module.chips {
-        let Some(sub) = result.chip_layouts.get_mut(id) else { continue };
-        if module.nodes.get(id).is_some_and(|n| n.gate_class == gc::MICROCHIP_FUNCTION_DEFINITION) {
+        let Some(sub) = result.chip_layouts.get_mut(id) else {
+            continue;
+        };
+        if module
+            .nodes
+            .get(id)
+            .is_some_and(|n| n.gate_class == gc::MICROCHIP_FUNCTION_DEFINITION)
+        {
             for class in [gc::FUNCTION_INPUT, gc::FUNCTION_OUTPUT] {
                 let mut ports: Vec<(i64, NodeId)> = child
                     .nodes
@@ -392,8 +430,10 @@ fn order_function_ports(module: &Module, result: &mut LayoutResult) {
                     })
                     .collect();
                 ports.sort();
-                let mut spots: Vec<Placement> =
-                    ports.iter().filter_map(|(_, n)| sub.placements.get(n).copied()).collect();
+                let mut spots: Vec<Placement> = ports
+                    .iter()
+                    .filter_map(|(_, n)| sub.placements.get(n).copied())
+                    .collect();
                 if spots.len() != ports.len() {
                     continue;
                 }
@@ -480,8 +520,14 @@ fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutRe
         rotations: HashMap::default(),
         // Only Code mode buses values through the gutter.
         bus: BusLayout::default(),
-        bounds_min: IntVec3 { z: Z_PLANE, ..extent.min },
-        bounds_max: IntVec3 { z: Z_PLANE, ..extent.max },
+        bounds_min: IntVec3 {
+            z: Z_PLANE,
+            ..extent.min
+        },
+        bounds_max: IntVec3 {
+            z: Z_PLANE,
+            ..extent.max
+        },
     }
 }
 
@@ -546,11 +592,7 @@ fn align_sources_to_consumers(laid: &mut RegionLayout, module: &Module) {
             // source events, pure expressions). Exec-taking gates
             // stay in their topological column so the exec chain
             // reads linearly across the chip.
-            let takes_exec = node
-                .ports
-                .inputs
-                .iter()
-                .any(|p| matches!(p.ty, Type::Exec));
+            let takes_exec = node.ports.inputs.iter().any(|p| matches!(p.ty, Type::Exec));
             if takes_exec {
                 continue;
             }

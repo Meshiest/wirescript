@@ -122,7 +122,14 @@ fn first_overlap_cells(boxes: &[Box3], order: &[usize]) -> Option<Option<(usize,
             size[k] = size[k].max(hi[k] - lo[k]);
         }
     }
-    let span = |b: &Box3, k: usize| (b.0[k].div_euclid(size[k]), (b.1[k] - 1).div_euclid(size[k]).max(b.0[k].div_euclid(size[k])));
+    let span = |b: &Box3, k: usize| {
+        (
+            b.0[k].div_euclid(size[k]),
+            (b.1[k] - 1)
+                .div_euclid(size[k])
+                .max(b.0[k].div_euclid(size[k])),
+        )
+    };
     let (mut min, mut max) = ([i32::MAX; 3], [i32::MIN; 3]);
     for b in boxes {
         for k in 0..3 {
@@ -186,7 +193,10 @@ fn scan(
         .map(|b| {
             let h = half_extent(catalog, b);
             let p = b.position;
-            ([p.x - h[0], p.y - h[1], p.z - h[2]], [p.x + h[0], p.y + h[1], p.z + h[2]])
+            (
+                [p.x - h[0], p.y - h[1], p.z - h[2]],
+                [p.x + h[0], p.y + h[1], p.z + h[2]],
+            )
         })
         .collect();
     match first_overlap(&boxes) {
@@ -222,7 +232,9 @@ mod tests {
     fn cells_find_the_pair_the_sweep_finds() {
         let mut seed = 0x9e37_79b9_u64;
         let mut rand = |n: i32| {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((seed >> 33) % n as u64) as i32
         };
         let mut used_cells = 0;
@@ -233,7 +245,14 @@ mod tests {
                 .map(|_| {
                     let lo = [rand(spread) * 2, rand(spread) * 2, rand(spread)];
                     let half = [1 + rand(5), 1 + rand(5), 1 + rand(2)];
-                    (lo, [lo[0] + 2 * half[0], lo[1] + 2 * half[1], lo[2] + 2 * half[2]])
+                    (
+                        lo,
+                        [
+                            lo[0] + 2 * half[0],
+                            lo[1] + 2 * half[1],
+                            lo[2] + 2 * half[2],
+                        ],
+                    )
                 })
                 .collect();
             let mut order: Vec<usize> = (0..boxes.len()).collect();
@@ -245,6 +264,9 @@ mod tests {
             }
             assert_eq!(first_overlap(&boxes), sweep, "round {round}");
         }
-        assert!(used_cells > 100, "the cells were tried on only {used_cells} sets");
+        assert!(
+            used_cells > 100,
+            "the cells were tried on only {used_cells} sets"
+        );
     }
 }

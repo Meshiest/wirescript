@@ -62,7 +62,10 @@ impl EnumRegistry {
     /// stands for when it names an enum here (see
     /// [`written_name`](Self::written_name)).
     pub(crate) fn type_named(&self, name: &str, args: Vec<Type>) -> Option<Type> {
-        self.defs.contains_key(name).then(|| Type::Enum { name: name.to_string(), args })
+        self.defs.contains_key(name).then(|| Type::Enum {
+            name: name.to_string(),
+            args,
+        })
     }
 
     /// Register `def` under its name, replacing an enum of that name.
@@ -73,13 +76,20 @@ impl EnumRegistry {
     /// The enum `name` of the `import * as ns` namespace that `file` imports:
     /// the head `ns.Name` of a path or type written there.
     pub fn namespaced(&self, file: &std::sync::Arc<str>, ns: &str, name: &str) -> Option<&EnumDef> {
-        let declares = self.namespaced.get(&(file.clone(), ns.to_string()))?.iter().any(|n| n == name);
+        let declares = self
+            .namespaced
+            .get(&(file.clone(), ns.to_string()))?
+            .iter()
+            .any(|n| n == name);
         declares.then(|| self.defs.get(name)).flatten()
     }
 
     /// Note that the `import * as ns` written in `file` declares enum `name`.
     fn note_namespaced(&mut self, file: &std::sync::Arc<str>, ns: &str, name: &str) {
-        self.namespaced.entry((file.clone(), ns.to_string())).or_default().push(name.to_string());
+        self.namespaced
+            .entry((file.clone(), ns.to_string()))
+            .or_default()
+            .push(name.to_string());
     }
 
     /// The one enum that declares every variant the arms of a `match` cite
@@ -117,7 +127,10 @@ impl EnumRegistry {
                 if game && !crate::catalog::resolves_bare_members(&def.name) {
                     continue;
                 }
-                if variants.iter().all(|name| def.variants.iter().any(|v| v.name == *name)) {
+                if variants
+                    .iter()
+                    .all(|name| def.variants.iter().any(|v| v.name == *name))
+                {
                     if found.is_some() {
                         return Err(());
                     }
@@ -135,9 +148,9 @@ impl EnumRegistry {
 
     /// Every enum's name and every variant's.
     pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
-        self.defs
-            .values()
-            .flat_map(|d| std::iter::once(d.name.as_str()).chain(d.variants.iter().map(|v| v.name.as_str())))
+        self.defs.values().flat_map(|d| {
+            std::iter::once(d.name.as_str()).chain(d.variants.iter().map(|v| v.name.as_str()))
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -269,9 +282,7 @@ pub(super) fn type_expr_mentions(te: &TypeExpr, param: &str) -> bool {
         }
         TypeExpr::Tuple { fields, .. } => fields.iter().any(|f| type_expr_mentions(f, param)),
         TypeExpr::Union { options, .. } => options.iter().any(|o| type_expr_mentions(o, param)),
-        TypeExpr::Record { fields, .. } => {
-            fields.iter().any(|f| type_expr_mentions(&f.typ, param))
-        }
+        TypeExpr::Record { fields, .. } => fields.iter().any(|f| type_expr_mentions(&f.typ, param)),
         TypeExpr::Generic { args, .. } => args.iter().any(|a| type_expr_mentions(a, param)),
     }
 }
@@ -290,9 +301,7 @@ pub(super) fn instantiation_stores_container(def: &EnumDef, args: &[Type]) -> Op
         let stored = def.variants.iter().any(|v| match &v.payload {
             Payload::Unit => false,
             Payload::Positional(types) => types.iter().any(|te| type_expr_mentions(te, &p.name)),
-            Payload::Named(fields) => {
-                fields.iter().any(|(_, te)| type_expr_mentions(te, &p.name))
-            }
+            Payload::Named(fields) => fields.iter().any(|(_, te)| type_expr_mentions(te, &p.name)),
         });
         if stored {
             return Some(p.name.clone());
@@ -467,7 +476,11 @@ pub fn build_registry(decls: &[TopDecl]) -> EnumRegistry {
     }
     for d in decls {
         if let TopDecl::Enum(e) = d {
-            m.insert(EnumDef { name: e.name.clone(), type_params: e.type_params.clone(), variants: variant_defs(e) });
+            m.insert(EnumDef {
+                name: e.name.clone(),
+                type_params: e.type_params.clone(),
+                variants: variant_defs(e),
+            });
         }
     }
     for (ns, e) in namespaced_enums(decls) {
@@ -475,7 +488,11 @@ pub fn build_registry(decls: &[TopDecl]) -> EnumRegistry {
         if m.defs.contains_key(&e.name) {
             continue;
         }
-        m.insert(EnumDef { name: e.name.clone(), type_params: e.type_params.clone(), variants: variant_defs(e) });
+        m.insert(EnumDef {
+            name: e.name.clone(),
+            type_params: e.type_params.clone(),
+            variants: variant_defs(e),
+        });
     }
     m
 }
@@ -541,7 +558,10 @@ pub fn resolve_bare_variant_enum<'d>(
 pub fn collect_enum_defs(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
     for d in decls {
         if let TopDecl::Enum(e) = d {
-            ctx.enum_decls.entry(e.name.clone()).or_default().push(e.range.clone());
+            ctx.enum_decls
+                .entry(e.name.clone())
+                .or_default()
+                .push(e.range.clone());
             let variants = assign_discriminants(e, ctx);
             Arc::make_mut(&mut ctx.enum_defs).insert(EnumDef {
                 name: e.name.clone(),
@@ -554,9 +574,18 @@ pub fn collect_enum_defs(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
     // a flat import's is: one enum of a name per program.
     for (ns, e) in namespaced_enums(decls) {
         Arc::make_mut(&mut ctx.enum_defs).note_namespaced(&ns.range.file, &ns.name, &e.name);
-        match ctx.enum_decls.get(&e.name).and_then(|ds| ds.iter().find(|r| **r != e.range)) {
+        match ctx
+            .enum_decls
+            .get(&e.name)
+            .and_then(|ds| ds.iter().find(|r| **r != e.range))
+        {
             Some(other) => {
-                let file = other.file.rsplit(['/', '\\']).next().unwrap_or(&other.file).to_string();
+                let file = other
+                    .file
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(&other.file)
+                    .to_string();
                 ctx.emit(
                     "WS013",
                     format!(
@@ -569,7 +598,10 @@ pub fn collect_enum_defs(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
             }
             None if ctx.enum_decls.contains_key(&e.name) => {}
             None => {
-                ctx.enum_decls.entry(e.name.clone()).or_default().push(e.range.clone());
+                ctx.enum_decls
+                    .entry(e.name.clone())
+                    .or_default()
+                    .push(e.range.clone());
                 let variants = assign_discriminants(e, ctx);
                 Arc::make_mut(&mut ctx.enum_defs).insert(EnumDef {
                     name: e.name.clone(),
@@ -592,33 +624,50 @@ mod tests {
     fn registry_with_user_enum_named_some() -> EnumRegistry {
         let mut m = build_registry(&[]);
         m.insert(EnumDef {
-                name: "Some".to_string(),
-                type_params: vec![],
-                variants: vec![VariantDef {
-                    name: "A".to_string(),
-                    discriminant: 0,
-                    payload: Payload::Unit,
-                }],
-            },
-        );
+            name: "Some".to_string(),
+            type_params: vec![],
+            variants: vec![VariantDef {
+                name: "A".to_string(),
+                discriminant: 0,
+                payload: Payload::Unit,
+            }],
+        });
         m
     }
 
     #[test]
     fn bare_variant_resolves_to_prelude_when_unshadowed() {
         let reg = build_registry(&[]);
-        assert_eq!(resolve_bare_variant_enum(&reg, "Some", |_| false).map(|d| d.name.as_str()), Some("Option"));
-        assert_eq!(resolve_bare_variant_enum(&reg, "None", |_| false).map(|d| d.name.as_str()), Some("Option"));
-        assert_eq!(resolve_bare_variant_enum(&reg, "Ok", |_| false).map(|d| d.name.as_str()), Some("Result"));
-        assert_eq!(resolve_bare_variant_enum(&reg, "Err", |_| false).map(|d| d.name.as_str()), Some("Result"));
-        assert_eq!(resolve_bare_variant_enum(&reg, "Nope", |_| false).map(|d| d.name.as_str()), None);
+        assert_eq!(
+            resolve_bare_variant_enum(&reg, "Some", |_| false).map(|d| d.name.as_str()),
+            Some("Option")
+        );
+        assert_eq!(
+            resolve_bare_variant_enum(&reg, "None", |_| false).map(|d| d.name.as_str()),
+            Some("Option")
+        );
+        assert_eq!(
+            resolve_bare_variant_enum(&reg, "Ok", |_| false).map(|d| d.name.as_str()),
+            Some("Result")
+        );
+        assert_eq!(
+            resolve_bare_variant_enum(&reg, "Err", |_| false).map(|d| d.name.as_str()),
+            Some("Result")
+        );
+        assert_eq!(
+            resolve_bare_variant_enum(&reg, "Nope", |_| false).map(|d| d.name.as_str()),
+            None
+        );
     }
 
     #[test]
     fn a_shadow_predicate_hit_blocks_resolution() {
         let reg = build_registry(&[]);
         // Whatever a stage's scope reports as a binding of this name wins.
-        assert_eq!(resolve_bare_variant_enum(&reg, "Some", |n| n == "Some").map(|d| d.name.as_str()), None);
+        assert_eq!(
+            resolve_bare_variant_enum(&reg, "Some", |n| n == "Some").map(|d| d.name.as_str()),
+            None
+        );
     }
 
     // The alignment guard for the single-sourced helper: lowering's and
@@ -642,7 +691,8 @@ mod tests {
         // named `Some` shadows the bare prelude variant - aligning them with
         // typecheck.
         assert_eq!(
-            resolve_bare_variant_enum(&reg, "Some", |n| reg.expression_path(n).is_some()).map(|d| d.name.as_str()),
+            resolve_bare_variant_enum(&reg, "Some", |n| reg.expression_path(n).is_some())
+                .map(|d| d.name.as_str()),
             None,
             "the registry-term predicate must shadow a user enum named after a variant"
         );
@@ -651,9 +701,15 @@ mod tests {
     #[test]
     fn registry_includes_builtin_game_enums() {
         let reg = build_registry(&[]);
-        let easing = reg.expression_path("EasingFunction").expect("EasingFunction is a built-in");
+        let easing = reg
+            .expression_path("EasingFunction")
+            .expect("EasingFunction is a built-in");
         // Discriminant is the schema integer, not an auto-numbered index.
-        let bounce = easing.variants.iter().find(|v| v.name == "Bounce").expect("Bounce");
+        let bounce = easing
+            .variants
+            .iter()
+            .find(|v| v.name == "Bounce")
+            .expect("Bounce");
         assert_eq!(
             bounce.discriminant,
             crate::catalog::enum_member_value("EBREasingFunction", "Bounce").unwrap()
@@ -667,15 +723,17 @@ mod tests {
         // A user enum that ALSO declares a `Some` variant - now `Some` is a
         // variant of both `Option` and `Dup`, so no unique owner.
         reg.insert(EnumDef {
-                name: "Dup".to_string(),
-                type_params: vec![],
-                variants: vec![VariantDef {
-                    name: "Some".to_string(),
-                    discriminant: 0,
-                    payload: Payload::Unit,
-                }],
-            },
+            name: "Dup".to_string(),
+            type_params: vec![],
+            variants: vec![VariantDef {
+                name: "Some".to_string(),
+                discriminant: 0,
+                payload: Payload::Unit,
+            }],
+        });
+        assert_eq!(
+            resolve_bare_variant_enum(&reg, "Some", |_| false).map(|d| d.name.as_str()),
+            None
         );
-        assert_eq!(resolve_bare_variant_enum(&reg, "Some", |_| false).map(|d| d.name.as_str()), None);
     }
 }

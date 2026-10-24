@@ -43,7 +43,9 @@ pub fn drop_internal_errors_beside_errors(diags: &mut Vec<Diagnostic>) {
     // Every compile in a debug build (every test) holds the wiring invariant,
     // so a test that looks only for some other code still fails on it.
     if cfg!(debug_assertions)
-        && let Some(d) = diags.iter().find(|d| d.code == INTERNAL_ERROR && d.message.contains(EXEC_INTO_VALUE))
+        && let Some(d) = diags
+            .iter()
+            .find(|d| d.code == INTERNAL_ERROR && d.message.contains(EXEC_INTO_VALUE))
     {
         panic!("{}", d.message);
     }
@@ -58,18 +60,24 @@ pub fn drop_internal_errors_beside_errors(diags: &mut Vec<Diagnostic>) {
     if !records.is_empty() {
         let within = |d: &Diagnostic| {
             records.iter().any(|r| {
-                r.file == d.range.file && r.start.offset <= d.range.start.offset && d.range.end.offset <= r.end.offset
+                r.file == d.range.file
+                    && r.start.offset <= d.range.start.offset
+                    && d.range.end.offset <= r.end.offset
             })
         };
         diags.retain(|d| !(d.code == "WS071" && within(d)));
     }
     let mut seen: crate::collections::HashSet<(std::sync::Arc<str>, usize)> = Default::default();
-    diags.retain(|d| !REPORTED_TWICE.contains(&d.code.as_str()) || seen.insert((d.range.file.clone(), d.range.start.offset)));
+    diags.retain(|d| {
+        !REPORTED_TWICE.contains(&d.code.as_str())
+            || seen.insert((d.range.file.clone(), d.range.start.offset))
+    });
 }
 
 /// The warning lowering gives an expression it emitted an `_Unsupported`
 /// placeholder for, followed by what the expression is when that is known.
-pub const PLACEHOLDER: &str = "IR lowering not yet supported for this expression, so a placeholder was emitted";
+pub const PLACEHOLDER: &str =
+    "IR lowering not yet supported for this expression, so a placeholder was emitted";
 
 /// Make every placeholder warning an error when nothing else rejects the
 /// program. The type check accepted the expression, so the placeholder is a
@@ -94,7 +102,10 @@ pub const LITERAL_AS_ONE_VALUE: &str = "a record or tuple literal where one valu
 /// `d` as the error it is in a program nothing else rejects, when `d` is a
 /// placeholder warning (see [`promote_placeholders`]).
 pub fn placeholder_error(d: &Diagnostic) -> Option<Diagnostic> {
-    let rest = d.message.strip_prefix(PLACEHOLDER).filter(|_| d.code == "WSP001")?;
+    let rest = d
+        .message
+        .strip_prefix(PLACEHOLDER)
+        .filter(|_| d.code == "WSP001")?;
     let what = rest.strip_prefix(": ").unwrap_or("this expression");
     let fix = match what.strip_prefix("the method call ") {
         Some(method) => format!(
@@ -102,7 +113,8 @@ pub fn placeholder_error(d: &Diagnostic) -> Option<Diagnostic> {
              lists for its type"
         ),
         None if what == LITERAL_AS_ONE_VALUE => {
-            "Write the type of the `var` holding it (`var v: T = ...`), or bind it with `let`".to_string()
+            "Write the type of the `var` holding it (`var v: T = ...`), or bind it with `let`"
+                .to_string()
         }
         None => "Rewrite it with a form the language reference documents".to_string(),
     };
@@ -218,9 +230,11 @@ impl Suppressions {
                     };
                     for l in covered {
                         match &codes {
-                            Some(codes) => {
-                                entry.line_codes.entry(l).or_default().extend(codes.iter().cloned())
-                            }
+                            Some(codes) => entry
+                                .line_codes
+                                .entry(l)
+                                .or_default()
+                                .extend(codes.iter().cloned()),
                             None => {
                                 entry.line_all.insert(l);
                             }

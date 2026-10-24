@@ -114,13 +114,21 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("scale", WirePort::ItemScale, Type::Float),
                 CallParam::opt("itemName", WirePort::ItemNameOverride, Type::String),
                 CallParam::opt("projectile", WirePort::ProjectileOverride, Type::Entity),
-                CallParam::opt("projectileScale", WirePort::ProjectileScaleMultiplier, Type::Float),
+                CallParam::opt(
+                    "projectileScale",
+                    WirePort::ProjectileScaleMultiplier,
+                    Type::Float,
+                ),
                 CallParam::opt("overrideColors", WirePort::BOverrideColors, Type::Bool),
                 // Config-only (settings menu, not wire inputs): `meshColors` is
                 // a color array (`Color[]`), `ammoOverride` the
                 // WeaponAmmoOverride nested struct. Both are constant-only.
                 CallParam::opt("meshColors", WirePort::MeshColors, mesh_colors_type()),
-                CallParam::opt("ammoOverride", WirePort::WeaponAmmoOverride, ammo_override_type()),
+                CallParam::opt(
+                    "ammoOverride",
+                    WirePort::WeaponAmmoOverride,
+                    ammo_override_type(),
+                ),
             ],
             vec![],
         ),
@@ -139,13 +147,21 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("scale", WirePort::ItemScale, Type::Float),
                 CallParam::opt("itemName", WirePort::ItemNameOverride, Type::String),
                 CallParam::opt("projectile", WirePort::ProjectileOverride, Type::Entity),
-                CallParam::opt("projectileScale", WirePort::ProjectileScaleMultiplier, Type::Float),
+                CallParam::opt(
+                    "projectileScale",
+                    WirePort::ProjectileScaleMultiplier,
+                    Type::Float,
+                ),
                 CallParam::opt("overrideColors", WirePort::BOverrideColors, Type::Bool),
                 // Config-only (settings menu, not wire inputs): `meshColors` is
                 // a color array (`Color[]`), `ammoOverride` the
                 // WeaponAmmoOverride nested struct. Both are constant-only.
                 CallParam::opt("meshColors", WirePort::MeshColors, mesh_colors_type()),
-                CallParam::opt("ammoOverride", WirePort::WeaponAmmoOverride, ammo_override_type()),
+                CallParam::opt(
+                    "ammoOverride",
+                    WirePort::WeaponAmmoOverride,
+                    ammo_override_type(),
+                ),
             ],
             vec![],
         ),
@@ -214,7 +230,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         character_exec(
             "GetCurrentInventorySlot",
             gc::CHARACTER_GET_CURRENT_INVENTORY_SLOT,
-            vec![CallParam::req("character", WirePort::Character, Type::Character)],
+            vec![CallParam::req(
+                "character",
+                WirePort::Character,
+                Type::Character,
+            )],
             vec![CallOutput::plain(WirePort::Slot, Type::Int)],
         ),
     );

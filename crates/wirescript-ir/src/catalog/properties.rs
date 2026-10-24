@@ -66,7 +66,8 @@ pub fn property_map() -> &'static PropertyMap {
     use std::sync::OnceLock;
     static MAP: OnceLock<PropertyMap> = OnceLock::new();
     MAP.get_or_init(|| {
-        serde_json::from_str(include_str!("../../data/property_map.json")).expect("property map JSON parses")
+        serde_json::from_str(include_str!("../../data/property_map.json"))
+            .expect("property map JSON parses")
     })
 }
 
@@ -117,12 +118,18 @@ pub fn property_type(p: &Property) -> PropertyType {
 
 /// The environment whose stored option is `option`.
 pub fn environment(option: &str) -> Option<&'static Environment> {
-    property_map().environments.iter().find(|e| e.option == option)
+    property_map()
+        .environments
+        .iter()
+        .find(|e| e.option == option)
 }
 
 /// The component whose stored option (its class) is `option`.
 pub fn component(option: &str) -> Option<&'static Component> {
-    property_map().components.iter().find(|c| c.option == option)
+    property_map()
+        .components
+        .iter()
+        .find(|c| c.option == option)
 }
 
 impl Environment {
@@ -158,21 +165,42 @@ mod tests {
                 match property_type(p) {
                     PropertyType::Value(_) | PropertyType::Enum(_) => typed += 1,
                     PropertyType::Unsupported(why) => {
-                        assert!(!why.contains("unknown property type"), "{owner}/{}: {why}", p.name);
+                        assert!(
+                            !why.contains("unknown property type"),
+                            "{owner}/{}: {why}",
+                            p.name
+                        );
                         rejected += 1;
                     }
                 }
             }
         }
-        assert!(typed > 0 && rejected > 0, "{typed} typed, {rejected} rejected");
-        let get = |env: &str, name: &str| property_type(environment(env).unwrap().property(name).unwrap());
+        assert!(
+            typed > 0 && rejected > 0,
+            "{typed} typed, {rejected} rejected"
+        );
+        let get = |env: &str, name: &str| {
+            property_type(environment(env).unwrap().property(name).unwrap())
+        };
         assert_eq!(get("Sky", "TimeOfDay"), PropertyType::Value(Type::Float));
         assert_eq!(get("Sky", "SkyColor"), PropertyType::Value(Type::Color));
-        assert_eq!(get("Ambience", "ReverbEffect"), PropertyType::Enum("EBRReverbEffect".into()));
-        assert!(matches!(get("Studio", "Scenarios"), PropertyType::Unsupported(_)));
+        assert_eq!(
+            get("Ambience", "ReverbEffect"),
+            PropertyType::Enum("EBRReverbEffect".into())
+        );
+        assert!(matches!(
+            get("Studio", "Scenarios"),
+            PropertyType::Unsupported(_)
+        ));
         let light = component("Component_PointLight").unwrap();
-        assert_eq!(property_type(light.property("Brightness").unwrap()), PropertyType::Value(Type::Float));
-        assert_eq!(property_type(light.property("Color").unwrap()), PropertyType::Value(Type::Color));
+        assert_eq!(
+            property_type(light.property("Brightness").unwrap()),
+            PropertyType::Value(Type::Float)
+        );
+        assert_eq!(
+            property_type(light.property("Color").unwrap()),
+            PropertyType::Value(Type::Color)
+        );
     }
 
     /// Every enum a property names is one the save schema defines, so its
@@ -180,9 +208,18 @@ mod tests {
     #[test]
     fn every_property_enum_is_in_the_schema() {
         let map = property_map();
-        for p in map.environments.iter().flat_map(|e| &e.properties).chain(map.components.iter().flat_map(|c| &c.properties)) {
+        for p in map
+            .environments
+            .iter()
+            .flat_map(|e| &e.properties)
+            .chain(map.components.iter().flat_map(|c| &c.properties))
+        {
             if let PropertyType::Enum(e) = property_type(p) {
-                assert!(!crate::catalog::enum_member_names(&e).is_empty(), "{}: enum {e} has no members", p.name);
+                assert!(
+                    !crate::catalog::enum_member_names(&e).is_empty(),
+                    "{}: enum {e} has no members",
+                    p.name
+                );
             }
         }
     }

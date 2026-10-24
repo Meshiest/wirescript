@@ -42,7 +42,12 @@ pub type CeSlotMap = HashMap<CeSlotKey, Vec<Option<Type>>>;
 /// Public so lowering builds the identical key (namespace + range) when it reads
 /// resolved slot types back out of the `CeSlotMap`.
 pub fn ce_slot_key(ns: CeNamespace, h: &Handler) -> CeSlotKey {
-    (ns, h.range.file.clone(), h.range.start.offset, h.range.end.offset)
+    (
+        ns,
+        h.range.file.clone(),
+        h.range.start.offset,
+        h.range.end.offset,
+    )
 }
 
 // ---------- custom-event sender/receiver type consistency (WS030) ----------
@@ -87,9 +92,7 @@ fn wire_class(t: &Type) -> Option<WireClass> {
         Type::Rotator => WireClass::Rotator,
         Type::Quat => WireClass::Quat,
         Type::Color => WireClass::Color,
-        Type::Controller | Type::Character | Type::Entity => {
-            WireClass::Object
-        }
+        Type::Controller | Type::Character | Type::Entity => WireClass::Object,
         _ => return None,
     })
 }
@@ -121,11 +124,19 @@ fn ce_receiver_of(
         .iter()
         .enumerate()
         .map(|(i, _)| match declared.get(i).cloned().flatten() {
-            Some(ty) => Some(RecvSlot { ty, declared: true, capture: false }),
+            Some(ty) => Some(RecvSlot {
+                ty,
+                declared: true,
+                capture: false,
+            }),
             // Fill from inference when available (pass 2); else unresolved.
             None => inferred
                 .and_then(|v| v.get(i).cloned().flatten())
-                .map(|ty| RecvSlot { ty, declared: false, capture: false }),
+                .map(|ty| RecvSlot {
+                    ty,
+                    declared: false,
+                    capture: false,
+                }),
         })
         .collect();
     Some((name, params))
@@ -145,7 +156,11 @@ struct RecvSlot {
 /// Fold a receiver's params into the per-channel signature: each slot keeps
 /// every classifiable type a receiver of the channel takes there, so a send
 /// is checked against each receiver, not only the first.
-fn ce_merge_receiver(map: &mut HashMap<String, Vec<Vec<RecvSlot>>>, name: String, params: Vec<Option<RecvSlot>>) {
+fn ce_merge_receiver(
+    map: &mut HashMap<String, Vec<Vec<RecvSlot>>>,
+    name: String,
+    params: Vec<Option<RecvSlot>>,
+) {
     let slots = map.entry(name).or_default();
     for (i, ty) in params.into_iter().enumerate() {
         if slots.len() <= i {
@@ -153,9 +168,11 @@ fn ce_merge_receiver(map: &mut HashMap<String, Vec<Vec<RecvSlot>>>, name: String
         }
         if let Some(t) = ty
             && let Some(class) = wire_class(&t.ty)
-            && !slots[i]
-                .iter()
-                .any(|s| wire_class(&s.ty) == Some(class) && s.declared == t.declared && s.capture == t.capture)
+            && !slots[i].iter().any(|s| {
+                wire_class(&s.ty) == Some(class)
+                    && s.declared == t.declared
+                    && s.capture == t.capture
+            })
         {
             slots[i].push(t);
         }
@@ -254,7 +271,10 @@ pub(super) fn check_custom_event_types(
                 declared = h
                     .params
                     .iter()
-                    .map(|p| p.ty.as_ref().map(|te| crate::typecheck::resolve::resolve_type_expr(ctx, te)))
+                    .map(|p| {
+                        p.ty.as_ref()
+                            .map(|te| crate::typecheck::resolve::resolve_type_expr(ctx, te))
+                    })
                     .collect();
                 for (p, t) in h.params.iter().zip(&declared) {
                     let Some(t) = t else { continue };
@@ -265,7 +285,9 @@ pub(super) fn check_custom_event_types(
             }
             if let Some((name, params)) = ce_receiver_of(h, "CustomEvent", ce_slots, &declared) {
                 ce_merge_receiver(&mut personal_recv, name, params);
-            } else if let Some((name, params)) = ce_receiver_of(h, "GlobalCustomEvent", ce_slots, &declared) {
+            } else if let Some((name, params)) =
+                ce_receiver_of(h, "GlobalCustomEvent", ce_slots, &declared)
+            {
                 ce_merge_receiver(&mut global_recv, name, params);
             }
         },
@@ -316,10 +338,14 @@ pub(super) fn check_custom_event_types(
         });
     });
     for a in awaits {
-        let (None, Some(te), Expr::Call { callee, args, .. }) = (&a.value_expr, &a.binding_type, &a.exec_expr) else {
+        let (None, Some(te), Expr::Call { callee, args, .. }) =
+            (&a.value_expr, &a.binding_type, &a.exec_expr)
+        else {
             continue;
         };
-        let Expr::Ident { name: event, .. } = callee.as_ref() else { continue };
+        let Expr::Ident { name: event, .. } = callee.as_ref() else {
+            continue;
+        };
         let Some(chan) = args.iter().find_map(|arg| match arg {
             CallArg::Positional(Expr::StringLit { value, .. }) => Some(value.clone()),
             _ => None,
@@ -330,22 +356,41 @@ pub(super) fn check_custom_event_types(
         let mark = ctx.diagnostics.len();
         let ty = crate::typecheck::resolve::resolve_type_expr(ctx, te);
         ctx.diagnostics.truncate(mark);
-        let slot = vec![Some(RecvSlot { ty, declared: true, capture: true })];
+        let slot = vec![Some(RecvSlot {
+            ty,
+            declared: true,
+            capture: true,
+        })];
         match event.as_str() {
             "CustomEvent" => ce_merge_receiver(&mut personal_recv, chan, slot),
             "GlobalCustomEvent" => ce_merge_receiver(&mut global_recv, chan, slot),
             _ => {}
         }
     }
-    check_ce_namespace(ctx, &personal_send, &personal_recv, tmap, "SendCustomEvent", "CustomEvent");
-    check_ce_namespace(ctx, &global_send, &global_recv, tmap, "SendGlobalCustomEvent", "GlobalCustomEvent");
+    check_ce_namespace(
+        ctx,
+        &personal_send,
+        &personal_recv,
+        tmap,
+        "SendCustomEvent",
+        "CustomEvent",
+    );
+    check_ce_namespace(
+        ctx,
+        &global_send,
+        &global_recv,
+        tmap,
+        "SendGlobalCustomEvent",
+        "GlobalCustomEvent",
+    );
 }
 
 /// The type a custom-event send's data value `e` sends: a gate read sends
 /// its first output.
 fn sent_type(tmap: &HashMap<(Arc<str>, usize, usize), Type>, e: &Expr) -> Option<Type> {
     let r = e.range();
-    tmap.get(&(r.file.clone(), r.start.offset, r.end.offset)).map(super::infer::first_output)
+    tmap.get(&(r.file.clone(), r.start.offset, r.end.offset))
+        .map(super::infer::first_output)
 }
 
 /// Within ONE custom-event namespace, warn (WS030) when a send's data value type
@@ -469,11 +514,15 @@ fn first_send_of<'a>(
     tmap: &HashMap<(Arc<str>, usize, usize), Type>,
 ) -> Option<&'a crate::diagnostic::SourceRange> {
     senders.iter().find_map(|call| {
-        let Expr::Call { args, .. } = call else { return None };
+        let Expr::Call { args, .. } = call else {
+            return None;
+        };
         if ce_send_event_name(args).as_deref() != Some(name) {
             return None;
         }
-        let (_, expr) = ce_send_data_args(args).into_iter().find(|(i, _)| *i == slot)?;
+        let (_, expr) = ce_send_data_args(args)
+            .into_iter()
+            .find(|(i, _)| *i == slot)?;
         let t = sent_type(tmap, expr)?;
         (wire_class(&t)? == class).then_some(expr.range())
     })
@@ -561,7 +610,11 @@ pub(super) fn infer_custom_event_slots(
             if p.ty.is_some() {
                 continue; // annotated: nothing to infer
             }
-            let inferred = chan.as_ref().and_then(|c| bucket.get(c)).and_then(|m| m.get(&i)).cloned();
+            let inferred = chan
+                .as_ref()
+                .and_then(|c| bucket.get(c))
+                .and_then(|m| m.get(&i))
+                .cloned();
             match inferred {
                 Some(t) => slots_out[i] = Some(t),
                 None => {

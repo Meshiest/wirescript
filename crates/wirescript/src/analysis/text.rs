@@ -36,7 +36,10 @@ pub fn line_start_byte(source: &str, line: usize) -> usize {
 /// the end of the line. Every cursor coordinate reaching `analysis` is a char
 /// column; slicing with it directly is only correct while the line is ASCII.
 pub fn char_col_to_byte(line_str: &str, col: usize) -> usize {
-    line_str.char_indices().nth(col).map_or(line_str.len(), |(b, _)| b)
+    line_str
+        .char_indices()
+        .nth(col)
+        .map_or(line_str.len(), |(b, _)| b)
 }
 
 /// 0-based char column of byte offset `b` within one line's text.
@@ -98,7 +101,10 @@ pub struct Ruler<'a> {
 
 impl<'a> Ruler<'a> {
     pub fn new(source: &'a str) -> Self {
-        Self { source, index: LineIndex::new(source) }
+        Self {
+            source,
+            index: LineIndex::new(source),
+        }
     }
 
     /// [`editor_col_to_char`] on this file.
@@ -137,10 +143,20 @@ pub fn word_at(source: &str, line: usize, col: usize) -> Option<String> {
     let l = source.lines().nth(line)?;
     // Convert character column to byte offset safely
     let c = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
-    let start = l[..c].rfind(|ch: char| !ch.is_alphanumeric() && ch != '_').map(|i| after_char(l, i)).unwrap_or(0);
-    let end = l[c..].find(|ch: char| !ch.is_alphanumeric() && ch != '_').map(|i| c + i).unwrap_or(l.len());
+    let start = l[..c]
+        .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .map(|i| after_char(l, i))
+        .unwrap_or(0);
+    let end = l[c..]
+        .find(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .map(|i| c + i)
+        .unwrap_or(l.len());
     let w = &l[start..end];
-    if w.is_empty() { None } else { Some(w.to_string()) }
+    if w.is_empty() {
+        None
+    } else {
+        Some(w.to_string())
+    }
 }
 
 /// If the cursor sits in a `receiver.partial` member-access position — the text
@@ -358,7 +374,12 @@ pub fn find_asset_refs(source: &str) -> Vec<AssetRef> {
                         j += 1;
                     }
                     let path: String = chars[i + 1..j].iter().collect();
-                    out.push(AssetRef { line: line_no, start_col: i, end_col: j, path });
+                    out.push(AssetRef {
+                        line: line_no,
+                        start_col: i,
+                        end_col: j,
+                        path,
+                    });
                     i = j;
                 }
                 _ => i += 1,
@@ -372,7 +393,9 @@ pub fn find_asset_refs(source: &str) -> Vec<AssetRef> {
 
 /// The `$` reference under `(line, col)`, if any (0-based char coordinates).
 pub fn asset_ref_at(source: &str, line: usize, col: usize) -> Option<AssetRef> {
-    find_asset_refs(source).into_iter().find(|r| r.contains(line, col))
+    find_asset_refs(source)
+        .into_iter()
+        .find(|r| r.contains(line, col))
 }
 
 /// Byte offset of `(line, col)` (0-based char column) within `source`.
@@ -559,7 +582,10 @@ impl LineIndex {
                 .filter(|(_, b)| *b == b'\n')
                 .map(|(i, _)| i as u32 + 1),
         );
-        Self { starts, len: source.len() as u32 }
+        Self {
+            starts,
+            len: source.len() as u32,
+        }
     }
 
     /// Byte offset where 0-based `line` starts, or the source length past the
@@ -568,9 +594,17 @@ impl LineIndex {
     /// The 0-based line and char column of byte `offset`: the line breaks
     /// before it, and the chars from its line's start that begin before it.
     pub fn line_col(&self, source: &str, offset: usize) -> (usize, usize) {
-        let line = self.starts.partition_point(|s| (*s as usize) <= offset).saturating_sub(1);
+        let line = self
+            .starts
+            .partition_point(|s| (*s as usize) <= offset)
+            .saturating_sub(1);
         let start = self.line_start_byte(line);
-        let col = source.get(start..).unwrap_or("").char_indices().take_while(|(i, _)| start + i < offset).count();
+        let col = source
+            .get(start..)
+            .unwrap_or("")
+            .char_indices()
+            .take_while(|(i, _)| start + i < offset)
+            .count();
         (line, col)
     }
 

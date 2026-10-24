@@ -161,7 +161,11 @@ fn partition_one(module: &mut Module) {
                         cl.chip_id = None;
                         match tgt_chip {
                             Some(b) => {
-                                children.get_mut(&b).expect("chip module").nodes.insert(nid, cl);
+                                children
+                                    .get_mut(&b)
+                                    .expect("chip module")
+                                    .nodes
+                                    .insert(nid, cl);
                             }
                             None => {
                                 module.nodes.insert(nid, cl);

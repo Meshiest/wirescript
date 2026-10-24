@@ -96,10 +96,7 @@ pub fn assign_comment_owners(
             .nodes
             .values()
             .filter(|n| {
-                is_spawnable(n)
-                    && !is_edge_pin(n)
-                    && has_range(n)
-                    && n.source_range.file == *anchor
+                is_spawnable(n) && !is_edge_pin(n) && has_range(n) && n.source_range.file == *anchor
             })
             .map(|n| n.source_range.start.line as i32)
             .collect();
@@ -121,9 +118,8 @@ pub fn assign_comment_owners(
         }
         let line = c.line as i32;
         // Rank: nearest row wins, then the deeper plane, then the lower id.
-        let rank = |dist: i32, depth: usize, key: Option<NodeId>| {
-            (dist, std::cmp::Reverse(depth), key)
-        };
+        let rank =
+            |dist: i32, depth: usize, key: Option<NodeId>| (dist, std::cmp::Reverse(depth), key);
         // Only the planes that bracket the line are in the running.
         let eligible: Vec<&(Option<NodeId>, usize, Vec<i32>, Option<(i32, i32)>)> = modules
             .iter()
@@ -140,7 +136,11 @@ pub fn assign_comment_owners(
         }
         if best.is_none() {
             for (key, depth, lines, _) in &eligible {
-                if let Some(&prev) = lines.partition_point(|&l| l < line).checked_sub(1).map(|i| &lines[i]) {
+                if let Some(&prev) = lines
+                    .partition_point(|&l| l < line)
+                    .checked_sub(1)
+                    .map(|i| &lines[i])
+                {
                     let r = rank(line - prev, *depth, *key);
                     if best.is_none_or(|b| r < b) {
                         best = Some(r);

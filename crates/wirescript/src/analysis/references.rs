@@ -46,15 +46,29 @@ pub fn find_name_range(source: &str, decl_range: &SourceRange, name: &str) -> Op
     // so the search reads only the range's own lines. A range with no offset
     // (0 past the first line) is found by counting lines from the top.
     let at = decl_range.start.offset;
-    let by_offset = (at > 0 || decl_range.start.line <= 1) && source.is_char_boundary(at.min(source.len())) && at <= source.len();
+    let by_offset = (at > 0 || decl_range.start.line <= 1)
+        && source.is_char_boundary(at.min(source.len()))
+        && at <= source.len();
     if !by_offset {
-        return name_range_in_lines(source.lines().skip((decl_range.start.line as usize).saturating_sub(1)), decl_range, name);
+        return name_range_in_lines(
+            source
+                .lines()
+                .skip((decl_range.start.line as usize).saturating_sub(1)),
+            decl_range,
+            name,
+        );
     }
     let line_start = source[..at].rfind('\n').map_or(0, |i| i + 1);
     let found = name_range_in_lines(source[line_start..].lines(), decl_range, name);
     debug_assert_eq!(
         found,
-        name_range_in_lines(source.lines().skip((decl_range.start.line as usize).saturating_sub(1)), decl_range, name),
+        name_range_in_lines(
+            source
+                .lines()
+                .skip((decl_range.start.line as usize).saturating_sub(1)),
+            decl_range,
+            name
+        ),
         "the line at byte {at} is not line {}",
         decl_range.start.line
     );
@@ -62,7 +76,11 @@ pub fn find_name_range(source: &str, decl_range: &SourceRange, name: &str) -> Op
 }
 
 /// [`find_name_range`] over `lines`, the source's lines from the range's first.
-fn name_range_in_lines<'a>(mut lines: impl Iterator<Item = &'a str>, decl_range: &SourceRange, name: &str) -> Option<SourceRange> {
+fn name_range_in_lines<'a>(
+    mut lines: impl Iterator<Item = &'a str>,
+    decl_range: &SourceRange,
+    name: &str,
+) -> Option<SourceRange> {
     if name.is_empty() {
         return None;
     }
@@ -102,8 +120,16 @@ fn name_range_in_lines<'a>(mut lines: impl Iterator<Item = &'a str>, decl_range:
             if before_ok && after_ok {
                 return Some(SourceRange {
                     file: decl_range.file.clone(),
-                    start: crate::diagnostic::Pos { offset: 0, line: line_no as u32, col: abs_col as u32 + 1 },
-                    end: crate::diagnostic::Pos { offset: 0, line: line_no as u32, col: after_col as u32 + 1 },
+                    start: crate::diagnostic::Pos {
+                        offset: 0,
+                        line: line_no as u32,
+                        col: abs_col as u32 + 1,
+                    },
+                    end: crate::diagnostic::Pos {
+                        offset: 0,
+                        line: line_no as u32,
+                        col: after_col as u32 + 1,
+                    },
                 });
             }
             // Advance past this candidate's start byte — `name` is ASCII, so

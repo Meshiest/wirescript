@@ -1,19 +1,27 @@
-use crate::collections::HashMap;
-use crate::ast::{CallArg, ChipDecl, Expr, Handler, HandlerConfigArg, LetBinding, Pattern, Script, Stmt, TopDecl, Trigger, TypeExpr};
+use super::doc_links::{Doc, doc_url, with_doc_link};
+use super::gate_docs::gate_docs;
+use super::resource_estimate::{ResourceEstimate, lookup_estimate};
+use super::symbols::SymbolDef;
+use super::text::{after_char, char_col_to_byte, find_enclosing_call, word_at};
+use super::types::{CollectionKind, collection_kind, type_str};
+use super::{IfContextMap, NarrowedReadMap, TypeMap, VarReadContextMap};
+use crate::ast::{
+    CallArg, ChipDecl, Expr, Handler, HandlerConfigArg, LetBinding, Pattern, Script, Stmt, TopDecl,
+    Trigger, TypeExpr,
+};
 use crate::catalog::calls::calls;
 use crate::catalog::events::find_event;
+use crate::collections::HashMap;
 use crate::diagnostic::SourceRange;
 use crate::ir::{Literal, Type};
 use crate::lower::ConstEnv;
-use super::{TypeMap, IfContextMap, NarrowedReadMap, VarReadContextMap};
-use super::types::{type_str, collection_kind, CollectionKind};
-use super::text::{after_char, char_col_to_byte, find_enclosing_call, word_at};
-use super::symbols::SymbolDef;
-use super::gate_docs::gate_docs;
-use super::doc_links::{doc_url, with_doc_link, Doc};
-use super::resource_estimate::{ResourceEstimate, lookup_estimate};
 
-enum EstimateKind { Chip, Mod, Fn, Scope }
+enum EstimateKind {
+    Chip,
+    Mod,
+    Fn,
+    Scope,
+}
 
 /// Byte offset of the start of `line` within `source`.
 fn line_offset_at(source: &str, line: usize) -> usize {
@@ -73,7 +81,11 @@ fn format_estimate(est: &ResourceEstimate, kind: EstimateKind) -> String {
     // bare "0 chips" reads like a missing count. A `chip` always instantiates
     // at least itself, so its count is never zero and always shown.
     if chips > 0 {
-        parts.push(format!("{} chip{}", chips, if chips == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{} chip{}",
+            chips,
+            if chips == 1 { "" } else { "s" }
+        ));
     }
     match kind {
         EstimateKind::Mod => parts.push("inlined per call".into()),
@@ -121,7 +133,13 @@ fn literal_display_inner(lit: &Literal) -> String {
         Literal::Map(pairs) => {
             let parts: Vec<String> = pairs
                 .iter()
-                .map(|(k, v)| format!("{} => {}", literal_display_inner(k), literal_display_inner(v)))
+                .map(|(k, v)| {
+                    format!(
+                        "{} => {}",
+                        literal_display_inner(k),
+                        literal_display_inner(v)
+                    )
+                })
                 .collect();
             format!("{{ {} }}", parts.join(", "))
         }
@@ -132,7 +150,10 @@ fn literal_display_inner(lit: &Literal) -> String {
                 .collect();
             format!("{{ {} }}", parts.join(", "))
         }
-        Literal::Asset { asset_type, asset_name } => format!("${asset_type}/{asset_name}"),
+        Literal::Asset {
+            asset_type,
+            asset_name,
+        } => format!("${asset_type}/{asset_name}"),
         Literal::PrefabRef { path } => format!("${path}"),
         Literal::NestedPrefab { .. } => "$```...```".to_string(),
         Literal::PrefabBytes(bytes) => format!("<prefab, {} bytes>", bytes.len()),
@@ -173,8 +194,13 @@ fn literal_display_inner(lit: &Literal) -> String {
 fn const_hover_value(ast: &Script, symbols: &[SymbolDef], target_off: usize) -> Option<Literal> {
     let script = ast;
     let enum_defs = std::sync::Arc::new(crate::typecheck::enums::build_registry(&script.decls));
-    let types = std::sync::Arc::new(crate::const_eval::DeclaredTypes::for_program_in(&script.decls, &enum_defs, &script.imports));
-    let mut module_env = crate::lower::build_const_env_in(&script.decls, &enum_defs, &script.imports, &types);
+    let types = std::sync::Arc::new(crate::const_eval::DeclaredTypes::for_program_in(
+        &script.decls,
+        &enum_defs,
+        &script.imports,
+    ));
+    let mut module_env =
+        crate::lower::build_const_env_in(&script.decls, &enum_defs, &script.imports, &types);
     let mods = const_mod_table(&script.decls);
     let lookup = |name: &str| mods.get(name).cloned();
     let lookup_mod = ModScope {
@@ -203,7 +229,14 @@ fn const_hover_value(ast: &Script, symbols: &[SymbolDef], target_off: usize) -> 
     for name in &unknown {
         module_env.remove(name);
     }
-    eval_const_at(&script.decls, target_off, &module_env, &module_env, &enum_defs, &lookup_mod)
+    eval_const_at(
+        &script.decls,
+        target_off,
+        &module_env,
+        &module_env,
+        &enum_defs,
+        &lookup_mod,
+    )
 }
 
 /// The builtin names an import may replace with a user `mod` the file's own
@@ -212,7 +245,10 @@ fn const_hover_value(ast: &Script, symbols: &[SymbolDef], target_off: usize) -> 
 /// the `mod`s, `chip`s and `fn`s the merged program (`symbols`) declares in
 /// other files. `None` stands for every name, when the file imports a whole
 /// module and nothing says what it declares.
-fn import_shadowable(decls: &[TopDecl], symbols: &[SymbolDef]) -> Option<crate::collections::HashSet<String>> {
+fn import_shadowable(
+    decls: &[TopDecl],
+    symbols: &[SymbolDef],
+) -> Option<crate::collections::HashSet<String>> {
     let mut names = crate::collections::HashSet::default();
     let mut whole = false;
     for d in decls {
@@ -220,7 +256,11 @@ fn import_shadowable(decls: &[TopDecl], symbols: &[SymbolDef]) -> Option<crate::
             TopDecl::Import(i) => match &i.kind {
                 crate::ast::ImportKind::All => whole = true,
                 crate::ast::ImportKind::Named(bindings) => {
-                    names.extend(bindings.iter().map(|b| b.alias.clone().unwrap_or_else(|| b.name.clone())));
+                    names.extend(
+                        bindings
+                            .iter()
+                            .map(|b| b.alias.clone().unwrap_or_else(|| b.name.clone())),
+                    );
                 }
                 crate::ast::ImportKind::Namespace(_) => {}
             },
@@ -228,13 +268,19 @@ fn import_shadowable(decls: &[TopDecl], symbols: &[SymbolDef]) -> Option<crate::
         }
     }
     if whole {
-        let own = decls.iter().find(|d| !matches!(d, TopDecl::Import(_))).map(|d| d.range().file.clone())?;
+        let own = decls
+            .iter()
+            .find(|d| !matches!(d, TopDecl::Import(_)))
+            .map(|d| d.range().file.clone())?;
         let foreign: Vec<&SymbolDef> = symbols.iter().filter(|s| s.range.file != own).collect();
         if foreign.is_empty() {
             return None;
         }
         names.extend(
-            foreign.into_iter().filter(|s| matches!(s.kind, "mod" | "chip" | "fn")).map(|s| s.name.clone()),
+            foreign
+                .into_iter()
+                .filter(|s| matches!(s.kind, "mod" | "chip" | "fn"))
+                .map(|s| s.name.clone()),
         );
     }
     Some(names)
@@ -246,7 +292,8 @@ fn reads_any(e: &Expr, names: &crate::collections::HashSet<String>) -> bool {
     if names.is_empty() {
         return false;
     }
-    let mut read = |n: Node| matches!(n, Node::Expr(Expr::Ident { name, .. }) if names.contains(name));
+    let mut read =
+        |n: Node| matches!(n, Node::Expr(Expr::Ident { name, .. }) if names.contains(name));
     read(Node::Expr(e)) || any_below(Node::Expr(e), |_| true, &mut read)
 }
 
@@ -257,7 +304,9 @@ fn const_mod_table(decls: &[TopDecl]) -> HashMap<String, std::sync::Arc<ChipDecl
     decls
         .iter()
         .filter_map(|d| match d {
-            TopDecl::Chip(c) if c.is_const => Some((c.name.clone(), std::sync::Arc::new(c.clone()))),
+            TopDecl::Chip(c) if c.is_const => {
+                Some((c.name.clone(), std::sync::Arc::new(c.clone())))
+            }
             _ => None,
         })
         .collect()
@@ -281,9 +330,11 @@ impl ModScope<'_> {
     fn calls_shadowable(&self, e: &Expr) -> bool {
         use crate::ast::walk::{Node, any_below};
         let mut hit = |n: Node| match n {
-            Node::Expr(Expr::Call { callee, .. }) => matches!(callee.as_ref(), Expr::Ident { name, .. }
+            Node::Expr(Expr::Call { callee, .. }) => {
+                matches!(callee.as_ref(), Expr::Ident { name, .. }
                 if crate::catalog::calls::find_call(name).is_some()
-                    && self.import_shadowable.as_ref().is_none_or(|s| s.contains(name))),
+                    && self.import_shadowable.as_ref().is_none_or(|s| s.contains(name)))
+            }
             _ => false,
         };
         hit(Node::Expr(e)) || any_below(Node::Expr(e), |_| true, &mut hit)
@@ -352,14 +403,20 @@ fn eval_const_at(
             // which hide the module constants they are named like.
             TopDecl::Chip(c) if range_contains_offset(&c.range, target_off) => {
                 let env = body_env(c, module_env);
-                return eval_const_in_block(&c.body, target_off, &env, module_env, enum_defs, lookup_mod);
+                return eval_const_in_block(
+                    &c.body, target_off, &env, module_env, enum_defs, lookup_mod,
+                );
             }
             // An anonymous chip shares its parent's scope.
             TopDecl::AnonChip(ac) if range_contains_offset(&ac.range, target_off) => {
-                return eval_const_in_block(&ac.body, target_off, &env, module_env, enum_defs, lookup_mod);
+                return eval_const_in_block(
+                    &ac.body, target_off, &env, module_env, enum_defs, lookup_mod,
+                );
             }
             TopDecl::Namespace(ns) if range_contains_offset(&ns.range, target_off) => {
-                return eval_const_at(&ns.decls, target_off, env0, module_env, enum_defs, lookup_mod);
+                return eval_const_at(
+                    &ns.decls, target_off, env0, module_env, enum_defs, lookup_mod,
+                );
             }
             _ => {}
         }
@@ -426,18 +483,31 @@ fn eval_const_in_block(
             }
             Stmt::ChipDecl(c) if range_contains_offset(&c.range, target_off) => {
                 let env = body_env(c, module_env);
-                return eval_const_in_block(&c.body, target_off, &env, module_env, enum_defs, lookup_mod);
+                return eval_const_in_block(
+                    &c.body, target_off, &env, module_env, enum_defs, lookup_mod,
+                );
             }
             Stmt::AnonChip(ac) if range_contains_offset(&ac.range, target_off) => {
-                return eval_const_in_block(&ac.body, target_off, &env, module_env, enum_defs, lookup_mod);
+                return eval_const_in_block(
+                    &ac.body, target_off, &env, module_env, enum_defs, lookup_mod,
+                );
             }
             Stmt::If(i) if range_contains_offset(&i.then_block.range, target_off) => {
-                return eval_const_in_block(&i.then_block, target_off, &env, module_env, enum_defs, lookup_mod);
+                return eval_const_in_block(
+                    &i.then_block,
+                    target_off,
+                    &env,
+                    module_env,
+                    enum_defs,
+                    lookup_mod,
+                );
             }
             Stmt::If(i) => {
                 if let Some(eb) = &i.else_block {
                     if range_contains_offset(&eb.range, target_off) {
-                        return eval_const_in_block(eb, target_off, &env, module_env, enum_defs, lookup_mod);
+                        return eval_const_in_block(
+                            eb, target_off, &env, module_env, enum_defs, lookup_mod,
+                        );
                     }
                 }
             }
@@ -510,59 +580,127 @@ pub fn hover_at(
         return Some(h);
     }
 
-    None
-        .or_else(|| {
-            hover_if_keyword(source, file, &word, if_contexts, resource_estimates, line, col)
-                .map(|h| with_doc_link(h, Doc::Keyword("if")))
+    None.or_else(|| {
+        hover_if_keyword(
+            source,
+            file,
+            &word,
+            if_contexts,
+            resource_estimates,
+            line,
+            col,
+        )
+        .map(|h| with_doc_link(h, Doc::Keyword("if")))
+    })
+    .or_else(|| {
+        hover_is_keyword(source, ast, &word, line, col)
+            .map(|h| with_doc_link(h, Doc::Keyword("is")))
+    })
+    .or_else(|| {
+        hover_loop_exit_keyword(source, ast, &word, line, col)
+            .map(|h| with_doc_link(h, Doc::Keyword(&word)))
+    })
+    .or_else(|| hover_named_param(source, &word, line, col))
+    .or_else(|| hover_event_config_param(source, &word, line, col))
+    .or_else(|| hover_data_driven_config(source, &word, line, col))
+    .or_else(|| hover_config_enum_value(source, &word, line, col))
+    .or_else(|| {
+        hover_collection_method(source, symbols, &word, line, col).map(|h| {
+            let topic = if h.starts_with("**map.") {
+                "mapMethods"
+            } else {
+                "arrayMethods"
+            };
+            with_doc_link(h, Doc::Topic(topic))
         })
-        .or_else(|| hover_is_keyword(source, ast, &word, line, col).map(|h| with_doc_link(h, Doc::Keyword("is"))))
-        .or_else(|| {
-            hover_loop_exit_keyword(source, ast, &word, line, col).map(|h| with_doc_link(h, Doc::Keyword(&word)))
-        })
-        .or_else(|| hover_named_param(source, &word, line, col))
-        .or_else(|| hover_event_config_param(source, &word, line, col))
-        .or_else(|| hover_data_driven_config(source, &word, line, col))
-        .or_else(|| hover_config_enum_value(source, &word, line, col))
-        .or_else(|| {
-            hover_collection_method(source, symbols, &word, line, col).map(|h| {
-                let topic = if h.starts_with("**map.") { "mapMethods" } else { "arrayMethods" };
-                with_doc_link(h, Doc::Topic(topic))
-            })
-        })
-        .or_else(|| {
-            hover_custom_event(source, file, ast, &word, type_map, line, col)
-                .map(|h| with_doc_link(h, Doc::Topic("customEvents")))
-        })
-        .or_else(|| hover_builtin_event(&word).map(|h| with_doc_link(h, event_doc(&word))))
-        .or_else(|| hover_builtin_call(source, &word, line, col).map(|h| with_doc_link(h, Doc::Builtin(&word))))
-        .or_else(|| {
-            hover_chip_or_mod_keyword(source, &word, symbols, resource_estimates, line)
-                .map(|h| with_doc_link(h, Doc::Keyword(&word)))
-        })
-        .or_else(|| hover_on_keyword(source, &word, resource_estimates, line).map(|h| with_doc_link(h, Doc::Keyword("on"))))
-        .or_else(|| {
-            hover_record_or_type_field(
-                source,
-                file,
-                ast,
-                type_map,
-                symbols,
-                doc_comments,
-                &word,
-                line,
-                col,
-            )
-        })
-        .or_else(|| hover_namespace_member(source, symbols, doc_comments, resource_estimates, &word, line, col))
-        .or_else(|| hover_enum_discriminant_variant_path(source, ast, &word, line, col))
-        .or_else(|| hover_enum_variant_path(source, ast, symbols, &word, line, col))
-        .or_else(|| hover_enum_field_construction(source, ast, &word, line, col))
-        .or_else(|| hover_component_property(source, file, type_map, line, col, &word))
-        .or_else(|| resolve_field_hover(source, file, type_map, narrowed_reads, symbols, line, col, &word))
-        .or_else(|| hover_generic_call(source, file, ast, symbols, doc_comments, resource_estimates, type_map, &word, line, col))
-        .or_else(|| hover_user_symbol(source, file, ast, symbols, doc_comments, var_read_contexts, narrowed_reads, resource_estimates, &word, line, col))
-        .or_else(|| hover_enum_type_name(source, ast, &word))
-        .or_else(|| hover_type_or_class(&word))
+    })
+    .or_else(|| {
+        hover_custom_event(source, file, ast, &word, type_map, line, col)
+            .map(|h| with_doc_link(h, Doc::Topic("customEvents")))
+    })
+    .or_else(|| hover_builtin_event(&word).map(|h| with_doc_link(h, event_doc(&word))))
+    .or_else(|| {
+        hover_builtin_call(source, &word, line, col).map(|h| with_doc_link(h, Doc::Builtin(&word)))
+    })
+    .or_else(|| {
+        hover_chip_or_mod_keyword(source, &word, symbols, resource_estimates, line)
+            .map(|h| with_doc_link(h, Doc::Keyword(&word)))
+    })
+    .or_else(|| {
+        hover_on_keyword(source, &word, resource_estimates, line)
+            .map(|h| with_doc_link(h, Doc::Keyword("on")))
+    })
+    .or_else(|| {
+        hover_record_or_type_field(
+            source,
+            file,
+            ast,
+            type_map,
+            symbols,
+            doc_comments,
+            &word,
+            line,
+            col,
+        )
+    })
+    .or_else(|| {
+        hover_namespace_member(
+            source,
+            symbols,
+            doc_comments,
+            resource_estimates,
+            &word,
+            line,
+            col,
+        )
+    })
+    .or_else(|| hover_enum_discriminant_variant_path(source, ast, &word, line, col))
+    .or_else(|| hover_enum_variant_path(source, ast, symbols, &word, line, col))
+    .or_else(|| hover_enum_field_construction(source, ast, &word, line, col))
+    .or_else(|| hover_component_property(source, file, type_map, line, col, &word))
+    .or_else(|| {
+        resolve_field_hover(
+            source,
+            file,
+            type_map,
+            narrowed_reads,
+            symbols,
+            line,
+            col,
+            &word,
+        )
+    })
+    .or_else(|| {
+        hover_generic_call(
+            source,
+            file,
+            ast,
+            symbols,
+            doc_comments,
+            resource_estimates,
+            type_map,
+            &word,
+            line,
+            col,
+        )
+    })
+    .or_else(|| {
+        hover_user_symbol(
+            source,
+            file,
+            ast,
+            symbols,
+            doc_comments,
+            var_read_contexts,
+            narrowed_reads,
+            resource_estimates,
+            &word,
+            line,
+            col,
+        )
+    })
+    .or_else(|| hover_enum_type_name(source, ast, &word))
+    .or_else(|| hover_type_or_class(&word))
 }
 
 /// Hover for a segment of `Environment.<group>.<property>`: the builtin
@@ -570,9 +708,14 @@ pub fn hover_at(
 /// writes as. Read from the line's text like environment completion, so it
 /// works inside `${...}` too. A binding of the program's own named
 /// `Environment` shadows the builtin, as in the type checker.
-fn hover_environment_path(source: &str, symbols: &[SymbolDef], line: usize, col: usize) -> Option<String> {
-    use crate::catalog::properties::{property_type, PropertyType};
-    use crate::typecheck::props::{environment_by_label, environment_names, ENVIRONMENT};
+fn hover_environment_path(
+    source: &str,
+    symbols: &[SymbolDef],
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    use crate::catalog::properties::{PropertyType, property_type};
+    use crate::typecheck::props::{ENVIRONMENT, environment_by_label, environment_names};
     let l = source.lines().nth(line)?;
     let end = word_end_at_byte(l, char_col_to_byte(l, col));
     let start = l[..end]
@@ -585,7 +728,10 @@ fn hover_environment_path(source: &str, symbols: &[SymbolDef], line: usize, col:
     }
     match segments.as_slice() {
         [_] => {
-            let groups: Vec<String> = environment_names().iter().map(|n| format!("`{n}`")).collect();
+            let groups: Vec<String> = environment_names()
+                .iter()
+                .map(|n| format!("`{n}`"))
+                .collect();
             let hover = format!(
                 "```wirescript\n{ENVIRONMENT}\n```\nThe world's environment settings. Reading \
                  `{ENVIRONMENT}.<group>.<property>` runs a **Get Environment Property** gate and \
@@ -597,7 +743,11 @@ fn hover_environment_path(source: &str, symbols: &[SymbolDef], line: usize, col:
         }
         [_, group] => {
             let e = environment_by_label(group)?;
-            let names: Vec<String> = e.properties.iter().map(|p| format!("`{}`", p.name)).collect();
+            let names: Vec<String> = e
+                .properties
+                .iter()
+                .map(|p| format!("`{}`", p.name))
+                .collect();
             let hover = format!(
                 "```wirescript\n{ENVIRONMENT}.{group}\n```\n**Environment group**, {} properties: {}.",
                 e.properties.len(),
@@ -611,11 +761,17 @@ fn hover_environment_path(source: &str, symbols: &[SymbolDef], line: usize, col:
                 PropertyType::Value(t) => (type_str(&t), String::new()),
                 PropertyType::Enum(raw) => {
                     let en = crate::catalog::clean_game_enum_type(&raw);
-                    (format!("int ({en})"), format!(" It reads as an `int` and takes a member such as `{en}.<member>`."))
+                    (
+                        format!("int ({en})"),
+                        format!(
+                            " It reads as an `int` and takes a member such as `{en}.<member>`."
+                        ),
+                    )
                 }
-                PropertyType::Unsupported(why) => {
-                    ("unsupported".to_string(), format!(" It is {why}, so a program can't read or write it."))
-                }
+                PropertyType::Unsupported(why) => (
+                    "unsupported".to_string(),
+                    format!(" It is {why}, so a program can't read or write it."),
+                ),
             };
             let hover = format!(
                 "```wirescript\n{ENVIRONMENT}.{group}.{property}: {ty}\n```\n**Environment setting.** Reading it \
@@ -656,7 +812,9 @@ fn builtin_type_desc(word: &str) -> Option<&'static str> {
         "exec" => "Execution signal. Triggers gates; carries no value.",
         "zone" => "Reference to a Zone brick. Can be wired, not stored.",
         "teleport" => "Reference to a Teleport Destination. Can be wired, not stored.",
-        "prefab" => "Reference to a prefab: a `$./file.brz`, a `$./file.ws`, or an inline prefab block. Resolved at compile time.",
+        "prefab" => {
+            "Reference to a prefab: a `$./file.brz`, a `$./file.ws`, or an inline prefab block. Resolved at compile time."
+        }
         "brick" => "Reference to a brick. Set it in the editor or receive it from a port or event.",
         "any" => "Accepts any type. Prefer a generic `<T>`.",
         "never" => "No value. The type of an expression that never produces one.",
@@ -678,7 +836,10 @@ fn hover_type_or_class(word: &str) -> Option<String> {
         return Some(with_doc_link(hover, Doc::Topic("constraintClass")));
     }
     let desc = builtin_type_desc(word)?;
-    Some(with_doc_link(format!("```wirescript\n{word}\n```\n{desc}"), Doc::Type(word)))
+    Some(with_doc_link(
+        format!("```wirescript\n{word}\n```\n{desc}"),
+        Doc::Type(word),
+    ))
 }
 
 /// Hover for a `:name` atom literal under the cursor: the compile-time `int`
@@ -699,9 +860,13 @@ fn hover_atom(source: &str, file: &str, line: usize, col: usize) -> Option<Strin
 /// Whether the identifier under the cursor is an annotation's name: the
 /// character right before it is `@`.
 fn annotation_word_at(source: &str, line: usize, col: usize) -> bool {
-    let Some(l) = source.lines().nth(line) else { return false };
+    let Some(l) = source.lines().nth(line) else {
+        return false;
+    };
     let c = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
-    let start = l[..c].rfind(|ch: char| !ch.is_alphanumeric() && ch != '_').map(|i| i + 1);
+    let start = l[..c]
+        .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .map(|i| i + 1);
     start.is_some_and(|s| s > 0 && l.as_bytes()[s - 1] == b'@')
 }
 
@@ -732,24 +897,38 @@ fn hover_annotation(name: &str) -> Option<String> {
              `BrickMaterial.Glow`. A constant is set on the brick itself. On the module and top-level \
              `var`s a runtime value adds a Brick Property Changer to the brick and is wired into it live.",
         ),
-        "closed" => ("@closed".to_string(), "Compiles this chip collapsed instead of open."),
+        "closed" => (
+            "@closed".to_string(),
+            "Compiles this chip collapsed instead of open.",
+        ),
         "invisible" => (
             "@invisible".to_string(),
             "Hides a brick and turns off its collision: at the top of the file the root microchip, on \
              a port its rerouter pin.",
         ),
-        "nofold" => ("@nofold".to_string(), "Keeps these gates out of constant folding."),
+        "nofold" => (
+            "@nofold".to_string(),
+            "Keeps these gates out of constant folding.",
+        ),
         "fold" => ("@fold".to_string(), "Constant folding, on by default."),
         "layout" => (
             "@layout(\"code\" | \"cube\")".to_string(),
             "At the top of the file: places gates the way the source reads (`\"code\"`) or packs them \
              into a compact cube (`\"cube\"`).",
         ),
-        "flat" => ("@flat".to_string(), "At the top of the file: inlines every chip onto one grid."),
-        "sliced" => ("@sliced".to_string(), "Spreads a `for` loop's iterations across ticks."),
+        "flat" => (
+            "@flat".to_string(),
+            "At the top of the file: inlines every chip onto one grid.",
+        ),
+        "sliced" => (
+            "@sliced".to_string(),
+            "Spreads a `for` loop's iterations across ticks.",
+        ),
         _ => return None,
     };
-    Some(format!("```wirescript\n{sig}\n```\n\n**Annotation.** {text}"))
+    Some(format!(
+        "```wirescript\n{sig}\n```\n\n**Annotation.** {text}"
+    ))
 }
 
 /// Hover for a `$` reference token under the cursor: a prefab file reference
@@ -759,7 +938,10 @@ fn hover_annotation(name: &str) -> Option<String> {
 fn hover_asset_ref(source: &str, file: &str, line: usize, col: usize) -> Option<String> {
     let r = super::text::asset_ref_at(source, line, col)?;
     Some(if r.is_file() {
-        with_doc_link(render_prefab_file_hover(&r.path, file), Doc::Topic("prefabs"))
+        with_doc_link(
+            render_prefab_file_hover(&r.path, file),
+            Doc::Topic("prefabs"),
+        )
     } else {
         with_doc_link(render_asset_hover(&r.path), Doc::Topic("assets"))
     })
@@ -814,10 +996,15 @@ fn render_component_type_hover(path: &str) -> String {
         None => (path, None),
     };
     let Some(o) = crate::catalog::component_type(name) else {
-        return format!("**Component type** `{name}`\n\nNot a component type the component gates take (WS110).");
+        return format!(
+            "**Component type** `{name}`\n\nNot a component type the component gates take (WS110)."
+        );
     };
     if let Some(property) = property {
-        return match crate::catalog::component_properties(o.class).into_iter().find(|p| p.name == property) {
+        return match crate::catalog::component_properties(o.class)
+            .into_iter()
+            .find(|p| p.name == property)
+        {
             Some(p) => format!(
                 "**Component property** `{}.{}`: `{}`\n\nA property of the {} component. The list \
                  comes from the save schema, so it may hold fields the game's own picker does \
@@ -884,7 +1071,9 @@ fn hover_if_keyword(
     line: usize,
     col: usize,
 ) -> Option<String> {
-    if word != "if" { return None; }
+    if word != "if" {
+        return None;
+    }
 
     let offset = line_offset_at(source, line) + word_start_in_line(source.lines().nth(line)?, col);
     let f: std::sync::Arc<str> = file.into();
@@ -1092,7 +1281,10 @@ fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Optio
     let p = spec.params.iter().find(|p| p.name == word)?;
 
     let port_doc = input_port_doc(spec.gate_class, p.port.as_str());
-    let display = port_doc.map(|(d, _)| d).filter(|d| !d.is_empty()).unwrap_or(p.name);
+    let display = port_doc
+        .map(|(d, _)| d)
+        .filter(|d| !d.is_empty())
+        .unwrap_or(p.name);
     let tooltip = port_doc.map(|(_, t)| t).unwrap_or("");
 
     // A param surfaced as a plain int but backed by a schema enum shows the
@@ -1102,8 +1294,12 @@ fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Optio
         .map(str::to_string)
         .unwrap_or_else(|| type_str(&p.ty));
     let mut v = format!("**{}** `{}: {}`", display, p.name, ty_label);
-    if p.optional { v += " *(optional)*"; }
-    if !tooltip.is_empty() { v += &format!("\n\n{}", tooltip); }
+    if p.optional {
+        v += " *(optional)*";
+    }
+    if !tooltip.is_empty() {
+        v += &format!("\n\n{}", tooltip);
+    }
     if let Some(et) = config_enum {
         let members = crate::catalog::enum_member_names(et).join(", ");
         if !members.is_empty() {
@@ -1198,7 +1394,13 @@ fn hover_array_method_named(word: &str) -> Option<String> {
     let m = crate::catalog::arrays::ARRAY_METHODS
         .iter()
         .find(|m| m.name == word)?;
-    Some(format!("**array.{}**\n\n{}{} - {}", m.name, m.name, m.shown_signature(), m.doc))
+    Some(format!(
+        "**array.{}**\n\n{}{} - {}",
+        m.name,
+        m.name,
+        m.shown_signature(),
+        m.doc
+    ))
 }
 
 /// Render the map-method hover for `word` on a receiver whose type displays as
@@ -1209,7 +1411,11 @@ fn hover_map_method(word: &str, map_display: &str) -> Option<String> {
     let m = crate::catalog::maps::map_method(word)?;
     Some(format!(
         "**map.{}**\n\n{}{} - {}\n\n*{}*",
-        m.name, m.name, m.shown_signature(), m.doc, map_display,
+        m.name,
+        m.name,
+        m.shown_signature(),
+        m.doc,
+        map_display,
     ))
 }
 
@@ -1246,7 +1452,10 @@ fn hover_builtin_event(word: &str) -> Option<String> {
     } else {
         format!(" -> ({})", data_parts.join(", "))
     };
-    let mut out = format!("```wirescript\non {}{}{}\n```", evt.surface_name, call_sig, arrow);
+    let mut out = format!(
+        "```wirescript\non {}{}{}\n```",
+        evt.surface_name, call_sig, arrow
+    );
     if !evt.input_named.is_empty() {
         let wired: Vec<&str> = evt.input_named.iter().map(|(s, _, _)| *s).collect();
         out += &format!("\n\n**Wired input:** {}", wired.join(", "));
@@ -1299,7 +1508,10 @@ fn hover_custom_event(
     };
     let slots = resolve_ce_channel_slots(script, ns_word, &channel, type_map, file);
 
-    let data_parts: Vec<String> = slots.iter().map(|(name, ty)| format!("{name}: {ty}")).collect();
+    let data_parts: Vec<String> = slots
+        .iter()
+        .map(|(name, ty)| format!("{name}: {ty}"))
+        .collect();
     let sig = if is_send {
         // A send call is a plain call: the data values stay in the parens
         // alongside the channel name, e.g. `SendCustomEvent("dmg", amount)`.
@@ -1379,7 +1591,11 @@ fn ce_trigger_channel_at(script: &Script, word: &str, off: usize) -> Option<Stri
 /// `eventName = "x"` if present, else its first positional string literal.
 fn ce_handler_channel(h: &Handler) -> Option<String> {
     for c in &h.config {
-        if let HandlerConfigArg::Named { name, value: Expr::StringLit { value, .. } } = c {
+        if let HandlerConfigArg::Named {
+            name,
+            value: Expr::StringLit { value, .. },
+        } = c
+        {
             if name.eq_ignore_ascii_case("eventname") {
                 return Some(value.clone());
             }
@@ -1460,8 +1676,7 @@ fn resolve_ce_channel_slots(
                 }
                 if send_types[slot].is_none() {
                     let r = expr.range();
-                    if let Some(t) =
-                        type_map.get(&(file_arc.clone(), r.start.offset, r.end.offset))
+                    if let Some(t) = type_map.get(&(file_arc.clone(), r.start.offset, r.end.offset))
                     {
                         if !matches!(t, Type::Any | Type::Opaque) {
                             send_types[slot] = Some(type_str(t));
@@ -1494,7 +1709,12 @@ fn resolve_ce_channel_slots(
 /// if present, else the first positional string literal.
 fn ce_send_channel(args: &[CallArg]) -> Option<String> {
     for a in args {
-        if let CallArg::Named { name, value: Expr::StringLit { value, .. }, .. } = a {
+        if let CallArg::Named {
+            name,
+            value: Expr::StringLit { value, .. },
+            ..
+        } = a
+        {
             if name.eq_ignore_ascii_case("eventname") {
                 return Some(value.clone());
             }
@@ -1513,9 +1733,9 @@ fn ce_send_channel(args: &[CallArg]) -> Option<String> {
 /// given); the remaining positionals are data slots 0.., and `dataN` names slot
 /// N-1. A `target` named arg is neither the channel nor a data slot.
 fn ce_send_data_slots(args: &[CallArg]) -> Vec<(usize, &Expr)> {
-    let has_named_channel = args
-        .iter()
-        .any(|a| matches!(a, CallArg::Named { name, .. } if name.eq_ignore_ascii_case("eventname")));
+    let has_named_channel = args.iter().any(
+        |a| matches!(a, CallArg::Named { name, .. } if name.eq_ignore_ascii_case("eventname")),
+    );
     let mut out = Vec::new();
     let mut pos_idx = 0usize;
     for a in args {
@@ -1523,13 +1743,20 @@ fn ce_send_data_slots(args: &[CallArg]) -> Vec<(usize, &Expr)> {
             CallArg::Positional(e) => {
                 let is_channel = !has_named_channel && pos_idx == 0;
                 if !is_channel {
-                    let slot = if has_named_channel { pos_idx } else { pos_idx - 1 };
+                    let slot = if has_named_channel {
+                        pos_idx
+                    } else {
+                        pos_idx - 1
+                    };
                     out.push((slot, e));
                 }
                 pos_idx += 1;
             }
             CallArg::Named { name, value, .. } => {
-                if let Some(n) = name.strip_prefix("data").and_then(|s| s.parse::<usize>().ok()) {
+                if let Some(n) = name
+                    .strip_prefix("data")
+                    .and_then(|s| s.parse::<usize>().ok())
+                {
                     if n >= 1 {
                         out.push((n - 1, value));
                     }
@@ -1551,7 +1778,11 @@ fn hover_event_config_param(source: &str, word: &str, line: usize, col: usize) -
     }
     let trigger = find_enclosing_call(source, line, col)?;
     let evt = find_event(&trigger)?;
-    if let Some((_, field)) = evt.config_named.iter().find(|(k, _)| k.eq_ignore_ascii_case(word)) {
+    if let Some((_, field)) = evt
+        .config_named
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(word))
+    {
         let enum_ty = crate::catalog::config_field_enum_type(evt.gate_class, field);
         let ty_label = enum_ty.unwrap_or("config value");
         let mut v = format!(
@@ -1566,7 +1797,11 @@ fn hover_event_config_param(source: &str, word: &str, line: usize, col: usize) -
         }
         return Some(v);
     }
-    if evt.input_named.iter().any(|(s, _, _)| s.eq_ignore_ascii_case(word)) {
+    if evt
+        .input_named
+        .iter()
+        .any(|(s, _, _)| s.eq_ignore_ascii_case(word))
+    {
         return Some(format!(
             "**{}** *(wired input on the `{}` event)*",
             word, evt.surface_name
@@ -1616,9 +1851,7 @@ fn hover_config_enum_value(source: &str, word: &str, line: usize, col: usize) ->
     // value written in the slot).
     crate::catalog::enum_member_value(et, word)?;
     let members = crate::catalog::enum_member_names(et).join(", ");
-    Some(format!(
-        "**{word}**: `{et}` member\n\none of: {members}"
-    ))
+    Some(format!("**{word}**: `{et}` member\n\none of: {members}"))
 }
 
 // ---------- language-level `enum` hover (user + built-in game enums) ----------
@@ -1668,7 +1901,10 @@ fn hover_enum_type_name(source: &str, ast: &Script, word: &str) -> Option<String
         return Some(v);
     }
     // Prelude (`Option`/`Result`): cheap to build (two entries), no reparse.
-    if let Some(def) = crate::typecheck::enums::prelude_enum_defs().into_iter().find(|d| d.name == word) {
+    if let Some(def) = crate::typecheck::enums::prelude_enum_defs()
+        .into_iter()
+        .find(|d| d.name == word)
+    {
         return Some(render_user_or_prelude_enum_hover(&def, false));
     }
     // A user `enum`: only worth a reparse when the file could plausibly
@@ -1686,7 +1922,10 @@ fn hover_enum_type_name(source: &str, ast: &Script, word: &str) -> Option<String
 }
 
 /// Find a top-level `TopDecl::Enum` named `name`, recursing into namespaces.
-fn find_top_level_enum_decl<'a>(decls: &'a [crate::ast::TopDecl], name: &str) -> Option<&'a crate::ast::EnumDecl> {
+fn find_top_level_enum_decl<'a>(
+    decls: &'a [crate::ast::TopDecl],
+    name: &str,
+) -> Option<&'a crate::ast::EnumDecl> {
     for d in decls {
         match d {
             TopDecl::Enum(e) if e.name == name => return Some(e),
@@ -1703,7 +1942,10 @@ fn find_top_level_enum_decl<'a>(decls: &'a [crate::ast::TopDecl], name: &str) ->
 
 /// Render hover for a user-declared or prelude `EnumDef`: its signature plus a
 /// `Variants:` list (each with its payload shape).
-fn render_user_or_prelude_enum_hover(def: &crate::typecheck::enums::EnumDef, is_user: bool) -> String {
+fn render_user_or_prelude_enum_hover(
+    def: &crate::typecheck::enums::EnumDef,
+    is_user: bool,
+) -> String {
     let generics = if def.type_params.is_empty() {
         String::new()
     } else {
@@ -1765,7 +2007,9 @@ fn hover_enum_variant_path(
     col: usize,
 ) -> Option<String> {
     let enum_name = receiver_at(source, line, col)?;
-    if enum_name.is_empty() || super::resolve_symbol(symbols, source, enum_name, line, col).is_some() {
+    if enum_name.is_empty()
+        || super::resolve_symbol(symbols, source, enum_name, line, col).is_some()
+    {
         return None;
     }
 
@@ -1798,7 +2042,13 @@ fn hover_enum_variant_path(
 /// `parser::expr::parse_record_lit`), not just the key, so the key span is
 /// derived from the field name's byte length rather than read off a
 /// dedicated sub-range.
-fn hover_enum_field_construction(source: &str, ast: &Script, word: &str, line: usize, col: usize) -> Option<String> {
+fn hover_enum_field_construction(
+    source: &str,
+    ast: &Script,
+    word: &str,
+    line: usize,
+    col: usize,
+) -> Option<String> {
     let line_str = source.lines().nth(line)?;
     let word_off = line_offset_at(source, line) + word_start_in_line(line_str, col);
 
@@ -1814,9 +2064,11 @@ fn hover_enum_field_construction(source: &str, ast: &Script, word: &str, line: u
             };
             for f in fields {
                 let (name, key_start, key_end) = match f {
-                    crate::ast::RecordLitField::Named { name, range, .. } => {
-                        (name.as_str(), range.start.offset, range.start.offset + name.len())
-                    }
+                    crate::ast::RecordLitField::Named { name, range, .. } => (
+                        name.as_str(),
+                        range.start.offset,
+                        range.start.offset + name.len(),
+                    ),
                     crate::ast::RecordLitField::Shorthand { name, range } => {
                         (name.as_str(), range.start.offset, range.end.offset)
                     }
@@ -1825,10 +2077,18 @@ fn hover_enum_field_construction(source: &str, ast: &Script, word: &str, line: u
                 if name != word || word_off < key_start || word_off > key_end {
                     continue;
                 }
-                let Expr::FieldAccess { obj, field: variant, .. } = path.as_ref() else {
+                let Expr::FieldAccess {
+                    obj,
+                    field: variant,
+                    ..
+                } = path.as_ref()
+                else {
                     continue;
                 };
-                let Expr::Ident { name: enum_name, .. } = obj.as_ref() else {
+                let Expr::Ident {
+                    name: enum_name, ..
+                } = obj.as_ref()
+                else {
                     continue;
                 };
                 hit = Some((enum_name.clone(), variant.clone()));
@@ -1863,7 +2123,13 @@ fn hover_enum_field_construction(source: &str, ast: &Script, word: &str, line: u
 /// int` via `type_map` (the typechecker types `.Discriminant` as `Type::Int`
 /// regardless of whether the object is a bare value or a variant path - see
 /// `infer.rs`'s `field == "Discriminant"` arm).
-fn hover_enum_discriminant_variant_path(source: &str, ast: &Script, word: &str, line: usize, col: usize) -> Option<String> {
+fn hover_enum_discriminant_variant_path(
+    source: &str,
+    ast: &Script,
+    word: &str,
+    line: usize,
+    col: usize,
+) -> Option<String> {
     if word != "Discriminant" {
         return None;
     }
@@ -1940,7 +2206,9 @@ fn call_doc_override(name: &str) -> Option<(&'static str, &'static str)> {
 /// regenerated each game build, so it is the hover's first source;
 /// `gate_docs.json` is older and covers only some gates.
 fn gate_inventory(gate_class: &str) -> Option<&'static crate::catalog::ComponentSpec> {
-    crate::catalog::default_catalog().find_by_class(gate_class).map(|g| &g.component)
+    crate::catalog::default_catalog()
+        .find_by_class(gate_class)
+        .map(|g| &g.component)
 }
 
 /// The display name and tooltip of input `port` on `gate_class`, from the
@@ -1969,39 +2237,73 @@ fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Opti
     let override_doc = call_doc_override(spec.name);
     let title = override_doc
         .map(|(t, _)| t)
-        .or_else(|| inventory.map(|c| c.display_name.as_str()).filter(|n| !n.is_empty()))
+        .or_else(|| {
+            inventory
+                .map(|c| c.display_name.as_str())
+                .filter(|n| !n.is_empty())
+        })
         .or_else(|| gate_doc.map(|g| g.display_name.as_str()))
         .unwrap_or(spec.name);
 
     let mut params: Vec<String> = Vec::new();
-    if spec.exec { params.push("exec".into()); }
+    if spec.exec {
+        params.push("exec".into());
+    }
     params.extend(spec.params.iter().map(|p| {
-        if p.optional { format!("{}?: {}", p.name, type_str(&p.ty)) } else { format!("{}: {}", p.name, type_str(&p.ty)) }
+        if p.optional {
+            format!("{}?: {}", p.name, type_str(&p.ty))
+        } else {
+            format!("{}: {}", p.name, type_str(&p.ty))
+        }
     }));
 
     let out = match spec.outputs.len() {
         0 => String::new(),
         1 => format!(" -> {}", type_str(&spec.outputs[0].ty)),
-        _ => format!(" -> ({})", spec.outputs.iter().map(|o| format!("{}: {}", o.port.as_str(), type_str(&o.ty))).collect::<Vec<_>>().join(", ")),
+        _ => format!(
+            " -> ({})",
+            spec.outputs
+                .iter()
+                .map(|o| format!("{}: {}", o.port.as_str(), type_str(&o.ty)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     };
 
-    let mut parts = vec![format!("### {}\n```wirescript\n{}({}){}\n```", title, spec.name, params.join(", "), out)];
+    let mut parts = vec![format!(
+        "### {}\n```wirescript\n{}({}){}\n```",
+        title,
+        spec.name,
+        params.join(", "),
+        out
+    )];
     // The game's own SearchTags keywords for this gate (from the inventory dump)
     // — surfaced so hover doubles as a "what would I search for this?" hint.
     let tags_line = crate::catalog::default_catalog()
         .find_by_class(spec.gate_class)
         .map(|g| g.component.search_tags.trim())
         .filter(|t| !t.is_empty())
-        .map(|t| format!("*Keywords: {}*", t.split_whitespace().collect::<Vec<_>>().join(", ")));
+        .map(|t| {
+            format!(
+                "*Keywords: {}*",
+                t.split_whitespace().collect::<Vec<_>>().join(", ")
+            )
+        });
     if let Some((_, doc)) = override_doc {
         parts.push(doc.to_string());
-        if let Some(t) = tags_line { parts.push(t); }
+        if let Some(t) = tags_line {
+            parts.push(t);
+        }
         return Some(parts.join("\n\n"));
     }
     let description = inventory
         .map(|c| c.description.as_str())
         .filter(|d| !d.is_empty())
-        .or_else(|| gate_doc.map(|g| g.description.as_str()).filter(|d| !d.is_empty()));
+        .or_else(|| {
+            gate_doc
+                .map(|g| g.description.as_str())
+                .filter(|d| !d.is_empty())
+        });
     if let Some(d) = description {
         parts.push(d.to_string());
     }
@@ -2015,8 +2317,12 @@ fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Opti
     if !param_docs.is_empty() {
         parts.push(format!("**Parameters:**\n{}", param_docs.join("\n")));
     }
-    if let Some(table) = defaults_table(spec) { parts.push(table); }
-    if let Some(t) = tags_line { parts.push(t); }
+    if let Some(table) = defaults_table(spec) {
+        parts.push(table);
+    }
+    if let Some(t) = tags_line {
+        parts.push(t);
+    }
     Some(parts.join("\n\n"))
 }
 
@@ -2052,7 +2358,8 @@ fn defaults_table(spec: &crate::catalog::calls::CallSpec) -> Option<String> {
     if rows.is_empty() {
         return None;
     }
-    let mut t = String::from("**Defaults:**\n\n| Parameter | Type | Default |\n| --- | --- | --- |");
+    let mut t =
+        String::from("**Defaults:**\n\n| Parameter | Type | Default |\n| --- | --- | --- |");
     for (n, ty, d) in &rows {
         t += &format!("\n| {n} | {ty} | {d} |");
     }
@@ -2067,7 +2374,9 @@ fn hover_chip_or_mod_keyword(
     resource_estimates: &HashMap<String, ResourceEstimate>,
     line: usize,
 ) -> Option<String> {
-    if !matches!(word, "chip" | "mod" | "fn") { return None; }
+    if !matches!(word, "chip" | "mod" | "fn") {
+        return None;
+    }
 
     let lo = line_offset_at(source, line);
     let line_end = lo + super::text::line_text(source, line).len() + 1;
@@ -2078,15 +2387,27 @@ fn hover_chip_or_mod_keyword(
             && sym.range.start.offset < line_end
         {
             let context = if sym.exec { "exec" } else { "pure" };
-            let name = if sym.name.is_empty() || sym.name.starts_with('_') { "(anonymous)" } else { &sym.name };
+            let name = if sym.name.is_empty() || sym.name.starts_with('_') {
+                "(anonymous)"
+            } else {
+                &sym.name
+            };
             let const_kw = if sym.is_const { "const " } else { "" };
             let mut hover = format!(
                 "```wirescript\n{const_kw}{} {} ({})\n```\n\n{} context - {}",
-                sym.kind, name, context,
+                sym.kind,
+                name,
+                context,
                 if sym.exec { "Exec" } else { "Pure" },
-                if sym.exec { "body runs as sequential exec chain" } else { "body is evaluated as signal-flow (combinational)" },
+                if sym.exec {
+                    "body runs as sequential exec chain"
+                } else {
+                    "body is evaluated as signal-flow (combinational)"
+                },
             );
-            if let Some(est) = lookup_estimate(resource_estimates, &sym.name, sym.range.start.offset) {
+            if let Some(est) =
+                lookup_estimate(resource_estimates, &sym.name, sym.range.start.offset)
+            {
                 let ek = estimate_kind(sym.kind);
                 hover += &format!("\n\n{}", format_estimate(est, ek));
             }
@@ -2103,7 +2424,9 @@ fn hover_on_keyword(
     resource_estimates: &HashMap<String, ResourceEstimate>,
     line: usize,
 ) -> Option<String> {
-    if word != "on" { return None; }
+    if word != "on" {
+        return None;
+    }
 
     let l = source.lines().nth(line)?;
     let offset = line_offset_at(source, line) + l.find("on").unwrap_or(0);
@@ -2147,7 +2470,8 @@ fn hover_record_or_type_field(
         {
             if let Some(ref ty_str) = sym.ty {
                 if let Some(field_type) = extract_record_field_type(ty_str, word) {
-                    let mut hover = format!("```wirescript\n{}.{}: {}\n```", sym.name, word, field_type);
+                    let mut hover =
+                        format!("```wirescript\n{}.{}: {}\n```", sym.name, word, field_type);
                     // Field `///` doc comment, stored by the parser keyed by the
                     // field name's offset.
                     let field_off = line_offset_at(source, line)
@@ -2212,10 +2536,18 @@ fn hover_generic_call(
     // read where the declaration's file declares it.
     let param_names: Vec<String> = decl.type_params.iter().map(|tp| tp.name.clone()).collect();
     let enum_defs = std::sync::Arc::new(crate::typecheck::enums::build_registry(&script.decls));
-    let types = crate::const_eval::DeclaredTypes::for_program_in(&script.decls, &enum_defs, &script.imports);
+    let types = crate::const_eval::DeclaredTypes::for_program_in(
+        &script.decls,
+        &enum_defs,
+        &script.imports,
+    );
     let types = types.in_file(&decl.range.file);
-    let own_param =
-        |name: &str, _: &crate::diagnostic::SourceRange| param_names.iter().any(|p| p == name).then(|| Type::Param(name.to_string()));
+    let own_param = |name: &str, _: &crate::diagnostic::SourceRange| {
+        param_names
+            .iter()
+            .any(|p| p == name)
+            .then(|| Type::Param(name.to_string()))
+    };
     let resolve = |te: &TypeExpr| types.resolve_scoped(te, &own_param);
     let param_types: Vec<Type> = decl.inputs.iter().map(|p| resolve(&p.typ)).collect();
 
@@ -2237,14 +2569,23 @@ fn hover_generic_call(
         let params: Vec<(String, Vec<Type>)> = decl
             .type_params
             .iter()
-            .map(|tp| (tp.name.clone(), crate::types::mono::mask_for_param(tp.bound.as_ref(), &|te| types.resolve(te))))
+            .map(|tp| {
+                (
+                    tp.name.clone(),
+                    crate::types::mono::mask_for_param(tp.bound.as_ref(), &|te| types.resolve(te)),
+                )
+            })
             .collect();
         crate::types::mono::infer_call_subst(&param_types, &arg_types, &params)
     };
 
     // Nothing resolved (e.g. a `T` only in the return type, called without
     // explicit args): leave the declaration hover to show the generic form.
-    if decl.type_params.iter().all(|tp| !subst.contains_key(&tp.name)) {
+    if decl
+        .type_params
+        .iter()
+        .all(|tp| !subst.contains_key(&tp.name))
+    {
         return None;
     }
 
@@ -2277,11 +2618,23 @@ fn hover_generic_call(
         .collect();
     let ret_suffix = match decl.outputs.as_slice() {
         [] => String::new(),
-        [single] => format!(" -> {}", type_str(&crate::types::mono::substitute(&resolve(&single.typ), &subst))),
+        [single] => format!(
+            " -> {}",
+            type_str(&crate::types::mono::substitute(
+                &resolve(&single.typ),
+                &subst
+            ))
+        ),
         multiple => {
             let fields: Vec<String> = multiple
                 .iter()
-                .map(|o| format!("{}: {}", o.name, type_str(&crate::types::mono::substitute(&resolve(&o.typ), &subst))))
+                .map(|o| {
+                    format!(
+                        "{}: {}",
+                        o.name,
+                        type_str(&crate::types::mono::substitute(&resolve(&o.typ), &subst))
+                    )
+                })
                 .collect();
             format!(" -> ({})", fields.join(", "))
         }
@@ -2297,22 +2650,33 @@ fn hover_generic_call(
         name: sym.name.clone(),
         kind: sym.kind,
         range: sym.range.clone(),
-        ty: Some(format!("{}({}){}", header, params_str.join(", "), ret_suffix)),
+        ty: Some(format!(
+            "{}({}){}",
+            header,
+            params_str.join(", "),
+            ret_suffix
+        )),
         exec: sym.exec,
         is_const: sym.is_const,
     };
-    let mut out = render_decl_hover(&synth, doc_comments, resource_estimates, Some((symbols, ast)));
+    let mut out = render_decl_hover(
+        &synth,
+        doc_comments,
+        resource_estimates,
+        Some((symbols, ast)),
+    );
 
     let bindings: Vec<String> = decl
         .type_params
         .iter()
-        .filter_map(|tp| subst.get(&tp.name).map(|t| format!("`{}` = `{}`", tp.name, type_str(t))))
+        .filter_map(|tp| {
+            subst
+                .get(&tp.name)
+                .map(|t| format!("`{}` = `{}`", tp.name, type_str(t)))
+        })
         .collect();
     if !bindings.is_empty() {
-        out += &format!(
-            "\n\n*Generic call: {} for this call.*",
-            bindings.join(", ")
-        );
+        out += &format!("\n\n*Generic call: {} for this call.*", bindings.join(", "));
     }
     Some(out)
 }
@@ -2332,7 +2696,13 @@ fn generic_call_at<'a>(
             if found.is_some() {
                 return;
             }
-            let Expr::Call { callee, args, type_args, .. } = call else {
+            let Expr::Call {
+                callee,
+                args,
+                type_args,
+                ..
+            } = call
+            else {
                 return;
             };
             let Expr::Ident { name, range } = callee.as_ref() else {
@@ -2436,8 +2806,16 @@ fn hover_user_symbol(
     });
     let mut v = match narrowed {
         Some(n) => {
-            let here = SymbolDef { ty: Some(type_str(&n.ty)), ..sym.clone() };
-            let mut v = render_decl_hover(&here, doc_comments, resource_estimates, Some((symbols, ast)));
+            let here = SymbolDef {
+                ty: Some(type_str(&n.ty)),
+                ..sym.clone()
+            };
+            let mut v = render_decl_hover(
+                &here,
+                doc_comments,
+                resource_estimates,
+                Some((symbols, ast)),
+            );
             v += &narrowing_note(sym.ty.as_deref().unwrap_or("any"), n);
             v
         }
@@ -2496,8 +2874,13 @@ fn render_decl_hover(
                     }
                     None => ty_str.to_string(),
                 }
-            } else { ty_str.to_string() };
-            format!("```wirescript\n{const_kw}{} {}{}\n```", sym.kind, sym.name, sig)
+            } else {
+                ty_str.to_string()
+            };
+            format!(
+                "```wirescript\n{const_kw}{} {}{}\n```",
+                sym.kind, sym.name, sig
+            )
         }
         "typeparam" => {
             // Show the bound; if it's a named constraint class (`Scalar` /
@@ -2523,7 +2906,11 @@ fn render_decl_hover(
         // `name: const string` — the keyword sits before the TYPE, mirroring
         // how the parameter is spelled in the signature itself.
         "param" => {
-            let ty_display = if sym.is_const { format!("const {ty_str}") } else { ty_str.to_string() };
+            let ty_display = if sym.is_const {
+                format!("const {ty_str}")
+            } else {
+                ty_str.to_string()
+            };
             format!("```wirescript\nparam {}: {}\n```", sym.name, ty_display)
         }
         // A `const` binding: show `const`, not `let`, and — the single most
@@ -2536,7 +2923,10 @@ fn render_decl_hover(
                 .and_then(|(symbols, ast)| const_hover_value(ast, symbols, sym.range.start.offset))
                 .map(|lit| literal_display(&lit));
             match value {
-                Some(val) => format!("```wirescript\nconst {}: {} = {}\n```", sym.name, ty_str, val),
+                Some(val) => format!(
+                    "```wirescript\nconst {}: {} = {}\n```",
+                    sym.name, ty_str, val
+                ),
                 None => format!("```wirescript\nconst {}: {}\n```", sym.name, ty_str),
             }
         }
@@ -2571,12 +2961,20 @@ fn hover_namespace_member(
     // The cursor must be on the `member` half of an `obj.member` access.
     let obj_name = receiver_at(source, line, col)?;
     // `obj` must be a namespace alias for this to be a namespace-member access.
-    if !symbols.iter().any(|s| s.name == obj_name && s.kind == "namespace") {
+    if !symbols
+        .iter()
+        .any(|s| s.name == obj_name && s.kind == "namespace")
+    {
         return None;
     }
     let qualified = format!("{obj_name}.{word}");
     let sym = symbols.iter().find(|s| s.name == qualified)?;
-    Some(render_decl_hover(sym, doc_comments, resource_estimates, None))
+    Some(render_decl_hover(
+        sym,
+        doc_comments,
+        resource_estimates,
+        None,
+    ))
 }
 
 /// Record-literal field key resolved through the TYPE MAP: the typechecker
@@ -2611,9 +3009,11 @@ fn resolve_record_lit_field_typed(
             };
             for f in fields {
                 let (name, key_start, key_end) = match f {
-                    crate::ast::RecordLitField::Named { name, range, .. } => {
-                        (name.as_str(), range.start.offset, range.start.offset + name.len())
-                    }
+                    crate::ast::RecordLitField::Named { name, range, .. } => (
+                        name.as_str(),
+                        range.start.offset,
+                        range.start.offset + name.len(),
+                    ),
                     crate::ast::RecordLitField::Shorthand { name, range } => {
                         (name.as_str(), range.start.offset, range.end.offset)
                     }
@@ -2642,7 +3042,12 @@ fn resolve_record_lit_field_typed(
     ))
 }
 
-fn resolve_record_lit_field(source: &str, symbols: &[SymbolDef], field: &str, line: usize) -> Option<String> {
+fn resolve_record_lit_field(
+    source: &str,
+    symbols: &[SymbolDef],
+    field: &str,
+    line: usize,
+) -> Option<String> {
     // Walk backwards from the current line to find a `let name: TypeName = {` pattern
     for scan_line in (0..=line).rev() {
         let l = source.lines().nth(scan_line)?;
@@ -2652,16 +3057,24 @@ fn resolve_record_lit_field(source: &str, symbols: &[SymbolDef], field: &str, li
             && let Some(colon_pos) = rest.find(':')
         {
             let after_colon = rest[colon_pos + 1..].trim();
-            let type_name = after_colon.split(|c: char| c == '=' || c.is_whitespace()).next()?;
+            let type_name = after_colon
+                .split(|c: char| c == '=' || c.is_whitespace())
+                .next()?;
             let type_name = type_name.trim();
-            if type_name.is_empty() { continue; }
+            if type_name.is_empty() {
+                continue;
+            }
 
             for sym in symbols {
-                if sym.kind == "type" && sym.name == type_name
+                if sym.kind == "type"
+                    && sym.name == type_name
                     && let Some(ref ty_str) = sym.ty
                 {
                     if let Some(field_type) = extract_record_field_type(ty_str, field) {
-                        return Some(format!("```wirescript\n{}.{}: {}\n```", type_name, field, field_type));
+                        return Some(format!(
+                            "```wirescript\n{}.{}: {}\n```",
+                            type_name, field, field_type
+                        ));
                     }
                 }
             }
@@ -2748,7 +3161,11 @@ fn default_for_type(ty: &str) -> String {
             .filter_map(|f| {
                 let f = f.trim();
                 let c = f.find(':')?;
-                Some(format!("{}: {}", f[..c].trim(), default_for_type(f[c + 1..].trim())))
+                Some(format!(
+                    "{}: {}",
+                    f[..c].trim(),
+                    default_for_type(f[c + 1..].trim())
+                ))
             })
             .collect();
         return if fields.is_empty() {
@@ -2956,7 +3373,13 @@ fn enclosing_is_expr<'a>(ast: &'a Script, line: u32, col: u32) -> Option<&'a Exp
 
 /// Hover on the `is` of a variant test. On a kind test
 /// (`x.getType() is Type.Int`) it also says what `x` narrows to.
-fn hover_is_keyword(source: &str, ast: &Script, word: &str, line: usize, col: usize) -> Option<String> {
+fn hover_is_keyword(
+    source: &str,
+    ast: &Script,
+    word: &str,
+    line: usize,
+    col: usize,
+) -> Option<String> {
     use crate::typecheck::narrow;
     if word != "is" {
         return None;
@@ -2972,9 +3395,11 @@ fn hover_is_keyword(source: &str, ast: &Script, word: &str, line: usize, col: us
     {
         return None;
     }
-    if let (Some(subject), Some(test), Some(member)) =
-        (narrow::test_subject_text(value), narrow::describe_test(value), narrow::type_member(path))
-    {
+    if let (Some(subject), Some(test), Some(member)) = (
+        narrow::test_subject_text(value),
+        narrow::describe_test(value),
+        narrow::type_member(path),
+    ) {
         let mut v = format!(
             "```wirescript\n{test} is Type.{member}\n```\n**Kind test**: `true` while `{subject}` holds a `{member}` value."
         );
@@ -2997,14 +3422,22 @@ fn hover_is_keyword(source: &str, ast: &Script, word: &str, line: usize, col: us
 }
 
 /// Hover on a `break` or `continue` statement in a loop body.
-fn hover_loop_exit_keyword(source: &str, ast: &Script, word: &str, line: usize, col: usize) -> Option<String> {
+fn hover_loop_exit_keyword(
+    source: &str,
+    ast: &Script,
+    word: &str,
+    line: usize,
+    col: usize,
+) -> Option<String> {
     use crate::ast::walk::{self, Node};
     if word != "break" && word != "continue" {
         return None;
     }
     fn found(node: Node, line: u32, col: u32) -> bool {
         let hit = match node {
-            Node::Stmt(Stmt::Break { range } | Stmt::Continue { range }) => range_contains_1based(range, line, col),
+            Node::Stmt(Stmt::Break { range } | Stmt::Continue { range }) => {
+                range_contains_1based(range, line, col)
+            }
             _ => false,
         };
         let mut below = false;
@@ -3014,7 +3447,9 @@ fn hover_loop_exit_keyword(source: &str, ast: &Script, word: &str, line: usize, 
     let cursor_line = (line + 1) as u32;
     let cursor_col = (char_col_to_byte(super::text::line_text(source, line), col) + 1) as u32;
     let mut hit = false;
-    walk::script_children(ast, &mut |n, _| hit = hit || found(n, cursor_line, cursor_col));
+    walk::script_children(ast, &mut |n, _| {
+        hit = hit || found(n, cursor_line, cursor_col)
+    });
     if !hit {
         return None;
     }
@@ -3057,20 +3492,32 @@ pub fn fill_match_arms_at(
     let cursor_col = (char_col_to_byte(super::text::line_text(source, line), col) + 1) as u32;
 
     let best = enclosing_match_expr(ast, cursor_line, cursor_col)?;
-    let Expr::MatchExpr { scrutinee, arms, range } = best else {
+    let Expr::MatchExpr {
+        scrutinee,
+        arms,
+        range,
+    } = best
+    else {
         return None;
     };
 
     let sr = scrutinee.range();
     let scrut_ty = type_map.get(&(sr.file.clone(), sr.start.offset, sr.end.offset))?;
-    if !matches!(scrut_ty, Type::Enum { .. } | Type::Int | Type::Float | Type::Bool | Type::String) {
+    if !matches!(
+        scrut_ty,
+        Type::Enum { .. } | Type::Int | Type::Float | Type::Bool | Type::String
+    ) {
         return None;
     }
 
     let enum_defs = std::sync::Arc::new(crate::typecheck::enums::build_registry(&ast.decls));
-    let types = crate::const_eval::DeclaredTypes::for_program_in(&ast.decls, &enum_defs, &ast.imports);
+    let types =
+        crate::const_eval::DeclaredTypes::for_program_in(&ast.decls, &enum_defs, &ast.imports);
     let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
-    let enums = crate::typecheck::patterns::Enums { defs: &enum_defs, types: &types };
+    let enums = crate::typecheck::patterns::Enums {
+        defs: &enum_defs,
+        types: &types,
+    };
     let guarded: Vec<bool> = arms.iter().map(|a| a.guard.is_some()).collect();
     let usefulness = crate::typecheck::patterns::analyze(enums, scrut_ty, &arm_patterns, &guarded);
     if usefulness.missing.is_empty() {
@@ -3123,27 +3570,38 @@ pub fn fill_match_arms_at(
     // The caller places an edit at this column, so hand back a char column
     // rather than the lexer's byte one.
     let close_col = super::text::byte_to_char_col(close_line_str, close_byte);
-    Some(MatchArmsFill { line: close_line, col: close_col, text })
+    Some(MatchArmsFill {
+        line: close_line,
+        col: close_col,
+        text,
+    })
 }
 
-pub(super) fn resolve_record_param_field_type(script: &crate::ast::Script, param_type: &crate::ast::TypeExpr, field: &str) -> Option<String> {
+pub(super) fn resolve_record_param_field_type(
+    script: &crate::ast::Script,
+    param_type: &crate::ast::TypeExpr,
+    field: &str,
+) -> Option<String> {
     let record_fields = match param_type {
         crate::ast::TypeExpr::Record { fields, .. } => fields,
         crate::ast::TypeExpr::Name { name, .. } => {
             for d in &script.decls {
                 if let crate::ast::TopDecl::TypeAlias(ta) = d
                     && ta.name == *name
-                        && let crate::ast::TypeExpr::Record { fields, .. } = &ta.typ {
-                            return fields.iter()
-                                .find(|f| f.name == field)
-                                .map(|f| super::types::type_expr_str(&f.typ));
-                        }
+                    && let crate::ast::TypeExpr::Record { fields, .. } = &ta.typ
+                {
+                    return fields
+                        .iter()
+                        .find(|f| f.name == field)
+                        .map(|f| super::types::type_expr_str(&f.typ));
+                }
             }
             return None;
         }
         _ => return None,
     };
-    record_fields.iter()
+    record_fields
+        .iter()
         .find(|f| f.name == field)
         .map(|f| super::types::type_expr_str(&f.typ))
 }
@@ -3151,7 +3609,14 @@ pub(super) fn resolve_record_param_field_type(script: &crate::ast::Script, param
 /// A property read or written on a component reference, `light.Brightness`:
 /// the same hover as `$Component/PointLight/Brightness`. The object is the
 /// name before the `.`, or the call or index expression that ends there.
-fn hover_component_property(source: &str, file: &str, type_map: &TypeMap, line: usize, col: usize, field: &str) -> Option<String> {
+fn hover_component_property(
+    source: &str,
+    file: &str,
+    type_map: &TypeMap,
+    line: usize,
+    col: usize,
+    field: &str,
+) -> Option<String> {
     let l = source.lines().nth(line)?;
     let c = char_col_to_byte(l, col);
     let start = word_start_at_byte(l, c);
@@ -3162,7 +3627,9 @@ fn hover_component_property(source: &str, file: &str, type_map: &TypeMap, line: 
     let obj_start = word_start_at_byte(l, obj_end);
     let lo = line_offset_at(source, line);
     let f: std::sync::Arc<str> = file.into();
-    let named = (obj_start < obj_end).then(|| find_obj_type(type_map, &f, lo + obj_start, lo + obj_end)).flatten();
+    let named = (obj_start < obj_end)
+        .then(|| find_obj_type(type_map, &f, lo + obj_start, lo + obj_end))
+        .flatten();
     let obj_ty = named.or_else(|| {
         type_map
             .iter()
@@ -3176,12 +3643,19 @@ fn hover_component_property(source: &str, file: &str, type_map: &TypeMap, line: 
     if class.is_empty() {
         return None;
     }
-    Some(render_component_type_hover(&format!("{}/{field}", crate::catalog::component_name(&class))))
+    Some(render_component_type_hover(&format!(
+        "{}/{field}",
+        crate::catalog::component_name(&class)
+    )))
 }
 
 /// The line a hover adds for a read a kind test narrowed.
 fn narrowing_note(declared: &str, n: &crate::typecheck::NarrowedRead) -> String {
-    format!("\n\nDeclared `{declared}`, narrowed to `{}` here by {}.", type_str(&n.ty), n.by)
+    format!(
+        "\n\nDeclared `{declared}`, narrowed to `{}` here by {}.",
+        type_str(&n.ty),
+        n.by
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3208,7 +3682,8 @@ fn resolve_field_hover(
     let field_end_col = word_end_at_byte(l, c);
 
     let f: std::sync::Arc<str> = file.into();
-    let fmt_field = |ty_display: String| format!("```wirescript\nfield {}: {}\n```", field, ty_display);
+    let fmt_field =
+        |ty_display: String| format!("```wirescript\nfield {}: {}\n```", field, ty_display);
 
     // Layer 1: Full expression span (obj.field) in type_map - best case, typechecker
     // recorded the type of the entire dotted expression. Skip a bare `any`: for a
@@ -3312,7 +3787,11 @@ fn resolve_object_record_string(symbols: &[SymbolDef], obj_name: &str) -> Option
 /// Reformat a single-line record type string (`{ x: int, y: int }`) into a
 /// fenced, one-field-per-line `wirescript` block so VS Code colours it.
 fn render_record_type_string_hover(rec: &str) -> String {
-    let inner = rec.trim().trim_start_matches('{').trim_end_matches('}').trim();
+    let inner = rec
+        .trim()
+        .trim_start_matches('{')
+        .trim_end_matches('}')
+        .trim();
     let body: String = inner
         .split(", ")
         .filter(|f| !f.trim().is_empty())
@@ -3327,7 +3806,8 @@ fn resolve_field_via_symbols(symbols: &[SymbolDef], obj_name: &str, field: &str)
     let sym = symbols.iter().find(|s| s.name == obj_name)?;
     let ty_name = sym.ty.as_deref()?;
 
-    symbols.iter()
+    symbols
+        .iter()
         .find(|ts| ts.kind == "type" && ts.name == ty_name)
         .and_then(|ts| ts.ty.as_deref())
         .and_then(|ty_str| extract_record_field_type(ty_str, field))
@@ -3352,7 +3832,12 @@ fn resolve_field_via_symbols(symbols: &[SymbolDef], obj_name: &str, field: &str)
 ///    This catches the most common parser/hover offset mismatch.
 /// 3. **Start-only scan** - any entry with a matching `(file, obj_start, _)`.
 ///    Last resort when the end offset is completely different.
-fn find_obj_type(type_map: &TypeMap, file: &std::sync::Arc<str>, obj_start: usize, obj_end: usize) -> Option<Type> {
+fn find_obj_type(
+    type_map: &TypeMap,
+    file: &std::sync::Arc<str>,
+    obj_start: usize,
+    obj_end: usize,
+) -> Option<Type> {
     // Tier 1: exact span
     if let Some(ty) = type_map.get(&(file.clone(), obj_start, obj_end)) {
         return Some(ty.clone());
@@ -3377,9 +3862,10 @@ fn find_obj_type(type_map: &TypeMap, file: &std::sync::Arc<str>, obj_start: usiz
 
 fn resolve_field_in_type(ty: &Type, field: &str) -> Option<Type> {
     match ty {
-        Type::Record(fields) | Type::Outputs(fields) => {
-            fields.iter().find(|(k, _)| k == field).map(|(_, t)| t.clone())
-        }
+        Type::Record(fields) | Type::Outputs(fields) => fields
+            .iter()
+            .find(|(k, _)| k == field)
+            .map(|(_, t)| t.clone()),
         Type::Ref(inner) => {
             if crate::catalog::is_var_pseudo_field(field) || field.eq_ignore_ascii_case("VarRef") {
                 return Some(inner.as_ref().clone());

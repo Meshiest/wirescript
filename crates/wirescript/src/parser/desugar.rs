@@ -16,7 +16,14 @@ pub(super) fn desugar_gate_call(
     use crate::catalog::gate_builtins as gb;
     let name = match callee.as_ref() {
         Expr::Ident { name, .. } if type_args.is_empty() => name.clone(),
-        _ => return Expr::Call { callee, args, type_args, range },
+        _ => {
+            return Expr::Call {
+                callee,
+                args,
+                type_args,
+                range,
+            };
+        }
     };
     // `GetVariable(v)` reads `v` — desugar to the bare receiver expression.
     if name == gb::GET_VARIABLE && args.len() == 1 && matches!(args[0], CallArg::Positional(_)) {
@@ -39,9 +46,19 @@ pub(super) fn desugar_gate_call(
             field: method.to_string(),
             range: range.clone(),
         };
-        return Expr::Call { callee: Box::new(fa), args: rest, type_args: Vec::new(), range };
+        return Expr::Call {
+            callee: Box::new(fa),
+            args: rest,
+            type_args: Vec::new(),
+            range,
+        };
     }
-    Expr::Call { callee, args, type_args, range }
+    Expr::Call {
+        callee,
+        args,
+        type_args,
+        range,
+    }
 }
 
 /// Rewrite a STATEMENT-form gate builtin into the equivalent assignment:
@@ -49,16 +66,30 @@ pub(super) fn desugar_gate_call(
 /// `IncrementVariable(v, x)` -> `v = v + x`. Returns `None` for anything else.
 pub(super) fn gate_builtin_assign(e: &Expr) -> Option<Assign> {
     use crate::catalog::gate_builtins as gb;
-    let Expr::Call { callee, args, range, type_args } = e else { return None };
+    let Expr::Call {
+        callee,
+        args,
+        range,
+        type_args,
+    } = e
+    else {
+        return None;
+    };
     if !type_args.is_empty() {
         return None;
     }
-    let Expr::Ident { name, .. } = callee.as_ref() else { return None };
+    let Expr::Ident { name, .. } = callee.as_ref() else {
+        return None;
+    };
     let pos = |i: usize| match args.get(i) {
         Some(CallArg::Positional(x)) => Some(x.clone()),
         _ => None,
     };
-    let assign = |target: Expr, value: Expr| Assign { target, value, range: range.clone() };
+    let assign = |target: Expr, value: Expr| Assign {
+        target,
+        value,
+        range: range.clone(),
+    };
     match name.as_str() {
         gb::SET_VARIABLE if args.len() == 2 => Some(assign(pos(0)?, pos(1)?)),
         gb::SET_ARRAY_ELEMENT if args.len() == 3 => {

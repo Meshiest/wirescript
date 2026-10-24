@@ -134,7 +134,9 @@ impl<'a> Parser<'a> {
     fn module_label_follows(&self, idx: usize) -> bool {
         let mut at = idx;
         loop {
-            let Some(close) = self.expr_ann_end(at) else { return false };
+            let Some(close) = self.expr_ann_end(at) else {
+                return false;
+            };
             let after = self.peek_at(close + 1).kind;
             if after == TokenKind::Eof {
                 return true;
@@ -146,7 +148,10 @@ impl<'a> Parser<'a> {
             if after != TokenKind::Newline {
                 return false;
             }
-            if matches!(self.peek_at(close + 2).kind, TokenKind::Newline | TokenKind::Eof) {
+            if matches!(
+                self.peek_at(close + 2).kind,
+                TokenKind::Newline | TokenKind::Eof
+            ) {
                 return true;
             }
             at = close + 2; // the run continues on the next line, or is decl-level
@@ -374,7 +379,11 @@ impl<'a> Parser<'a> {
                     // No engine outranks another, so the last spelling wins and
                     // the file is told its earlier one was discarded.
                     if result.layout.is_some_and(|prev| prev != choice) {
-                        self.warn("module-level @layout is set twice; the last one wins", start, end);
+                        self.warn(
+                            "module-level @layout is set twice; the last one wins",
+                            start,
+                            end,
+                        );
                     }
                     result.layout = Some(choice);
                 }
@@ -475,11 +484,7 @@ impl<'a> Parser<'a> {
                     }
                     match (text, expr) {
                         (Some((s, end)), _) if s.is_empty() => {
-                            self.error(
-                                "@label text must not be empty".to_string(),
-                                tok.start,
-                                end,
-                            );
+                            self.error("@label text must not be empty".to_string(), tok.start, end);
                         }
                         (Some((s, end)), _) => {
                             if anns.label.is_some() || anns.label_expr.is_some() {
@@ -506,22 +511,36 @@ impl<'a> Parser<'a> {
                     // `@color(expr)` / `@material(expr)`: any expression; its
                     // type and constness are typecheck's to judge.
                     let mut arg: Option<(Expr, Pos)> = None;
-                    if self.match_tok(TokenKind::LParen, None).is_some() && !self.check(TokenKind::RParen, None) {
+                    if self.match_tok(TokenKind::LParen, None).is_some()
+                        && !self.check(TokenKind::RParen, None)
+                    {
                         let e = self.parse_expr();
                         let end = e.range().end;
                         arg = Some((e, end));
                     }
                     self.match_tok(TokenKind::RParen, None);
                     let word = tok.text.as_str();
-                    let slot = if word == "color" { &mut anns.color } else { &mut anns.material };
+                    let slot = if word == "color" {
+                        &mut anns.color
+                    } else {
+                        &mut anns.material
+                    };
                     match arg {
                         Some((_, end)) if slot.is_some() => {
                             self.error(format!("duplicate @{word}"), tok.start, end);
                         }
                         Some((e, end)) => *slot = Some((e, self.make_range(tok.start, end))),
                         None => {
-                            let example = if word == "color" { "@color(Color(1.0, 0.5, 0.0))" } else { "@material(Glow)" };
-                            self.error(format!("@{word} requires an argument: {example}"), tok.start, tok.end);
+                            let example = if word == "color" {
+                                "@color(Color(1.0, 0.5, 0.0))"
+                            } else {
+                                "@material(Glow)"
+                            };
+                            self.error(
+                                format!("@{word} requires an argument: {example}"),
+                                tok.start,
+                                tok.end,
+                            );
                         }
                     }
                 }
@@ -580,11 +599,7 @@ impl<'a> Parser<'a> {
                 w => match PortSide::from_word(w) {
                     Some(side) => {
                         if anns.side.is_some() {
-                            self.error(
-                                "duplicate side annotation".to_string(),
-                                tok.start,
-                                tok.end,
-                            );
+                            self.error("duplicate side annotation".to_string(), tok.start, tok.end);
                         } else {
                             anns.side = Some((side, self.make_range(tok.start, tok.end)));
                         }
@@ -601,7 +616,7 @@ impl<'a> Parser<'a> {
                             )
                         };
                         self.error(msg, tok.start, tok.end);
-                    },
+                    }
                 },
             }
             while self.check(TokenKind::Newline, None) {

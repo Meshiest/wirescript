@@ -87,7 +87,12 @@ pub(super) fn is_enum_constant_arg(ctx: &TypeCheckCtx, enum_type: &str, e: &Expr
 /// schema's member list. A bare identifier is an enum member (not a variable);
 /// an int is range-checked; anything else is rejected (config is constant-only).
 /// `setting` names the argument as a diagnostic quotes it.
-pub(super) fn validate_enum_config_arg(ctx: &mut TypeCheckCtx, enum_type: &str, setting: &str, e: &Expr) {
+pub(super) fn validate_enum_config_arg(
+    ctx: &mut TypeCheckCtx,
+    enum_type: &str,
+    setting: &str,
+    e: &Expr,
+) {
     match e {
         Expr::Ident { name, range } => {
             if crate::catalog::enum_member_value(enum_type, name).is_none() {

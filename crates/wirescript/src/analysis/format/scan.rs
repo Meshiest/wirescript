@@ -77,7 +77,11 @@ pub(super) fn classify(chars: &[char], carry: Carry) -> (Vec<Class>, Carry) {
     let mut state = carry;
     let mut quote: Option<char> = None;
     let mut esc = false;
-    let at = |i: usize, s: &str| s.chars().enumerate().all(|(k, c)| chars.get(i + k) == Some(&c));
+    let at = |i: usize, s: &str| {
+        s.chars()
+            .enumerate()
+            .all(|(k, c)| chars.get(i + k) == Some(&c))
+    };
     let mut i = 0;
     while i < n {
         match state {
@@ -89,7 +93,11 @@ pub(super) fn classify(chars: &[char], carry: Carry) -> (Vec<Class>, Carry) {
                     i += 2;
                 } else if at(i, "*/") {
                     class[i + 1] = Class::BlockComment;
-                    state = if depth == 1 { Carry::Code } else { Carry::Block(depth - 1) };
+                    state = if depth == 1 {
+                        Carry::Code
+                    } else {
+                        Carry::Block(depth - 1)
+                    };
                     i += 2;
                 } else {
                     i += 1;
@@ -113,7 +121,11 @@ pub(super) fn classify(chars: &[char], carry: Carry) -> (Vec<Class>, Carry) {
         let c = chars[i];
         if esc || c == '\\' {
             esc = !esc;
-            class[i] = if quote.is_some() { Class::Str } else { Class::Code };
+            class[i] = if quote.is_some() {
+                Class::Str
+            } else {
+                Class::Code
+            };
             i += 1;
             continue;
         }
@@ -155,5 +167,8 @@ pub(super) fn classify(chars: &[char], carry: Carry) -> (Vec<Class>, Carry) {
 
 /// Where the line's `//` comment starts, or its length when it has none.
 pub(super) fn code_end(class: &[Class]) -> usize {
-    class.iter().position(|c| *c == Class::LineComment).unwrap_or(class.len())
+    class
+        .iter()
+        .position(|c| *c == Class::LineComment)
+        .unwrap_or(class.len())
 }

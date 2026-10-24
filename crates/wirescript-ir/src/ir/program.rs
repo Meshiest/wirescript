@@ -17,7 +17,10 @@ pub struct Program {
 
 impl Program {
     pub fn new(module: Module) -> Self {
-        Self { module, settings: ProgramSettings::default() }
+        Self {
+            module,
+            settings: ProgramSettings::default(),
+        }
     }
 }
 
@@ -130,14 +133,22 @@ impl Program {
     /// compared; only lowering reads them.
     pub fn diff(&self, other: &Program) -> Option<String> {
         if self.settings != other.settings {
-            return Some(format!("settings differ: {:?} vs {:?}", self.settings, other.settings));
+            return Some(format!(
+                "settings differ: {:?} vs {:?}",
+                self.settings, other.settings
+            ));
         }
         diff_module(&self.module, &other.module, "root")
     }
 }
 
-fn same_properties(a: &crate::collections::HashMap<crate::intern::Sym, Literal>, b: &crate::collections::HashMap<crate::intern::Sym, Literal>) -> bool {
-    a.len() == b.len() && a.iter().all(|(k, x)| b.get(k).is_some_and(|y| same_literal(x, y)))
+fn same_properties(
+    a: &crate::collections::HashMap<crate::intern::Sym, Literal>,
+    b: &crate::collections::HashMap<crate::intern::Sym, Literal>,
+) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .all(|(k, x)| b.get(k).is_some_and(|y| same_literal(x, y)))
 }
 
 /// Literal equality with floats compared by their bits: a NaN equals itself,
@@ -146,22 +157,54 @@ fn same_literal(a: &Literal, b: &Literal) -> bool {
     let fs = |x: &[f64], y: &[f64]| x.iter().zip(y).all(|(p, q)| p.to_bits() == q.to_bits());
     match (a, b) {
         (Literal::Float(x), Literal::Float(y)) => x.to_bits() == y.to_bits(),
-        (Literal::Vector { x, y, z }, Literal::Vector { x: x2, y: y2, z: z2 }) => fs(&[*x, *y, *z], &[*x2, *y2, *z2]),
-        (Literal::Rotator { pitch, yaw, roll }, Literal::Rotator { pitch: p2, yaw: y2, roll: r2 }) => {
-            fs(&[*pitch, *yaw, *roll], &[*p2, *y2, *r2])
+        (
+            Literal::Vector { x, y, z },
+            Literal::Vector {
+                x: x2,
+                y: y2,
+                z: z2,
+            },
+        ) => fs(&[*x, *y, *z], &[*x2, *y2, *z2]),
+        (
+            Literal::Rotator { pitch, yaw, roll },
+            Literal::Rotator {
+                pitch: p2,
+                yaw: y2,
+                roll: r2,
+            },
+        ) => fs(&[*pitch, *yaw, *roll], &[*p2, *y2, *r2]),
+        (
+            Literal::Quat { x, y, z, w },
+            Literal::Quat {
+                x: x2,
+                y: y2,
+                z: z2,
+                w: w2,
+            },
+        ) => fs(&[*x, *y, *z, *w], &[*x2, *y2, *z2, *w2]),
+        (
+            Literal::LinearColor { r, g, b, a },
+            Literal::LinearColor {
+                r: r2,
+                g: g2,
+                b: b2,
+                a: a2,
+            },
+        ) => fs(&[*r, *g, *b, *a], &[*r2, *g2, *b2, *a2]),
+        (Literal::Array(x), Literal::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same_literal(p, q))
         }
-        (Literal::Quat { x, y, z, w }, Literal::Quat { x: x2, y: y2, z: z2, w: w2 }) => {
-            fs(&[*x, *y, *z, *w], &[*x2, *y2, *z2, *w2])
-        }
-        (Literal::LinearColor { r, g, b, a }, Literal::LinearColor { r: r2, g: g2, b: b2, a: a2 }) => {
-            fs(&[*r, *g, *b, *a], &[*r2, *g2, *b2, *a2])
-        }
-        (Literal::Array(x), Literal::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same_literal(p, q)),
         (Literal::Map(x), Literal::Map(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|((k1, v1), (k2, v2))| same_literal(k1, k2) && same_literal(v1, v2))
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y)
+                    .all(|((k1, v1), (k2, v2))| same_literal(k1, k2) && same_literal(v1, v2))
         }
         (Literal::Record(x), Literal::Record(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|((k1, v1), (k2, v2))| k1 == k2 && same_literal(v1, v2))
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y)
+                    .all(|((k1, v1), (k2, v2))| k1 == k2 && same_literal(v1, v2))
         }
         _ => a == b,
     }
@@ -171,7 +214,11 @@ fn diff_module(a: &Module, b: &Module, path: &str) -> Option<String> {
     use crate::intern::resolve;
     let here = |what: &str| Some(format!("{path}: {what}"));
     if a.name != b.name {
-        return here(&format!("name `{}` vs `{}`", resolve(a.name), resolve(b.name)));
+        return here(&format!(
+            "name `{}` vs `{}`",
+            resolve(a.name),
+            resolve(b.name)
+        ));
     }
     let mut ids: Vec<_> = a.nodes.keys().copied().collect();
     ids.sort();
@@ -183,7 +230,10 @@ fn diff_module(a: &Module, b: &Module, path: &str) -> Option<String> {
     for id in &ids {
         let (x, y) = (&a.nodes[id], &b.nodes[id]);
         // Everything but the properties by `==`; the properties by their bits.
-        let bare = |n: &Node| Node { properties: Default::default(), ..n.clone() };
+        let bare = |n: &Node| Node {
+            properties: Default::default(),
+            ..n.clone()
+        };
         let same = same_properties(&x.properties, &y.properties) && bare(x) == bare(y);
         if !same {
             return here(&format!("{id} differs:\n  {x:?}\n  {y:?}"));
@@ -193,7 +243,10 @@ fn diff_module(a: &Module, b: &Module, path: &str) -> Option<String> {
         return here(&format!("wires {:?} vs {:?}", a.wires, b.wires));
     }
     if a.inputs != b.inputs || a.outputs != b.outputs {
-        return here(&format!("inputs/outputs {:?}/{:?} vs {:?}/{:?}", a.inputs, a.outputs, b.inputs, b.outputs));
+        return here(&format!(
+            "inputs/outputs {:?}/{:?} vs {:?}/{:?}",
+            a.inputs, a.outputs, b.inputs, b.outputs
+        ));
     }
     if a.scopes != b.scopes {
         return here("scopes differ");
@@ -204,7 +257,10 @@ fn diff_module(a: &Module, b: &Module, path: &str) -> Option<String> {
     {
         return here("labels differ");
     }
-    if a.dynamic_colors != b.dynamic_colors || a.dynamic_materials != b.dynamic_materials || a.root_style != b.root_style {
+    if a.dynamic_colors != b.dynamic_colors
+        || a.dynamic_materials != b.dynamic_materials
+        || a.root_style != b.root_style
+    {
         return here("styles differ");
     }
     if a.value_names != b.value_names {
@@ -217,5 +273,7 @@ fn diff_module(a: &Module, b: &Module, path: &str) -> Option<String> {
     if chips != other_chips {
         return here(&format!("chips {chips:?} vs {other_chips:?}"));
     }
-    chips.iter().find_map(|c| diff_module(&a.chips[c], &b.chips[c], &format!("{path}/{c}")))
+    chips
+        .iter()
+        .find_map(|c| diff_module(&a.chips[c], &b.chips[c], &format!("{path}/{c}")))
 }

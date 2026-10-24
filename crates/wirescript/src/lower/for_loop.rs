@@ -12,7 +12,8 @@
 use super::*;
 use crate::ast::{Expr, RangeExtent, RangeSource};
 use crate::ir::plane::{
-    ForSlot, LoopKind, PlaneSpec, RUN_ACROSS_TICKS, SHELL_OUTPUTS, for_slots, plane_spec, slot_types,
+    ForSlot, LoopKind, PlaneSpec, RUN_ACROSS_TICKS, SHELL_OUTPUTS, for_slots, plane_spec,
+    slot_types,
 };
 use crate::typecheck::ContainerKind;
 
@@ -99,7 +100,11 @@ pub(crate) fn normalize_range(r: &RangeSource) -> RangePins {
             from.clone().map(PinExpr::User).unwrap_or(PinExpr::Int(0)),
         ),
         RangeExtent::Bounds { start, end } => {
-            let span = bin("-", PinExpr::User(end.clone()), PinExpr::User(start.clone()));
+            let span = bin(
+                "-",
+                PinExpr::User(end.clone()),
+                PinExpr::User(start.clone()),
+            );
             // `int / int` in this language truncates, so `ceil` would receive
             // an already-integral quotient and do nothing. Multiplying by a
             // float constant selects the `(Float, Int) -> Float` divide, which
@@ -114,7 +119,11 @@ pub(crate) fn normalize_range(r: &RangeSource) -> RangePins {
     };
 
     if !r.reversed {
-        return RangePins { count, first_index, step };
+        return RangePins {
+            count,
+            first_index,
+            step,
+        };
     }
 
     // `.rev()` starts at the last index the forward range would have produced
@@ -123,7 +132,11 @@ pub(crate) fn normalize_range(r: &RangeSource) -> RangePins {
     let last = bin(
         "+",
         first_index,
-        bin("*", bin("-", PinExpr::CountPin, PinExpr::Int(1)), step.clone()),
+        bin(
+            "*",
+            bin("-", PinExpr::CountPin, PinExpr::Int(1)),
+            step.clone(),
+        ),
     );
     RangePins {
         count,
@@ -208,12 +221,16 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
         }
         ForSource::Collection { expr, .. } => {
             // The shell takes a REFERENCE: resolved like any other container receiver.
-            let source = ctx.container_kind(expr).and_then(|k| container_ref(ctx, expr, &k));
+            let source = ctx
+                .container_kind(expr)
+                .and_then(|k| container_ref(ctx, expr, &k));
             let port = match source {
                 Some(ContainerSource::Ref(p)) => Some(p),
                 Some(ContainerSource::Columns(cols)) => {
                     let driver = match kind {
-                        LoopKind::ForEachArray => leaf_columns(Columns::Array, &cols).into_iter().next(),
+                        LoopKind::ForEachArray => {
+                            leaf_columns(Columns::Array, &cols).into_iter().next()
+                        }
                         _ => leaf_columns(Columns::Map, &cols).into_iter().next(),
                     };
                     columns = Some(cols);
@@ -249,7 +266,11 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
         shell_props.insert(crate::intern::intern(RUN_ACROSS_TICKS), Literal::Bool(true));
     }
     let consts = ctx.const_lookup();
-    if let Some(label) = crate::lower::predeclare::resolve_label_text(s.label.as_deref(), s.label_expr.as_ref(), &consts) {
+    if let Some(label) = crate::lower::predeclare::resolve_label_text(
+        s.label.as_deref(),
+        s.label_expr.as_ref(),
+        &consts,
+    ) {
         shell_props.insert(*crate::intern::sym::NAME_LABEL, Literal::String(label));
     }
     let shell = ctx.add_gate(AddNodeOpts {
@@ -612,7 +633,10 @@ fn lower_pin_val(
         PinExpr::Float(f) => PinVal::Const(Literal::Float(*f)),
         // `normalize_range` builds this only into `FirstIndex`, which is
         // lowered after `Count` and so always has the value to hand.
-        PinExpr::CountPin => scope.count.clone().unwrap_or(PinVal::Const(Literal::Int(0))),
+        PinExpr::CountPin => scope
+            .count
+            .clone()
+            .unwrap_or(PinVal::Const(Literal::Int(0))),
         PinExpr::User(expr) => lower_user(ctx, expr, true, scope),
         PinExpr::Bin { op, lhs, rhs } => {
             let l = lower_pin_val(ctx, lhs, range, scope);
@@ -697,7 +721,11 @@ fn const_user_expr(ctx: &LowerCtx, e: &Expr, int_place: bool) -> Option<Literal>
     if !int_place {
         return Some(lit);
     }
-    Some(crate::const_eval::coerce_const_to_type(lit, &Type::Int, ctx.consts.types()))
+    Some(crate::const_eval::coerce_const_to_type(
+        lit,
+        &Type::Int,
+        ctx.consts.types(),
+    ))
 }
 
 /// Build the Math gate for a synthesized binary operator.
@@ -807,7 +835,6 @@ fn build_builtin(
     node.port(spec.outputs[0].port)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -844,10 +871,10 @@ mod tests {
         match e {
             Expr::IntLit { value, .. } => Literal::Int(*value),
             Expr::FloatLit { value, .. } => Literal::Float(*value),
-            Expr::BinOp { op, left, right, .. } => {
-                crate::lower::eval_const_binop(op, eval_user_expr(left), eval_user_expr(right))
-                    .unwrap_or_else(|| panic!("operator `{op}` refused to fold its operands"))
-            }
+            Expr::BinOp {
+                op, left, right, ..
+            } => crate::lower::eval_const_binop(op, eval_user_expr(left), eval_user_expr(right))
+                .unwrap_or_else(|| panic!("operator `{op}` refused to fold its operands")),
             other => panic!("unexpected expr shape in a hand-built RangeSource fixture: {other:?}"),
         }
     }

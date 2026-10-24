@@ -83,8 +83,11 @@ pub fn is_ident(s: &str) -> bool {
 }
 
 /// How the text spells each layout engine (`layout = ...`).
-pub const LAYOUT_MODES: &[(&str, LayoutMode)] =
-    &[("dag", LayoutMode::Dag), ("code", LayoutMode::Code), ("cube", LayoutMode::Cube)];
+pub const LAYOUT_MODES: &[(&str, LayoutMode)] = &[
+    ("dag", LayoutMode::Dag),
+    ("code", LayoutMode::Code),
+    ("cube", LayoutMode::Cube),
+];
 
 /// How the text spells each node kind (`!kind ...`).
 pub const NODE_KINDS: &[(&str, NodeKind)] = &[
@@ -105,7 +108,9 @@ pub type ScopeKindWord = (&'static str, bool, fn(String) -> ScopeKind);
 pub const SCOPE_KINDS: &[ScopeKindWord] = &[
     ("ModuleRoot", false, |_| ScopeKind::ModuleRoot),
     ("ChipBody", true, |name| ScopeKind::ChipBody { name }),
-    ("HandlerBody", true, |trigger_label| ScopeKind::HandlerBody { trigger_label }),
+    ("HandlerBody", true, |trigger_label| {
+        ScopeKind::HandlerBody { trigger_label }
+    }),
     ("IfGroup", false, |_| ScopeKind::IfGroup),
     ("IfCond", false, |_| ScopeKind::IfCond),
     ("IfThen", false, |_| ScopeKind::IfThen),
@@ -152,7 +157,16 @@ pub static SCALAR_TYPES: &[(&str, Type)] = &[
 ];
 
 /// The words that start a type with parameters.
-pub const COMPOUND_TYPE_WORDS: &[&str] = &["map", "union", "tuple", "array", "outputs", "param", "enum", "component"];
+pub const COMPOUND_TYPE_WORDS: &[&str] = &[
+    "map",
+    "union",
+    "tuple",
+    "array",
+    "outputs",
+    "param",
+    "enum",
+    "component",
+];
 
 /// Whether `w` starts a type.
 pub fn is_type_word(w: &str) -> bool {
@@ -168,24 +182,37 @@ struct ClassNames {
 }
 
 static CLASS_NAMES: LazyLock<ClassNames> = LazyLock::new(|| {
-    let full: Vec<&'static str> = default_catalog().entries().iter().map(|g| resolve(intern(&g.component.class))).collect();
+    let full: Vec<&'static str> = default_catalog()
+        .entries()
+        .iter()
+        .map(|g| resolve(intern(&g.component.class)))
+        .collect();
     let is_full: crate::collections::HashSet<&str> = full.iter().copied().collect();
     let mut short_to_full = HashMap::default();
     let mut full_to_short = HashMap::default();
     for f in full {
-        let Some(short) = f.strip_prefix(CLASS_PREFIX) else { continue };
+        let Some(short) = f.strip_prefix(CLASS_PREFIX) else {
+            continue;
+        };
         if !is_ident(short) || is_full.contains(short) || RESERVED.contains(&short) {
             continue;
         }
         short_to_full.insert(short, f);
         full_to_short.insert(f, short);
     }
-    ClassNames { short_to_full, full_to_short }
+    ClassNames {
+        short_to_full,
+        full_to_short,
+    }
 });
 
 /// How the writer spells `class`.
 pub fn class_spelling(class: &'static str) -> &'static str {
-    CLASS_NAMES.full_to_short.get(class).copied().unwrap_or(class)
+    CLASS_NAMES
+        .full_to_short
+        .get(class)
+        .copied()
+        .unwrap_or(class)
 }
 
 /// The class a written name means: the short spelling's full class, or the
@@ -199,7 +226,11 @@ pub fn resolve_class(written: &str) -> &'static str {
 
 /// Every short spelling with the class it means, for tests.
 pub fn short_class_names() -> Vec<(&'static str, &'static str)> {
-    let mut v: Vec<_> = CLASS_NAMES.short_to_full.iter().map(|(s, f)| (*s, *f)).collect();
+    let mut v: Vec<_> = CLASS_NAMES
+        .short_to_full
+        .iter()
+        .map(|(s, f)| (*s, *f))
+        .collect();
     v.sort();
     v
 }
@@ -216,11 +247,16 @@ static CATALOG_PORTS: LazyLock<HashMap<&'static str, GateIO>> = LazyLock::new(||
     let mut out = HashMap::default();
     for g in default_catalog().entries() {
         let side = |ps: &[crate::catalog::Port]| {
-            ps.iter().map(|p| PortSpec::new(intern(&p.name), p.ty.to_type(&Type::Any, &Type::Exec))).collect::<Vec<_>>()
+            ps.iter()
+                .map(|p| PortSpec::new(intern(&p.name), p.ty.to_type(&Type::Any, &Type::Exec)))
+                .collect::<Vec<_>>()
         };
         out.insert(
             resolve(intern(&g.component.class)),
-            GateIO { inputs: side(&g.component.inputs), outputs: side(&g.component.outputs) },
+            GateIO {
+                inputs: side(&g.component.inputs),
+                outputs: side(&g.component.outputs),
+            },
         );
     }
     out
@@ -229,7 +265,11 @@ static CATALOG_PORTS: LazyLock<HashMap<&'static str, GateIO>> = LazyLock::new(||
 /// Give the input `port` of `ports` the type `src` of the wire feeding it,
 /// when that input is typed `any`. Whether it changed.
 pub fn infer_any_input(ports: &mut GateIO, port: crate::intern::Sym, src: Type) -> bool {
-    match ports.inputs.iter_mut().find(|p| p.name == port && p.ty == Type::Any) {
+    match ports
+        .inputs
+        .iter_mut()
+        .find(|p| p.name == port && p.ty == Type::Any)
+    {
         Some(p) => {
             p.ty = src;
             true
@@ -249,7 +289,9 @@ pub fn literal_type(lit: &Literal) -> Type {
         Literal::Rotator { .. } => Type::Rotator,
         Literal::Quat { .. } => Type::Quat,
         Literal::Color { .. } | Literal::LinearColor { .. } => Type::Color,
-        Literal::PrefabRef { .. } | Literal::NestedPrefab { .. } | Literal::PrefabBytes(_) => Type::PrefabRef,
+        Literal::PrefabRef { .. } | Literal::NestedPrefab { .. } | Literal::PrefabBytes(_) => {
+            Type::PrefabRef
+        }
         _ => Type::Any,
     }
 }
@@ -269,7 +311,11 @@ pub fn default_ports(class: &str, value: Option<&Literal>) -> GateIO {
 /// The type of the output a reference names: `port`, or the only output.
 pub fn output_type(ports: &GateIO, port: Option<&str>) -> Option<Type> {
     match port {
-        Some(p) => ports.outputs.iter().find(|o| resolve(o.name) == p).map(|o| o.ty.clone()),
+        Some(p) => ports
+            .outputs
+            .iter()
+            .find(|o| resolve(o.name) == p)
+            .map(|o| o.ty.clone()),
         None if ports.outputs.len() == 1 => Some(ports.outputs[0].ty.clone()),
         None => None,
     }
@@ -311,9 +357,15 @@ pub static ANNOTATIONS: &[(&str, &LazyLock<Sym>, AnnValue)] = &[
 pub const NO_LABEL: &str = "nolabel";
 
 pub fn annotation_by_key(key: &str) -> Option<(&'static str, AnnValue)> {
-    ANNOTATIONS.iter().find(|(k, _, _)| *k == key).map(|(_, p, v)| (resolve(***p), *v))
+    ANNOTATIONS
+        .iter()
+        .find(|(k, _, _)| *k == key)
+        .map(|(_, p, v)| (resolve(***p), *v))
 }
 
 pub fn annotation_by_prop(prop: &str) -> Option<(&'static str, AnnValue)> {
-    ANNOTATIONS.iter().find(|(_, p, _)| resolve(***p) == prop).map(|(k, _, v)| (*k, *v))
+    ANNOTATIONS
+        .iter()
+        .find(|(_, p, _)| resolve(***p) == prop)
+        .map(|(k, _, v)| (*k, *v))
 }

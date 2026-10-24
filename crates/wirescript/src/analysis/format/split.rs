@@ -1,7 +1,7 @@
 //! Breaking an over-wide line: an import list across several lines, or a
 //! binary expression before its loosest operators.
 
-use super::scan::{classify, Carry, Class};
+use super::scan::{Carry, Class, classify};
 
 /// Columns a line takes, counted the way the editor's ruler does for the
 /// common cases (UTF-16 code units).
@@ -33,14 +33,20 @@ fn precedence(op: &str) -> Option<u8> {
     })
 }
 
-const TWO_CHAR_OPS: [&str; 11] = ["&&", "||", "^^", "==", "!=", "<=", ">=", "<<", ">>", "**", ".."];
+const TWO_CHAR_OPS: [&str; 11] = [
+    "&&", "||", "^^", "==", "!=", "<=", ">=", "<<", ">>", "**", "..",
+];
 
 /// Where the binary operators outside every bracket are, as (position,
 /// precedence). A unary sign, a `...` spread, `->`/`=>`, a compound
 /// assignment and the inside of an atom (`:my-state`) are not operators.
 fn top_level_ops(chars: &[char], class: &[Class]) -> Vec<(usize, u8)> {
     let ends_operand = |c: char| is_ident(c) || matches!(c, ')' | ']' | '"' | '\'');
-    let at = |i: usize, s: &str| s.chars().enumerate().all(|(k, c)| chars.get(i + k) == Some(&c));
+    let at = |i: usize, s: &str| {
+        s.chars()
+            .enumerate()
+            .all(|(k, c)| chars.get(i + k) == Some(&c))
+    };
     let n = chars.len();
     let mut ops = Vec::new();
     let mut depth = 0i32;
@@ -146,7 +152,11 @@ fn is_balanced(chars: &[char], class: &[Class]) -> bool {
 /// Whether one of `words` appears as a whole word in the line's code.
 fn has_word(chars: &[char], class: &[Class], words: &[&str]) -> bool {
     let mut word = String::new();
-    for (c, k) in chars.iter().zip(class).chain(std::iter::once((&' ', &Class::Code))) {
+    for (c, k) in chars
+        .iter()
+        .zip(class)
+        .chain(std::iter::once((&' ', &Class::Code)))
+    {
         if *k == Class::Code && is_ident(*c) {
             word.push(*c);
         } else {
@@ -166,12 +176,21 @@ fn collect(chars: &[char]) -> String {
 /// `import { a, b, c } from "lib"` with its names spread over lines, as many
 /// to a line as fit in `max`, each followed by a comma. `None` when the line
 /// is not a braced import of at least two names.
-pub(super) fn split_import(chars: &[char], class: &[Class], base: usize, indent: &str, max: usize) -> Option<Vec<String>> {
-    let starts_import = chars.starts_with(&['i', 'm', 'p', 'o', 'r', 't']) && !chars.get(6).copied().is_some_and(is_ident);
+pub(super) fn split_import(
+    chars: &[char],
+    class: &[Class],
+    base: usize,
+    indent: &str,
+    max: usize,
+) -> Option<Vec<String>> {
+    let starts_import = chars.starts_with(&['i', 'm', 'p', 'o', 'r', 't'])
+        && !chars.get(6).copied().is_some_and(is_ident);
     if !starts_import {
         return None;
     }
-    let code_at = |c: char, from: usize| (from..chars.len()).find(|&i| chars[i] == c && class[i] == Class::Code);
+    let code_at = |c: char, from: usize| {
+        (from..chars.len()).find(|&i| chars[i] == c && class[i] == Class::Code)
+    };
     let open = code_at('{', 0)?;
     let close = code_at('}', open + 1)?;
     let names: Vec<String> = chars[open + 1..close]
@@ -184,7 +203,11 @@ pub(super) fn split_import(chars: &[char], class: &[Class], base: usize, indent:
     if names.len() < 2 {
         return None;
     }
-    let prefix = chars[..open].iter().collect::<String>().trim_end().to_string();
+    let prefix = chars[..open]
+        .iter()
+        .collect::<String>()
+        .trim_end()
+        .to_string();
     let suffix: String = chars[close..].iter().collect();
     let cont = indent.repeat(base + 1);
     let mut out = vec![format!("{}{prefix} {{", indent.repeat(base))];
@@ -212,7 +235,9 @@ pub(super) fn split_import(chars: &[char], class: &[Class], base: usize, indent:
 /// `None` when there is nothing to break on, the brackets do not balance, or
 /// the line is an `if`/`then`/`else`/`match`/`await` form.
 fn split_once(chars: &[char], class: &[Class], base: usize, indent: &str) -> Option<Vec<String>> {
-    if has_word(chars, class, &["if", "then", "else", "match", "await"]) || !is_balanced(chars, class) {
+    if has_word(chars, class, &["if", "then", "else", "match", "await"])
+        || !is_balanced(chars, class)
+    {
         return None;
     }
     let ops = top_level_ops(chars, class);
@@ -228,7 +253,11 @@ fn split_once(chars: &[char], class: &[Class], base: usize, indent: &str) -> Opt
         return None;
     }
     let mut out = vec![format!("{}{}", indent.repeat(base), segments[0])];
-    out.extend(segments[1..].iter().map(|s| format!("{}{s}", indent.repeat(base + 1))));
+    out.extend(
+        segments[1..]
+            .iter()
+            .map(|s| format!("{}{s}", indent.repeat(base + 1))),
+    );
     Some(out)
 }
 
@@ -236,12 +265,20 @@ fn split_once(chars: &[char], class: &[Class], base: usize, indent: &str) -> Opt
 /// continuation lines start with an operator, which this formatter does not
 /// break further, so only the first line can still need it. Doing it here
 /// rather than on the next run is what makes the result stable.
-pub(super) fn split_operation(chars: &[char], class: &[Class], base: usize, indent: &str, max: usize) -> Option<Vec<String>> {
+pub(super) fn split_operation(
+    chars: &[char],
+    class: &[Class],
+    base: usize,
+    indent: &str,
+    max: usize,
+) -> Option<Vec<String>> {
     let mut out = split_once(chars, class, base, indent)?;
     while width(&out[0]) > max {
         let first: Vec<char> = out[0].trim_start().chars().collect();
         let (first_class, _) = classify(&first, Carry::Code);
-        let Some(lines) = split_once(&first, &first_class, base, indent) else { break };
+        let Some(lines) = split_once(&first, &first_class, base, indent) else {
+            break;
+        };
         out.splice(0..1, lines);
     }
     Some(out)

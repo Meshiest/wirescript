@@ -25,11 +25,17 @@ pub fn visit_program<'a>(
     walk::script_children(script, &mut |n, _| visit(n, on_handler, on_call));
 }
 
-fn visit<'a>(node: Node<'a>, on_handler: &mut dyn FnMut(&'a Handler), on_call: &mut dyn FnMut(&'a Expr)) {
+fn visit<'a>(
+    node: Node<'a>,
+    on_handler: &mut dyn FnMut(&'a Handler),
+    on_call: &mut dyn FnMut(&'a Expr),
+) {
     match node {
         Node::Decl(TopDecl::Handler(h)) | Node::Stmt(Stmt::Handler(h)) => on_handler(h),
         // A captured event's body is the handler it runs.
-        Node::Decl(TopDecl::Event(EventDecl { captured: Some(h), .. })) => on_handler(h),
+        Node::Decl(TopDecl::Event(EventDecl {
+            captured: Some(h), ..
+        })) => on_handler(h),
         // The `match` and variant-construction nodes fire too: the "fill
         // missing match arms" code action locates the enclosing `match` at a
         // cursor through this, and hover / go-to-definition on a named payload

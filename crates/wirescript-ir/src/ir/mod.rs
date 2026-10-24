@@ -11,8 +11,8 @@
 
 pub mod build;
 pub mod builder;
-pub mod gate_variants;
 pub mod gate_class;
+pub mod gate_variants;
 pub(crate) mod module_tree;
 pub mod plane;
 pub mod port_registry;
@@ -20,14 +20,15 @@ pub mod program;
 pub mod validate;
 
 pub use builder::{BuildError, ModuleRef, ProgramBuilder};
-pub use validate::{PortSide, ValidationError};
 pub use program::{
-    HANDLE_TARGET, HANDLE_TARGETS, LayoutMode, MICROCHIP_BRICK, Program, ProgramSettings, SourceComment, SourceMap,
+    HANDLE_TARGET, HANDLE_TARGETS, LayoutMode, MICROCHIP_BRICK, Program, ProgramSettings,
+    SourceComment, SourceMap,
 };
+pub use validate::{PortSide, ValidationError};
 
 use crate::collections::HashMap;
 
-use crate::intern::{sym, Sym};
+use crate::intern::{Sym, sym};
 use crate::ir::port_registry::WirePort;
 
 /// Cheap numeric node identity — every node gets a globally unique u32.
@@ -142,7 +143,11 @@ impl ScopeInfo {
     /// A module's root scope (`ROOT_SCOPE_ID`) of `kind`: no parent and no
     /// source range.
     pub fn root(kind: ScopeKind) -> Self {
-        Self { kind, source_range: SourceRange::default(), parent: None }
+        Self {
+            kind,
+            source_range: SourceRange::default(),
+            parent: None,
+        }
     }
 }
 
@@ -219,7 +224,10 @@ pub enum Type {
     /// their `name`s match and their `args` (generic type arguments, e.g.
     /// `Option<int>`'s `[Int]`) are pairwise equal. Never coerces/widens to a
     /// different enum, even a structurally identical one.
-    Enum { name: String, args: Vec<Type> },
+    Enum {
+        name: String,
+        args: Vec<Type>,
+    },
     /// A reference to one component on a brick, of the component type it
     /// names (`Component_PointLight`): what Get/Add Component give. Its
     /// properties read and write as fields (`light.Brightness`). Like a brick
@@ -322,7 +330,11 @@ impl Type {
     /// `fields` as the outputs of a gate read, unless they are a tuple's
     /// positions or a single value.
     pub fn outputs(fields: Vec<(String, Type)>) -> Type {
-        if fields.iter().enumerate().all(|(i, (k, _))| *k == i.to_string()) {
+        if fields
+            .iter()
+            .enumerate()
+            .all(|(i, (k, _))| *k == i.to_string())
+        {
             Type::Record(fields)
         } else {
             Type::Outputs(fields)
@@ -332,7 +344,8 @@ impl Type {
     /// This type with every gate read in it held as the record of its
     /// outputs.
     pub fn as_record(&self) -> Type {
-        let fields = |fs: &[(String, Type)]| fs.iter().map(|(k, t)| (k.clone(), t.as_record())).collect();
+        let fields =
+            |fs: &[(String, Type)]| fs.iter().map(|(k, t)| (k.clone(), t.as_record())).collect();
         match self {
             Type::Outputs(fs) | Type::Record(fs) => Type::Record(fields(fs)),
             Type::Ref(t) => Type::Ref(Box::new(t.as_record())),
@@ -340,9 +353,10 @@ impl Type {
             Type::Map(k, v) => Type::Map(Box::new(k.as_record()), Box::new(v.as_record())),
             Type::Union(ts) => Type::Union(ts.iter().map(Type::as_record).collect()),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(Type::as_record).collect()),
-            Type::Enum { name, args } => {
-                Type::Enum { name: name.clone(), args: args.iter().map(Type::as_record).collect() }
-            }
+            Type::Enum { name, args } => Type::Enum {
+                name: name.clone(),
+                args: args.iter().map(Type::as_record).collect(),
+            },
             other => other.clone(),
         }
     }
@@ -353,7 +367,11 @@ impl Type {
     pub fn held_by_var(&self) -> Type {
         match self {
             Type::Outputs(fs) if !fs.is_empty() => unwrap_ref(&fs[0].1).held_by_var(),
-            Type::Record(fs) => Type::Record(fs.iter().map(|(k, t)| (k.clone(), t.held_by_var())).collect()),
+            Type::Record(fs) => Type::Record(
+                fs.iter()
+                    .map(|(k, t)| (k.clone(), t.held_by_var()))
+                    .collect(),
+            ),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(Type::held_by_var).collect()),
             Type::Array(t) => Type::Array(Box::new(t.held_by_var())),
             other => other.clone(),
@@ -367,7 +385,9 @@ impl Type {
             Type::Record(fs) => fs.iter().any(|(_, t)| t.holds_outputs()),
             Type::Ref(t) | Type::Array(t) => t.holds_outputs(),
             Type::Map(k, v) => k.holds_outputs() || v.holds_outputs(),
-            Type::Union(ts) | Type::Tuple(ts) | Type::Enum { args: ts, .. } => ts.iter().any(Type::holds_outputs),
+            Type::Union(ts) | Type::Tuple(ts) | Type::Enum { args: ts, .. } => {
+                ts.iter().any(Type::holds_outputs)
+            }
             _ => false,
         }
     }
@@ -405,7 +425,9 @@ impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Type::Component(class) if class.is_empty() => f.write_str("Component"),
-            Type::Component(class) => write!(f, "Component<{}>", crate::catalog::component_name(class)),
+            Type::Component(class) => {
+                write!(f, "Component<{}>", crate::catalog::component_name(class))
+            }
             Type::Bool => f.write_str("bool"),
             Type::Int => f.write_str("int"),
             Type::Float => f.write_str("float"),
@@ -428,7 +450,9 @@ impl std::fmt::Display for Type {
             Type::Never => f.write_str("never"),
             Type::Ref(inner) => write!(f, "*{inner}"),
             // `(*int)[]` is an array of refs; `*int[]` is a ref to an array.
-            Type::Array(inner) if matches!(inner.as_ref(), Type::Ref(_)) => write!(f, "({inner})[]"),
+            Type::Array(inner) if matches!(inner.as_ref(), Type::Ref(_)) => {
+                write!(f, "({inner})[]")
+            }
             Type::Array(inner) => write!(f, "{inner}[]"),
             Type::Map(k, v) => write!(f, "Map<{k}, {v}>"),
             Type::Param(n) => f.write_str(n),
@@ -438,7 +462,10 @@ impl std::fmt::Display for Type {
                     write!(
                         f,
                         "<{}>",
-                        args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")
+                        args.iter()
+                            .map(|a| a.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     )?;
                 }
                 Ok(())
@@ -559,11 +586,15 @@ pub enum Literal {
     /// resolves `path` to `.brz` bytes, embeds them via `World::add_prefab`,
     /// and writes the resulting `Prefabs/Uploads/…` path into the gate's
     /// `Prefab` path string.
-    PrefabRef { path: String },
+    PrefabRef {
+        path: String,
+    },
     /// Inline nested-prefab source (the `$``` ... ``` ` form). The emitter
     /// will compile `source` and embed it the same way `PrefabRef` embeds a
     /// `.brz` file (at emit); for now it just carries the raw source.
-    NestedPrefab { source: String },
+    NestedPrefab {
+        source: String,
+    },
     /// A prefab's `.brz` bytes, embedded as they are. What a `NestedPrefab`
     /// becomes once compiled, so a serialized program needs no front end.
     PrefabBytes(std::sync::Arc<[u8]>),
@@ -662,14 +693,23 @@ impl GateIO {
     pub fn array_storage(elem: Type) -> Self {
         Self {
             inputs: vec![],
-            outputs: vec![PortSpec::new(*sym::ARRAY_VAR_REF, Type::Ref(Box::new(Type::Array(Box::new(elem)))))],
+            outputs: vec![PortSpec::new(
+                *sym::ARRAY_VAR_REF,
+                Type::Ref(Box::new(Type::Array(Box::new(elem)))),
+            )],
         }
     }
 
     /// Ports of the storage gate behind a map of type `map_type`: the ref its
     /// map ops chain through.
     pub fn map_storage(map_type: Type) -> Self {
-        Self { inputs: vec![], outputs: vec![PortSpec::new(*sym::MAP_VAR_REF, Type::Ref(Box::new(map_type)))] }
+        Self {
+            inputs: vec![],
+            outputs: vec![PortSpec::new(
+                *sym::MAP_VAR_REF,
+                Type::Ref(Box::new(map_type)),
+            )],
+        }
     }
 
     /// Ports of `Union`: two exec inputs merged into one continuation.
@@ -735,7 +775,10 @@ impl NodeKind {
     /// Whether a node of this kind is a brick in its module's plane: a gate,
     /// an event, a pin, or a chip's shell. A `Coerce` node is not.
     pub fn has_brick(self) -> bool {
-        matches!(self, NodeKind::Gate | NodeKind::Event | NodeKind::Input | NodeKind::Output | NodeKind::Chip)
+        matches!(
+            self,
+            NodeKind::Gate | NodeKind::Event | NodeKind::Input | NodeKind::Output | NodeKind::Chip
+        )
     }
 }
 
@@ -858,19 +901,34 @@ impl StyleValue {
 /// display bytes. Alpha is linear in both. `None` for any other literal.
 pub fn brick_color(lit: &Literal) -> Option<Literal> {
     fn encode(c: f64) -> u8 {
-        let c = if c.is_finite() { c.clamp(0.0, 1.0) } else { 0.0 };
-        let s = if c <= 0.003_130_8 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+        let c = if c.is_finite() {
+            c.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let s = if c <= 0.003_130_8 {
+            12.92 * c
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        };
         (s * 255.0).round() as u8
     }
     fn linear(c: f64) -> u8 {
-        let c = if c.is_finite() { c.clamp(0.0, 1.0) } else { 0.0 };
+        let c = if c.is_finite() {
+            c.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         (c * 255.0).round() as u8
     }
     match lit {
         Literal::Color { .. } => Some(lit.clone()),
-        Literal::LinearColor { r, g, b, a } => {
-            Some(Literal::Color { r: encode(*r), g: encode(*g), b: encode(*b), a: linear(*a) })
-        }
+        Literal::LinearColor { r, g, b, a } => Some(Literal::Color {
+            r: encode(*r),
+            g: encode(*g),
+            b: encode(*b),
+            a: linear(*a),
+        }),
         _ => None,
     }
 }
@@ -987,7 +1045,12 @@ impl Module {
     /// `ChipBody { name }`.
     pub fn new_chip_body(module_name: &str, chip_name: impl Into<String>) -> Self {
         let mut m = Self::new(module_name);
-        m.scopes.insert(ROOT_SCOPE_ID, ScopeInfo::root(ScopeKind::ChipBody { name: chip_name.into() }));
+        m.scopes.insert(
+            ROOT_SCOPE_ID,
+            ScopeInfo::root(ScopeKind::ChipBody {
+                name: chip_name.into(),
+            }),
+        );
         m
     }
 
@@ -1015,7 +1078,12 @@ impl Module {
             .values()
             .chain(self.dynamic_materials.values())
             .chain(self.root_style.color.iter().filter_map(StyleValue::wired))
-            .chain(self.root_style.material.iter().filter_map(StyleValue::wired))
+            .chain(
+                self.root_style
+                    .material
+                    .iter()
+                    .filter_map(StyleValue::wired),
+            )
     }
 
     /// The chip module `path` leads to: a chain of chip node ids from this
@@ -1026,19 +1094,27 @@ impl Module {
 
     /// [`Module::at`], mutably.
     pub fn at_mut(&mut self, path: &[NodeId]) -> &mut Module {
-        path.iter().fold(self, |m, c| m.chips.get_mut(c).expect("a chip module on the path"))
+        path.iter().fold(self, |m, c| {
+            m.chips.get_mut(c).expect("a chip module on the path")
+        })
     }
 
     /// Node `id`, in this module or any chip module below it. Node ids are
     /// unique across the tree, so the search order cannot change the answer.
     pub fn find_deep(&self, id: NodeId) -> Option<&Node> {
-        self.nodes.get(&id).or_else(|| self.chips.values().find_map(|c| c.find_deep(id)))
+        self.nodes
+            .get(&id)
+            .or_else(|| self.chips.values().find_map(|c| c.find_deep(id)))
     }
 
     /// Call `f` on this module and every chip module below it, each with its
     /// path from here: a parent before its chips, the chips in id order.
     pub fn walk<'a>(&'a self, f: &mut impl FnMut(&[NodeId], &'a Module)) {
-        fn go<'a>(m: &'a Module, path: &mut Vec<NodeId>, f: &mut impl FnMut(&[NodeId], &'a Module)) {
+        fn go<'a>(
+            m: &'a Module,
+            path: &mut Vec<NodeId>,
+            f: &mut impl FnMut(&[NodeId], &'a Module),
+        ) {
             f(path, m);
             let mut kids: Vec<NodeId> = m.chips.keys().copied().collect();
             kids.sort_unstable();

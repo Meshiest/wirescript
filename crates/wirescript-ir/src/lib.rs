@@ -19,11 +19,15 @@ pub mod readback;
 pub mod wsir;
 
 pub use diagnostic::{Diagnostic, Pos, Severity, SourceRange};
-pub use emit::{Assembly, EmitError, EmitOptions, NestedCompiler, Placement, PrefabResolver, assemble, assemble_with_phases, build_world, emit_brz};
 #[cfg(feature = "brdb-full")]
 pub use emit::emit_brdb;
+pub use emit::{
+    Assembly, EmitError, EmitOptions, NestedCompiler, Placement, PrefabResolver, assemble,
+    assemble_with_phases, build_world, emit_brz,
+};
 pub use ir::{
-    BuildError, GateIO, LayoutMode, Literal, Module, ModuleRef, Node, NodeId, NodeKind, PortRef, PortSpec, Program,
-    ProgramBuilder, ProgramSettings, SourceComment, SourceMap, Type, ValidationError, Wire,
+    BuildError, GateIO, LayoutMode, Literal, Module, ModuleRef, Node, NodeId, NodeKind, PortRef,
+    PortSpec, Program, ProgramBuilder, ProgramSettings, SourceComment, SourceMap, Type,
+    ValidationError, Wire,
 };
 pub use layout::{LayoutOptions, LayoutResult, layout, layout_with_opts};

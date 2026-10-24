@@ -145,7 +145,11 @@ struct Module {
 }
 
 impl Module {
-    fn new(values: Arc<ConstEnv>, declared: Arc<HashSet<String>>, uncertified: Arc<HashSet<String>>) -> Self {
+    fn new(
+        values: Arc<ConstEnv>,
+        declared: Arc<HashSet<String>>,
+        uncertified: Arc<HashSet<String>>,
+    ) -> Self {
         let certified = if uncertified.is_empty() {
             values.clone()
         } else {
@@ -153,10 +157,19 @@ impl Module {
             Arc::new(kept.map(|(n, v)| (n.clone(), v.clone())).collect())
         };
         let declared_values: Arc<ConstEnv> = Arc::new(
-            declared.iter().filter_map(|n| values.get(n).map(|l| (n.clone(), l.clone()))).collect(),
+            declared
+                .iter()
+                .filter_map(|n| values.get(n).map(|l| (n.clone(), l.clone())))
+                .collect(),
         );
         let admitted = [values.clone(), values.clone(), declared_values, certified];
-        Self { values, declared, uncertified, admitted, mod_dups: None }
+        Self {
+            values,
+            declared,
+            uncertified,
+            admitted,
+            mod_dups: None,
+        }
     }
 
     /// These constants, a `const mod` body reading each name declared more
@@ -164,11 +177,18 @@ impl Module {
     fn with_dups(mut self, dups: &Dups) -> Self {
         if dups.top.has_dups() {
             let values = |admit: Admit| -> Arc<crate::lower::DupConsts> {
-                let kept = dups.values.iter().filter(|(_, (_, marks))| marks.admit(admit));
+                let kept = dups
+                    .values
+                    .iter()
+                    .filter(|(_, (_, marks))| marks.admit(admit));
                 Arc::new(kept.map(|(k, (lit, _))| (k.clone(), lit.clone())).collect())
             };
             let made = |base: &Arc<ConstEnv>, admit: Admit| {
-                Arc::new(crate::const_eval::ModDups::new(base.clone(), dups.top.clone(), values(admit)))
+                Arc::new(crate::const_eval::ModDups::new(
+                    base.clone(),
+                    dups.top.clone(),
+                    values(admit),
+                ))
             };
             self.mod_dups = Some([
                 made(&self.values, Admit::All),
@@ -197,7 +217,10 @@ pub(crate) struct ConstNames {
 impl ConstNames {
     /// The constants `module` holds, with no frame open.
     pub(crate) fn of(module: Arc<ConstEnv>) -> Self {
-        Self { module, here: Arc::default() }
+        Self {
+            module,
+            here: Arc::default(),
+        }
     }
 
     /// The constant `name` reads as. A namespace member `ns.m` reads as
@@ -345,7 +368,12 @@ impl ConstScope {
         let by_name = ["EnumToInt", "IntToEnum"]
             .iter()
             .map(|n| n.to_string())
-            .chain(values.keys().filter_map(|k| k.split_once('.')).map(|(ns, _)| ns.to_string()))
+            .chain(
+                values
+                    .keys()
+                    .filter_map(|k| k.split_once('.'))
+                    .map(|(ns, _)| ns.to_string()),
+            )
             .collect();
         Self {
             module: Module::new(values, declared, uncertified),
@@ -371,33 +399,55 @@ impl ConstScope {
         imports: &Arc<crate::ast::ImportScope>,
         top: &Arc<crate::scope::top::TopNames>,
     ) -> Self {
-        let types = Arc::new(crate::const_eval::DeclaredTypes::for_program_in(decls, enum_defs, imports));
-        let (values, dup_values) = crate::lower::build_const_env_at(decls, enum_defs, imports, &types, top);
-        let uncertified = crate::lower::build_const_uncertified(decls, enum_defs, imports, &values, &types);
+        let types = Arc::new(crate::const_eval::DeclaredTypes::for_program_in(
+            decls, enum_defs, imports,
+        ));
+        let (values, dup_values) =
+            crate::lower::build_const_env_at(decls, enum_defs, imports, &types, top);
+        let uncertified =
+            crate::lower::build_const_uncertified(decls, enum_defs, imports, &values, &types);
         let mut all: HashMap<Arc<str>, Arc<ConstEnv>> = HashMap::default();
         let mut certified: HashMap<Arc<str>, Arc<ConstEnv>> = HashMap::default();
         for d in decls {
-            let crate::ast::TopDecl::Namespace(ns) = d else { continue };
-            let Some(file) = ns.decls.first().map(|d| d.range().file.clone()) else { continue };
+            let crate::ast::TopDecl::Namespace(ns) = d else {
+                continue;
+            };
+            let Some(file) = ns.decls.first().map(|d| d.range().file.clone()) else {
+                continue;
+            };
             let prefix = format!("{}.", ns.name);
             let own: Vec<(&String, String, &Literal)> = values
                 .iter()
                 .filter_map(|(k, v)| k.strip_prefix(&prefix).map(|n| (k, n.to_string(), v)))
                 .collect();
             let table = |keep: &dyn Fn(&String) -> bool| -> Arc<ConstEnv> {
-                Arc::new(own.iter().filter(|(k, ..)| keep(k)).map(|(_, n, v)| (n.clone(), (*v).clone())).collect())
+                Arc::new(
+                    own.iter()
+                        .filter(|(k, ..)| keep(k))
+                        .map(|(_, n, v)| (n.clone(), (*v).clone()))
+                        .collect(),
+                )
             };
             all.insert(file.clone(), table(&|_| true));
             certified.insert(file, table(&|k| !uncertified.contains(k)));
         }
-        let mut dups = Dups { top: top.clone(), values: HashMap::default() };
+        let mut dups = Dups {
+            top: top.clone(),
+            values: HashMap::default(),
+        };
         for d in decls {
-            let crate::ast::TopDecl::Let(l) = d else { continue };
+            let crate::ast::TopDecl::Let(l) = d else {
+                continue;
+            };
             for name in crate::const_eval::bound_names(&l.binding) {
                 let key = (l.range.file.clone(), l.range.start.offset, name);
                 if let Some(lit) = dup_values.get(&key) {
                     let uncertified = uncertified.contains(&key.2);
-                    let marks = Marks { declared: l.is_const, uncertified, ..Default::default() };
+                    let marks = Marks {
+                        declared: l.is_const,
+                        uncertified,
+                        ..Default::default()
+                    };
                     dups.values.insert(key, (lit.clone(), marks));
                 }
             }
@@ -417,7 +467,9 @@ impl ConstScope {
         let storage = top_level_storage(decls);
         let mut at_top: Vec<String> = top_level_values(decls)
             .into_iter()
-            .filter(|n| by_name.contains(n) || (storage.contains(n) && out.module.values.contains_key(n)))
+            .filter(|n| {
+                by_name.contains(n) || (storage.contains(n) && out.module.values.contains_key(n))
+            })
             .collect();
         at_top.sort();
         at_top.dedup();
@@ -449,7 +501,8 @@ impl ConstScope {
             for name in params.keys() {
                 uncertified.remove(name);
             }
-            Module::new(Arc::new(values), Arc::new(declared), Arc::new(uncertified)).with_dups(&self.dups)
+            Module::new(Arc::new(values), Arc::new(declared), Arc::new(uncertified))
+                .with_dups(&self.dups)
         };
         Self {
             module,
@@ -472,7 +525,10 @@ impl ConstScope {
 
     /// Open the frame of scope frame `id`.
     pub(crate) fn push(&mut self, id: u64) {
-        self.frames.push(Frame { id, ..Default::default() });
+        self.frames.push(Frame {
+            id,
+            ..Default::default()
+        });
         self.bump();
     }
 
@@ -504,7 +560,10 @@ impl ConstScope {
         if self.frames.is_empty()
             && let Some(at) = self.cursor.as_ref().filter(|c| c.range.file == range.file)
         {
-            let end = crate::diagnostic::SourceRange { start: range.end, ..range.clone() };
+            let end = crate::diagnostic::SourceRange {
+                start: range.end,
+                ..range.clone()
+            };
             let body = at.body;
             self.set_cursor(Some(crate::scope::top::ReadAt { range: end, body }));
         }
@@ -527,7 +586,11 @@ impl ConstScope {
 
     /// The constant the top-level declaration written at `decl` holds under
     /// `name`, a name its file declares more than once there.
-    pub(crate) fn dup_constant(&self, decl: &crate::diagnostic::SourceRange, name: &str) -> Option<&Literal> {
+    pub(crate) fn dup_constant(
+        &self,
+        decl: &crate::diagnostic::SourceRange,
+        name: &str,
+    ) -> Option<&Literal> {
         let key = (decl.file.clone(), decl.start.offset, name.to_string());
         self.dups.values.get(&key).map(|(lit, _)| lit)
     }
@@ -581,7 +644,10 @@ impl ConstScope {
     /// [`hide_at_top`](Self::hide_at_top) for names a chip may already hold
     /// constants under, as [`split_hidden_at_top`](Self::split_hidden_at_top)
     /// hands them back.
-    pub(crate) fn hide_held_at_top(&mut self, held: impl IntoIterator<Item = HiddenAtTop>) -> usize {
+    pub(crate) fn hide_held_at_top(
+        &mut self,
+        held: impl IntoIterator<Item = HiddenAtTop>,
+    ) -> usize {
         let mark = self.hidden_at_top.len();
         self.hidden_at_top.extend(held);
         self.bump();
@@ -598,7 +664,9 @@ impl ConstScope {
     /// later [`hide_at_top`](Self::hide_at_top): the body of a declaration
     /// written outside the chips that hid them.
     pub(crate) fn split_hidden_at_top(&mut self, mark: usize) -> Vec<HiddenAtTop> {
-        let names = self.hidden_at_top.split_off(mark.min(self.hidden_at_top.len()));
+        let names = self
+            .hidden_at_top
+            .split_off(mark.min(self.hidden_at_top.len()));
         self.bump();
         names
     }
@@ -661,7 +729,10 @@ impl ConstScope {
             .iter()
             .filter_map(|(key, lit)| {
                 let name = key.strip_prefix(&prefix)?;
-                let marks = Marks { uncertified: self.module.uncertified.contains(key), ..Default::default() };
+                let marks = Marks {
+                    uncertified: self.module.uncertified.contains(key),
+                    ..Default::default()
+                };
                 Some((name.to_string(), lit.clone(), marks))
             })
             .collect();
@@ -686,8 +757,10 @@ impl ConstScope {
     ) -> Option<&Literal> {
         // A mod, type or namespace of the name is passed over: what it hides
         // is the value bindings further out.
-        let binding =
-            scope.visible_bindings(name).map(|(i, v)| (i, bound(v))).find(|(_, b)| !matches!(b, Bound::NotAValue));
+        let binding = scope
+            .visible_bindings(name)
+            .map(|(i, v)| (i, bound(v)))
+            .find(|(_, b)| !matches!(b, Bound::NotAValue));
         let (at, held) = match binding {
             Some((i, Bound::MayBeConstant)) => (Some((i, true)), None),
             Some((i, Bound::Value)) => (Some((i, false)), None),
@@ -738,10 +811,15 @@ impl ConstScope {
             return None;
         }
         if let Some((_, held)) = self.hidden_at_top.iter().rev().find(|(h, _)| h == name) {
-            return held.as_ref().filter(|(_, marks)| marks.admit(admit)).map(|(lit, _)| (0, lit));
+            return held
+                .as_ref()
+                .filter(|(_, marks)| marks.admit(admit))
+                .map(|(lit, _)| (0, lit));
         }
         if let Some(answer) = self.dup_answer(name) {
-            return answer.filter(|(_, marks)| marks.admit(admit)).map(|(lit, _)| (0, lit));
+            return answer
+                .filter(|(_, marks)| marks.admit(admit))
+                .map(|(lit, _)| (0, lit));
         }
         let lit = self.module.values.get(name)?;
         let admitted = match admit {
@@ -760,13 +838,21 @@ impl ConstScope {
     /// open frames' bindings, never the module's table.
     ///
     /// [`get`]: Self::get
-    pub(crate) fn env<V>(&self, scope: &Scope<V>, bound: &dyn Fn(&V) -> Bound, admit: Admit) -> ConstNames {
+    pub(crate) fn env<V>(
+        &self,
+        scope: &Scope<V>,
+        bound: &dyn Fn(&V) -> Bound,
+        admit: Admit,
+    ) -> ConstNames {
         let slot = admit.slot();
         let cached = self.answered.borrow()[slot].clone();
         let env = match cached {
             Some((s, c, env)) if c == self.rev && s == scope.rev() => return env,
             // Only names bound since: each decides only its own answer.
-            Some((s, c, env)) if c == self.rev && let Some(names) = scope.inserted_since(s) => {
+            Some((s, c, env))
+                if c == self.rev
+                    && let Some(names) = scope.inserted_since(s) =>
+            {
                 let names: Vec<crate::intern::Sym> = names.collect();
                 let frames = self.env_frames(scope);
                 let recorded = self.recorded(&frames);
@@ -778,7 +864,10 @@ impl ConstScope {
                         None => here.remove(key),
                     };
                 }
-                let env = ConstNames { module: env.module, here: Arc::new(here) };
+                let env = ConstNames {
+                    module: env.module,
+                    here: Arc::new(here),
+                };
                 debug_assert!(
                     *env.here == *self.rebuild(scope, bound, admit).here,
                     "an incremental constant env differs from a rebuilt one"
@@ -794,7 +883,10 @@ impl ConstScope {
     /// The open frames [`env`](Self::env) reads, innermost first.
     fn env_frames<V>(&self, scope: &Scope<V>) -> Vec<(usize, u64)> {
         let floor = scope.floor().max(1);
-        scope.visible_frame_ids().filter(|(i, _)| *i >= floor).collect()
+        scope
+            .visible_frame_ids()
+            .filter(|(i, _)| *i >= floor)
+            .collect()
     }
 
     /// Every name a frame of `frames` records a constant under.
@@ -824,30 +916,50 @@ impl ConstScope {
                 return Some(match scope.get_in(i, sym).map(bound) {
                     Some(Bound::Value) => None,
                     Some(Bound::Holds(_)) => self.get(scope, bound, key, admit).cloned(),
-                    Some(Bound::MayBeConstant | Bound::NotAValue) | None => marks.admit(admit).then(|| lit.clone()),
+                    Some(Bound::MayBeConstant | Bound::NotAValue) | None => {
+                        marks.admit(admit).then(|| lit.clone())
+                    }
                 });
             }
             match scope.get_in(i, sym).map(bound) {
                 None | Some(Bound::NotAValue) => {}
                 Some(Bound::Holds(_)) => return Some(self.get(scope, bound, key, admit).cloned()),
                 Some(Bound::MayBeConstant | Bound::Value) => {
-                    if module.contains_key(key) || recorded.contains(key) || self.by_name.contains(key) {
+                    if module.contains_key(key)
+                        || recorded.contains(key)
+                        || self.by_name.contains(key)
+                    {
                         return Some(None);
                     }
                 }
             }
         }
         if scope.floor() == 0 {
-            if let Some((_, held)) = self.hidden_at_top.iter().rev().find(|(name, _)| name == key) {
-                return Some(held.as_ref().filter(|(_, marks)| marks.admit(admit)).map(|(lit, _)| lit.clone()));
+            if let Some((_, held)) = self
+                .hidden_at_top
+                .iter()
+                .rev()
+                .find(|(name, _)| name == key)
+            {
+                return Some(
+                    held.as_ref()
+                        .filter(|(_, marks)| marks.admit(admit))
+                        .map(|(lit, _)| lit.clone()),
+                );
             }
             if self.dups.top.dups().any(|(name, _)| name == key)
                 && let Some(answer) = self.dup_answer(key)
             {
-                return Some(answer.filter(|(_, marks)| marks.admit(admit)).map(|(lit, _)| lit.clone()));
+                return Some(
+                    answer
+                        .filter(|(_, marks)| marks.admit(admit))
+                        .map(|(lit, _)| lit.clone()),
+                );
             }
             if self.by_name_at_top.iter().any(|name| name == key)
-                && scope.visible_bindings(key).any(|(_, v)| !matches!(bound(v), Bound::NotAValue))
+                && scope
+                    .visible_bindings(key)
+                    .any(|(_, v)| !matches!(bound(v), Bound::NotAValue))
             {
                 return Some(self.get(scope, bound, key, admit).cloned());
             }
@@ -856,7 +968,12 @@ impl ConstScope {
     }
 
     /// [`env`](Self::env) worked out from every open frame.
-    fn rebuild<V>(&self, scope: &Scope<V>, bound: &dyn Fn(&V) -> Bound, admit: Admit) -> ConstNames {
+    fn rebuild<V>(
+        &self,
+        scope: &Scope<V>,
+        bound: &dyn Fn(&V) -> Bound,
+        admit: Admit,
+    ) -> ConstNames {
         let module = self.module.admitted[admit.slot()].clone();
         // One pass over the open frames, innermost first: a name is decided
         // by the first frame that records it or binds it to a value, as
@@ -879,7 +996,9 @@ impl ConstScope {
                     let answer = match scope.get_in(i, sym).map(bound) {
                         Some(Bound::Value) => None,
                         Some(Bound::Holds(_)) => self.get(scope, bound, key, admit).cloned(),
-                        Some(Bound::MayBeConstant | Bound::NotAValue) | None => marks.admit(admit).then(|| lit.clone()),
+                        Some(Bound::MayBeConstant | Bound::NotAValue) | None => {
+                            marks.admit(admit).then(|| lit.clone())
+                        }
                     };
                     here.insert(key, answer);
                 }
@@ -895,7 +1014,10 @@ impl ConstScope {
                         here.insert(key, self.get(scope, bound, key, admit).cloned());
                     }
                     Bound::MayBeConstant | Bound::Value => {
-                        if module.contains_key(key) || recorded.contains(key) || self.by_name.contains(key) {
+                        if module.contains_key(key)
+                            || recorded.contains(key)
+                            || self.by_name.contains(key)
+                        {
                             here.insert(key, None);
                         }
                     }
@@ -905,26 +1027,36 @@ impl ConstScope {
         if scope.floor() == 0 {
             for (name, held) in self.hidden_at_top.iter().rev() {
                 let key = crate::intern::resolve(crate::intern::intern(name));
-                let lit = held.as_ref().filter(|(_, marks)| marks.admit(admit)).map(|(lit, _)| lit.clone());
+                let lit = held
+                    .as_ref()
+                    .filter(|(_, marks)| marks.admit(admit))
+                    .map(|(lit, _)| lit.clone());
                 here.entry(key).or_insert(lit);
             }
             for (name, _) in self.dups.top.dups() {
                 if let Some(answer) = self.dup_answer(name) {
                     let key = crate::intern::resolve(crate::intern::intern(name));
-                    let lit = answer.filter(|(_, marks)| marks.admit(admit)).map(|(lit, _)| lit.clone());
+                    let lit = answer
+                        .filter(|(_, marks)| marks.admit(admit))
+                        .map(|(lit, _)| lit.clone());
                     here.entry(key).or_insert(lit);
                 }
             }
             for name in self.by_name_at_top.iter() {
                 let key = crate::intern::resolve(crate::intern::intern(name));
                 if !here.contains_key(key)
-                    && scope.visible_bindings(name).any(|(_, v)| !matches!(bound(v), Bound::NotAValue))
+                    && scope
+                        .visible_bindings(name)
+                        .any(|(_, v)| !matches!(bound(v), Bound::NotAValue))
                 {
                     here.insert(key, self.get(scope, bound, key, admit).cloned());
                 }
             }
         }
-        ConstNames { module, here: Arc::new(here) }
+        ConstNames {
+            module,
+            here: Arc::new(here),
+        }
     }
 
     /// The context `const_eval` evaluates in where `scope` is now: names
@@ -943,7 +1075,10 @@ impl ConstScope {
             Admit::Certified => (
                 self.module.admitted[Admit::Certified.slot()].clone(),
                 &self.by_file[1],
-                self.module.mod_dups.as_ref().map(|[_, certified]| certified.clone()),
+                self.module
+                    .mod_dups
+                    .as_ref()
+                    .map(|[_, certified]| certified.clone()),
             ),
             _ => (
                 self.module.values.clone(),
@@ -953,8 +1088,16 @@ impl ConstScope {
         };
         let consts = self.env(scope, bound, admit);
         let types = self.types.clone();
-        crate::const_eval::ConstCtx::new(consts, module_consts, by_file.clone(), enum_defs, imports, types, lookup_mod)
-            .with_mod_dups(mod_dups)
+        crate::const_eval::ConstCtx::new(
+            consts,
+            module_consts,
+            by_file.clone(),
+            enum_defs,
+            imports,
+            types,
+            lookup_mod,
+        )
+        .with_mod_dups(mod_dups)
     }
 }
 

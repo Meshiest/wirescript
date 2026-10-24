@@ -3,6 +3,9 @@
 // builds size their stacks there instead.
 fn main() {
     if std::env::var("CARGO_CFG_TARGET_FAMILY").as_deref() == Ok("wasm") {
-        println!("cargo:rustc-link-arg-bins=-zstack-size={}", 64 * 1024 * 1024);
+        println!(
+            "cargo:rustc-link-arg-bins=-zstack-size={}",
+            64 * 1024 * 1024
+        );
     }
 }

@@ -11,7 +11,9 @@ pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {
     let before = ctx.handler_end_execs.len();
     lower_handler(ctx, h);
     let ends: Vec<PortRef> = ctx.handler_end_execs.drain(before..).collect();
-    let end = ends.into_iter().fold(None, |acc, e| merge_exec(ctx, acc, Some(e), &d.range));
+    let end = ends
+        .into_iter()
+        .fold(None, |acc, e| merge_exec(ctx, acc, Some(e), &d.range));
     if let Some(e) = end {
         ctx.captured_events.insert(d.name.clone(), e);
     }
@@ -186,7 +188,10 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         && !negated
         && matches!(&h.trigger, Trigger::Ident { name, .. } if name.starts_with("_on_expr_"))
     {
-        let Trigger::Ident { range: trig_range, .. } = &h.trigger else {
+        let Trigger::Ident {
+            range: trig_range, ..
+        } = &h.trigger
+        else {
             unreachable!()
         };
         // Engage on the SCOPE BINDING / arrow-params / explicit `exec =` intent,
@@ -213,7 +218,9 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
                 _ => None,
             };
             let exec_name = shape.as_ref().and_then(|s| {
-                s.iter().find(|(_, t)| matches!(t, Type::Exec)).map(|(n, _)| n.clone())
+                s.iter()
+                    .find(|(_, t)| matches!(t, Type::Exec))
+                    .map(|(n, _)| n.clone())
             });
             // Materialize a bindable exec trigger from the call's result record,
             // or `None` when the call exposes none (e.g. an inline mod).
@@ -248,11 +255,9 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
                             else {
                                 continue;
                             };
-                            if let Some(port) = crate::lower::access::binding_to_port(
-                                ctx,
-                                &binding,
-                                &pname.range,
-                            ) {
+                            if let Some(port) =
+                                crate::lower::access::binding_to_port(ctx, &binding, &pname.range)
+                            {
                                 ctx.scope.insert(&pname.name, Binding::EventParam(port));
                             }
                         }
@@ -302,7 +307,9 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     // Try: captured event alias
     let captured = ctx.captured_events.get(&trigger_name).cloned();
     if let Some(cap) = captured {
-        save.lower_body(ctx, h, cap, trigger_name.clone(), |ctx| lower_block(ctx, &h.body));
+        save.lower_body(ctx, h, cap, trigger_name.clone(), |ctx| {
+            lower_block(ctx, &h.body)
+        });
         return;
     }
 
@@ -311,7 +318,9 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     if let Some(rec) = in_rec {
         let trig = rec.node_id.port(WirePort::RerOutput);
         let trig = negate_trigger(ctx, trig, negated);
-        save.lower_body(ctx, h, trig, trigger_name.clone(), |ctx| lower_block(ctx, &h.body));
+        save.lower_body(ctx, h, trig, trigger_name.clone(), |ctx| {
+            lower_block(ctx, &h.body)
+        });
         return;
     }
 
@@ -319,7 +328,9 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     let buf_rec = ctx.lookup_buffer(&trigger_name).cloned();
     if let Some(rec) = buf_rec {
         let trig = rec.node_id.port(WirePort::Output);
-        save.lower_body(ctx, h, trig, trigger_name.clone(), |ctx| lower_block(ctx, &h.body));
+        save.lower_body(ctx, h, trig, trigger_name.clone(), |ctx| {
+            lower_block(ctx, &h.body)
+        });
         return;
     }
 
@@ -337,7 +348,9 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         };
         let trigger_port = negate_trigger(ctx, base_port, negated);
         let trigger_label = trigger_label(&trigger_name, &trigger_field);
-        save.lower_body(ctx, h, trigger_port, trigger_label, |ctx| lower_block(ctx, &h.body));
+        save.lower_body(ctx, h, trigger_port, trigger_label, |ctx| {
+            lower_block(ctx, &h.body)
+        });
         return;
     }
 
@@ -369,7 +382,9 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         };
         let trigger_port = negate_trigger(ctx, base_port, negated);
         let trigger_label = trigger_label(&trigger_name, &trigger_field);
-        save.lower_body(ctx, h, trigger_port, trigger_label, |ctx| lower_block(ctx, &h.body));
+        save.lower_body(ctx, h, trigger_port, trigger_label, |ctx| {
+            lower_block(ctx, &h.body)
+        });
         return;
     }
 

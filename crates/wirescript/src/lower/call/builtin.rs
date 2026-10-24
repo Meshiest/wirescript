@@ -14,7 +14,8 @@ use super::*;
 fn enum_config_discriminant(ctx: &LowerCtx, arg_expr: &Expr, enum_type: &str) -> Option<i64> {
     let lookup = |n: &str| ctx.resolve_mod(n);
     let mut budget = crate::const_eval::Budget::default();
-    let lit = crate::const_eval::eval_expr(arg_expr, &ctx.const_ctx(Some(&lookup)), &mut budget).ok()?;
+    let lit =
+        crate::const_eval::eval_expr(arg_expr, &ctx.const_ctx(Some(&lookup)), &mut budget).ok()?;
     let Literal::Record(fields) = lit else {
         return None;
     };
@@ -35,7 +36,10 @@ fn scrub_param_type(t: Type) -> Type {
         Type::Param(_) => Type::Any,
         Type::Array(inner) => Type::Array(Box::new(scrub_param_type(*inner))),
         Type::Ref(inner) => Type::Ref(Box::new(scrub_param_type(*inner))),
-        Type::Map(k, v) => Type::Map(Box::new(scrub_param_type(*k)), Box::new(scrub_param_type(*v))),
+        Type::Map(k, v) => Type::Map(
+            Box::new(scrub_param_type(*k)),
+            Box::new(scrub_param_type(*v)),
+        ),
         Type::Union(opts) => Type::Union(opts.into_iter().map(scrub_param_type).collect()),
         Type::Tuple(fs) => Type::Tuple(fs.into_iter().map(scrub_param_type).collect()),
         Type::Record(fs) => Type::Record(
@@ -54,11 +58,16 @@ fn scrub_param_type(t: Type) -> Type {
 /// The value type an `abs`/`min`/`max`/`clamp`/`Dampen` call resolved to,
 /// which each of its math-variant ports carries.
 fn math_variant(ctx: &LowerCtx, spec: &crate::catalog::calls::CallSpec, e: &Expr) -> Option<Type> {
-    if !matches!(spec.gate_class, gc::MATH_ABS | gc::MATH_MIN | gc::MATH_MAX | gc::MATH_CLAMP | gc::DAMPEN) {
+    if !matches!(
+        spec.gate_class,
+        gc::MATH_ABS | gc::MATH_MIN | gc::MATH_MAX | gc::MATH_CLAMP | gc::DAMPEN
+    ) {
         return None;
     }
     match ctx.type_at(e.range()).map(|t| unwrap_ref(&t)) {
-        Some(t @ (Type::Int | Type::Float | Type::Vector | Type::Rotator | Type::Quat | Type::Color)) => Some(t),
+        Some(
+            t @ (Type::Int | Type::Float | Type::Vector | Type::Rotator | Type::Quat | Type::Color),
+        ) => Some(t),
         _ => Some(Type::Float),
     }
 }
@@ -88,10 +97,16 @@ fn select_of_records(
     e: &Expr,
     range: &SourceRange,
 ) -> Option<PortRef> {
-    if spec.name != "Select" || !matches!(unwrap_ref(&ctx.type_of(e)), Type::Record(_) | Type::Enum { .. }) {
+    if spec.name != "Select"
+        || !matches!(
+            unwrap_ref(&ctx.type_of(e)),
+            Type::Record(_) | Type::Enum { .. }
+        )
+    {
         return None;
     }
-    let [cond, a, b] = [0, 1, 2].map(|i| spec.params.get(i).and_then(|p| bound.get(p.name).copied()));
+    let [cond, a, b] =
+        [0, 1, 2].map(|i| spec.params.get(i).and_then(|p| bound.get(p.name).copied()));
     let (cond, a, b) = (cond?, a?, b?);
     let cond_port = lower_expr(ctx, cond);
     let a_fields = crate::lower::stmt::choice_branch_fields(ctx, a, e.range())?;
@@ -365,7 +380,10 @@ pub(in crate::lower) fn lower_builtin_call(
     order.sort_by_key(|&i| wired[i].1.range().start.offset);
     let exprs: Vec<&Expr> = order.iter().map(|&i| wired[i].1).collect();
     let mut ports = vec![None; wired.len()];
-    for (i, port) in order.into_iter().zip(crate::lower::ordered::lower_in_order(ctx, &exprs)) {
+    for (i, port) in order
+        .into_iter()
+        .zip(crate::lower::ordered::lower_in_order(ctx, &exprs))
+    {
         ports[i] = Some(port);
     }
     for ((port, _), val_port) in wired.iter().zip(ports) {
@@ -425,7 +443,11 @@ pub(in crate::lower) fn lower_builtin_call(
                 // default), so report WS028 when typecheck's acceptance and
                 // lowering's fold diverge. A non-scalar cfg type is not bakeable
                 // on this path and is left alone.
-                None if matches!(cfg.ty.as_str(), "bool" | "int" | "float" | "string" | "enum") => {
+                None if matches!(
+                    cfg.ty.as_str(),
+                    "bool" | "int" | "float" | "string" | "enum"
+                ) =>
+                {
                     ctx.error(
                         "WS028",
                         format!(
@@ -457,17 +479,18 @@ pub(in crate::lower) fn lower_builtin_call(
     // `ExecIn`. Wire into whichever the real component actually exposes, or the
     // game rejects the connection ("port Exec does not exist in target
     // component") when the save loads.
-    let exec_in_port = if spec.exec
-        && crate::catalog::is_wire_input(spec.gate_class, WirePort::ExecIn.as_str())
-    {
-        WirePort::ExecIn
-    } else {
-        WirePort::Exec
-    };
+    let exec_in_port =
+        if spec.exec && crate::catalog::is_wire_input(spec.gate_class, WirePort::ExecIn.as_str()) {
+            WirePort::ExecIn
+        } else {
+            WirePort::Exec
+        };
 
     let mut ports = GateIO::default();
     if spec.exec {
-        ports.inputs.push(PortSpec::exec(intern(exec_in_port.as_str())));
+        ports
+            .inputs
+            .push(PortSpec::exec(intern(exec_in_port.as_str())));
         ports.outputs.push(PortSpec::exec(*sym::EXEC_OUT));
     }
     // Generic passthrough builtins (`Sleep`/`SleepTicks`/`Select`/`Swap`) declare
@@ -497,7 +520,10 @@ pub(in crate::lower) fn lower_builtin_call(
                 (outs, Type::Record(fields)) => {
                     for out in outs {
                         let name = crate::catalog::arrays::field_name_ref(out.port.as_str());
-                        if let Some((_, t)) = fields.iter().find(|(n, _)| n == name || n == out.port.as_str()) {
+                        if let Some((_, t)) = fields
+                            .iter()
+                            .find(|(n, _)| n == name || n == out.port.as_str())
+                        {
                             crate::types::mono::collect(&out.ty, t, &mut constraints);
                         }
                     }
@@ -573,16 +599,23 @@ pub(in crate::lower) fn lower_builtin_call(
                 ty = t;
             }
         }
-        ports.inputs.push(PortSpec::new(intern(p.port.as_str()), ty));
+        ports
+            .inputs
+            .push(PortSpec::new(intern(p.port.as_str()), ty));
     }
     for out in &spec.outputs {
         let ty = concrete(&out.ty);
-        ports.outputs.push(PortSpec::new(intern(out.port.as_str()), ty));
+        ports
+            .outputs
+            .push(PortSpec::new(intern(out.port.as_str()), ty));
     }
     if unpinned && !ctx.template_build {
         ctx.error(
             crate::diagnostic::INTERNAL_ERROR,
-            format!("internal: no port of `{}` pins its type parameter, so it would be typed `any`", spec.name),
+            format!(
+                "internal: no port of `{}` pins its type parameter, so it would be typed `any`",
+                spec.name
+            ),
             e.range(),
         );
     }
@@ -609,7 +642,10 @@ pub(in crate::lower) fn lower_builtin_call(
 
     // `GetMicrochipBrick()` is a var emit fills with the program's own microchip brick.
     if spec.name == "GetMicrochipBrick" {
-        properties.insert(intern(crate::lower::function::MICROCHIP_BRICK), Literal::Bool(true));
+        properties.insert(
+            intern(crate::lower::function::MICROCHIP_BRICK),
+            Literal::Bool(true),
+        );
     }
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: spec.gate_class,

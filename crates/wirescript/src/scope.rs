@@ -89,7 +89,11 @@ impl<V> Default for Scope<V> {
 impl<V> Scope<V> {
     pub fn new() -> Self {
         Self {
-            frames: vec![Frame { tag: ScopeTag::ROOT, id: next_frame_id(), entries: HashMap::default() }],
+            frames: vec![Frame {
+                tag: ScopeTag::ROOT,
+                id: next_frame_id(),
+                entries: HashMap::default(),
+            }],
             floor: 0,
             rev: 0,
             base: 0,
@@ -124,7 +128,11 @@ impl<V> Scope<V> {
     }
 
     pub fn push(&mut self, tag: ScopeTag) {
-        self.frames.push(Frame { tag, id: next_frame_id(), entries: HashMap::default() });
+        self.frames.push(Frame {
+            tag,
+            id: next_frame_id(),
+            entries: HashMap::default(),
+        });
         self.bump();
     }
 
@@ -148,7 +156,9 @@ impl<V> Scope<V> {
     /// Each frame by-name resolution can see, innermost first: its index and
     /// its id.
     pub fn visible_frame_ids(&self) -> impl Iterator<Item = (usize, u64)> + '_ {
-        (self.floor..self.frames.len()).rev().map(|i| (i, self.frames[i].id))
+        (self.floor..self.frames.len())
+            .rev()
+            .map(|i| (i, self.frames[i].id))
     }
 
     /// The id of the innermost frame.
@@ -200,14 +210,18 @@ impl<V> Scope<V> {
     /// frame at or above the floor that binds it.
     pub fn visible_frame(&self, key: &str) -> Option<usize> {
         let sym = crate::intern::intern(key);
-        (self.floor..self.frames.len()).rev().find(|&i| self.frames[i].entries.contains_key(&sym))
+        (self.floor..self.frames.len())
+            .rev()
+            .find(|&i| self.frames[i].entries.contains_key(&sym))
     }
 
     /// Every binding of `key` by-name resolution can see, innermost first,
     /// with the index of its frame.
     pub fn visible_bindings(&self, key: &str) -> impl Iterator<Item = (usize, &V)> {
         let sym = crate::intern::intern(key);
-        (self.floor..self.frames.len()).rev().filter_map(move |i| self.frames[i].entries.get(&sym).map(|v| (i, v)))
+        (self.floor..self.frames.len())
+            .rev()
+            .filter_map(move |i| self.frames[i].entries.get(&sym).map(|v| (i, v)))
     }
 
     /// The binding of `key` in the frame at `index`, that frame alone.
@@ -272,17 +286,22 @@ impl<V> Scope<V> {
 
     /// Iterate all entries across all frames (newest first).
     pub fn iter(&self) -> impl Iterator<Item = (&str, &V)> {
-        self.frames.iter().rev().flat_map(|f| f.entries.iter().map(|(k, v)| (crate::intern::resolve(*k), v)))
+        self.frames.iter().rev().flat_map(|f| {
+            f.entries
+                .iter()
+                .map(|(k, v)| (crate::intern::resolve(*k), v))
+        })
     }
 
     /// Iterate every entry `get` can reach: the frames at or above the floor,
     /// innermost first. A name declared in two open frames is yielded once per
     /// frame, so a caller that cares about distinct names dedupes by key.
     pub fn iter_visible(&self) -> impl Iterator<Item = (&str, &V)> {
-        self.frames[self.floor..]
-            .iter()
-            .rev()
-            .flat_map(|f| f.entries.iter().map(|(k, v)| (crate::intern::resolve(*k), v)))
+        self.frames[self.floor..].iter().rev().flat_map(|f| {
+            f.entries
+                .iter()
+                .map(|(k, v)| (crate::intern::resolve(*k), v))
+        })
     }
 
     /// Index of the innermost frame binding `key` to a value `pred` accepts.
@@ -328,13 +347,20 @@ impl<V> Scope<V> {
     /// Push a frame holding `entries` that stands for frame `id`: a copy of
     /// it, which a later [`frames`](Self::frames) reports under the same id.
     pub fn push_as(&mut self, tag: ScopeTag, id: u64, entries: impl IntoIterator<Item = (Sym, V)>) {
-        self.frames.push(Frame { tag, id, entries: entries.into_iter().collect() });
+        self.frames.push(Frame {
+            tag,
+            id,
+            entries: entries.into_iter().collect(),
+        });
         self.bump();
     }
 
     /// The bindings of the frame at `index`.
     pub fn frame_entries(&self, index: usize) -> impl Iterator<Item = (Sym, &V)> {
-        self.frames.get(index).into_iter().flat_map(|f| f.entries.iter().map(|(k, v)| (*k, v)))
+        self.frames
+            .get(index)
+            .into_iter()
+            .flat_map(|f| f.entries.iter().map(|(k, v)| (*k, v)))
     }
 
     /// Every frame, outermost first: its tag, its id and its entries.
@@ -348,9 +374,20 @@ impl<V> Scope<V> {
     /// The first becomes the root whatever its tag; an empty list gives
     /// [`Scope::new`].
     pub fn from_frames(frames: Vec<FrameCopy<V>>) -> Self {
-        let mut scope = Self { frames: Vec::new(), floor: 0, rev: 0, base: 0, inserts: Vec::new() }.bumped();
+        let mut scope = Self {
+            frames: Vec::new(),
+            floor: 0,
+            rev: 0,
+            base: 0,
+            inserts: Vec::new(),
+        }
+        .bumped();
         for (tag, id, entries) in frames {
-            scope.frames.push(Frame { tag, id, entries: entries.into_iter().collect() });
+            scope.frames.push(Frame {
+                tag,
+                id,
+                entries: entries.into_iter().collect(),
+            });
         }
         match scope.frames.first_mut() {
             Some(root) => root.tag = ScopeTag::ROOT,
@@ -362,12 +399,19 @@ impl<V> Scope<V> {
     /// Iterate entries from the top frame downward, stopping when a frame
     /// whose tag intersects `boundary` is reached (that frame IS included).
     pub fn iter_within(&self, boundary: ScopeTag) -> impl Iterator<Item = (&str, &V)> {
-        let start = self.frames.iter().enumerate().rev()
+        let start = self
+            .frames
+            .iter()
+            .enumerate()
+            .rev()
             .find(|(_, f)| f.tag.intersects(boundary))
             .map(|(i, _)| i)
             .unwrap_or(0);
-        self.frames[start..].iter().rev()
-            .flat_map(|f| f.entries.iter().map(|(k, v)| (crate::intern::resolve(*k), v)))
+        self.frames[start..].iter().rev().flat_map(|f| {
+            f.entries
+                .iter()
+                .map(|(k, v)| (crate::intern::resolve(*k), v))
+        })
     }
 }
 

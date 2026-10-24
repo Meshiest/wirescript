@@ -171,8 +171,10 @@ pub fn check_args(
                 // A spread element has only a type; coerce it against the wire
                 // param directly (config params can't be spread-filled).
                 let param = &sig.params[idx];
-                if matches!(param.kind, ParamKind::Wire | ParamKind::WireEnum(_) | ParamKind::Const)
-                    && !crate::typecheck::type_has_param(&param.ty)
+                if matches!(
+                    param.kind,
+                    ParamKind::Wire | ParamKind::WireEnum(_) | ParamKind::Const
+                ) && !crate::typecheck::type_has_param(&param.ty)
                     && coerce(&unwrap_ref(ty), &unwrap_ref(&param.ty)) == CoerceRule::Mismatch
                 {
                     ctx.emit(
@@ -254,7 +256,9 @@ pub(super) fn brick_property_member(property: &Expr) -> Option<i64> {
         Expr::StringLit { value, .. } => crate::catalog::enum_member_value(ENUM, value),
         Expr::IntLit { value, .. } => Some(*value),
         Expr::FieldAccess { obj, field, .. } => match obj.as_ref() {
-            Expr::Ident { name, .. } if crate::catalog::game_enum_schema_type(name) == Some(ENUM) => {
+            Expr::Ident { name, .. }
+                if crate::catalog::game_enum_schema_type(name) == Some(ENUM) =>
+            {
                 crate::catalog::builtin_game_enums()
                     .into_iter()
                     .find(|e| e.schema_type == ENUM)
@@ -281,7 +285,12 @@ pub(super) fn brick_property_type(member: i64) -> Option<Type> {
 /// `SetBrickProperty`'s value takes the type of the setting it writes (see
 /// [`brick_property_type`]). The setting is a constant, so the mismatch is
 /// caught here rather than written to a brick that silently ignores it.
-fn check_brick_property_value(ctx: &mut TypeCheckCtx, sig: &CallSignature, args: &[CallArg], pos_base: usize) {
+fn check_brick_property_value(
+    ctx: &mut TypeCheckCtx,
+    sig: &CallSignature,
+    args: &[CallArg],
+    pos_base: usize,
+) {
     const ENUM: &str = BRICK_PROPERTY;
     if args.iter().any(|a| matches!(a, CallArg::Spread(_))) {
         return;
@@ -292,7 +301,11 @@ fn check_brick_property_value(ctx: &mut TypeCheckCtx, sig: &CallSignature, args:
             _ => None,
         });
         named.or_else(|| {
-            let idx = sig.params.iter().position(|p| p.name == name)?.checked_sub(pos_base)?;
+            let idx = sig
+                .params
+                .iter()
+                .position(|p| p.name == name)?
+                .checked_sub(pos_base)?;
             args.iter()
                 .filter_map(|a| match a {
                     CallArg::Positional(e) => Some(e),
@@ -304,8 +317,12 @@ fn check_brick_property_value(ctx: &mut TypeCheckCtx, sig: &CallSignature, args:
     let (Some(property), Some(value)) = (arg_for("property"), arg_for("value")) else {
         return;
     };
-    let Some(member) = brick_property_member(property) else { return };
-    let Some(want) = brick_property_type(member) else { return };
+    let Some(member) = brick_property_member(property) else {
+        return;
+    };
+    let Some(want) = brick_property_type(member) else {
+        return;
+    };
     let got = unwrap_ref(&arg_type(ctx, value));
     if coerce(&got, &want) == CoerceRule::Mismatch {
         let setting = crate::catalog::enum_member_names(ENUM)
@@ -330,11 +347,21 @@ fn check_brick_property_value(ctx: &mut TypeCheckCtx, sig: &CallSignature, args:
 fn check_one_arg(ctx: &mut TypeCheckCtx, sig: &CallSignature, param: &Param, arg_expr: &Expr) {
     match param.kind {
         ParamKind::ConfigEnum(enum_type) => {
-            validate_enum_config_arg(ctx, enum_type, &format!("`{}` setting `{}`", sig.name, param.name), arg_expr);
+            validate_enum_config_arg(
+                ctx,
+                enum_type,
+                &format!("`{}` setting `{}`", sig.name, param.name),
+                arg_expr,
+            );
         }
         ParamKind::WireEnum(enum_type) => {
             if is_enum_constant_arg(ctx, enum_type, arg_expr) {
-                validate_enum_config_arg(ctx, enum_type, &format!("`{}` setting `{}`", sig.name, param.name), arg_expr);
+                validate_enum_config_arg(
+                    ctx,
+                    enum_type,
+                    &format!("`{}` setting `{}`", sig.name, param.name),
+                    arg_expr,
+                );
             } else if !wire_arg_is_game_enum(ctx, enum_type, arg_expr) {
                 check_wire_arg(ctx, arg_expr, param);
             }
@@ -393,7 +420,9 @@ fn check_record_lit_ref_fields(ctx: &mut TypeCheckCtx, param: &Param, arg_expr: 
     };
     for f in fields {
         let (name, value, frange) = match f {
-            crate::ast::RecordLitField::Named { name, value, range } => (name.as_str(), Some(value), range),
+            crate::ast::RecordLitField::Named { name, value, range } => {
+                (name.as_str(), Some(value), range)
+            }
             crate::ast::RecordLitField::Shorthand { name, range } => (name.as_str(), None, range),
             crate::ast::RecordLitField::Spread { .. } => continue,
         };
@@ -486,7 +515,9 @@ pub(super) fn field_names_storage(ctx: &TypeCheckCtx, arg_expr: &Expr) -> bool {
                 .and_then(|m| m.get(member.as_str()))
                 .is_some_and(|info| match info.kind {
                     SymbolKind::Var | SymbolKind::Array | SymbolKind::Map => true,
-                    SymbolKind::LetBinding => crate::typecheck::infer::projection_is_place(ctx, arg_expr),
+                    SymbolKind::LetBinding => {
+                        crate::typecheck::infer::projection_is_place(ctx, arg_expr)
+                    }
                     _ => false,
                 })
         }),
@@ -498,10 +529,12 @@ pub(super) fn field_names_storage(ctx: &TypeCheckCtx, arg_expr: &Expr) -> bool {
                         Some((_, ft)) => ft.clone(),
                         None => return false,
                     },
-                    Type::Tuple(fields) => match seg.parse::<usize>().ok().and_then(|i| fields.get(i)) {
-                        Some(ft) => ft.clone(),
-                        None => return false,
-                    },
+                    Type::Tuple(fields) => {
+                        match seg.parse::<usize>().ok().and_then(|i| fields.get(i)) {
+                            Some(ft) => ft.clone(),
+                            None => return false,
+                        }
+                    }
                     Type::Ref(_) if seg == "Value" || seg == "prev" => t.clone(),
                     _ => return false,
                 };
@@ -559,7 +592,10 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
                     };
                     ctx.emit(
                         "WS003",
-                        format!("argument '{}': expected {want}, got {raw}{hint}", param.name),
+                        format!(
+                            "argument '{}': expected {want}, got {raw}{hint}",
+                            param.name
+                        ),
                         arg_expr.range().clone(),
                     );
                 }
@@ -571,8 +607,10 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
         let ok = match arg_expr {
             Expr::Ident { name, .. } => match ctx.scope.lookup(name) {
                 Some(s) => {
-                    matches!(s.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map)
-                        || (s.kind == SymbolKind::Param && matches!(&s.ty, Type::Ref(_)))
+                    matches!(
+                        s.kind,
+                        SymbolKind::Var | SymbolKind::Array | SymbolKind::Map
+                    ) || (s.kind == SymbolKind::Param && matches!(&s.ty, Type::Ref(_)))
                         || (s.kind == SymbolKind::In && matches!(unwrap_ref(&s.ty), Type::Array(_)))
                         || (s.kind == SymbolKind::LetBinding
                             && matches!(unwrap_ref(&s.ty), Type::Array(_) | Type::Map(_, _)))
@@ -666,14 +704,19 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
     if crate::typecheck::infer::record_into_one_value(ctx, arg_expr, &arg_ty, &param_ty) {
         if matches!(arg_ty, Type::Record(_)) {
             let r = arg_expr.range();
-            ctx.resolutions.rejected_record_args.insert((r.file.clone(), r.start.offset, r.end.offset));
+            ctx.resolutions.rejected_record_args.insert((
+                r.file.clone(),
+                r.start.offset,
+                r.end.offset,
+            ));
         }
         return;
     }
     // A generic enum value built in the argument (`Opt.Some(7)` for an
     // `Opt<float>` parameter) is built at the parameter's instantiation, as an
     // annotated `let` or `var` builds it. Kept only when that checks cleanly.
-    if let (Type::Enum { name: pn, args: pa }, Type::Enum { name: an, args: aa }) = (&param_ty, &arg_ty)
+    if let (Type::Enum { name: pn, args: pa }, Type::Enum { name: an, args: aa }) =
+        (&param_ty, &arg_ty)
         && pn == an
         && !pa.is_empty()
         && pa != aa
@@ -681,10 +724,16 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
         let before = ctx.diagnostics.len();
         crate::typecheck::infer::check(ctx, arg_expr, &param_ty);
         let (old, new) = ctx.diagnostics.split_at(before);
-        if !new.iter().any(|d| d.severity == crate::diagnostic::Severity::Error) {
+        if !new
+            .iter()
+            .any(|d| d.severity == crate::diagnostic::Severity::Error)
+        {
             let repeats: Vec<bool> = new
                 .iter()
-                .map(|d| old.iter().any(|o| o.code == d.code && o.message == d.message && o.range == d.range))
+                .map(|d| {
+                    old.iter()
+                        .any(|o| o.code == d.code && o.message == d.message && o.range == d.range)
+                })
                 .collect();
             let mut i = 0;
             ctx.diagnostics.retain(|_| {

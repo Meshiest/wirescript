@@ -17,9 +17,22 @@ pub enum Value {
     Float(f64),
     Bool(bool),
     Str(String),
-    Vector { x: f64, y: f64, z: f64 },
-    Rotator { pitch: f64, yaw: f64, roll: f64 },
-    Quat { x: f64, y: f64, z: f64, w: f64 },
+    Vector {
+        x: f64,
+        y: f64,
+        z: f64,
+    },
+    Rotator {
+        pitch: f64,
+        yaw: f64,
+        roll: f64,
+    },
+    Quat {
+        x: f64,
+        y: f64,
+        z: f64,
+        w: f64,
+    },
     /// Linear-space RGBA (0-1 components) — the wire `LinearColor` variant.
     /// `ColorToHex` converts FROM this at a certified sRGB gamma boundary
     /// (round-trip-verified — see `color_to_hex`'s doc comment); the
@@ -28,7 +41,12 @@ pub enum Value {
     /// those two functions' doc comments — both hard-refuse in production
     /// folding as a result). Every OTHER composite/color op just carries it
     /// through untouched.
-    Color { r: f64, g: f64, b: f64, a: f64 },
+    Color {
+        r: f64,
+        g: f64,
+        b: f64,
+        a: f64,
+    },
 }
 
 impl Value {
@@ -50,17 +68,31 @@ impl Value {
             Literal::Float(f) => Some(Value::Float(*f)),
             Literal::Bool(b) => Some(Value::Bool(*b)),
             Literal::String(s) => Some(Value::Str(s.clone())),
-            Literal::Vector { x, y, z } => Some(Value::Vector { x: *x, y: *y, z: *z }),
-            Literal::Rotator { pitch, yaw, roll } => {
-                Some(Value::Rotator { pitch: *pitch, yaw: *yaw, roll: *roll })
-            }
-            Literal::Quat { x, y, z, w } => Some(Value::Quat { x: *x, y: *y, z: *z, w: *w }),
+            Literal::Vector { x, y, z } => Some(Value::Vector {
+                x: *x,
+                y: *y,
+                z: *z,
+            }),
+            Literal::Rotator { pitch, yaw, roll } => Some(Value::Rotator {
+                pitch: *pitch,
+                yaw: *yaw,
+                roll: *roll,
+            }),
+            Literal::Quat { x, y, z, w } => Some(Value::Quat {
+                x: *x,
+                y: *y,
+                z: *z,
+                w: *w,
+            }),
             // `Literal::LinearColor` IS this fold pass's own composite Color
             // shape (its doc comment says as much: "produced by folding a
             // constant Color(r, g, b, a?) call") — pass through untouched.
-            Literal::LinearColor { r, g, b, a } => {
-                Some(Value::Color { r: *r, g: *g, b: *b, a: *a })
-            }
+            Literal::LinearColor { r, g, b, a } => Some(Value::Color {
+                r: *r,
+                g: *g,
+                b: *b,
+                a: *a,
+            }),
             // `Literal::Color` (u8 0-255) is a DIFFERENT, pre-existing
             // representation (brick-paint literals — see emit.rs's
             // `Literal::Color -> WireVariant::LinearColor` arm) that
@@ -87,15 +119,31 @@ impl Value {
             Value::Float(f) => Literal::Float(*f),
             Value::Bool(b) => Literal::Bool(*b),
             Value::Str(s) => Literal::String(s.clone()),
-            Value::Vector { x, y, z } => Literal::Vector { x: *x, y: *y, z: *z },
-            Value::Rotator { pitch, yaw, roll } => {
-                Literal::Rotator { pitch: *pitch, yaw: *yaw, roll: *roll }
-            }
-            Value::Quat { x, y, z, w } => Literal::Quat { x: *x, y: *y, z: *z, w: *w },
+            Value::Vector { x, y, z } => Literal::Vector {
+                x: *x,
+                y: *y,
+                z: *z,
+            },
+            Value::Rotator { pitch, yaw, roll } => Literal::Rotator {
+                pitch: *pitch,
+                yaw: *yaw,
+                roll: *roll,
+            },
+            Value::Quat { x, y, z, w } => Literal::Quat {
+                x: *x,
+                y: *y,
+                z: *z,
+                w: *w,
+            },
             // The inverse of `from_literal`'s `LinearColor` arm — always
             // round-trips through the exact linear representation, never
             // the lossy u8 `Literal::Color` shape.
-            Value::Color { r, g, b, a } => Literal::LinearColor { r: *r, g: *g, b: *b, a: *a },
+            Value::Color { r, g, b, a } => Literal::LinearColor {
+                r: *r,
+                g: *g,
+                b: *b,
+                a: *a,
+            },
         }
     }
 }
@@ -179,9 +227,16 @@ const G_MATH_MODULO: &str = "MathModulo";
 /// assert against the SAME list `eval()` actually refuses against, rather
 /// than a hand-copied mirror that could silently drift.
 const DEFERRED: &[&str] = &[
-    G_VEC_MAGNITUDE, G_VEC_NORMALIZE, G_VEC_DISTANCE, G_QUAT_SLERP,
-    G_QUAT_FROM_AXIS_ANGLE, G_QUAT_ANGLE_BETWEEN, G_QUAT_BETWEEN,
-    G_DIRECTION_TO_ROTATION, G_ROTATION_TO_DIRECTION, G_COLOR_BLEND,
+    G_VEC_MAGNITUDE,
+    G_VEC_NORMALIZE,
+    G_VEC_DISTANCE,
+    G_QUAT_SLERP,
+    G_QUAT_FROM_AXIS_ANGLE,
+    G_QUAT_ANGLE_BETWEEN,
+    G_QUAT_BETWEEN,
+    G_DIRECTION_TO_ROTATION,
+    G_ROTATION_TO_DIRECTION,
+    G_COLOR_BLEND,
 ];
 
 /// MUST-REFUSE — blank-render-only evidence, ZERO transitive certification:
@@ -204,7 +259,10 @@ const DEFERRED: &[&str] = &[
 /// Module-level for the same reason as `DEFERRED` — see
 /// `blank_render_gates_always_refuse` in the test module below.
 const BLANK_RENDER_REFUSED: &[&str] = &[
-    G_MAKE_ROTATION, G_MAKE_COLOR_SRGB, G_MAKE_COLOR_HEX, G_INVERT_ROTATION,
+    G_MAKE_ROTATION,
+    G_MAKE_COLOR_SRGB,
+    G_MAKE_COLOR_HEX,
+    G_INVERT_ROTATION,
 ];
 
 /// Certified: non-finite floats sanitize to 0 at gate INPUTS.
@@ -224,8 +282,9 @@ pub(crate) fn truthy(v: Option<&Value>) -> bool {
         // Never probed (Select/Branch chapters are scalar-only) and no
         // composite-producing gate ever feeds a condition port in this
         // table — dead in practice, but `truthy` must stay total.
-        Some(Value::Vector { .. } | Value::Rotator { .. }
-            | Value::Quat { .. } | Value::Color { .. }) => false,
+        Some(
+            Value::Vector { .. } | Value::Rotator { .. } | Value::Quat { .. } | Value::Color { .. },
+        ) => false,
     }
 }
 
@@ -323,7 +382,11 @@ pub(crate) fn render_for_format(v: &Value) -> String {
             let (neg, int_part, frac) = round3(*f);
             let grouped = group_thousands(&int_part);
             let sign = if neg { "-" } else { "" };
-            if frac.is_empty() { format!("{sign}{grouped}") } else { format!("{sign}{grouped}.{frac}") }
+            if frac.is_empty() {
+                format!("{sign}{grouped}")
+            } else {
+                format!("{sign}{grouped}.{frac}")
+            }
         }
         Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
         Value::Str(s) => s.clone(),
@@ -356,7 +419,11 @@ pub(crate) fn render(v: &Value) -> String {
             let (neg, int_part, frac) = round3(*f);
             let grouped = group_thousands(&int_part);
             let sign = if neg { "-" } else { "" };
-            if frac.is_empty() { format!("{sign}{grouped}") } else { format!("{sign}{grouped}.{frac}") }
+            if frac.is_empty() {
+                format!("{sign}{grouped}")
+            } else {
+                format!("{sign}{grouped}.{frac}")
+            }
         }
         _ => render_for_format(v),
     }
@@ -376,7 +443,11 @@ fn concat_display(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Int(n) => n.to_string(),
         Value::Float(f) => {
-            if !f.is_finite() || *f == 0.0 { "0".to_string() } else { format!("{f}") }
+            if !f.is_finite() || *f == 0.0 {
+                "0".to_string()
+            } else {
+                format!("{f}")
+            }
         }
         Value::Str(s) => s.clone(),
         _ => render_for_format(v), // composites: never probed in Concatenate; same law as elsewhere
@@ -399,8 +470,9 @@ fn ord_num(v: Option<&Value>) -> Option<f64> {
         Some(Value::Float(f)) => sanitize(*f),
         Some(Value::Bool(b)) => *b as i64 as f64,
         Some(Value::Str(s)) => s.parse::<f64>().map(sanitize).unwrap_or(0.0),
-        Some(Value::Vector { .. } | Value::Rotator { .. }
-            | Value::Quat { .. } | Value::Color { .. }) => return None, // never probed
+        Some(
+            Value::Vector { .. } | Value::Rotator { .. } | Value::Quat { .. } | Value::Color { .. },
+        ) => return None, // never probed
     })
 }
 
@@ -421,16 +493,40 @@ fn eq(a: Option<&Value>, b: Option<&Value>) -> Option<bool> {
             Float(_) => Float(0.0),
             Bool(_) => Bool(false),
             Str(_) => Str(String::new()),
-            Vector { .. } => Vector { x: 0.0, y: 0.0, z: 0.0 },
-            Rotator { .. } => Rotator { pitch: 0.0, yaw: 0.0, roll: 0.0 },
-            Quat { .. } => Quat { x: 0.0, y: 0.0, z: 0.0, w: 0.0 },
-            Color { .. } => Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
+            Vector { .. } => Vector {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            Rotator { .. } => Rotator {
+                pitch: 0.0,
+                yaw: 0.0,
+                roll: 0.0,
+            },
+            Quat { .. } => Quat {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 0.0,
+            },
+            Color { .. } => Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            },
         }
     };
     let (a, b) = match (a, b) {
         (Some(a), Some(b)) => (a.clone(), b.clone()),
-        (Some(a), None) => { let d = default_for(a); (a.clone(), d) }
-        (None, Some(b)) => { let d = default_for(b); (d, b.clone()) }
+        (Some(a), None) => {
+            let d = default_for(a);
+            (a.clone(), d)
+        }
+        (None, Some(b)) => {
+            let d = default_for(b);
+            (d, b.clone())
+        }
         (None, None) => return None, // not in table
     };
     Some(match (&a, &b) {
@@ -443,21 +539,75 @@ fn eq(a: Option<&Value>, b: Option<&Value>) -> Option<bool> {
         // Certified (int:N str:S direction): canonical int rendering compared
         // as a string ("1"=="1" T, ""=="0"'s int-0 F, "1.0" F).
         (Int(x), Str(s)) | (Str(s), Int(x)) => &x.to_string() == s,
-        (Vector { x: x1, y: y1, z: z1 }, Vector { x: x2, y: y2, z: z2 }) => {
-            sanitize(*x1) == sanitize(*x2) && sanitize(*y1) == sanitize(*y2)
+        (
+            Vector {
+                x: x1,
+                y: y1,
+                z: z1,
+            },
+            Vector {
+                x: x2,
+                y: y2,
+                z: z2,
+            },
+        ) => {
+            sanitize(*x1) == sanitize(*x2)
+                && sanitize(*y1) == sanitize(*y2)
                 && sanitize(*z1) == sanitize(*z2)
         }
-        (Rotator { pitch: p1, yaw: y1, roll: r1 }, Rotator { pitch: p2, yaw: y2, roll: r2 }) => {
-            sanitize(*p1) == sanitize(*p2) && sanitize(*y1) == sanitize(*y2)
+        (
+            Rotator {
+                pitch: p1,
+                yaw: y1,
+                roll: r1,
+            },
+            Rotator {
+                pitch: p2,
+                yaw: y2,
+                roll: r2,
+            },
+        ) => {
+            sanitize(*p1) == sanitize(*p2)
+                && sanitize(*y1) == sanitize(*y2)
                 && sanitize(*r1) == sanitize(*r2)
         }
-        (Quat { x: x1, y: y1, z: z1, w: w1 }, Quat { x: x2, y: y2, z: z2, w: w2 }) => {
-            sanitize(*x1) == sanitize(*x2) && sanitize(*y1) == sanitize(*y2)
-                && sanitize(*z1) == sanitize(*z2) && sanitize(*w1) == sanitize(*w2)
+        (
+            Quat {
+                x: x1,
+                y: y1,
+                z: z1,
+                w: w1,
+            },
+            Quat {
+                x: x2,
+                y: y2,
+                z: z2,
+                w: w2,
+            },
+        ) => {
+            sanitize(*x1) == sanitize(*x2)
+                && sanitize(*y1) == sanitize(*y2)
+                && sanitize(*z1) == sanitize(*z2)
+                && sanitize(*w1) == sanitize(*w2)
         }
-        (Color { r: r1, g: g1, b: b1, a: a1 }, Color { r: r2, g: g2, b: b2, a: a2 }) => {
-            sanitize(*r1) == sanitize(*r2) && sanitize(*g1) == sanitize(*g2)
-                && sanitize(*b1) == sanitize(*b2) && sanitize(*a1) == sanitize(*a2)
+        (
+            Color {
+                r: r1,
+                g: g1,
+                b: b1,
+                a: a1,
+            },
+            Color {
+                r: r2,
+                g: g2,
+                b: b2,
+                a: a2,
+            },
+        ) => {
+            sanitize(*r1) == sanitize(*r2)
+                && sanitize(*g1) == sanitize(*g2)
+                && sanitize(*b1) == sanitize(*b2)
+                && sanitize(*a1) == sanitize(*a2)
         }
         _ => return None, // float-str / bool-str / float-bool / cross-composite: unprobed
     })
@@ -474,7 +624,10 @@ fn cmp(a: Option<&Value>, b: Option<&Value>) -> Option<std::cmp::Ordering> {
 /// Math domain: Int/Bool/unwired stay in exact i64 (checked); any Float
 /// switches to f64 with input sanitize. Strings refuse (certified outputs
 /// contradict every parse model: "a"+1 recorded 0, not 1).
-enum MathIn { I(i64), F(f64) }
+enum MathIn {
+    I(i64),
+    F(f64),
+}
 fn math_in(v: Option<&Value>) -> Option<MathIn> {
     Some(match v {
         None => MathIn::I(0),
@@ -482,8 +635,9 @@ fn math_in(v: Option<&Value>) -> Option<MathIn> {
         Some(Value::Bool(b)) => MathIn::I(*b as i64),
         Some(Value::Float(f)) => MathIn::F(sanitize(*f)),
         Some(Value::Str(_)) => return None,
-        Some(Value::Vector { .. } | Value::Rotator { .. }
-            | Value::Quat { .. } | Value::Color { .. }) => return None, // routed to composite_math instead
+        Some(
+            Value::Vector { .. } | Value::Rotator { .. } | Value::Quat { .. } | Value::Color { .. },
+        ) => return None, // routed to composite_math instead
     })
 }
 
@@ -528,10 +682,22 @@ fn component_op(gate: &str, x: f64, y: f64) -> Option<f64> {
 /// non-finite guard for the plain scalar path (which only inspects
 /// `Value::Float`, not composite fields, so this is implemented locally).
 fn composite_math(gate: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
-    let finite3 = |x: f64, y: f64, z: f64| (x.is_finite() && y.is_finite() && z.is_finite())
-        .then_some(Value::Vector { x, y, z });
+    let finite3 = |x: f64, y: f64, z: f64| {
+        (x.is_finite() && y.is_finite() && z.is_finite()).then_some(Value::Vector { x, y, z })
+    };
     match (a, b) {
-        (Some(Value::Vector { x: x1, y: y1, z: z1 }), Some(Value::Vector { x: x2, y: y2, z: z2 })) => {
+        (
+            Some(Value::Vector {
+                x: x1,
+                y: y1,
+                z: z1,
+            }),
+            Some(Value::Vector {
+                x: x2,
+                y: y2,
+                z: z2,
+            }),
+        ) => {
             let x = component_op(gate, sanitize(*x1), sanitize(*x2))?;
             let y = component_op(gate, sanitize(*y1), sanitize(*y2))?;
             let z = component_op(gate, sanitize(*z1), sanitize(*z2))?;
@@ -568,24 +734,34 @@ fn math(gate: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
             g if g.ends_with(G_MATH_SUBTRACT) => x.checked_sub(y)?,
             g if g.ends_with(G_MATH_MULTIPLY) => x.checked_mul(y)?,
             g if g.ends_with(G_MATH_DIVIDE) => {
-                if y == 0 { 0 } // certified: div by zero -> 0
+                if y == 0 {
+                    0
+                }
+                // certified: div by zero -> 0
                 else {
                     // checked_rem first: None on i64::MIN % -1 (the same
                     // overflow that would make raw `x / y` panic below).
                     let rem = x.checked_rem(y)?;
                     // Truncation direction unprobed for mixed signs with a
                     // remainder — refuse rather than guess trunc vs floor.
-                    if (x < 0) != (y < 0) && rem != 0 { return None; }
+                    if (x < 0) != (y < 0) && rem != 0 {
+                        return None;
+                    }
                     x.checked_div(y)?
                 }
             }
             g if g.ends_with(G_MATH_MODULO) => {
-                if y == 0 { 0 } // certified: mod by zero -> 0
+                if y == 0 {
+                    0
+                }
+                // certified: mod by zero -> 0
                 else {
                     // checked_rem first: None on i64::MIN % -1 refuses before
                     // any raw `%` can panic (the guard itself must not panic).
                     let rem = x.checked_rem(y)?;
-                    if (x < 0 || y < 0) && rem != 0 { return None; }
+                    if (x < 0 || y < 0) && rem != 0 {
+                        return None;
+                    }
                     rem
                 }
             }
@@ -593,7 +769,10 @@ fn math(gate: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
         }));
     }
     let to_f = |m: MathIn| -> Option<f64> {
-        Some(match m { MathIn::I(n) => int_as_f64(n)?, MathIn::F(f) => f })
+        Some(match m {
+            MathIn::I(n) => int_as_f64(n)?,
+            MathIn::F(f) => f,
+        })
     };
     let (x, y) = (to_f(x)?, to_f(y)?);
     if gate.ends_with(G_MATH_MODULO) {
@@ -609,8 +788,8 @@ fn math(gate: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
         g if g.ends_with(G_MATH_ADD) => x + y,
         g if g.ends_with(G_MATH_SUBTRACT) => x - y,
         g if g.ends_with(G_MATH_MULTIPLY) => x * y,
-        g if g.ends_with(G_MATH_DIVIDE) => x / y,   // non-finite result: fold
-        _ => return None,                          // renders as "0"
+        g if g.ends_with(G_MATH_DIVIDE) => x / y, // non-finite result: fold
+        _ => return None,                         // renders as "0"
     }))
 }
 
@@ -623,12 +802,33 @@ fn math(gate: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
 // an edge case these laws would mishandle (domain errors, shift-by->=64, the
 // half-rounding tie direction), all of which stay unprobed -> unfolded.
 const EXTENDED_MATH: &[&str] = &[
-    "MathSin", "MathCos", "MathTan", "MathAsin", "MathAcos", "MathAtan",
-    "MathSinh", "MathCosh", "MathTanh", "MathAsinh", "MathAcosh", "MathAtanh",
-    "MathExp", "MathLn", "MathSqrt", "MathAbs", "MathSign", "MathNegate",
-    "MathDegreesToRadians", "MathRadiansToDegrees",
-    "MathAtan2", "MathPow", "MathMin", "MathMax", "MathLogBase",
-    "MathClamp", "MathModuloFloored",
+    "MathSin",
+    "MathCos",
+    "MathTan",
+    "MathAsin",
+    "MathAcos",
+    "MathAtan",
+    "MathSinh",
+    "MathCosh",
+    "MathTanh",
+    "MathAsinh",
+    "MathAcosh",
+    "MathAtanh",
+    "MathExp",
+    "MathLn",
+    "MathSqrt",
+    "MathAbs",
+    "MathSign",
+    "MathNegate",
+    "MathDegreesToRadians",
+    "MathRadiansToDegrees",
+    "MathAtan2",
+    "MathPow",
+    "MathMin",
+    "MathMax",
+    "MathLogBase",
+    "MathClamp",
+    "MathModuloFloored",
 ];
 
 fn as_float(v: Option<&Value>) -> Option<f64> {
@@ -651,7 +851,12 @@ fn as_int(v: Option<&Value>) -> Option<i64> {
 /// integer in, an integer out.
 const VARIANT_PRESERVING: &[&str] = &["MathAbs", "MathMin", "MathMax", "MathClamp"];
 
-fn integer_math(short: &str, a: Option<&Value>, b: Option<&Value>, c: Option<&Value>) -> Option<Value> {
+fn integer_math(
+    short: &str,
+    a: Option<&Value>,
+    b: Option<&Value>,
+    c: Option<&Value>,
+) -> Option<Value> {
     Some(Value::Int(match short {
         "MathAbs" => as_int(a)?.checked_abs()?,
         "MathMin" => as_int(a)?.min(as_int(b)?),
@@ -661,9 +866,17 @@ fn integer_math(short: &str, a: Option<&Value>, b: Option<&Value>, c: Option<&Va
     }))
 }
 
-fn extended_math(short: &str, a: Option<&Value>, b: Option<&Value>, c: Option<&Value>) -> Option<Value> {
+fn extended_math(
+    short: &str,
+    a: Option<&Value>,
+    b: Option<&Value>,
+    c: Option<&Value>,
+) -> Option<Value> {
     if VARIANT_PRESERVING.contains(&short)
-        && [a, b, c].into_iter().flatten().all(|v| matches!(v, Value::Int(_) | Value::Bool(_)))
+        && [a, b, c]
+            .into_iter()
+            .flatten()
+            .all(|v| matches!(v, Value::Int(_) | Value::Bool(_)))
     {
         return integer_math(short, a, b, c);
     }
@@ -686,7 +899,13 @@ fn extended_math(short: &str, a: Option<&Value>, b: Option<&Value>, c: Option<&V
         "MathAbs" => as_float(a)?.abs(),
         "MathSign" => {
             let x = as_float(a)?;
-            if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }
+            if x > 0.0 {
+                1.0
+            } else if x < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }
         }
         "MathNegate" => -as_float(a)?,
         "MathDegreesToRadians" => as_float(a)?.to_radians(),
@@ -719,12 +938,16 @@ fn bitwise(short: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
         // Shift amounts outside 0..63 are unprobed (UB in Rust) — refuse.
         "BitwiseShiftLeft" => {
             let s = as_int(b)?;
-            if !(0..64).contains(&s) { return None; }
+            if !(0..64).contains(&s) {
+                return None;
+            }
             as_int(a)? << s
         }
         "BitwiseShiftRight" => {
             let s = as_int(b)?;
-            if !(0..64).contains(&s) { return None; }
+            if !(0..64).contains(&s) {
+                return None;
+            }
             as_int(a)? >> s
         }
         "BitwiseBitCount" => i64::from(as_int(a)?.count_ones()),
@@ -780,7 +1003,9 @@ fn string_result_ok(s: &str) -> Option<Value> {
 /// law (`concat_display`, NOT `render`/`render_for_format` — certified to
 /// differ on bools).
 fn concatenate(a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
-    if !string_operands_foldable(&[a, b]) { return None; }
+    if !string_operands_foldable(&[a, b]) {
+        return None;
+    }
     let render_operand = |v: Option<&Value>| match v {
         None => String::new(),
         Some(v) => concat_display(v),
@@ -825,13 +1050,25 @@ fn string_ends_with(s: Option<&Value>, suf: Option<&Value>) -> Option<Value> {
 /// erroring (`Substring("hello", 10, 3) -> ""`, `Substring("hello", 1, 100)
 /// -> "ello"`). A negative LENGTH is unprobed and explicitly refused rather
 /// than guessed.
-fn string_substring(s: Option<&Value>, start: Option<&Value>, len: Option<&Value>) -> Option<Value> {
+fn string_substring(
+    s: Option<&Value>,
+    start: Option<&Value>,
+    len: Option<&Value>,
+) -> Option<Value> {
     let s = ascii_str(s?)?;
-    let (Some(Value::Int(start)), Some(Value::Int(len))) = (start, len) else { return None };
-    if *len < 0 { return None; } // unprobed — refuse rather than guess
+    let (Some(Value::Int(start)), Some(Value::Int(len))) = (start, len) else {
+        return None;
+    };
+    if *len < 0 {
+        return None;
+    } // unprobed — refuse rather than guess
     let chars: Vec<char> = s.chars().collect();
     let n = chars.len() as i64;
-    let actual_start = if *start < 0 { (n + *start).max(0) } else { (*start).min(n) };
+    let actual_start = if *start < 0 {
+        (n + *start).max(0)
+    } else {
+        (*start).min(n)
+    };
     // Saturating: a near-i64::MAX length must clamp to the string end, not
     // overflow to a negative `end` that panics the slice below.
     let end = actual_start.saturating_add(*len).min(n);
@@ -843,7 +1080,9 @@ fn string_substring(s: Option<&Value>, start: Option<&Value>, len: Option<&Value
 /// finds index 0)).
 fn string_find(s: Option<&Value>, needle: Option<&Value>) -> Option<Value> {
     let (s, needle) = (ascii_str(s?)?, ascii_str(needle?)?);
-    if needle.is_empty() { return Some(Value::Int(-1)); }
+    if needle.is_empty() {
+        return Some(Value::Int(-1));
+    }
     Some(Value::Int(s.find(needle).map_or(-1, |i| i as i64)))
 }
 /// Certified: an EMPTY search string is a no-op (`Replace(s, "", x) -> s`
@@ -852,10 +1091,18 @@ fn string_find(s: Option<&Value>, needle: Option<&Value>) -> Option<Value> {
 /// replace-all is unprobed beyond 0/1 occurrences (every probed case has
 /// exactly one or zero matches, where the two strategies agree) — refuse
 /// when the search string appears more than once rather than guess.
-fn string_replace(s: Option<&Value>, search: Option<&Value>, repl: Option<&Value>) -> Option<Value> {
+fn string_replace(
+    s: Option<&Value>,
+    search: Option<&Value>,
+    repl: Option<&Value>,
+) -> Option<Value> {
     let (s, search, repl) = (ascii_str(s?)?, ascii_str(search?)?, ascii_str(repl?)?);
-    if search.is_empty() { return string_result_ok(s); }
-    if s.matches(search).count() >= 2 { return None; } // replace-first vs -all unprobed
+    if search.is_empty() {
+        return string_result_ok(s);
+    }
+    if s.matches(search).count() >= 2 {
+        return None;
+    } // replace-first vs -all unprobed
     string_result_ok(&s.replace(search, repl))
 }
 /// Certified: whitespace-trimmed, strict-integer-only text parses; anything
@@ -881,11 +1128,19 @@ fn string_parse_number(s: Option<&Value>) -> Option<Value> {
     let trimmed = s.trim();
     let lower = trimmed.to_ascii_lowercase();
     let lower = lower.strip_prefix(['+', '-']).unwrap_or(&lower);
-    if lower == "inf" || lower == "infinity" || lower == "nan" { return None; }
+    if lower == "inf" || lower == "infinity" || lower == "nan" {
+        return None;
+    }
     let has_dot_or_exp = trimmed.contains(['.', 'e', 'E']);
     let f = trimmed.parse::<f64>().unwrap_or(0.0);
-    if !f.is_finite() { return None; } // belt-and-suspenders alongside the inf/nan text guard
-    Some(if has_dot_or_exp { Value::Float(sanitize(f)) } else { Value::Int(f as i64) })
+    if !f.is_finite() {
+        return None;
+    } // belt-and-suspenders alongside the inf/nan text guard
+    Some(if has_dot_or_exp {
+        Value::Float(sanitize(f))
+    } else {
+        Value::Int(f as i64)
+    })
 }
 
 /// FormatText's real certified law: substitute `{0}`..`{6}` with
@@ -920,8 +1175,12 @@ fn string_parse_number(s: Option<&Value>) -> Option<Value> {
 /// `FormatText`'s substitution slots, `InputA..InputG`, in template-index
 /// order (`{0}`..`{6}`).
 pub(crate) const FORMAT_SLOTS: [WirePort; 7] = [
-    WirePort::InputA, WirePort::InputB, WirePort::InputC,
-    WirePort::InputD, WirePort::InputE, WirePort::InputF,
+    WirePort::InputA,
+    WirePort::InputB,
+    WirePort::InputC,
+    WirePort::InputD,
+    WirePort::InputE,
+    WirePort::InputF,
     WirePort::InputG,
 ];
 
@@ -956,7 +1215,9 @@ pub(crate) fn interp_groups<T, E>(
 }
 
 pub fn format_text(template: &str, inputs: &[Option<Value>]) -> Option<String> {
-    if !template.is_ascii() { return None; }
+    if !template.is_ascii() {
+        return None;
+    }
     if !string_operands_foldable(&inputs.iter().map(Option::as_ref).collect::<Vec<_>>()) {
         return None;
     }
@@ -964,21 +1225,36 @@ pub fn format_text(template: &str, inputs: &[Option<Value>]) -> Option<String> {
     let mut out = String::new();
     let mut i = 0;
     while i < bytes.len() {
-        if template[i..].starts_with("{{") { out.push('{'); i += 2; continue; }
-        if template[i..].starts_with("}}") { out.push('}'); i += 2; continue; }
+        if template[i..].starts_with("{{") {
+            out.push('{');
+            i += 2;
+            continue;
+        }
+        if template[i..].starts_with("}}") {
+            out.push('}');
+            i += 2;
+            continue;
+        }
         if bytes[i] == b'{' {
-            let Some(rel) = template[i + 1..].find('}') else { return None }; // unterminated — unprobed
+            let Some(rel) = template[i + 1..].find('}') else {
+                return None;
+            }; // unterminated — unprobed
             let tag = &template[i + 1..i + 1 + rel];
             // The gate's own syntax, documented by its in-game tooltip but
             // never probed: `{A}`..`{G}` name an input, `:` adds an option
             // (`{A:,}`, `{A:.2}`, `{A:On=Off}`), and `|` after a tag picks a
             // word form (`{A}|plural(...)`). Leave those to the game.
-            let names_input = tag.as_bytes().first().is_some_and(|c| (b'A'..=b'G').contains(c))
+            let names_input = tag
+                .as_bytes()
+                .first()
+                .is_some_and(|c| (b'A'..=b'G').contains(c))
                 && (tag.len() == 1 || tag.as_bytes()[1] == b':');
-            let word_form = template[i + rel + 2..].strip_prefix('|').is_some_and(|rest| {
-                let name = rest.bytes().take_while(u8::is_ascii_alphabetic).count();
-                name > 0 && rest.as_bytes().get(name) == Some(&b'(')
-            });
+            let word_form = template[i + rel + 2..]
+                .strip_prefix('|')
+                .is_some_and(|rest| {
+                    let name = rest.bytes().take_while(u8::is_ascii_alphabetic).count();
+                    name > 0 && rest.as_bytes().get(name) == Some(&b'(')
+                });
             if names_input || tag.contains(':') || word_form {
                 return None;
             }
@@ -996,7 +1272,9 @@ pub fn format_text(template: &str, inputs: &[Option<Value>]) -> Option<String> {
         out.push(bytes[i] as char); // safe: template.is_ascii() already checked
         i += 1;
     }
-    if out.len() > MAX_FOLDED_STRING_LEN || !out.is_ascii() { return None; }
+    if out.len() > MAX_FOLDED_STRING_LEN || !out.is_ascii() {
+        return None;
+    }
     Some(out)
 }
 
@@ -1009,14 +1287,22 @@ pub fn format_text(template: &str, inputs: &[Option<Value>]) -> Option<String> {
 /// check: linear 0.5 -> sRGB byte 188/0xBC, standard IEC 61966-2-1 sRGB).
 fn srgb_to_linear(c: f64) -> f64 {
     let c = c.clamp(0.0, 1.0);
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
 }
 /// Linear (0-1) -> sRGB (gamma-encoded, 0-1). Certified: `ColorToHex(Color(
 /// 1.0, 0.5, 0.0)) -> "FFBC00"` — linear 0.5 -> 0.7354 -> ×255 -> 187.53 ->
 /// rounds to 188 = 0xBC, exactly the standard sRGB transfer function.
 fn linear_to_srgb(c: f64) -> f64 {
     let c = c.clamp(0.0, 1.0);
-    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// FOLD-ELIGIBLE — directly certified: unlike the rotator/quat/color
@@ -1027,7 +1313,10 @@ fn linear_to_srgb(c: f64) -> f64 {
 /// field packing, arg order preserved) with no need for a transitive proof
 /// through another gate.
 fn make_vector(a: Option<&Value>, b: Option<&Value>, c: Option<&Value>) -> Option<Value> {
-    let f = |v: Option<&Value>| match v { Some(Value::Float(f)) => Some(sanitize(*f)), _ => None };
+    let f = |v: Option<&Value>| match v {
+        Some(Value::Float(f)) => Some(sanitize(*f)),
+        _ => None,
+    };
     let (x, y, z) = (f(a)?, f(b)?, f(c)?);
     (x.is_finite() && y.is_finite() && z.is_finite()).then_some(Value::Vector { x, y, z })
 }
@@ -1043,10 +1332,16 @@ fn make_vector(a: Option<&Value>, b: Option<&Value>, c: Option<&Value>) -> Optio
 /// ready the moment a future probe wave chains rotators through a
 /// rendering gate — see `BLANK_RENDER_REFUSED`'s doc comment.
 fn make_rotation(p: Option<&Value>, y: Option<&Value>, r: Option<&Value>) -> Option<Value> {
-    let f = |v: Option<&Value>| match v { Some(Value::Float(f)) => Some(sanitize(*f)), _ => None };
+    let f = |v: Option<&Value>| match v {
+        Some(Value::Float(f)) => Some(sanitize(*f)),
+        _ => None,
+    };
     let (pitch, yaw, roll) = (f(p)?, f(y)?, f(r)?);
-    (pitch.is_finite() && yaw.is_finite() && roll.is_finite())
-        .then_some(Value::Rotator { pitch, yaw, roll })
+    (pitch.is_finite() && yaw.is_finite() && roll.is_finite()).then_some(Value::Rotator {
+        pitch,
+        yaw,
+        roll,
+    })
 }
 /// FOLD-ELIGIBLE — certified TRANSITIVELY, not directly: `MakeQuaternion`'s
 /// own case output renders blank (quats never render through FormatText),
@@ -1056,11 +1351,23 @@ fn make_rotation(p: Option<&Value>, y: Option<&Value>, r: Option<&Value>) -> Opt
 /// case). A wrong arg order or transposed component here would visibly
 /// diverge those gates' certified outputs, so their exact replay certifies
 /// this constructor by proxy even though its own case output can't.
-fn make_quaternion(a: Option<&Value>, b: Option<&Value>, c: Option<&Value>, d: Option<&Value>) -> Option<Value> {
-    let f = |v: Option<&Value>| match v { Some(Value::Float(f)) => Some(sanitize(*f)), _ => None };
+fn make_quaternion(
+    a: Option<&Value>,
+    b: Option<&Value>,
+    c: Option<&Value>,
+    d: Option<&Value>,
+) -> Option<Value> {
+    let f = |v: Option<&Value>| match v {
+        Some(Value::Float(f)) => Some(sanitize(*f)),
+        _ => None,
+    };
     let (x, y, z, w) = (f(a)?, f(b)?, f(c)?, f(d)?);
-    (x.is_finite() && y.is_finite() && z.is_finite() && w.is_finite())
-        .then_some(Value::Quat { x, y, z, w })
+    (x.is_finite() && y.is_finite() && z.is_finite() && w.is_finite()).then_some(Value::Quat {
+        x,
+        y,
+        z,
+        w,
+    })
 }
 /// FOLD-ELIGIBLE (IN ISOLATION), 3-ARG FORM ONLY — certified TRANSITIVELY
 /// via `ColorToHex(Color(1.0,0.5,0.0)) -> "FFBC00"`: that round-trip
@@ -1087,12 +1394,26 @@ fn make_quaternion(a: Option<&Value>, b: Option<&Value>, c: Option<&Value>, d: O
 /// branch is ever reached. Safe over-refusal — not a bug, just dead code in
 /// production until/unless a future probe wave certifies the 3-input
 /// signature directly.
-fn make_color(a: Option<&Value>, b: Option<&Value>, c: Option<&Value>, d: Option<&Value>) -> Option<Value> {
-    if d.is_some() { return None; } // 4-arg (explicit alpha): unconfirmed, refuse
-    let f = |v: Option<&Value>| match v { Some(Value::Float(f)) => Some(sanitize(*f)), _ => None };
+fn make_color(
+    a: Option<&Value>,
+    b: Option<&Value>,
+    c: Option<&Value>,
+    d: Option<&Value>,
+) -> Option<Value> {
+    if d.is_some() {
+        return None;
+    } // 4-arg (explicit alpha): unconfirmed, refuse
+    let f = |v: Option<&Value>| match v {
+        Some(Value::Float(f)) => Some(sanitize(*f)),
+        _ => None,
+    };
     let (r, g, b_) = (f(a)?, f(b)?, f(c)?);
-    (r.is_finite() && g.is_finite() && b_.is_finite())
-        .then_some(Value::Color { r, g, b: b_, a: 1.0 })
+    (r.is_finite() && g.is_finite() && b_.is_finite()).then_some(Value::Color {
+        r,
+        g,
+        b: b_,
+        a: 1.0,
+    })
 }
 /// MUST-REFUSE in production (see `BLANK_RENDER_REFUSED` in `eval()`, which
 /// short-circuits before this function is ever actually called there).
@@ -1104,13 +1425,23 @@ fn make_color(a: Option<&Value>, b: Option<&Value>, c: Option<&Value>, d: Option
 /// through this gate and back OUT through `ColorToHex` the way `MakeColor`
 /// is certified via that exact round-trip. Kept implemented so it's ready
 /// once such a round-trip case exists.
-fn make_color_srgb(a: Option<&Value>, b: Option<&Value>, c: Option<&Value>, d: Option<&Value>) -> Option<Value> {
+fn make_color_srgb(
+    a: Option<&Value>,
+    b: Option<&Value>,
+    c: Option<&Value>,
+    d: Option<&Value>,
+) -> Option<Value> {
     let byte = |v: Option<&Value>| match v {
         Some(Value::Int(n)) if (0..=255).contains(n) => Some(*n as f64 / 255.0),
         _ => None, // out-of-range byte: unprobed, refuse rather than clamp/guess
     };
     let (r, g, b_, a_) = (byte(a)?, byte(b)?, byte(c)?, byte(d)?);
-    Some(Value::Color { r: srgb_to_linear(r), g: srgb_to_linear(g), b: srgb_to_linear(b_), a: a_ })
+    Some(Value::Color {
+        r: srgb_to_linear(r),
+        g: srgb_to_linear(g),
+        b: srgb_to_linear(b_),
+        a: a_,
+    })
 }
 /// MUST-REFUSE in production (see `BLANK_RENDER_REFUSED` in `eval()`, which
 /// short-circuits before this function is ever actually called there).
@@ -1124,16 +1455,29 @@ fn make_color_srgb(a: Option<&Value>, b: Option<&Value>, c: Option<&Value>, d: O
 fn make_color_hex(s: Option<&Value>) -> Option<Value> {
     let s = ascii_str(s?)?;
     let hex = s.strip_prefix('#').unwrap_or(s);
-    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
-    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok().map(|v| v as f64 / 255.0);
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| {
+        u8::from_str_radix(&hex[i..i + 2], 16)
+            .ok()
+            .map(|v| v as f64 / 255.0)
+    };
     let (r, g, b) = (byte(0)?, byte(2)?, byte(4)?);
-    Some(Value::Color { r: srgb_to_linear(r), g: srgb_to_linear(g), b: srgb_to_linear(b), a: 1.0 })
+    Some(Value::Color {
+        r: srgb_to_linear(r),
+        g: srgb_to_linear(g),
+        b: srgb_to_linear(b),
+        a: 1.0,
+    })
 }
 /// Certified: `ColorToHex(Color(1.0,0.5,0.0)) -> "FFBC00"` — RGB only
 /// (alpha dropped), uppercase, 2 hex digits per channel, gamma-encoded
 /// (`linear_to_srgb`) and rounded to the nearest byte.
 fn color_to_hex(c: Option<&Value>) -> Option<Value> {
-    let Some(Value::Color { r, g, b, .. }) = c else { return None };
+    let Some(Value::Color { r, g, b, .. }) = c else {
+        return None;
+    };
     let byte = |c: f64| -> Option<u8> {
         let v = (linear_to_srgb(sanitize(c)) * 255.0).round();
         (0.0..=255.0).contains(&v).then_some(v as u8)
@@ -1143,35 +1487,84 @@ fn color_to_hex(c: Option<&Value>) -> Option<Value> {
 }
 
 fn vec_scale(v: Option<&Value>, s: Option<&Value>) -> Option<Value> {
-    let (Some(Value::Vector { x, y, z }), Some(Value::Float(s))) = (v, s) else { return None };
+    let (Some(Value::Vector { x, y, z }), Some(Value::Float(s))) = (v, s) else {
+        return None;
+    };
     let s = sanitize(*s);
     let (x, y, z) = (sanitize(*x) * s, sanitize(*y) * s, sanitize(*z) * s);
     (x.is_finite() && y.is_finite() && z.is_finite()).then_some(Value::Vector { x, y, z })
 }
 fn vec_dot(a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
-    let (Some(Value::Vector { x: x1, y: y1, z: z1 }), Some(Value::Vector { x: x2, y: y2, z: z2 })) = (a, b)
-    else { return None };
-    let d = sanitize(*x1) * sanitize(*x2) + sanitize(*y1) * sanitize(*y2) + sanitize(*z1) * sanitize(*z2);
+    let (
+        Some(Value::Vector {
+            x: x1,
+            y: y1,
+            z: z1,
+        }),
+        Some(Value::Vector {
+            x: x2,
+            y: y2,
+            z: z2,
+        }),
+    ) = (a, b)
+    else {
+        return None;
+    };
+    let d = sanitize(*x1) * sanitize(*x2)
+        + sanitize(*y1) * sanitize(*y2)
+        + sanitize(*z1) * sanitize(*z2);
     d.is_finite().then_some(Value::Float(d))
 }
 fn vec_cross(a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
-    let (Some(Value::Vector { x: x1, y: y1, z: z1 }), Some(Value::Vector { x: x2, y: y2, z: z2 })) = (a, b)
-    else { return None };
+    let (
+        Some(Value::Vector {
+            x: x1,
+            y: y1,
+            z: z1,
+        }),
+        Some(Value::Vector {
+            x: x2,
+            y: y2,
+            z: z2,
+        }),
+    ) = (a, b)
+    else {
+        return None;
+    };
     let (x1, y1, z1) = (sanitize(*x1), sanitize(*y1), sanitize(*z1));
     let (x2, y2, z2) = (sanitize(*x2), sanitize(*y2), sanitize(*z2));
     let (x, y, z) = (y1 * z2 - z1 * y2, z1 * x2 - x1 * z2, x1 * y2 - y1 * x2);
     (x.is_finite() && y.is_finite() && z.is_finite()).then_some(Value::Vector { x, y, z })
 }
 fn vec_magnitude_sq(v: Option<&Value>) -> Option<Value> {
-    let Some(Value::Vector { x, y, z }) = v else { return None };
+    let Some(Value::Vector { x, y, z }) = v else {
+        return None;
+    };
     let (x, y, z) = (sanitize(*x), sanitize(*y), sanitize(*z));
     let m = x * x + y * y + z * z;
     m.is_finite().then_some(Value::Float(m))
 }
 fn vec_distance_sq(a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
-    let (Some(Value::Vector { x: x1, y: y1, z: z1 }), Some(Value::Vector { x: x2, y: y2, z: z2 })) = (a, b)
-    else { return None };
-    let (dx, dy, dz) = (sanitize(*x1) - sanitize(*x2), sanitize(*y1) - sanitize(*y2), sanitize(*z1) - sanitize(*z2));
+    let (
+        Some(Value::Vector {
+            x: x1,
+            y: y1,
+            z: z1,
+        }),
+        Some(Value::Vector {
+            x: x2,
+            y: y2,
+            z: z2,
+        }),
+    ) = (a, b)
+    else {
+        return None;
+    };
+    let (dx, dy, dz) = (
+        sanitize(*x1) - sanitize(*x2),
+        sanitize(*y1) - sanitize(*y2),
+        sanitize(*z1) - sanitize(*z2),
+    );
     let d = dx * dx + dy * dy + dz * dz;
     d.is_finite().then_some(Value::Float(d))
 }
@@ -1190,8 +1583,22 @@ fn vec_distance_sq(a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
 /// by `Quat(0,0,0.3826...,0.9238...)` -> `X=0.707 Y=0.707 Z=0.000`) — so
 /// this is NOT restricted to axis-aligned rotations.
 fn rotate_vector(v: Option<&Value>, q: Option<&Value>) -> Option<Value> {
-    let (Some(Value::Vector { x: vx, y: vy, z: vz }), Some(Value::Quat { x: qx, y: qy, z: qz, w: qw })) = (v, q)
-    else { return None };
+    let (
+        Some(Value::Vector {
+            x: vx,
+            y: vy,
+            z: vz,
+        }),
+        Some(Value::Quat {
+            x: qx,
+            y: qy,
+            z: qz,
+            w: qw,
+        }),
+    ) = (v, q)
+    else {
+        return None;
+    };
     let (vx, vy, vz) = (sanitize(*vx), sanitize(*vy), sanitize(*vz));
     let (ux, uy, uz, s) = (sanitize(*qx), sanitize(*qy), sanitize(*qz), sanitize(*qw));
     let (c1x, c1y, c1z) = (uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
@@ -1211,19 +1618,44 @@ fn rotate_vector(v: Option<&Value>, q: Option<&Value>) -> Option<Value> {
 /// gate's OUTPUT into a value-bearing gate (e.g. feeding an inverted quat
 /// into `RotateVector`) either, so there is zero transitive evidence.
 fn invert_rotation(q: Option<&Value>) -> Option<Value> {
-    let Some(Value::Quat { x, y, z, w }) = q else { return None };
+    let Some(Value::Quat { x, y, z, w }) = q else {
+        return None;
+    };
     let (x, y, z, w) = (sanitize(*x), sanitize(*y), sanitize(*z), sanitize(*w));
     let norm_sq = x * x + y * y + z * z + w * w;
-    if norm_sq == 0.0 || !norm_sq.is_finite() { return None; }
+    if norm_sq == 0.0 || !norm_sq.is_finite() {
+        return None;
+    }
     let (ix, iy, iz, iw) = (-x / norm_sq, -y / norm_sq, -z / norm_sq, w / norm_sq);
-    (ix.is_finite() && iy.is_finite() && iz.is_finite() && iw.is_finite())
-        .then_some(Value::Quat { x: ix, y: iy, z: iz, w: iw })
+    (ix.is_finite() && iy.is_finite() && iz.is_finite() && iw.is_finite()).then_some(Value::Quat {
+        x: ix,
+        y: iy,
+        z: iz,
+        w: iw,
+    })
 }
 fn quat_dot(a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
-    let (Some(Value::Quat { x: x1, y: y1, z: z1, w: w1 }), Some(Value::Quat { x: x2, y: y2, z: z2, w: w2 })) = (a, b)
-    else { return None };
-    let d = sanitize(*x1) * sanitize(*x2) + sanitize(*y1) * sanitize(*y2)
-        + sanitize(*z1) * sanitize(*z2) + sanitize(*w1) * sanitize(*w2);
+    let (
+        Some(Value::Quat {
+            x: x1,
+            y: y1,
+            z: z1,
+            w: w1,
+        }),
+        Some(Value::Quat {
+            x: x2,
+            y: y2,
+            z: z2,
+            w: w2,
+        }),
+    ) = (a, b)
+    else {
+        return None;
+    };
+    let d = sanitize(*x1) * sanitize(*x2)
+        + sanitize(*y1) * sanitize(*y2)
+        + sanitize(*z1) * sanitize(*z2)
+        + sanitize(*w1) * sanitize(*w2);
     d.is_finite().then_some(Value::Float(d))
 }
 

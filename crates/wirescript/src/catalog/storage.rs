@@ -120,17 +120,38 @@ mod tests {
                 missing.push(class.to_string());
             }
         }
-        assert!(missing.is_empty(), "storage gates not classified: {missing:?}");
+        assert!(
+            missing.is_empty(),
+            "storage gates not classified: {missing:?}"
+        );
     }
 
     #[test]
     fn readers_and_writers() {
-        assert_eq!(access(gc::MICROCHIP_FOR_EACH_ARRAY, WirePort::ArrayVarRef), Some(Access::Read));
-        assert_eq!(access(gc::ARRAY_APPEND, WirePort::SourceRef), Some(Access::Read));
-        assert_eq!(access(gc::ARRAY_APPEND, WirePort::ArrayVarRef), Some(Access::Write));
-        assert_eq!(access(gc::MAP_GET_KEYS, WirePort::MapVarRef), Some(Access::Read));
-        assert_eq!(access(gc::MAP_GET_KEYS, WirePort::ArrayVarRef), Some(Access::Write));
-        assert_eq!(access("BrickComponentType_Unknown", WirePort::ArrayVarRef), Some(Access::Write));
+        assert_eq!(
+            access(gc::MICROCHIP_FOR_EACH_ARRAY, WirePort::ArrayVarRef),
+            Some(Access::Read)
+        );
+        assert_eq!(
+            access(gc::ARRAY_APPEND, WirePort::SourceRef),
+            Some(Access::Read)
+        );
+        assert_eq!(
+            access(gc::ARRAY_APPEND, WirePort::ArrayVarRef),
+            Some(Access::Write)
+        );
+        assert_eq!(
+            access(gc::MAP_GET_KEYS, WirePort::MapVarRef),
+            Some(Access::Read)
+        );
+        assert_eq!(
+            access(gc::MAP_GET_KEYS, WirePort::ArrayVarRef),
+            Some(Access::Write)
+        );
+        assert_eq!(
+            access("BrickComponentType_Unknown", WirePort::ArrayVarRef),
+            Some(Access::Write)
+        );
         assert_eq!(access(gc::VAR_SET, WirePort::Value), None);
     }
 }

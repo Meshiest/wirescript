@@ -14,16 +14,34 @@ pub enum ValidationError {
     UnknownClass { node: NodeId, class: String },
     /// A wire end names a port its node does not have on that side, or a
     /// node declares a port its inventory class does not have.
-    UnknownPort { node: NodeId, class: String, port: String, side: PortSide, valid: Vec<String> },
+    UnknownPort {
+        node: NodeId,
+        class: String,
+        port: String,
+        side: PortSide,
+        valid: Vec<String>,
+    },
     /// A wire carries an exec pulse into a value input, which it cannot
     /// fill. (A value into an exec input is legal: its change fires it.)
-    TypeMismatch { from: PortRef, to: PortRef, from_type: Type, to_type: Type },
+    TypeMismatch {
+        from: PortRef,
+        to: PortRef,
+        from_type: Type,
+        to_type: Type,
+    },
     /// Two wires feed one input. Fan-in fails the whole save at load.
-    FanIn { target: PortRef, sources: Vec<PortRef> },
+    FanIn {
+        target: PortRef,
+        sources: Vec<PortRef>,
+    },
     /// A wire, label or list names a node that is not in the program.
     MissingNode { node: NodeId, referenced_by: String },
     /// A module's inputs, outputs or chips disagree with its nodes.
-    ChipIo { module: String, node: NodeId, problem: String },
+    ChipIo {
+        module: String,
+        node: NodeId,
+        problem: String,
+    },
     /// A `coerce` node, which lowering never makes and the backend does not
     /// emit.
     Coerce { node: NodeId },
@@ -53,12 +71,23 @@ impl std::fmt::Display for ValidationError {
             ValidationError::UnknownClass { node, class } => {
                 write!(f, "{node}: `{class}` is not a gate class in the inventory")
             }
-            ValidationError::UnknownPort { node, class, port, side, valid } => write!(
+            ValidationError::UnknownPort {
+                node,
+                class,
+                port,
+                side,
+                valid,
+            } => write!(
                 f,
                 "{node} ({class}) has no {side} port `{port}`; its {side} ports are: {}",
                 port_list(valid)
             ),
-            ValidationError::TypeMismatch { from, to, from_type, to_type } => write!(
+            ValidationError::TypeMismatch {
+                from,
+                to,
+                from_type,
+                to_type,
+            } => write!(
                 f,
                 "wire {}.{} -> {}.{} carries `{from_type}` into a `{to_type}` input; an exec pulse carries no value",
                 from.node_id, from.port, to.node_id, to.port
@@ -69,17 +98,38 @@ impl std::fmt::Display for ValidationError {
                 target.node_id,
                 target.port,
                 sources.len(),
-                sources.iter().map(|s| format!("{}.{}", s.node_id, s.port)).collect::<Vec<_>>().join(", ")
+                sources
+                    .iter()
+                    .map(|s| format!("{}.{}", s.node_id, s.port))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
-            ValidationError::MissingNode { node, referenced_by } => {
-                write!(f, "{referenced_by} names {node}, which is not a node of this program")
+            ValidationError::MissingNode {
+                node,
+                referenced_by,
+            } => {
+                write!(
+                    f,
+                    "{referenced_by} names {node}, which is not a node of this program"
+                )
             }
-            ValidationError::ChipIo { module, node, problem } => write!(f, "module `{module}`, {node}: {problem}"),
+            ValidationError::ChipIo {
+                module,
+                node,
+                problem,
+            } => write!(f, "module `{module}`, {node}: {problem}"),
             ValidationError::Coerce { node } => {
-                write!(f, "{node} is a `coerce` node, which the backend does not emit; use a gate of the conversion's class")
+                write!(
+                    f,
+                    "{node} is a `coerce` node, which the backend does not emit; use a gate of the conversion's class"
+                )
             }
             ValidationError::DuplicateId { node, modules } => {
-                write!(f, "{node} is defined in more than one module: {}", modules.join(", "))
+                write!(
+                    f,
+                    "{node} is defined in more than one module: {}",
+                    modules.join(", ")
+                )
             }
         }
     }
@@ -87,7 +137,11 @@ impl std::fmt::Display for ValidationError {
 
 /// A node's ports as an error lists them: comma-separated, or `none`.
 pub(crate) fn port_list(ports: &[String]) -> String {
-    if ports.is_empty() { "none".to_string() } else { ports.join(", ") }
+    if ports.is_empty() {
+        "none".to_string()
+    } else {
+        ports.join(", ")
+    }
 }
 
 /// Classes the backend handles that the inventory does not list.
@@ -105,9 +159,14 @@ impl Program {
         let mut errors = Vec::new();
         let mut dups: Vec<(NodeId, Vec<Sym>)> = dups.into_iter().collect();
         dups.sort_by_key(|(id, _)| *id);
-        errors.extend(dups.into_iter().map(|(node, modules)| ValidationError::DuplicateId {
-            node,
-            modules: modules.into_iter().map(|m| resolve(m).to_string()).collect(),
+        errors.extend(dups.into_iter().map(|(node, modules)| {
+            ValidationError::DuplicateId {
+                node,
+                modules: modules
+                    .into_iter()
+                    .map(|m| resolve(m).to_string())
+                    .collect(),
+            }
         }));
         let nodes: HashMap<NodeId, &Node> = nodes.into_iter().map(|(id, (n, _))| (id, n)).collect();
         check_module(&self.module, &nodes, &mut errors, true);
@@ -121,7 +180,8 @@ impl Program {
                 feeds.entry(w.target).or_default().push(w.source);
             }
         }
-        let mut fan: Vec<(PortRef, Vec<PortRef>)> = feeds.into_iter().filter(|(_, s)| s.len() > 1).collect();
+        let mut fan: Vec<(PortRef, Vec<PortRef>)> =
+            feeds.into_iter().filter(|(_, s)| s.len() > 1).collect();
         fan.sort_by_key(|(t, _)| (t.node_id, t.port.as_str()));
         for (target, mut sources) in fan {
             sources.sort_by_key(|s| (s.node_id, s.port.as_str()));
@@ -133,7 +193,11 @@ impl Program {
 
 /// Every node with the module it is in, and each id found in more than one
 /// module with all of their names.
-fn collect<'a>(m: &'a Module, out: &mut HashMap<NodeId, (&'a Node, Sym)>, dups: &mut HashMap<NodeId, Vec<Sym>>) {
+fn collect<'a>(
+    m: &'a Module,
+    out: &mut HashMap<NodeId, (&'a Node, Sym)>,
+    dups: &mut HashMap<NodeId, Vec<Sym>>,
+) {
     for (id, n) in &m.nodes {
         if let Some((_, first)) = out.get(id) {
             dups.entry(*id).or_insert_with(|| vec![*first]).push(m.name);
@@ -161,7 +225,12 @@ fn port_names(ps: &[super::PortSpec]) -> Vec<String> {
     ps.iter().map(|p| resolve(p.name).to_string()).collect()
 }
 
-fn check_module(m: &Module, all: &HashMap<NodeId, &Node>, errors: &mut Vec<ValidationError>, root: bool) {
+fn check_module(
+    m: &Module,
+    all: &HashMap<NodeId, &Node>,
+    errors: &mut Vec<ValidationError>,
+    root: bool,
+) {
     let catalog = crate::catalog::default_catalog();
     let module_name = resolve(m.name).to_string();
     let mut ids: Vec<&NodeId> = m.nodes.keys().collect();
@@ -170,7 +239,10 @@ fn check_module(m: &Module, all: &HashMap<NodeId, &Node>, errors: &mut Vec<Valid
     for id in &ids {
         let n = &m.nodes[*id];
         if catalog.find_by_class(n.gate_class).is_none() && !is_pseudo_class(n.gate_class) {
-            errors.push(ValidationError::UnknownClass { node: n.id, class: n.gate_class.to_string() });
+            errors.push(ValidationError::UnknownClass {
+                node: n.id,
+                class: n.gate_class.to_string(),
+            });
         }
         if n.kind == NodeKind::Coerce {
             errors.push(ValidationError::Coerce { node: n.id });
@@ -189,7 +261,11 @@ fn check_module(m: &Module, all: &HashMap<NodeId, &Node>, errors: &mut Vec<Valid
         if catalog.has_wire_port(n.gate_class, side, port.as_str()) {
             return None;
         }
-        let inv = if side == PortSide::Input { &spec.component.inputs } else { &spec.component.outputs };
+        let inv = if side == PortSide::Input {
+            &spec.component.inputs
+        } else {
+            &spec.component.outputs
+        };
         Some(ValidationError::UnknownPort {
             node: n.id,
             class: n.gate_class.to_string(),
@@ -200,7 +276,8 @@ fn check_module(m: &Module, all: &HashMap<NodeId, &Node>, errors: &mut Vec<Valid
     };
 
     for w in &m.wires {
-        let (Some(src), Some(dst)) = (all.get(&w.source.node_id), all.get(&w.target.node_id)) else {
+        let (Some(src), Some(dst)) = (all.get(&w.source.node_id), all.get(&w.target.node_id))
+        else {
             for end in [w.source.node_id, w.target.node_id] {
                 if !all.contains_key(&end) {
                     errors.push(ValidationError::MissingNode {
@@ -214,8 +291,16 @@ fn check_module(m: &Module, all: &HashMap<NodeId, &Node>, errors: &mut Vec<Valid
         if w.source.port == WirePort::Layout && w.target.port == WirePort::Layout {
             continue;
         }
-        let out = src.ports.outputs.iter().find(|p| p.name == w.source.port.sym());
-        let inp = dst.ports.inputs.iter().find(|p| p.name == w.target.port.sym());
+        let out = src
+            .ports
+            .outputs
+            .iter()
+            .find(|p| p.name == w.source.port.sym());
+        let inp = dst
+            .ports
+            .inputs
+            .iter()
+            .find(|p| p.name == w.target.port.sym());
         if out.is_none() {
             errors.push(ValidationError::UnknownPort {
                 node: src.id,
@@ -259,7 +344,10 @@ fn check_module(m: &Module, all: &HashMap<NodeId, &Node>, errors: &mut Vec<Valid
     for (host, src) in &m.dynamic_labels {
         for id in [*host, src.node_id] {
             if !all.contains_key(&id) {
-                errors.push(ValidationError::MissingNode { node: id, referenced_by: format!("a label in `{module_name}`") });
+                errors.push(ValidationError::MissingNode {
+                    node: id,
+                    referenced_by: format!("a label in `{module_name}`"),
+                });
             }
         }
     }
@@ -267,21 +355,39 @@ fn check_module(m: &Module, all: &HashMap<NodeId, &Node>, errors: &mut Vec<Valid
         && let Some(p) = m.root_dynamic_label
         && !all.contains_key(&p.node_id)
     {
-        errors.push(ValidationError::MissingNode { node: p.node_id, referenced_by: "the root label".into() });
+        errors.push(ValidationError::MissingNode {
+            node: p.node_id,
+            referenced_by: "the root label".into(),
+        });
     }
-    for (what, map) in [("@color", &m.dynamic_colors), ("@material", &m.dynamic_materials)] {
+    for (what, map) in [
+        ("@color", &m.dynamic_colors),
+        ("@material", &m.dynamic_materials),
+    ] {
         for (host, src) in map {
             for id in [*host, src.node_id] {
                 if !all.contains_key(&id) {
-                    errors.push(ValidationError::MissingNode { node: id, referenced_by: format!("a {what} in `{module_name}`") });
+                    errors.push(ValidationError::MissingNode {
+                        node: id,
+                        referenced_by: format!("a {what} in `{module_name}`"),
+                    });
                 }
             }
         }
     }
     if root {
-        for p in m.root_style.color.iter().chain(m.root_style.material.iter()).filter_map(crate::ir::StyleValue::wired) {
+        for p in m
+            .root_style
+            .color
+            .iter()
+            .chain(m.root_style.material.iter())
+            .filter_map(crate::ir::StyleValue::wired)
+        {
             if !all.contains_key(&p.node_id) {
-                errors.push(ValidationError::MissingNode { node: p.node_id, referenced_by: "the root style".into() });
+                errors.push(ValidationError::MissingNode {
+                    node: p.node_id,
+                    referenced_by: "the root style".into(),
+                });
             }
         }
     }
@@ -289,17 +395,26 @@ fn check_module(m: &Module, all: &HashMap<NodeId, &Node>, errors: &mut Vec<Valid
     // Inputs and outputs: each listed once, and each a pin of this module.
     // (A pin may be left off the list: lowering does that for pins it
     // reaches only by wire.)
-    for (list, kind, what) in [(&m.inputs, NodeKind::Input, "input"), (&m.outputs, NodeKind::Output, "output")] {
+    for (list, kind, what) in [
+        (&m.inputs, NodeKind::Input, "input"),
+        (&m.outputs, NodeKind::Output, "output"),
+    ] {
         let mut seen = crate::collections::HashSet::default();
         for id in list {
             let problem = match m.nodes.get(id) {
                 None => Some(format!("listed as an {what} but not a node of this module")),
-                Some(n) if n.kind != kind => Some(format!("listed as an {what} but is a {:?} node", n.kind)),
+                Some(n) if n.kind != kind => {
+                    Some(format!("listed as an {what} but is a {:?} node", n.kind))
+                }
                 Some(_) if !seen.insert(*id) => Some(format!("listed as an {what} twice")),
                 Some(_) => None,
             };
             if let Some(problem) = problem {
-                errors.push(ValidationError::ChipIo { module: module_name.clone(), node: *id, problem });
+                errors.push(ValidationError::ChipIo {
+                    module: module_name.clone(),
+                    node: *id,
+                    problem,
+                });
             }
         }
     }
@@ -402,13 +517,19 @@ mod tests {
     fn the_builder_refuses_what_validation_would_flag() {
         let mut b = ProgramBuilder::new("m");
         let root = b.root();
-        assert!(matches!(b.gate(root, "NoSuchGate"), Err(crate::ir::BuildError::UnknownClass(_))));
+        assert!(matches!(
+            b.gate(root, "NoSuchGate"),
+            Err(crate::ir::BuildError::UnknownClass(_))
+        ));
         let a = b.input(root, "a", Type::Bool);
         let g = b.gate(root, "Expr_LogicalAND").unwrap();
         let err = b.wire(a, "RER_Output", g, "bNope").unwrap_err();
         assert!(err.to_string().contains("bInputA, bInputB"), "{err}");
         b.wire(a, "RER_Output", g, "bInputA").unwrap();
-        assert!(matches!(b.wire(a, "RER_Output", g, "bInputA"), Err(crate::ir::BuildError::FanIn { .. })));
+        assert!(matches!(
+            b.wire(a, "RER_Output", g, "bInputA"),
+            Err(crate::ir::BuildError::FanIn { .. })
+        ));
     }
 
     #[test]
@@ -426,7 +547,10 @@ mod tests {
         );
         assert_eq!(kinds(&p), ["port"]);
         let msg = p.validate()[0].to_string();
-        assert!(msg.contains("`Exec`") && msg.contains("bInputA, bInputB"), "{msg}");
+        assert!(
+            msg.contains("`Exec`") && msg.contains("bInputA, bInputB"),
+            "{msg}"
+        );
         // A wire end on a port its node does not declare.
         let mut p = parse(AND);
         p.module.wires[0].target.port = WirePort::from_name("Exec");
@@ -446,12 +570,22 @@ mod tests {
     fn fan_in() {
         let mut p = parse(AND);
         let extra = Wire {
-            source: PortRef { node_id: NodeId(2), port: WirePort::RerOutput },
-            target: PortRef { node_id: NodeId(3), port: WirePort::from_name("bInputA") },
+            source: PortRef {
+                node_id: NodeId(2),
+                port: WirePort::RerOutput,
+            },
+            target: PortRef {
+                node_id: NodeId(3),
+                port: WirePort::from_name("bInputA"),
+            },
         };
         p.module.wires.push(extra);
         assert_eq!(kinds(&p), ["fan-in"]);
-        assert!(p.validate()[0].to_string().contains("n1.RER_Output, n2.RER_Output"));
+        assert!(
+            p.validate()[0]
+                .to_string()
+                .contains("n1.RER_Output, n2.RER_Output")
+        );
     }
 
     #[test]
@@ -480,17 +614,34 @@ mod tests {
 
     #[test]
     fn coerce_node() {
-        let p = parse("module @m {\n  %a = in bool\n  %c = Expr_LogicalAND(bInputA: %a) !kind coerce\n}\n");
+        let p = parse(
+            "module @m {\n  %a = in bool\n  %c = Expr_LogicalAND(bInputA: %a) !kind coerce\n}\n",
+        );
         assert_eq!(kinds(&p), ["coerce"]);
-        assert!(p.validate()[0].to_string().contains("coerce"), "{}", p.validate()[0]);
+        assert!(
+            p.validate()[0].to_string().contains("coerce"),
+            "{}",
+            p.validate()[0]
+        );
     }
 
     #[test]
     fn duplicate_id() {
-        let mut p = parse("module @m {\n  %g = Expr_LogicalAND\n  %c = chip @body {\n    %h = Expr_LogicalOR\n  }\n}\n");
+        let mut p = parse(
+            "module @m {\n  %g = Expr_LogicalAND\n  %c = chip @body {\n    %h = Expr_LogicalOR\n  }\n}\n",
+        );
         let g = p.module.nodes[&NodeId(1)].clone();
-        p.module.chips.get_mut(&NodeId(2)).unwrap().nodes.insert(NodeId(1), g);
+        p.module
+            .chips
+            .get_mut(&NodeId(2))
+            .unwrap()
+            .nodes
+            .insert(NodeId(1), g);
         assert_eq!(kinds(&p), ["duplicate-id"]);
-        assert!(p.validate()[0].to_string().contains("m, body"), "{}", p.validate()[0]);
+        assert!(
+            p.validate()[0].to_string().contains("m, body"),
+            "{}",
+            p.validate()[0]
+        );
     }
 }

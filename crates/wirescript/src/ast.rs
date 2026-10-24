@@ -67,9 +67,15 @@ pub struct Script {
 pub struct ImportScope {
     /// Importing file -> the `(file, start offset)` of each declaration its
     /// imports name, transitively through a module's own whole-module imports.
-    pub named: crate::collections::HashMap<std::sync::Arc<str>, crate::collections::HashSet<(std::sync::Arc<str>, usize)>>,
+    pub named: crate::collections::HashMap<
+        std::sync::Arc<str>,
+        crate::collections::HashSet<(std::sync::Arc<str>, usize)>,
+    >,
     /// Importing file -> the files its own `import` declarations name.
-    pub files: crate::collections::HashMap<std::sync::Arc<str>, crate::collections::HashSet<std::sync::Arc<str>>>,
+    pub files: crate::collections::HashMap<
+        std::sync::Arc<str>,
+        crate::collections::HashSet<std::sync::Arc<str>>,
+    >,
     /// Imported file -> the type aliases its top level can name: the ones it
     /// declares and the ones its own imports bring in, with an `import * as`
     /// module's aliases kept inside their `Namespace`. A type written in that
@@ -334,8 +340,15 @@ impl VarDecl {
         if !walk::mentions(walk::Node::Expr(init), &self.name) {
             return None;
         }
-        let label = self.label.clone().or_else(|| self.label_expr.is_none().then(|| self.name.clone()));
-        Some(VarDecl { name: format!("{}{DECLARED_APART}", self.name), label, ..self.clone() })
+        let label = self
+            .label
+            .clone()
+            .or_else(|| self.label_expr.is_none().then(|| self.name.clone()));
+        Some(VarDecl {
+            name: format!("{}{DECLARED_APART}", self.name),
+            label,
+            ..self.clone()
+        })
     }
 
     /// The name as the source writes it (see [`declared_apart`](Self::declared_apart)).
@@ -965,14 +978,18 @@ impl Stmt {
 /// body: those `out`s belong to that chip, not to the module boundary.
 pub fn handler_port_sites(block: &Block) -> Vec<&OutBinding> {
     let mut sites = Vec::new();
-    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, _| match n {
-        walk::Node::Stmt(Stmt::OutBinding(o)) => {
-            sites.push(o);
-            true
-        }
-        walk::Node::Stmt(Stmt::AnonChip(_) | Stmt::ChipDecl(_)) => false,
-        _ => true,
-    });
+    walk::walk(
+        walk::Node::Block(block),
+        walk::Ctx::default(),
+        &mut |n, _| match n {
+            walk::Node::Stmt(Stmt::OutBinding(o)) => {
+                sites.push(o);
+                true
+            }
+            walk::Node::Stmt(Stmt::AnonChip(_) | Stmt::ChipDecl(_)) => false,
+            _ => true,
+        },
+    );
     sites
 }
 
@@ -1363,7 +1380,6 @@ impl Expr {
             | Expr::As { range, .. } => range,
         }
     }
-
 }
 
 #[derive(Clone, Debug)]
@@ -1438,19 +1454,33 @@ pub enum Pattern {
     /// `true`, `:red`. `expr` is the literal as an expression (an `IntLit`,
     /// `FloatLit`, `StringLit`, `BoolLit`, `AtomLit`, or a negated number), so
     /// it types and lowers like the same literal anywhere else.
-    Literal { expr: Box<Expr>, range: SourceRange },
+    Literal {
+        expr: Box<Expr>,
+        range: SourceRange,
+    },
     /// `lo..hi`: a number at least `lo` and below `hi`, half-open like a `for`
     /// range. Both ends are number literals.
-    Range { lo: Box<Expr>, hi: Box<Expr>, range: SourceRange },
+    Range {
+        lo: Box<Expr>,
+        hi: Box<Expr>,
+        range: SourceRange,
+    },
     /// `"say " .. rest`: a string made of these parts in order. Each part is a
     /// string `Literal`, or a `Binding`/`Wildcard` hole standing for any run of
     /// characters (possibly empty); two holes never sit side by side.
     /// `template` when written as one string (`"say ${rest}"`), whose `${name}`
     /// reads like an interpolation but binds.
-    Concat { parts: Vec<Pattern>, template: bool, range: SourceRange },
+    Concat {
+        parts: Vec<Pattern>,
+        template: bool,
+        range: SourceRange,
+    },
     /// `p | q`: matches when any alternative does. An alternative binds no
     /// names.
-    Or { alts: Vec<Pattern>, range: SourceRange },
+    Or {
+        alts: Vec<Pattern>,
+        range: SourceRange,
+    },
 }
 
 impl Pattern {

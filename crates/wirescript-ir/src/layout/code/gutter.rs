@@ -44,10 +44,7 @@ fn is_bus_worthy_source(n: &Node) -> bool {
         || n.note == Some("boundary_pin")
         || matches!(
             n.gate_class,
-            gate_class::VAR
-                | gate_class::ARRAY_VAR
-                | gate_class::BUFFER
-                | gate_class::BUFFER_TICKS
+            gate_class::VAR | gate_class::ARRAY_VAR | gate_class::BUFFER | gate_class::BUFFER_TICKS
         )
 }
 
@@ -466,7 +463,15 @@ fn emit_lane(
                 }
             }
 
-            let id = push_bus_node(bus, p.x, lane_y, z, chain_rotation, BusRole::Gutter, color_of);
+            let id = push_bus_node(
+                bus,
+                p.x,
+                lane_y,
+                z,
+                chain_rotation,
+                BusRole::Gutter,
+                color_of,
+            );
             bus.wires.push(BusWire {
                 source: upstream,
                 target: BusEnd::Bus(id),
@@ -517,7 +522,15 @@ fn emit_lane(
                 // carries the value out to its row, and `upstream` stays on
                 // the down-pointing link so the next stop chains from the
                 // lane, not through this branch.
-                let id = push_bus_node(bus, stop_x, lane_y, z, NodeRotation::Deg0, BusRole::Gutter, color_of);
+                let id = push_bus_node(
+                    bus,
+                    stop_x,
+                    lane_y,
+                    z,
+                    NodeRotation::Deg0,
+                    BusRole::Gutter,
+                    color_of,
+                );
                 bus.wires.push(BusWire {
                     source: upstream,
                     target: BusEnd::Bus(id),
@@ -543,7 +556,15 @@ fn emit_lane(
             let claimed = row_cells.entry((page, row)).or_default();
             if !claimed.iter().any(|&c| cells_overlap(c, cell)) {
                 claimed.push(cell);
-                let gate_id = push_bus_node(bus, stop_x, gate_y, z, NodeRotation::Deg0, BusRole::Gutter, color_of);
+                let gate_id = push_bus_node(
+                    bus,
+                    stop_x,
+                    gate_y,
+                    z,
+                    NodeRotation::Deg0,
+                    BusRole::Gutter,
+                    color_of,
+                );
                 bus.wires.push(BusWire {
                     source: BusEnd::Bus(prev),
                     target: BusEnd::Bus(gate_id),
@@ -629,8 +650,18 @@ pub(super) struct Body<'a> {
 /// one another. Single-page layouts — every code layout inside the default
 /// budgets — are unaffected.
 pub(super) fn plan_bus(body: &Body) -> BusPlan {
-    let Body { module, placements, rotations, node_row, page_infos, owners } = *body;
-    let mut plan = BusPlan { pages: vec![PageBus::default(); page_infos.len()], ..BusPlan::default() };
+    let Body {
+        module,
+        placements,
+        rotations,
+        node_row,
+        page_infos,
+        owners,
+    } = *body;
+    let mut plan = BusPlan {
+        pages: vec![PageBus::default(); page_infos.len()],
+        ..BusPlan::default()
+    };
     if page_infos.is_empty() || node_row.is_empty() {
         return plan;
     }
@@ -721,7 +752,12 @@ pub(super) fn plan_bus(body: &Body) -> BusPlan {
         // every lane and the input-pin stack clears all of them.
         plan.pages[pi] = PageBus {
             band_width: lanes_used as i32 * LANE_PITCH + BUS_BAND_GUTTER,
-            lanes: picked.iter().zip(demands).zip(lanes).map(|((&gi, demand), lane)| (gi, demand, lane)).collect(),
+            lanes: picked
+                .iter()
+                .zip(demands)
+                .zip(lanes)
+                .map(|((&gi, demand), lane)| (gi, demand, lane))
+                .collect(),
             lanes_used,
         };
     }
@@ -736,12 +772,19 @@ pub(super) fn plan_bus(body: &Body) -> BusPlan {
 /// Lay the planned lanes out as rerouters and wires, and record the module
 /// wires they replace.
 pub(super) fn lay_bus(body: &Body, plan: &mut BusPlan) -> (BusLayout, usize) {
-    let Body { placements, page_infos, .. } = *body;
+    let Body {
+        placements,
+        page_infos,
+        ..
+    } = *body;
     let mut bus = BusLayout::default();
     let mut laid = 0usize;
     let mut lane_cells: LaneCells = HashMap::default();
-    let pages: Vec<Vec<(usize, BusDemand, usize)>> =
-        plan.pages.iter_mut().map(|p| std::mem::take(&mut p.lanes)).collect();
+    let pages: Vec<Vec<(usize, BusDemand, usize)>> = plan
+        .pages
+        .iter_mut()
+        .map(|p| std::mem::take(&mut p.lanes))
+        .collect();
     for (pi, lanes) in pages.iter().enumerate() {
         if page_infos.get(pi).is_none() {
             continue;
@@ -943,8 +986,20 @@ pub(super) fn lay_bus(body: &Body, plan: &mut BusPlan) -> (BusLayout, usize) {
 ///   stated non-goal. The `src.y > sink.y` test is what separates the two: an
 ///   operand is strictly right of the spine, a preceding statement is level
 ///   with it.
-pub(super) fn lay_mini_bus(bus: &mut BusLayout, body: &Body, node_line: &HashMap<NodeId, usize>, plan: &mut BusPlan) {
-    let Body { module, placements, rotations, node_row, page_infos, owners: subtree } = *body;
+pub(super) fn lay_mini_bus(
+    bus: &mut BusLayout,
+    body: &Body,
+    node_line: &HashMap<NodeId, usize>,
+    plan: &mut BusPlan,
+) {
+    let Body {
+        module,
+        placements,
+        rotations,
+        node_row,
+        page_infos,
+        owners: subtree,
+    } = *body;
     // Levels already handed out on each sink's row, so two corners dropping
     // into one statement do not leave at the same height.
     let mut sink_levels: HashMap<NodeId, Vec<i32>> = HashMap::default();
@@ -956,10 +1011,7 @@ pub(super) fn lay_mini_bus(bus: &mut BusLayout, body: &Body, node_line: &HashMap
             continue;
         }
         // The gutter owns this consumer already.
-        if bus
-            .suppressed
-            .contains(&(w.target.node_id, w.target.port))
-        {
+        if bus.suppressed.contains(&(w.target.node_id, w.target.port)) {
             continue;
         }
         if !subtree.is_bussable(module, w.source.node_id)

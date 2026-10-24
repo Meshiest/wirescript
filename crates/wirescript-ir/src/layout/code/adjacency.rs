@@ -55,14 +55,12 @@ pub(super) fn is_spine_exec_gate(node: &Node, in_line_consumers: &[usize]) -> bo
 /// True when `target` names an exec input on its node — an exec-chain edge
 /// rather than an operand edge.
 pub fn targets_exec(module: &Module, target: &PortRef) -> bool {
-    module
-        .nodes
-        .get(&target.node_id)
-        .is_some_and(|n| {
-            n.ports.inputs.iter().any(|p| {
-                p.ty == Type::Exec && crate::intern::resolve(p.name) == target.port.as_str()
-            })
-        })
+    module.nodes.get(&target.node_id).is_some_and(|n| {
+        n.ports
+            .inputs
+            .iter()
+            .any(|p| p.ty == Type::Exec && crate::intern::resolve(p.name) == target.port.as_str())
+    })
 }
 
 pub(super) fn build_adjacency(module: &Module) -> Adjacency {
@@ -91,12 +89,19 @@ pub(super) fn build_adjacency(module: &Module) -> Adjacency {
     // Each list in source order, then id, the order every reader walks it in.
     let key = |m: &Module, id: &NodeId| {
         (
-            m.nodes.get(id).map(|n| n.source_range.start.offset).unwrap_or(usize::MAX),
+            m.nodes
+                .get(id)
+                .map(|n| n.source_range.start.offset)
+                .unwrap_or(usize::MAX),
             *id,
         )
     };
-    for v in consumers.values_mut() { v.sort_by_key(|id| key(module, id)); }
-    for v in producers.values_mut() { v.sort_by_key(|id| key(module, id)); }
+    for v in consumers.values_mut() {
+        v.sort_by_key(|id| key(module, id));
+    }
+    for v in producers.values_mut() {
+        v.sort_by_key(|id| key(module, id));
+    }
     Adjacency {
         consumers,
         producers,

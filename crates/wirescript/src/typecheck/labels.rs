@@ -102,10 +102,7 @@ fn check_one_label_expr(ctx: &mut TypeCheckCtx, label_expr: &Option<Expr>) {
 /// the label component's `Text` port). Only the non-constant labels reach here —
 /// a constant one bakes its text statically and needs no wire. Runs after the
 /// main decl loop so every top-level symbol is already declared.
-pub(super) fn check_dynamic_var_labels(
-    ctx: &mut TypeCheckCtx,
-    script: &Script,
-) {
+pub(super) fn check_dynamic_var_labels(ctx: &mut TypeCheckCtx, script: &Script) {
     for d in &script.decls {
         if let TopDecl::Var(v) = d {
             if let Some(le) = &v.label_expr {

@@ -75,7 +75,9 @@ pub(in crate::lower) fn lower_chip_call_instance(
     let (mono_frame, base_key) = if chip_decl.type_params.is_empty() {
         (None, chip_decl.name.clone())
     } else {
-        let Some(frame) = super::mono::mono_frame(ctx, chip_decl, range, &positional_args, type_args) else {
+        let Some(frame) =
+            super::mono::mono_frame(ctx, chip_decl, range, &positional_args, type_args)
+        else {
             return super::mono::report_unchecked_instantiation(ctx, chip_decl, range);
         };
         let key = mono_key(chip_decl, &frame);
@@ -126,7 +128,10 @@ pub(in crate::lower) fn lower_chip_call_instance(
     // A chip declared inside a body captures the names that body bound where
     // it declared the chip, which are another body's each time the enclosing
     // mod expands.
-    if ctx.decl_views.contains_key(&(dr.file.clone(), dr.start.offset)) {
+    if ctx
+        .decl_views
+        .contains_key(&(dr.file.clone(), dr.start.offset))
+    {
         let captured = ctx.with_decl_scope(chip_decl, |ctx| body_captures(ctx, chip_decl));
         if !captured.is_empty() {
             key.push_str(&format!("\u{1}v{captured}"));
@@ -141,7 +146,9 @@ pub(in crate::lower) fn lower_chip_call_instance(
     }
     // The constants of the scope the body inherits are baked into it. The
     // body inherits its declaration's scope, not this call site's.
-    let inherited = ctx.with_decl_scope(chip_decl, |ctx| ctx.consts.snapshot()).describe();
+    let inherited = ctx
+        .with_decl_scope(chip_decl, |ctx| ctx.consts.snapshot())
+        .describe();
     if !inherited.is_empty() {
         key.push_str(&format!("\u{1}s{inherited}"));
     }
@@ -205,14 +212,26 @@ pub(in crate::lower) fn lower_chip_call_instance(
         if chip_decl.closed {
             props.insert(*sym::CHIP_CLOSED, Literal::Bool(true));
         }
-        if let Some(label) = resolve_label_text(chip_decl.label.as_deref(), chip_decl.label_expr.as_ref(), &consts) {
+        if let Some(label) = resolve_label_text(
+            chip_decl.label.as_deref(),
+            chip_decl.label_expr.as_ref(),
+            &consts,
+        ) {
             props.insert(*sym::NAME_LABEL, Literal::String(label));
         }
-        if let Some(doc) = ctx.doc_comments.get(&crate::parser::doc_key(&chip_decl.range)) {
+        if let Some(doc) = ctx
+            .doc_comments
+            .get(&crate::parser::doc_key(&chip_decl.range))
+        {
             props.insert(*sym::DOC_TEXT, Literal::String(doc.clone()));
         }
     }
-    crate::lower::style::bake_style(ctx, chip_node_id, chip_decl.color_expr.as_ref(), chip_decl.material_expr.as_ref());
+    crate::lower::style::bake_style(
+        ctx,
+        chip_node_id,
+        chip_decl.color_expr.as_ref(),
+        chip_decl.material_expr.as_ref(),
+    );
 
     let child_inputs = child_module.inputs.clone();
     let child_outputs = child_module.outputs.clone();
@@ -294,11 +313,10 @@ fn unsequenced_chip_returns(chip_decl: &ChipDecl) -> Option<&'static str> {
     counts
         .iter()
         .any(|(name, (count, _))| {
-            let default = chip_decl
-                .body
-                .stmts
-                .iter()
-                .any(|s| matches!(s, Stmt::OutBinding(o) if o.value.is_some() && &o.name == name));
+            let default =
+                chip_decl.body.stmts.iter().any(
+                    |s| matches!(s, Stmt::OutBinding(o) if o.value.is_some() && &o.name == name),
+                );
             *count > usize::from(default)
         })
         .then_some("returns a value and also writes an output with `emit` or `out`")
@@ -357,7 +375,12 @@ fn immutable_container_params(
 /// Decided from the node actually wired into each pin, then followed through
 /// the instance's own modules: into nested chip pins, `Select`s and buffers,
 /// up to a gate that changes the container or stores its reference.
-fn check_constant_pins(ctx: &mut LowerCtx, chip_node: NodeId, pins: &[NodeId], range: &SourceRange) {
+fn check_constant_pins(
+    ctx: &mut LowerCtx,
+    chip_node: NodeId,
+    pins: &[NodeId],
+    range: &SourceRange,
+) {
     if ctx.immutable_containers.is_empty() {
         return;
     }
@@ -367,7 +390,9 @@ fn check_constant_pins(ctx: &mut LowerCtx, chip_node: NodeId, pins: &[NodeId], r
         .filter(|p| {
             crate::lower::ordered::feeds_of(ctx, *p)
                 .into_iter()
-                .any(|(port, src)| port == WirePort::RerInput && is_immutable_container(ctx, src.node_id))
+                .any(|(port, src)| {
+                    port == WirePort::RerInput && is_immutable_container(ctx, src.node_id)
+                })
         })
         .collect();
     if tainted.is_empty() {
@@ -439,7 +464,11 @@ fn check_constant_pins(ctx: &mut LowerCtx, chip_node: NodeId, pins: &[NodeId], r
 /// `d`'s declaration scope.
 fn body_captures(ctx: &LowerCtx, d: &ChipDecl) -> String {
     let mut names = crate::collections::HashSet::default();
-    crate::resolve::collect_idents(crate::ast::walk::Node::Block(&d.body), crate::resolve::Uses::All, &mut names);
+    crate::resolve::collect_idents(
+        crate::ast::walk::Node::Block(&d.body),
+        crate::resolve::Uses::All,
+        &mut names,
+    );
     collect_emit_targets(&d.body, &mut names);
     for p in &d.inputs {
         names.remove(&p.name);
@@ -449,11 +478,15 @@ fn body_captures(ctx: &LowerCtx, d: &ChipDecl) -> String {
     let mut out = String::new();
     for name in names {
         let sym = intern(&name);
-        let Some(frame) = ctx.scope.frame_of(sym, |_| true) else { continue };
+        let Some(frame) = ctx.scope.frame_of(sym, |_| true) else {
+            continue;
+        };
         if frame == 0 {
             continue;
         }
-        let Some(binding) = ctx.scope.get_sym(sym) else { continue };
+        let Some(binding) = ctx.scope.get_sym(sym) else {
+            continue;
+        };
         out.push_str(&name);
         out.push('=');
         push_binding_identity(ctx, binding, &mut out);
@@ -469,10 +502,15 @@ fn push_binding_identity(ctx: &LowerCtx, b: &Binding, out: &mut String) {
     let _ = match b {
         Binding::Var(v) => write!(out, "v{}", v.node_id),
         Binding::Local(l) => write!(out, "l{:?}", l.port),
-        Binding::Buffer(n) | Binding::Input(n) | Binding::Output(n) => write!(out, "n{}", n.node_id),
+        Binding::Buffer(n) | Binding::Input(n) | Binding::Output(n) => {
+            write!(out, "n{}", n.node_id)
+        }
         Binding::EventParam(p) => write!(out, "e{p:?}"),
         Binding::DynRef(d) => write!(out, "d{:?}", d.port),
-        Binding::Chip(c) => match ctx.decl_views.get(&(c.range.file.clone(), c.range.start.offset)) {
+        Binding::Chip(c) => match ctx
+            .decl_views
+            .get(&(c.range.file.clone(), c.range.start.offset))
+        {
             Some(view) => write!(out, "c{}", view.serial),
             None => write!(out, "c{}", c.range.start.offset),
         },
@@ -495,10 +533,14 @@ fn push_binding_identity(ctx: &LowerCtx, b: &Binding, out: &mut String) {
 
 /// Every name `block` emits, at any depth, nested declarations included.
 fn collect_emit_targets(block: &Block, names: &mut crate::collections::HashSet<String>) {
-    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, _| {
-        if let walk::Node::Stmt(Stmt::Emit(e)) = n {
-            names.insert(e.name.clone());
-        }
-        true
-    });
+    walk::walk(
+        walk::Node::Block(block),
+        walk::Ctx::default(),
+        &mut |n, _| {
+            if let walk::Node::Stmt(Stmt::Emit(e)) = n {
+                names.insert(e.name.clone());
+            }
+            true
+        },
+    );
 }

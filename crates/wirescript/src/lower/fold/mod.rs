@@ -26,9 +26,7 @@ use crate::collections::{HashMap, HashSet};
 use crate::intern::{intern_static, resolve, sym};
 use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
-use crate::ir::{
-    GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire,
-};
+use crate::ir::{GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire};
 use eval::Value;
 use table::{AnnihilatorKind, CertifiedTable, InVariant};
 
@@ -188,8 +186,7 @@ pub(crate) fn fold_certified_constants(root: &mut Module) {
     let mut sorted_ids: Vec<NodeId> = infos.keys().copied().collect();
     sorted_ids.sort_unstable();
 
-    let mut worklist: std::collections::VecDeque<NodeId> =
-        sorted_ids.iter().copied().collect();
+    let mut worklist: std::collections::VecDeque<NodeId> = sorted_ids.iter().copied().collect();
     let mut queued: HashSet<NodeId> = sorted_ids.iter().copied().collect();
 
     while let Some(id) = worklist.pop_front() {
@@ -292,9 +289,7 @@ fn collect_infos<'m>(
     for (id, n) in &module.nodes {
         let nofold = n.properties.contains_key(&*sym::NO_FOLD);
         let lit = if n.gate_class == gc::LITERAL {
-            n.properties
-                .get(&*sym::VALUE)
-                .and_then(Value::from_literal)
+            n.properties.get(&*sym::VALUE).and_then(Value::from_literal)
         } else if n.gate_class == gc::STRING_CONCATENATE && n.ports.inputs.is_empty() {
             // A portless `String_Concatenate` (no declared input ports at
             // all — a REAL `..` concatenation always declares InputA/
@@ -415,12 +410,10 @@ fn resolve_data_input(
     properties: &HashMap<crate::intern::Sym, Literal>,
 ) -> Resolved {
     match resolve_input(target, port, in_wires, known) {
-        Resolved::Unwired => {
-            match properties.get(&port.sym()).and_then(Value::from_literal) {
-                Some(v) => Resolved::Known(v),
-                None => Resolved::Unwired,
-            }
-        }
+        Resolved::Unwired => match properties.get(&port.sym()).and_then(Value::from_literal) {
+            Some(v) => Resolved::Known(v),
+            None => Resolved::Unwired,
+        },
         other => other,
     }
 }
@@ -429,11 +422,7 @@ fn resolve_data_input(
 /// one (zero = unwired, refuse; >1 = fan-in, refuse) — used by Select to
 /// find its chosen data source without requiring that source's VALUE to be
 /// known (an opaque, never-folding source can still be shorted to).
-fn single_wire_source(
-    target: NodeId,
-    port: WirePort,
-    in_wires: &WireIndex,
-) -> Option<PortRef> {
+fn single_wire_source(target: NodeId, port: WirePort, in_wires: &WireIndex) -> Option<PortRef> {
     match in_wires.get(&(target, port)).map(Feeds::as_slice) {
         Some([src]) => Some(*src),
         _ => None,
@@ -457,11 +446,12 @@ fn resolve_condition(
     properties: &HashMap<crate::intern::Sym, Literal>,
     table: &CertifiedTable,
 ) -> Option<bool> {
-    let cond_val: Option<Value> = match resolve_data_input(id, cond_port, in_wires, known, properties) {
-        Resolved::Unresolved => return None,
-        Resolved::Unwired => None,
-        Resolved::Known(v) => Some(v),
-    };
+    let cond_val: Option<Value> =
+        match resolve_data_input(id, cond_port, in_wires, known, properties) {
+            Resolved::Unresolved => return None,
+            Resolved::Unwired => None,
+            Resolved::Known(v) => Some(v),
+        };
     let sig = [cond_val.as_ref().map_or(InVariant::Unwired, Value::variant)];
     if !table.covers(gate_class, &sig) {
         return None;
@@ -484,9 +474,20 @@ fn try_resolve_select(
     table: &CertifiedTable,
     plan: &mut HashMap<NodeId, PlanAction>,
 ) -> Option<Value> {
-    let truthy =
-        resolve_condition(id, WirePort::BSelectB, gc::SELECT, in_wires, known, properties, table)?;
-    let chosen_port = if truthy { WirePort::InputB } else { WirePort::InputA };
+    let truthy = resolve_condition(
+        id,
+        WirePort::BSelectB,
+        gc::SELECT,
+        in_wires,
+        known,
+        properties,
+        table,
+    )?;
+    let chosen_port = if truthy {
+        WirePort::InputB
+    } else {
+        WirePort::InputA
+    };
     let chosen_src = single_wire_source(id, chosen_port, in_wires)?;
     plan.insert(id, PlanAction::ShortCircuit { chosen_src });
     known.get(&chosen_src.node_id).cloned()
@@ -507,14 +508,26 @@ fn try_resolve_branch(
     table: &CertifiedTable,
     plan: &mut HashMap<NodeId, PlanAction>,
 ) {
-    let Some(truthy) =
-        resolve_condition(id, WirePort::BCond, gc::BRANCH, in_wires, known, properties, table)
-    else {
+    let Some(truthy) = resolve_condition(
+        id,
+        WirePort::BCond,
+        gc::BRANCH,
+        in_wires,
+        known,
+        properties,
+        table,
+    ) else {
         return;
     };
-    let taken_port = if truthy { WirePort::ExecOutA } else { WirePort::ExecOutB };
-    let taken_targets =
-        out_wires.get(&(id, taken_port)).map(|f| f.as_slice().to_vec()).unwrap_or_default();
+    let taken_port = if truthy {
+        WirePort::ExecOutA
+    } else {
+        WirePort::ExecOutB
+    };
+    let taken_targets = out_wires
+        .get(&(id, taken_port))
+        .map(|f| f.as_slice().to_vec())
+        .unwrap_or_default();
     plan.insert(id, PlanAction::Truncate { taken_targets });
 }
 
@@ -650,7 +663,15 @@ fn try_resolve(
     }
 
     if info.node.gate_class == gc::BRANCH {
-        try_resolve_branch(id, in_wires, out_wires, known, &info.node.properties, table, plan);
+        try_resolve_branch(
+            id,
+            in_wires,
+            out_wires,
+            known,
+            &info.node.properties,
+            table,
+            plan,
+        );
         return None;
     }
 
@@ -751,10 +772,7 @@ fn literal_properties_and_ports(
     };
     let mut properties = HashMap::default();
     properties.insert(*sym::VALUE, value.to_literal());
-    (
-        Arc::new(properties),
-        Arc::new(GateIO::source(ty)),
-    )
+    (Arc::new(properties), Arc::new(GateIO::source(ty)))
 }
 
 /// Mutate `module` (and every nested chip) per `plan`: convert each planned
@@ -1074,7 +1092,11 @@ fn assert_no_nofold_known_boundary(
 /// gives the fresh `_Literal` it mints, so the new node renders where it's
 /// read (same chip/row/scope as the consumer), not off in the chip the value
 /// originated from.
-fn collect_consumer_meta(module: &Module, consumer_ids: &HashSet<NodeId>, out: &mut HashMap<NodeId, Node>) {
+fn collect_consumer_meta(
+    module: &Module,
+    consumer_ids: &HashSet<NodeId>,
+    out: &mut HashMap<NodeId, Node>,
+) {
     for (id, n) in &module.nodes {
         if consumer_ids.contains(id) {
             out.insert(*id, n.clone());
@@ -1313,9 +1335,8 @@ fn sweep_dead_pure(root: &mut Module, protected: &HashSet<NodeId>) {
             }
         }
         for (id, n) in &module.nodes {
-            let is_pure_class = n.gate_class == gc::LITERAL
-                || n.gate_class
-                    .starts_with("BrickComponentType_Expr_");
+            let is_pure_class =
+                n.gate_class == gc::LITERAL || n.gate_class.starts_with("BrickComponentType_Expr_");
             if n.kind == NodeKind::Gate
                 && !n.properties.contains_key(&*sym::NO_FOLD)
                 && !protected.contains(id)
@@ -1328,7 +1349,13 @@ fn sweep_dead_pure(root: &mut Module, protected: &HashSet<NodeId>) {
             scan(child, protected, out_deg, in_sources, pure_eligible);
         }
     }
-    scan(root, protected, &mut out_deg, &mut in_sources, &mut pure_eligible);
+    scan(
+        root,
+        protected,
+        &mut out_deg,
+        &mut in_sources,
+        &mut pure_eligible,
+    );
 
     let mut dead: HashSet<NodeId> = HashSet::default();
     let mut work: Vec<NodeId> = pure_eligible

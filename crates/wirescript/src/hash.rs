@@ -64,12 +64,18 @@ pub fn xxh64(data: &[u8], seed: u64) -> u64 {
     while data.len() - i >= 8 {
         let k1 = round(0, read_u64(&data[i..]));
         h64 ^= k1;
-        h64 = h64.rotate_left(27).wrapping_mul(PRIME64_1).wrapping_add(PRIME64_4);
+        h64 = h64
+            .rotate_left(27)
+            .wrapping_mul(PRIME64_1)
+            .wrapping_add(PRIME64_4);
         i += 8;
     }
     if data.len() - i >= 4 {
         h64 ^= read_u32(&data[i..]).wrapping_mul(PRIME64_1);
-        h64 = h64.rotate_left(23).wrapping_mul(PRIME64_2).wrapping_add(PRIME64_3);
+        h64 = h64
+            .rotate_left(23)
+            .wrapping_mul(PRIME64_2)
+            .wrapping_add(PRIME64_3);
         i += 4;
     }
     while i < data.len() {

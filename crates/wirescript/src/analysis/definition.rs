@@ -43,7 +43,9 @@ pub fn definition_at(
     line: usize,
     col: usize,
 ) -> Option<Location> {
-    if let Some(loc) = find_import_definition(source, pre_resolve_ast, current_file, loader, line, col) {
+    if let Some(loc) =
+        find_import_definition(source, pre_resolve_ast, current_file, loader, line, col)
+    {
         return Some(loc);
     }
 
@@ -68,20 +70,30 @@ pub fn definition_at(
         // there is nothing else in this block that could resolve it, but a
         // dedicated resolver keeps it out of the namespace/record-field
         // fallbacks below (which look for a VALUE symbol, not a type name).
-        if let Some(loc) = resolve_enum_variant_definition(pre_resolve_ast, source, &word, line, col) {
+        if let Some(loc) =
+            resolve_enum_variant_definition(pre_resolve_ast, source, &word, line, col)
+        {
             return Some(loc);
         }
         // Namespace-qualified name (`card.drawCard` with `import * as card`):
         // resolve in the imported file. Checked before the symbol loop so a
         // same-named local decl can't shadow the qualified reference.
         if let Some(loc) = resolve_namespace_definition(
-            source, pre_resolve_ast, current_file, loader, &word, line, col,
+            source,
+            pre_resolve_ast,
+            current_file,
+            loader,
+            &word,
+            line,
+            col,
         ) {
             return Some(loc);
         }
         // Field access on a record value (e.g. cpu.cpsr): resolve the field
         // within the object's record type rather than matching standalone symbols.
-        if let Some(loc) = resolve_field_definition(source, symbols, current_file, loader, &word, line, col) {
+        if let Some(loc) =
+            resolve_field_definition(source, symbols, current_file, loader, &word, line, col)
+        {
             return Some(loc);
         }
     }
@@ -90,7 +102,9 @@ pub fn definition_at(
     // (`Shape.Box { w: 1.0, h: 2.0 }` - the `w`/`h`): jump to that field's own
     // declaration inside `enum Shape { Box { w: float, ... } }`. Not gated by
     // `is_field_access` above - the field key isn't preceded by a `.`.
-    if let Some(loc) = resolve_enum_field_construction_definition(pre_resolve_ast, source, line, col) {
+    if let Some(loc) =
+        resolve_enum_field_construction_definition(pre_resolve_ast, source, line, col)
+    {
         return Some(loc);
     }
 
@@ -103,7 +117,9 @@ pub fn definition_at(
     for sym in symbols {
         if sym.name == word {
             let file = cross_file_path(sym, current_file);
-            let file_source = file.as_ref().and_then(|_| loader.load(&sym.range.file, current_file).ok());
+            let file_source = file
+                .as_ref()
+                .and_then(|_| loader.load(&sym.range.file, current_file).ok());
             let search_source = file_source.as_deref().unwrap_or(source);
             let r = find_name_range(search_source, &sym.range, &sym.name)
                 .unwrap_or_else(|| sym.range.clone());
@@ -224,10 +240,14 @@ fn variant_ctor_path_names(path: &Expr) -> Option<(&str, &str)> {
 /// dedicated sub-range. `None` for a `Spread` field (no single key).
 fn record_lit_field_key_span(f: &RecordLitField) -> Option<(&str, usize, usize)> {
     match f {
-        RecordLitField::Named { name, range, .. } => {
-            Some((name.as_str(), range.start.offset, range.start.offset + name.len()))
+        RecordLitField::Named { name, range, .. } => Some((
+            name.as_str(),
+            range.start.offset,
+            range.start.offset + name.len(),
+        )),
+        RecordLitField::Shorthand { name, range } => {
+            Some((name.as_str(), range.start.offset, range.end.offset))
         }
-        RecordLitField::Shorthand { name, range } => Some((name.as_str(), range.start.offset, range.end.offset)),
         RecordLitField::Spread { .. } => None,
     }
 }
@@ -242,29 +262,30 @@ fn record_lit_field_key_span(f: &RecordLitField) -> Option<(&str, usize, usize)>
 /// which fires `on_call` on `Expr::VariantCtor` itself) looking for
 /// the field whose key span (see [`record_lit_field_key_span`]) contains the
 /// cursor.
-fn resolve_enum_field_construction_definition(ast: &Script, source: &str, line: usize, col: usize) -> Option<Location> {
+fn resolve_enum_field_construction_definition(
+    ast: &Script,
+    source: &str,
+    line: usize,
+    col: usize,
+) -> Option<Location> {
     let off = cursor_byte_offset(source, line, col);
     let mut hit: Option<(&Expr, &str)> = None; // (Enum.Variant path, field name)
-    super::visit::visit_program(
-        ast,
-        &mut |_h| {},
-        &mut |e| {
-            if hit.is_some() {
-                return;
-            }
-            let Expr::VariantCtor { path, fields, .. } = e else {
-                return;
+    super::visit::visit_program(ast, &mut |_h| {}, &mut |e| {
+        if hit.is_some() {
+            return;
+        }
+        let Expr::VariantCtor { path, fields, .. } = e else {
+            return;
+        };
+        for f in fields {
+            let Some((name, key_start, key_end)) = record_lit_field_key_span(f) else {
+                continue;
             };
-            for f in fields {
-                let Some((name, key_start, key_end)) = record_lit_field_key_span(f) else {
-                    continue;
-                };
-                if key_start <= off && off <= key_end {
-                    hit = Some((path, name));
-                }
+            if key_start <= off && off <= key_end {
+                hit = Some((path, name));
             }
-        },
-    );
+        }
+    });
     let (path, field_name) = hit?;
     let (enum_name, variant_name) = variant_ctor_path_names(path)?;
     let e = find_enum_decl(&ast.decls, enum_name)?;
@@ -298,46 +319,48 @@ fn resolve_enum_field_construction_definition(ast: &Script, source: &str, line: 
 ///   (`Pattern::Binding { name: field_tok.text.clone(), range: <field_tok's
 ///   range> }`). An explicit rebinding (`Box { w: renamed }`) has no AST
 ///   range for the `w` key at all, so only the shorthand form resolves here.
-fn resolve_enum_pattern_field_definition(ast: &Script, source: &str, line: usize, col: usize) -> Option<Location> {
+fn resolve_enum_pattern_field_definition(
+    ast: &Script,
+    source: &str,
+    line: usize,
+    col: usize,
+) -> Option<Location> {
     let off = cursor_byte_offset(source, line, col);
     let mut hit: Option<(&str, &str)> = None; // (variant name, field name)
-    super::visit::visit_program(
-        ast,
-        &mut |_h| {},
-        &mut |e| {
-            if hit.is_some() {
-                return;
-            }
-            let Expr::MatchExpr { arms, .. } = e else {
-                return;
+    super::visit::visit_program(ast, &mut |_h| {}, &mut |e| {
+        if hit.is_some() {
+            return;
+        }
+        let Expr::MatchExpr { arms, .. } = e else {
+            return;
+        };
+        for arm in arms {
+            let Pattern::Variant {
+                variant,
+                sub: VariantPattern::Named { fields, .. },
+                ..
+            } = &arm.pattern
+            else {
+                continue;
             };
-            for arm in arms {
-                let Pattern::Variant {
-                    variant,
-                    sub: VariantPattern::Named { fields, .. },
-                    ..
-                } = &arm.pattern
-                else {
+            for (key, sub) in fields {
+                let Pattern::Binding { name, range } = sub else {
                     continue;
                 };
-                for (key, sub) in fields {
-                    let Pattern::Binding { name, range } = sub else {
-                        continue;
-                    };
-                    if name != key {
-                        continue; // an explicit rebind (`w: renamed`) has no key range to click.
-                    }
-                    if range.start.offset <= off && off <= range.end.offset {
-                        hit = Some((variant.as_str(), key.as_str()));
-                    }
+                if name != key {
+                    continue; // an explicit rebind (`w: renamed`) has no key range to click.
+                }
+                if range.start.offset <= off && off <= range.end.offset {
+                    hit = Some((variant.as_str(), key.as_str()));
                 }
             }
-        },
-    );
+        }
+    });
     let (variant_name, field_name) = hit?;
 
     let registry = crate::typecheck::enums::build_registry(&ast.decls);
-    let def = crate::typecheck::enums::resolve_bare_variant_enum(&registry, variant_name, |_| false)?;
+    let def =
+        crate::typecheck::enums::resolve_bare_variant_enum(&registry, variant_name, |_| false)?;
     let e = find_enum_decl(&ast.decls, &def.name)?;
     let v = e.variants.iter().find(|v| v.name == variant_name)?;
     let EnumPayloadDecl::Named(decl_fields) = &v.payload else {
@@ -408,7 +431,10 @@ fn find_import_definition(
         }
 
         return Some(Location {
-            start_line: 0, start_col: 0, end_line: 0, end_col: 0,
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 0,
             file: Some(import_path),
         });
     }
@@ -421,7 +447,9 @@ fn is_field_access(source: &str, line: usize, col: usize) -> bool {
 
 /// Whether the name under the cursor directly follows `byte`.
 fn name_preceded_by(source: &str, line: usize, col: usize, byte: u8) -> bool {
-    let Some(l) = source.lines().nth(line) else { return false };
+    let Some(l) = source.lines().nth(line) else {
+        return false;
+    };
     let c = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
     let start = l[..c]
         .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
@@ -511,9 +539,13 @@ fn resolve_field_definition(
 
     let obj_sym = symbols.iter().find(|s| s.name == obj_name)?;
     let ty_name = obj_sym.ty.as_deref()?;
-    let type_sym = symbols.iter().find(|s| s.kind == "type" && s.name == ty_name)?;
+    let type_sym = symbols
+        .iter()
+        .find(|s| s.kind == "type" && s.name == ty_name)?;
     let file = cross_file_path(type_sym, current_file);
-    let type_source = file.as_ref().and_then(|_| loader.load(&type_sym.range.file, current_file).ok());
+    let type_source = file
+        .as_ref()
+        .and_then(|_| loader.load(&type_sym.range.file, current_file).ok());
     let search_src = type_source.as_deref().unwrap_or(source);
 
     let start_line = type_sym.range.start.line.saturating_sub(1) as usize;
@@ -521,14 +553,26 @@ fn resolve_field_definition(
     for line_idx in start_line..end_line {
         if let Some(line_str) = search_src.lines().nth(line_idx) {
             if let Some(pos) = line_str.find(field) {
-                let before = if pos > 0 { line_str.as_bytes()[pos - 1] } else { b' ' };
-                let after = line_str.as_bytes().get(pos + field.len()).copied().unwrap_or(b' ');
-                if !before.is_ascii_alphanumeric() && before != b'_'
-                    && !after.is_ascii_alphanumeric() && after != b'_'
+                let before = if pos > 0 {
+                    line_str.as_bytes()[pos - 1]
+                } else {
+                    b' '
+                };
+                let after = line_str
+                    .as_bytes()
+                    .get(pos + field.len())
+                    .copied()
+                    .unwrap_or(b' ');
+                if !before.is_ascii_alphanumeric()
+                    && before != b'_'
+                    && !after.is_ascii_alphanumeric()
+                    && after != b'_'
                 {
                     return Some(Location {
-                        start_line: line_idx, start_col: pos,
-                        end_line: line_idx, end_col: pos + field.len(),
+                        start_line: line_idx,
+                        start_col: pos,
+                        end_line: line_idx,
+                        end_col: pos + field.len(),
                         file,
                     });
                 }
@@ -609,17 +653,13 @@ fn custom_event_send_definition(
     // 1. Resolve the channel name under the cursor (must be a SendCustomEvent
     //    channel-name string).
     let mut name: Option<(String, &'static str)> = None;
-    super::visit::visit_program(
-        ast,
-        &mut |_h| {},
-        &mut |call| {
-            if name.is_none()
-                && let Some((n, tw)) = send_event_name_at(call, off)
-            {
-                name = Some((n.to_string(), tw));
-            }
-        },
-    );
+    super::visit::visit_program(ast, &mut |_h| {}, &mut |call| {
+        if name.is_none()
+            && let Some((n, tw)) = send_event_name_at(call, off)
+        {
+            name = Some((n.to_string(), tw));
+        }
+    });
     let (name, trigger_word) = name?;
     // 2. Find the matching receiver handler in the SAME namespace in this file.
     let mut target: Option<SourceRange> = None;

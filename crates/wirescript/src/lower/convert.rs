@@ -23,7 +23,13 @@ pub(super) fn lower_as(ctx: &mut LowerCtx, value: &Expr, e: &Expr) -> PortRef {
 
 /// `port` (a `src`) as a `dst`: itself when the types already agree, else the
 /// output of a new Convert gate it feeds.
-pub(super) fn convert_port(ctx: &mut LowerCtx, port: PortRef, src: &Type, dst: &Type, range: &SourceRange) -> PortRef {
+pub(super) fn convert_port(
+    ctx: &mut LowerCtx,
+    port: PortRef,
+    src: &Type,
+    dst: &Type,
+    range: &SourceRange,
+) -> PortRef {
     if src == dst || matches!(dst, Type::Any | Type::Opaque) {
         return port;
     }
@@ -62,7 +68,11 @@ pub(super) fn as_record_fields(
 fn field_types(t: &Type) -> Vec<(String, Type)> {
     match t {
         Type::Record(fs) => fs.clone(),
-        Type::Tuple(ts) => ts.iter().enumerate().map(|(i, t)| (i.to_string(), t.clone())).collect(),
+        Type::Tuple(ts) => ts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (i.to_string(), t.clone()))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -76,18 +86,26 @@ fn convert_fields(
 ) -> HashMap<crate::intern::Sym, Binding> {
     let src_fields = field_types(src);
     for (name, d) in field_types(dst) {
-        let Some(s) = src_fields.iter().find(|(n, _)| *n == name).map(|(_, t)| unwrap_ref(t)) else {
+        let Some(s) = src_fields
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, t)| unwrap_ref(t))
+        else {
             continue;
         };
         if s == d {
             continue;
         }
         let key = crate::intern::intern(&name);
-        let Some(binding) = fields.get(&key).cloned() else { continue };
+        let Some(binding) = fields.get(&key).cloned() else {
+            continue;
+        };
         let converted = match binding {
             Binding::Record(inner) => Binding::Record(convert_fields(ctx, inner, &s, &d, range)),
             other => match binding_to_port(ctx, &other, range) {
-                Some(port) => Binding::Local(LocalRecord { port: convert_port(ctx, port, &s, &d, range) }),
+                Some(port) => Binding::Local(LocalRecord {
+                    port: convert_port(ctx, port, &s, &d, range),
+                }),
                 None => other,
             },
         };
@@ -124,7 +142,9 @@ fn collect_sources(module: &Module, read: &mut HashSet<NodeId>) {
 
 fn drop_unread(module: &mut Module, read: &HashSet<NodeId>, dropped: &mut HashSet<NodeId>) {
     module.nodes.retain(|id, n| {
-        let unread = n.gate_class == gc::CONVERT && n.properties.contains_key(&*sym::AS_CONVERT) && !read.contains(id);
+        let unread = n.gate_class == gc::CONVERT
+            && n.properties.contains_key(&*sym::AS_CONVERT)
+            && !read.contains(id);
         if unread {
             dropped.insert(*id);
         }
@@ -136,7 +156,9 @@ fn drop_unread(module: &mut Module, read: &HashSet<NodeId>, dropped: &mut HashSe
 }
 
 fn drop_wires_into(module: &mut Module, dropped: &HashSet<NodeId>) {
-    module.wires.retain(|w| !dropped.contains(&w.target.node_id));
+    module
+        .wires
+        .retain(|w| !dropped.contains(&w.target.node_id));
     for child in module.chips.values_mut() {
         drop_wires_into(child, dropped);
     }

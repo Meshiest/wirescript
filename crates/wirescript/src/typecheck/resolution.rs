@@ -35,7 +35,10 @@ pub fn classify_method(name: &str, receiver: &Type) -> Option<MethodTarget> {
             ContainerKind::Map { .. } => crate::catalog::maps::is_map_method(name),
         };
         if is_method {
-            return Some(MethodTarget::Container { kind, method: name.to_string() });
+            return Some(MethodTarget::Container {
+                kind,
+                method: name.to_string(),
+            });
         }
     }
     crate::catalog::calls::find_call(name)

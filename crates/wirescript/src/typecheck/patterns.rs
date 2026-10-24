@@ -41,11 +41,21 @@ pub struct Usefulness {
 /// payload fields, not just the scrutinee's own enum). `guarded[i]` says arm
 /// `i` has an `if` guard: it can still be unreachable, but it covers nothing,
 /// since its guard may be false.
-pub fn analyze(enums: Enums<'_>, scrutinee: &Type, arms: &[Pattern], guarded: &[bool]) -> Usefulness {
+pub fn analyze(
+    enums: Enums<'_>,
+    scrutinee: &Type,
+    arms: &[Pattern],
+    guarded: &[bool],
+) -> Usefulness {
     let is_guarded = |i: usize| guarded.get(i).copied().unwrap_or(false);
     let col = match scrutinee {
-        Type::Enum { args, .. } => enums.defs.of(scrutinee).map(|edef| ColEnum { edef, args: args.clone() }),
-        Type::Int | Type::Float | Type::String | Type::Bool => return analyze_value(enums, scrutinee, arms, guarded),
+        Type::Enum { args, .. } => enums.defs.of(scrutinee).map(|edef| ColEnum {
+            edef,
+            args: args.clone(),
+        }),
+        Type::Int | Type::Float | Type::String | Type::Bool => {
+            return analyze_value(enums, scrutinee, arms, guarded);
+        }
         _ => None,
     };
     // Without a resolved enum for the scrutinee there is no constructor set to
@@ -100,13 +110,21 @@ pub fn analyze(enums: Enums<'_>, scrutinee: &Type, arms: &[Pattern], guarded: &[
                     let row = expand_matching(alt, v);
                     let useful = match spec.get(v.name.as_str()) {
                         Some(entry) => is_useful(&entry.rows, &row, &entry.types, enums),
-                        None => is_useful(&[], &row, &payload_col_types(&v.payload, &col, enums), enums),
+                        None => is_useful(
+                            &[],
+                            &row,
+                            &payload_col_types(&v.payload, &col, enums),
+                            enums,
+                        ),
                     };
                     reachable |= !seen_catchall && useful;
                     // A guarded arm covers nothing: its guard may be false.
                     if !is_guarded(i) {
                         spec.entry(v.name.as_str())
-                            .or_insert_with(|| Spec { types: payload_col_types(&v.payload, &col, enums), rows: Vec::new() })
+                            .or_insert_with(|| Spec {
+                                types: payload_col_types(&v.payload, &col, enums),
+                                rows: Vec::new(),
+                            })
                             .rows
                             .push(row);
                     }
@@ -137,7 +155,10 @@ pub fn analyze(enums: Enums<'_>, scrutinee: &Type, arms: &[Pattern], guarded: &[
     // descended into); a complete one recurses into each constructor.
     let mut missing = Vec::new();
     if !seen_catchall {
-        let all_used = edef.variants.iter().all(|v| spec.contains_key(v.name.as_str()));
+        let all_used = edef
+            .variants
+            .iter()
+            .all(|v| spec.contains_key(v.name.as_str()));
         if all_used {
             for v in &edef.variants {
                 let s = &spec[v.name.as_str()];
@@ -158,12 +179,20 @@ pub fn analyze(enums: Enums<'_>, scrutinee: &Type, arms: &[Pattern], guarded: &[
         }
     }
 
-    Usefulness { missing, unreachable_arms }
+    Usefulness {
+        missing,
+        unreachable_arms,
+    }
 }
 
 /// [`analyze`] for a scrutinee that is a single value (int, float, string or
 /// bool), over the general matrix: one column, one row per arm.
-fn analyze_value(enums: Enums<'_>, scrutinee: &Type, arms: &[Pattern], guarded: &[bool]) -> Usefulness {
+fn analyze_value(
+    enums: Enums<'_>,
+    scrutinee: &Type,
+    arms: &[Pattern],
+    guarded: &[bool],
+) -> Usefulness {
     let types = vec![value_col(scrutinee)];
     let mut matrix: Vec<Vec<Pattern>> = Vec::new();
     let mut unreachable_arms = Vec::new();
@@ -180,7 +209,10 @@ fn analyze_value(enums: Enums<'_>, scrutinee: &Type, arms: &[Pattern], guarded: 
         .into_iter()
         .filter_map(|mut w| w.pop().map(Witness))
         .collect();
-    Usefulness { missing, unreachable_arms }
+    Usefulness {
+        missing,
+        unreachable_arms,
+    }
 }
 
 /// The two values of a `bool`, as the constructors of an enum, so coverage
@@ -193,7 +225,11 @@ pub(crate) fn bool_enum() -> &'static EnumDef {
         variants: ["false", "true"]
             .iter()
             .enumerate()
-            .map(|(i, n)| VariantDef { name: n.to_string(), discriminant: i as i64, payload: Payload::Unit })
+            .map(|(i, n)| VariantDef {
+                name: n.to_string(),
+                discriminant: i as i64,
+                payload: Payload::Unit,
+            })
             .collect(),
     })
 }
@@ -201,7 +237,10 @@ pub(crate) fn bool_enum() -> &'static EnumDef {
 /// The coverage column for a value of type `t` that is not an enum: a bool
 /// has two constructors; any other value is opaque.
 fn value_col(t: &Type) -> Option<ColEnum<'static>> {
-    matches!(t, Type::Bool).then(|| ColEnum { edef: bool_enum(), args: vec![] })
+    matches!(t, Type::Bool).then(|| ColEnum {
+        edef: bool_enum(),
+        args: vec![],
+    })
 }
 
 /// `p`'s alternatives, nested `|` flattened; a pattern that is no `|` is its
@@ -226,7 +265,10 @@ pub(crate) fn is_value_test(p: &Pattern) -> bool {
 /// Rows with a `|` in their first column split into one row per alternative,
 /// which together cover exactly what the original row did.
 fn expand_or_heads(matrix: &[Vec<Pattern>]) -> std::borrow::Cow<'_, [Vec<Pattern>]> {
-    if !matrix.iter().any(|r| matches!(r.first(), Some(Pattern::Or { .. }))) {
+    if !matrix
+        .iter()
+        .any(|r| matches!(r.first(), Some(Pattern::Or { .. })))
+    {
         return std::borrow::Cow::Borrowed(matrix);
     }
     let mut out = Vec::with_capacity(matrix.len());
@@ -314,7 +356,11 @@ pub(crate) fn head_variant_name<'a>(p: &'a Pattern, edef: &EnumDef) -> Option<&'
             }
         }
         Pattern::Binding { name, .. } => {
-            if edef.variants.iter().any(|v| &v.name == name && matches!(v.payload, Payload::Unit)) {
+            if edef
+                .variants
+                .iter()
+                .any(|v| &v.name == name && matches!(v.payload, Payload::Unit))
+            {
                 Some(name.as_str())
             } else {
                 None
@@ -371,10 +417,16 @@ pub(crate) struct ColEnum<'a> {
 pub(crate) fn resolve_field_type(te: &TypeExpr, parent: &ColEnum, enums: Enums<'_>) -> Type {
     let params = &parent.edef.type_params;
     let param = |name: &str, _: &SourceRange| {
-        params.iter().position(|p| p.name == name).map(|i| parent.args.get(i).cloned().unwrap_or(Type::Any))
+        params
+            .iter()
+            .position(|p| p.name == name)
+            .map(|i| parent.args.get(i).cloned().unwrap_or(Type::Any))
     };
     // Read where the enum declares the field: through that file's aliases.
-    enums.types.in_file(&te.range().file).resolve_scoped(te, &param)
+    enums
+        .types
+        .in_file(&te.range().file)
+        .resolve_scoped(te, &param)
 }
 
 /// Resolve a payload field's declared type to the concrete enum instance
@@ -388,7 +440,9 @@ pub(crate) fn resolve_col_type<'a>(
 ) -> Option<ColEnum<'a>> {
     let t = resolve_field_type(te, parent, enums);
     let edef = enums.defs.of(&t)?;
-    let Type::Enum { args, .. } = t else { return None };
+    let Type::Enum { args, .. } = t else {
+        return None;
+    };
     Some(ColEnum { edef, args })
 }
 
@@ -459,11 +513,20 @@ fn build_variant_pattern(v: &VariantDef, subs: Vec<Pattern>) -> Pattern {
         Payload::Unit => VariantPattern::Unit,
         Payload::Positional(_) => VariantPattern::Positional(subs),
         Payload::Named(fields) => VariantPattern::Named {
-            fields: fields.iter().zip(subs).map(|((name, _), p)| (name.clone(), p)).collect(),
+            fields: fields
+                .iter()
+                .zip(subs)
+                .map(|((name, _), p)| (name.clone(), p))
+                .collect(),
             ignore_rest: false,
         },
     };
-    Pattern::Variant { enum_path: None, variant: v.name.clone(), sub, range: SourceRange::default() }
+    Pattern::Variant {
+        enum_path: None,
+        variant: v.name.clone(),
+        sub,
+        range: SourceRange::default(),
+    }
 }
 
 fn used_constructors(matrix: &[Vec<Pattern>], edef: &EnumDef) -> HashSet<String> {
@@ -479,7 +542,12 @@ fn used_constructors(matrix: &[Vec<Pattern>], edef: &EnumDef) -> HashSet<String>
 /// are dropped; a wildcard-like row (matches every constructor) expands to
 /// `arity` wildcards; a row that already names `v` expands to its own
 /// sub-patterns.
-fn specialize(matrix: &[Vec<Pattern>], edef: &EnumDef, v: &VariantDef, arity: usize) -> Vec<Vec<Pattern>> {
+fn specialize(
+    matrix: &[Vec<Pattern>],
+    edef: &EnumDef,
+    v: &VariantDef,
+    arity: usize,
+) -> Vec<Vec<Pattern>> {
     let mut out = Vec::with_capacity(matrix.len());
     for row in matrix {
         match head_variant_name(&row[0], edef) {
@@ -545,17 +613,24 @@ fn is_useful(
         // matches. Anything else might miss some of it, so it is left out,
         // which can only call an arm reachable, never wrongly unreachable.
         None => {
-            let sub_matrix: Vec<Vec<Pattern>> =
-                matrix.iter().filter(|r| opaque_covers(&r[0], &row[0])).map(|r| r[1..].to_vec()).collect();
+            let sub_matrix: Vec<Vec<Pattern>> = matrix
+                .iter()
+                .filter(|r| opaque_covers(&r[0], &row[0]))
+                .map(|r| r[1..].to_vec())
+                .collect();
             is_useful(&sub_matrix, &row[1..], rest_types, enums)
         }
         // A value test in an enum column is a type error of its own.
-        Some(col) if is_value_test(&row[0]) && head_variant_name(&row[0], col.edef).is_none() => true,
+        Some(col) if is_value_test(&row[0]) && head_variant_name(&row[0], col.edef).is_none() => {
+            true
+        }
         // A name from `head_variant_name` is already restricted to members of
         // `edef`, so this `find` cannot miss for well-formed input; folding it
         // into the dispatch keeps an unknown/mismatched constructor on the
         // wildcard path instead of panicking.
-        Some(col) => match head_variant_name(&row[0], col.edef).and_then(|name| col.edef.variants.iter().find(|v| v.name == name)) {
+        Some(col) => match head_variant_name(&row[0], col.edef)
+            .and_then(|name| col.edef.variants.iter().find(|v| v.name == name))
+        {
             Some(v) => {
                 let arity = payload_arity(&v.payload);
                 let mut new_types = payload_col_types(&v.payload, col, enums);
@@ -600,7 +675,11 @@ fn useful_witnesses(
     enums: Enums<'_>,
 ) -> Vec<Vec<Pattern>> {
     let Some((head, rest_types)) = types.split_first() else {
-        return if matrix.is_empty() { vec![vec![]] } else { vec![] };
+        return if matrix.is_empty() {
+            vec![vec![]]
+        } else {
+            vec![]
+        };
     };
     let expanded = expand_or_heads(matrix);
     let matrix = &*expanded;
@@ -608,8 +687,11 @@ fn useful_witnesses(
         // Only a catch-all covers an opaque column: there is always a value
         // that no literal, range or string pattern matches.
         None => {
-            let sub_matrix: Vec<Vec<Pattern>> =
-                matrix.iter().filter(|row| is_catchall(&row[0])).map(|row| row[1..].to_vec()).collect();
+            let sub_matrix: Vec<Vec<Pattern>> = matrix
+                .iter()
+                .filter(|row| is_catchall(&row[0]))
+                .map(|row| row[1..].to_vec())
+                .collect();
             useful_witnesses(&sub_matrix, rest_types, enums)
                 .into_iter()
                 .map(|mut w| {
@@ -621,7 +703,11 @@ fn useful_witnesses(
         Some(col) => {
             let edef = col.edef;
             let used = used_constructors(matrix, edef);
-            let missing: Vec<&VariantDef> = edef.variants.iter().filter(|v| !used.contains(&v.name)).collect();
+            let missing: Vec<&VariantDef> = edef
+                .variants
+                .iter()
+                .filter(|v| !used.contains(&v.name))
+                .collect();
             if missing.is_empty() {
                 // Complete signature: every constructor appears somewhere in
                 // the matrix, so recurse into each one - this is where a
@@ -651,7 +737,10 @@ fn useful_witnesses(
                 let mut out = Vec::new();
                 for v in &missing {
                     let arity = payload_arity(&v.payload);
-                    let pat = build_variant_pattern(v, vec![Pattern::Wildcard(SourceRange::default()); arity]);
+                    let pat = build_variant_pattern(
+                        v,
+                        vec![Pattern::Wildcard(SourceRange::default()); arity],
+                    );
                     for tail in &rest_witnesses {
                         let mut row = vec![pat.clone()];
                         row.extend(tail.iter().cloned());
@@ -686,7 +775,10 @@ mod tests {
         }
 
         fn enums(&self) -> Enums<'_> {
-            Enums { defs: &self.defs, types: &self.types }
+            Enums {
+                defs: &self.defs,
+                types: &self.types,
+            }
         }
     }
 
@@ -695,15 +787,25 @@ mod tests {
     }
 
     fn enum_ty(name: &str) -> Type {
-        Type::Enum { name: name.to_string(), args: vec![] }
+        Type::Enum {
+            name: name.to_string(),
+            args: vec![],
+        }
     }
 
     fn type_name(name: &str) -> TypeExpr {
-        TypeExpr::Name { name: name.to_string(), range: dummy_range() }
+        TypeExpr::Name {
+            name: name.to_string(),
+            range: dummy_range(),
+        }
     }
 
     fn variant(name: &str, disc: i64, payload: Payload) -> VariantDef {
-        VariantDef { name: name.to_string(), discriminant: disc, payload }
+        VariantDef {
+            name: name.to_string(),
+            discriminant: disc,
+            payload,
+        }
     }
 
     fn shape_enum_def() -> EnumDef {
@@ -713,7 +815,11 @@ mod tests {
             variants: vec![
                 variant("Empty", 0, Payload::Unit),
                 variant("Circle", 1, Payload::Positional(vec![type_name("float")])),
-                variant("Rect", 2, Payload::Positional(vec![type_name("float"), type_name("float")])),
+                variant(
+                    "Rect",
+                    2,
+                    Payload::Positional(vec![type_name("float"), type_name("float")]),
+                ),
             ],
         }
     }
@@ -721,7 +827,11 @@ mod tests {
     fn option_enum_def() -> EnumDef {
         EnumDef {
             name: "Option".to_string(),
-            type_params: vec![TypeParam { name: "T".to_string(), bound: None, range: dummy_range() }],
+            type_params: vec![TypeParam {
+                name: "T".to_string(),
+                bound: None,
+                range: dummy_range(),
+            }],
             variants: vec![
                 variant("Some", 0, Payload::Positional(vec![type_name("T")])),
                 variant("None", 1, Payload::Unit),
@@ -788,27 +898,51 @@ mod tests {
 
     #[test]
     fn missing_variant_is_a_witness() {
-        let u = analyze(Reg::new(enums()).enums(), &enum_ty("Shape"), &pats(&["Circle(_)", "Empty"]), &[]);
+        let u = analyze(
+            Reg::new(enums()).enums(),
+            &enum_ty("Shape"),
+            &pats(&["Circle(_)", "Empty"]),
+            &[],
+        );
         // Rect is unmatched.
-        assert!(u.missing.iter().any(|w| matches!(&w.0, Pattern::Variant { variant, .. } if variant == "Rect")));
+        assert!(
+            u.missing
+                .iter()
+                .any(|w| matches!(&w.0, Pattern::Variant { variant, .. } if variant == "Rect"))
+        );
     }
 
     #[test]
     fn full_cover_has_no_witness() {
-        let u = analyze(Reg::new(enums()).enums(), &enum_ty("Shape"), &pats(&["Circle(_)", "Rect(_, _)", "Empty"]), &[]);
+        let u = analyze(
+            Reg::new(enums()).enums(),
+            &enum_ty("Shape"),
+            &pats(&["Circle(_)", "Rect(_, _)", "Empty"]),
+            &[],
+        );
         assert!(u.missing.is_empty());
         assert!(u.unreachable_arms.is_empty());
     }
 
     #[test]
     fn wildcard_covers_the_rest() {
-        let u = analyze(Reg::new(enums()).enums(), &enum_ty("Shape"), &pats(&["Circle(_)", "_"]), &[]);
+        let u = analyze(
+            Reg::new(enums()).enums(),
+            &enum_ty("Shape"),
+            &pats(&["Circle(_)", "_"]),
+            &[],
+        );
         assert!(u.missing.is_empty());
     }
 
     #[test]
     fn arm_after_wildcard_is_unreachable() {
-        let u = analyze(Reg::new(enums()).enums(), &enum_ty("Shape"), &pats(&["_", "Empty"]), &[]);
+        let u = analyze(
+            Reg::new(enums()).enums(),
+            &enum_ty("Shape"),
+            &pats(&["_", "Empty"]),
+            &[],
+        );
         assert_eq!(u.unreachable_arms, vec![1]);
     }
 
@@ -816,8 +950,17 @@ mod tests {
     fn nested_missing_is_a_nested_witness() {
         // enum Tree { Leaf(int), Node(Option<int>) }; match Node(Some(_)) +
         // Leaf(_): Node(None) is missing.
-        let u = analyze(Reg::new(tree_enums()).enums(), &enum_ty("Tree"), &pats(&["Node(Some(_))", "Leaf(_)"]), &[]);
-        assert!(u.missing.iter().any(|w| format!("{:?}", w.0).contains("None")));
+        let u = analyze(
+            Reg::new(tree_enums()).enums(),
+            &enum_ty("Tree"),
+            &pats(&["Node(Some(_))", "Leaf(_)"]),
+            &[],
+        );
+        assert!(
+            u.missing
+                .iter()
+                .any(|w| format!("{:?}", w.0).contains("None"))
+        );
     }
 
     #[test]
@@ -828,7 +971,12 @@ mod tests {
         // regression guard is that this call returns at all; the unknown
         // `Triangle` is treated as an inert wildcard (catch-all), so no
         // witness is produced.
-        let u = analyze(Reg::new(enums()).enums(), &enum_ty("Shape"), &pats(&["Triangle(_)", "Empty"]), &[]);
+        let u = analyze(
+            Reg::new(enums()).enums(),
+            &enum_ty("Shape"),
+            &pats(&["Triangle(_)", "Empty"]),
+            &[],
+        );
         assert!(u.missing.is_empty());
     }
 
@@ -836,7 +984,10 @@ mod tests {
         EnumDef {
             name: "Inner".to_string(),
             type_params: vec![],
-            variants: vec![variant("On", 0, Payload::Unit), variant("Off", 1, Payload::Unit)],
+            variants: vec![
+                variant("On", 0, Payload::Unit),
+                variant("Off", 1, Payload::Unit),
+            ],
         }
     }
 
@@ -847,7 +998,10 @@ mod tests {
     }
 
     fn opt_inner_ty() -> Type {
-        Type::Enum { name: "Option".to_string(), args: vec![enum_ty("Inner")] }
+        Type::Enum {
+            name: "Option".to_string(),
+            args: vec![enum_ty("Inner")],
+        }
     }
 
     #[test]
@@ -856,9 +1010,16 @@ mod tests {
         // slot must resolve THROUGH the instantiation to `Inner`, so `Some(Off)`
         // is a missing witness. Without threading the args the payload is opaque
         // and this wrongly reports exhaustive.
-        let u = analyze(Reg::new(opt_inner_enums()).enums(), &opt_inner_ty(), &pats(&["Some(On)", "None"]), &[]);
+        let u = analyze(
+            Reg::new(opt_inner_enums()).enums(),
+            &opt_inner_ty(),
+            &pats(&["Some(On)", "None"]),
+            &[],
+        );
         assert!(
-            u.missing.iter().any(|w| format!("{:?}", w.0).contains("Off")),
+            u.missing
+                .iter()
+                .any(|w| format!("{:?}", w.0).contains("Off")),
             "expected a Some(Off) witness, got {:?}",
             u.missing
         );
@@ -888,58 +1049,119 @@ mod tests {
     }
 
     fn render(u: &Usefulness) -> Vec<String> {
-        u.missing.iter().map(|w| crate::typecheck::infer::render_pattern(&w.0)).collect()
+        u.missing
+            .iter()
+            .map(|w| crate::typecheck::infer::render_pattern(&w.0))
+            .collect()
     }
 
     #[test]
     fn literals_never_cover_a_string_so_it_needs_a_catch_all() {
         let reg = Reg::new(enums());
-        let u = analyze(reg.enums(), &Type::String, &pats(&[r#""a""#, r#""b" | "c""#]), &[]);
+        let u = analyze(
+            reg.enums(),
+            &Type::String,
+            &pats(&[r#""a""#, r#""b" | "c""#]),
+            &[],
+        );
         assert_eq!(render(&u), vec!["_"]);
         let u = analyze(reg.enums(), &Type::String, &pats(&[r#""a""#, "rest"]), &[]);
-        assert!(u.missing.is_empty() && u.unreachable_arms.is_empty(), "{u:?}");
+        assert!(
+            u.missing.is_empty() && u.unreachable_arms.is_empty(),
+            "{u:?}"
+        );
     }
 
     #[test]
     fn true_and_false_cover_a_bool() {
         let reg = Reg::new(enums());
-        assert!(analyze(reg.enums(), &Type::Bool, &pats(&["true", "false"]), &[]).missing.is_empty());
-        assert_eq!(render(&analyze(reg.enums(), &Type::Bool, &pats(&["true"]), &[])), vec!["false"]);
+        assert!(
+            analyze(reg.enums(), &Type::Bool, &pats(&["true", "false"]), &[])
+                .missing
+                .is_empty()
+        );
+        assert_eq!(
+            render(&analyze(reg.enums(), &Type::Bool, &pats(&["true"]), &[])),
+            vec!["false"]
+        );
         // A bool payload, too.
         let mut m: EnumRegistry = Default::default();
         m.insert(EnumDef {
             name: "Flag".to_string(),
             type_params: vec![],
-            variants: vec![variant("On", 0, Payload::Positional(vec![type_name("bool")]))],
+            variants: vec![variant(
+                "On",
+                0,
+                Payload::Positional(vec![type_name("bool")]),
+            )],
         });
         let reg = Reg::new(m);
-        assert_eq!(render(&analyze(reg.enums(), &enum_ty("Flag"), &pats(&["On(true)"]), &[])), vec!["On(false)"]);
+        assert_eq!(
+            render(&analyze(
+                reg.enums(),
+                &enum_ty("Flag"),
+                &pats(&["On(true)"]),
+                &[]
+            )),
+            vec!["On(false)"]
+        );
     }
 
     #[test]
     fn a_repeated_test_is_unreachable_but_an_overlapping_one_is_not() {
         let reg = Reg::new(enums());
-        let u = analyze(reg.enums(), &Type::String, &pats(&[r#""a""#, r#""a""#, r#""a" .. x"#, "_"]), &[]);
+        let u = analyze(
+            reg.enums(),
+            &Type::String,
+            &pats(&[r#""a""#, r#""a""#, r#""a" .. x"#, "_"]),
+            &[],
+        );
         assert_eq!(u.unreachable_arms, vec![1]);
-        let u = analyze(reg.enums(), &Type::Int, &pats(&["1..5", "1..5", "3", "_", "_"]), &[]);
+        let u = analyze(
+            reg.enums(),
+            &Type::Int,
+            &pats(&["1..5", "1..5", "3", "_", "_"]),
+            &[],
+        );
         assert_eq!(u.unreachable_arms, vec![1, 4]);
     }
 
     #[test]
     fn a_guarded_arm_covers_nothing() {
         let reg = Reg::new(enums());
-        let u = analyze(reg.enums(), &enum_ty("Shape"), &pats(&["Circle(_)", "Rect(_, _)", "Empty"]), &[false, false, true]);
+        let u = analyze(
+            reg.enums(),
+            &enum_ty("Shape"),
+            &pats(&["Circle(_)", "Rect(_, _)", "Empty"]),
+            &[false, false, true],
+        );
         assert_eq!(render(&u), vec!["Empty"]);
         let u = analyze(reg.enums(), &Type::Int, &pats(&["n", "_"]), &[true, false]);
-        assert!(u.missing.is_empty() && u.unreachable_arms.is_empty(), "{u:?}");
+        assert!(
+            u.missing.is_empty() && u.unreachable_arms.is_empty(),
+            "{u:?}"
+        );
     }
 
     #[test]
     fn an_arm_of_alternatives_covers_each_one() {
         let reg = Reg::new(enums());
-        let u = analyze(reg.enums(), &enum_ty("Shape"), &pats(&["Circle(_) | Rect(_, _)", "Empty"]), &[]);
-        assert!(u.missing.is_empty() && u.unreachable_arms.is_empty(), "{u:?}");
-        let u = analyze(reg.enums(), &enum_ty("Shape"), &pats(&["Circle(_) | Rect(_, _)", "Rect(_, _) | Circle(_)", "_"]), &[]);
+        let u = analyze(
+            reg.enums(),
+            &enum_ty("Shape"),
+            &pats(&["Circle(_) | Rect(_, _)", "Empty"]),
+            &[],
+        );
+        assert!(
+            u.missing.is_empty() && u.unreachable_arms.is_empty(),
+            "{u:?}"
+        );
+        let u = analyze(
+            reg.enums(),
+            &enum_ty("Shape"),
+            &pats(&["Circle(_) | Rect(_, _)", "Rect(_, _) | Circle(_)", "_"]),
+            &[],
+        );
         assert_eq!(u.unreachable_arms, vec![1]);
     }
 }

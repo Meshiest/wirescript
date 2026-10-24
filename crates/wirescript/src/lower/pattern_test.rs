@@ -2,7 +2,9 @@
 //! patterns) and the names a string pattern binds.
 
 use super::*;
-use crate::lower::matchtree::{Capture, ConcatPart, PathStep, VALUE_ROOT, ValueCheck, ValueTest, concat_lit_ends};
+use crate::lower::matchtree::{
+    Capture, ConcatPart, PathStep, VALUE_ROOT, ValueCheck, ValueTest, concat_lit_ends,
+};
 
 /// One string pattern lowered against one value: whether it matched, and what
 /// each hole holds when it did.
@@ -25,7 +27,10 @@ pub(super) fn match_root(
         Type::Int | Type::Float | Type::Bool | Type::String => {
             let port = lower_expr(ctx, scrutinee);
             let mut root = HashMap::default();
-            root.insert(crate::intern::intern(VALUE_ROOT), Binding::Local(LocalRecord { port }));
+            root.insert(
+                crate::intern::intern(VALUE_ROOT),
+                Binding::Local(LocalRecord { port }),
+            );
             Some(root)
         }
         _ => crate::lower::expr::match_scrutinee_record(ctx, scrutinee),
@@ -72,12 +77,24 @@ pub(super) fn lower_value_checks(
 }
 
 /// `a && b && ...`, or `None` for no conditions.
-pub(super) fn all_of(ctx: &mut LowerCtx, conds: Vec<PortRef>, range: &SourceRange) -> Option<PortRef> {
-    conds.into_iter().reduce(|a, b| emit_op(ctx, "&&", (a, Type::Bool), (b, Type::Bool), range))
+pub(super) fn all_of(
+    ctx: &mut LowerCtx,
+    conds: Vec<PortRef>,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    conds
+        .into_iter()
+        .reduce(|a, b| emit_op(ctx, "&&", (a, Type::Bool), (b, Type::Bool), range))
 }
 
 /// Whether `value`, of type `ty`, passes `test`.
-fn lower_value_test(ctx: &mut LowerCtx, value: PortRef, ty: &Type, test: &ValueTest, range: &SourceRange) -> PortRef {
+fn lower_value_test(
+    ctx: &mut LowerCtx,
+    value: PortRef,
+    ty: &Type,
+    test: &ValueTest,
+    range: &SourceRange,
+) -> PortRef {
     match test {
         ValueTest::Eq(lit) => {
             let lit = literal_node_range(ctx, range, ty.clone(), lit.clone());
@@ -92,7 +109,10 @@ fn lower_value_test(ctx: &mut LowerCtx, value: PortRef, ty: &Type, test: &ValueT
         }
         ValueTest::Concat(parts) => lower_concat(ctx, value, parts, range).cond,
         ValueTest::Any(tests) => {
-            let conds: Vec<PortRef> = tests.iter().map(|t| lower_value_test(ctx, value, ty, t, range)).collect();
+            let conds: Vec<PortRef> = tests
+                .iter()
+                .map(|t| lower_value_test(ctx, value, ty, t, range))
+                .collect();
             conds
                 .into_iter()
                 .reduce(|a, b| emit_op(ctx, "||", (a, Type::Bool), (b, Type::Bool), range))
@@ -124,8 +144,17 @@ pub(super) fn bind_capture(
 /// other literal is found at its first occurrence after the one before it
 /// (`Find`). Each hole is the `Substring` between its neighbours. The string
 /// gates are case-sensitive, as `==` is.
-fn lower_concat(ctx: &mut LowerCtx, value: PortRef, parts: &[ConcatPart], range: &SourceRange) -> ConcatLowered {
-    if let Some(hit) = ctx.concat_cache.iter().find(|c| c.value == value && c.parts == parts) {
+fn lower_concat(
+    ctx: &mut LowerCtx,
+    value: PortRef,
+    parts: &[ConcatPart],
+    range: &SourceRange,
+) -> ConcatLowered {
+    if let Some(hit) = ctx
+        .concat_cache
+        .iter()
+        .find(|c| c.value == value && c.parts == parts)
+    {
         return hit.clone();
     }
     let mut conds = Vec::new();
@@ -139,7 +168,13 @@ fn lower_concat(ctx: &mut LowerCtx, value: PortRef, parts: &[ConcatPart], range:
             })
             .collect();
         let lit = literal_node_range(ctx, range, Type::String, Literal::String(text));
-        conds.push(emit_op(ctx, "==", (value, Type::String), (lit, Type::String), range));
+        conds.push(emit_op(
+            ctx,
+            "==",
+            (value, Type::String),
+            (lit, Type::String),
+            range,
+        ));
     } else {
         let mut length = None;
         let mut pos = Offset::Const(0);
@@ -148,17 +183,38 @@ fn lower_concat(ctx: &mut LowerCtx, value: PortRef, parts: &[ConcatPart], range:
             match part {
                 ConcatPart::Hole => {
                     if pending {
-                        holes.push(literal_node_range(ctx, range, Type::String, Literal::String(String::new())));
+                        holes.push(literal_node_range(
+                            ctx,
+                            range,
+                            Type::String,
+                            Literal::String(String::new()),
+                        ));
                     }
                     pending = true;
                 }
                 ConcatPart::Lit(l) => {
                     let n = l.chars().count() as i64;
                     if !pending {
-                        conds.push(string_test(ctx, gc::STRING_STARTS_WITH, WirePort::Prefix, value, l, None, range));
+                        conds.push(string_test(
+                            ctx,
+                            gc::STRING_STARTS_WITH,
+                            WirePort::Prefix,
+                            value,
+                            l,
+                            None,
+                            range,
+                        ));
                         pos = pos.plus(ctx, n, range);
                     } else if concat_lit_ends(parts, j) {
-                        conds.push(string_test(ctx, gc::STRING_ENDS_WITH, WirePort::Suffix, value, l, None, range));
+                        conds.push(string_test(
+                            ctx,
+                            gc::STRING_ENDS_WITH,
+                            WirePort::Suffix,
+                            value,
+                            l,
+                            None,
+                            range,
+                        ));
                         let len = string_length(ctx, value, &mut length, range);
                         let start = Offset::Port(len).plus(ctx, -n, range);
                         if pos != Offset::Const(0) {
@@ -169,9 +225,23 @@ fn lower_concat(ctx: &mut LowerCtx, value: PortRef, parts: &[ConcatPart], range:
                         pos = Offset::Port(len);
                     } else {
                         let start = pos.port(ctx, range);
-                        let at = string_test(ctx, gc::STRING_FIND, WirePort::Search, value, l, Some(start), range);
+                        let at = string_test(
+                            ctx,
+                            gc::STRING_FIND,
+                            WirePort::Search,
+                            value,
+                            l,
+                            Some(start),
+                            range,
+                        );
                         let zero = literal_node_range(ctx, range, Type::Int, Literal::Int(0));
-                        conds.push(emit_op(ctx, ">=", (at, Type::Int), (zero, Type::Int), range));
+                        conds.push(emit_op(
+                            ctx,
+                            ">=",
+                            (at, Type::Int),
+                            (zero, Type::Int),
+                            range,
+                        ));
                         holes.push(substring(ctx, value, pos, Offset::Port(at), range));
                         pos = Offset::Port(at).plus(ctx, n, range);
                     }
@@ -184,8 +254,14 @@ fn lower_concat(ctx: &mut LowerCtx, value: PortRef, parts: &[ConcatPart], range:
             holes.push(substring(ctx, value, pos, Offset::Port(len), range));
         }
     }
-    let cond = all_of(ctx, conds, range).unwrap_or_else(|| literal_node_range(ctx, range, Type::Bool, Literal::Bool(true)));
-    let lowered = ConcatLowered { value, parts: parts.to_vec(), cond, holes };
+    let cond = all_of(ctx, conds, range)
+        .unwrap_or_else(|| literal_node_range(ctx, range, Type::Bool, Literal::Bool(true)));
+    let lowered = ConcatLowered {
+        value,
+        parts: parts.to_vec(),
+        cond,
+        holes,
+    };
     ctx.concat_cache.push(lowered.clone());
     lowered
 }
@@ -219,17 +295,34 @@ impl Offset {
 }
 
 /// `value`'s length, built once per string pattern.
-fn string_length(ctx: &mut LowerCtx, value: PortRef, cached: &mut Option<PortRef>, range: &SourceRange) -> PortRef {
+fn string_length(
+    ctx: &mut LowerCtx,
+    value: PortRef,
+    cached: &mut Option<PortRef>,
+    range: &SourceRange,
+) -> PortRef {
     if let Some(len) = *cached {
         return len;
     }
-    let len = emit_gate(ctx, gc::STRING_LENGTH, &[(WirePort::Input, value, Type::String)], Type::Int, range);
+    let len = emit_gate(
+        ctx,
+        gc::STRING_LENGTH,
+        &[(WirePort::Input, value, Type::String)],
+        Type::Int,
+        range,
+    );
     *cached = Some(len);
     len
 }
 
 /// The characters of `value` from `start` up to `end`.
-fn substring(ctx: &mut LowerCtx, value: PortRef, start: Offset, end: Offset, range: &SourceRange) -> PortRef {
+fn substring(
+    ctx: &mut LowerCtx,
+    value: PortRef,
+    start: Offset,
+    end: Offset,
+    range: &SourceRange,
+) -> PortRef {
     let count = match (start, end) {
         (Offset::Const(a), Offset::Const(b)) => Offset::Const(b - a),
         (Offset::Const(0), e) => e,
@@ -243,7 +336,11 @@ fn substring(ctx: &mut LowerCtx, value: PortRef, start: Offset, end: Offset, ran
     emit_gate(
         ctx,
         gc::STRING_SUBSTRING,
-        &[(WirePort::Input, value, Type::String), (WirePort::Start, start, Type::Int), (WirePort::Length, count, Type::Int)],
+        &[
+            (WirePort::Input, value, Type::String),
+            (WirePort::Start, start, Type::Int),
+            (WirePort::Length, count, Type::Int),
+        ],
         Type::String,
         range,
     )
@@ -290,7 +387,10 @@ fn emit_gate(
         gate_class: class,
         source_range: range.clone(),
         ports: GateIO {
-            inputs: inputs.iter().map(|(p, _, t)| PortSpec::new(p.sym(), t.clone())).collect(),
+            inputs: inputs
+                .iter()
+                .map(|(p, _, t)| PortSpec::new(p.sym(), t.clone()))
+                .collect(),
             outputs: vec![PortSpec::new(*sym::OUTPUT, out)],
         },
         ..Default::default()
@@ -332,8 +432,16 @@ pub(super) fn emit_op(
 }
 
 /// `disc` equals one of `keys`.
-pub(super) fn emit_disc_in(ctx: &mut LowerCtx, disc: PortRef, keys: &[i64], range: &SourceRange) -> PortRef {
-    let conds: Vec<PortRef> = keys.iter().map(|&k| emit_disc_eq(ctx, disc, k, range)).collect();
+pub(super) fn emit_disc_in(
+    ctx: &mut LowerCtx,
+    disc: PortRef,
+    keys: &[i64],
+    range: &SourceRange,
+) -> PortRef {
+    let conds: Vec<PortRef> = keys
+        .iter()
+        .map(|&k| emit_disc_eq(ctx, disc, k, range))
+        .collect();
     conds
         .into_iter()
         .reduce(|a, b| emit_op(ctx, "||", (a, Type::Bool), (b, Type::Bool), range))

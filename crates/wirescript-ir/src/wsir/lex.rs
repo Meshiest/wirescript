@@ -63,7 +63,13 @@ pub struct LexError {
 }
 
 pub fn lex(src: &str) -> Result<Vec<Token<'_>>, LexError> {
-    let mut lx = Lexer { src, b: src.as_bytes(), i: 0, line: 1, line_start: 0 };
+    let mut lx = Lexer {
+        src,
+        b: src.as_bytes(),
+        i: 0,
+        line: 1,
+        line_start: 0,
+    };
     // A rough guess from typical density keeps reallocation to a couple of times.
     let mut out = Vec::with_capacity(src.len() / 6 + 16);
     loop {
@@ -92,7 +98,12 @@ impl<'a> Lexer<'a> {
     }
 
     fn err(&self, at: usize, found: impl Into<String>, message: impl Into<String>) -> LexError {
-        LexError { line: self.line, col: self.col(at), found: found.into(), message: message.into() }
+        LexError {
+            line: self.line,
+            col: self.col(at),
+            found: found.into(),
+            message: message.into(),
+        }
     }
 
     fn skip_trivia(&mut self) {
@@ -161,15 +172,19 @@ impl<'a> Lexer<'a> {
                     while end < self.b.len() && self.b[end].is_ascii_digit() {
                         end += 1;
                     }
-                    let n = self.src[j..end]
-                        .parse::<u32>()
-                        .map_err(|_| self.err(start, &self.src[start..end], "metadata number out of range"))?;
+                    let n = self.src[j..end].parse::<u32>().map_err(|_| {
+                        self.err(start, &self.src[start..end], "metadata number out of range")
+                    })?;
                     self.i = end;
                     mk(Tok::MetaNum(n))
                 } else {
                     let end = self.ident_end(j);
                     if end == j {
-                        return Err(self.err(start, "!", "expected a metadata name or number after `!`"));
+                        return Err(self.err(
+                            start,
+                            "!",
+                            "expected a metadata name or number after `!`",
+                        ));
                     }
                     self.i = end;
                     mk(Tok::MetaKw(&self.src[j..end]))
@@ -181,11 +196,16 @@ impl<'a> Lexer<'a> {
             }
             b'#' => {
                 let j = self.i + 1;
-                let hex = self.b.get(j..j + 8).filter(|h| h.iter().all(u8::is_ascii_hexdigit));
+                let hex = self
+                    .b
+                    .get(j..j + 8)
+                    .filter(|h| h.iter().all(u8::is_ascii_hexdigit));
                 let Some(hex) = hex else {
                     return Err(self.err(start, "#", "expected a color `#rrggbbaa`"));
                 };
-                let byte = |k: usize| u8::from_str_radix(std::str::from_utf8(&hex[k..k + 2]).unwrap(), 16).unwrap();
+                let byte = |k: usize| {
+                    u8::from_str_radix(std::str::from_utf8(&hex[k..k + 2]).unwrap(), 16).unwrap()
+                };
                 self.i = j + 8;
                 mk(Tok::Color([byte(0), byte(2), byte(4), byte(6)]))
             }
@@ -203,7 +223,8 @@ impl<'a> Lexer<'a> {
                 self.i = end;
                 mk(Tok::Ident(&self.src[start..end]))
             }
-            b'=' | b'(' | b')' | b'{' | b'}' | b'[' | b']' | b',' | b':' | b'.' | b'*' | b'<' | b'>' | b'+' => {
+            b'=' | b'(' | b')' | b'{' | b'}' | b'[' | b']' | b',' | b':' | b'.' | b'*' | b'<'
+            | b'>' | b'+' => {
                 self.i += 1;
                 mk(Tok::Punct(c))
             }
@@ -219,9 +240,15 @@ impl<'a> Lexer<'a> {
         if self.b[j] == b'-' {
             j += 1;
             for (word, value) in [("inf", f64::NEG_INFINITY), ("nan", -f64::NAN)] {
-                if self.src[j..].starts_with(word) && !self.b.get(j + 3).is_some_and(|c| is_ident_char(*c)) {
+                if self.src[j..].starts_with(word)
+                    && !self.b.get(j + 3).is_some_and(|c| is_ident_char(*c))
+                {
                     self.i = j + 3;
-                    return Ok(Token { tok: Tok::Float(value), line, col });
+                    return Ok(Token {
+                        tok: Tok::Float(value),
+                        line,
+                        col,
+                    });
                 }
             }
             if !self.b.get(j).is_some_and(u8::is_ascii_digit) {
@@ -249,9 +276,15 @@ impl<'a> Lexer<'a> {
         let text = &self.src[start..j];
         self.i = j;
         let tok = if float {
-            Tok::Float(text.parse().map_err(|_| self.err(start, text, "malformed float"))?)
+            Tok::Float(
+                text.parse()
+                    .map_err(|_| self.err(start, text, "malformed float"))?,
+            )
         } else {
-            Tok::Int(text.parse().map_err(|_| self.err(start, text, "integer out of range for a 64-bit int"))?)
+            Tok::Int(
+                text.parse()
+                    .map_err(|_| self.err(start, text, "integer out of range for a 64-bit int"))?,
+            )
         };
         Ok(Token { tok, line, col })
     }
@@ -303,12 +336,24 @@ impl<'a> Lexer<'a> {
                                     j += 2 + c + 1;
                                     continue;
                                 }
-                                _ => return Err(self.err(j, "\\u", "expected `\\u{HEX}` with a valid code point")),
+                                _ => {
+                                    return Err(self.err(
+                                        j,
+                                        "\\u",
+                                        "expected `\\u{HEX}` with a valid code point",
+                                    ));
+                                }
                             }
                         }
                         _ => {
-                            let found = esc.map(|c| format!("\\{}", c as char)).unwrap_or_else(|| "\\".into());
-                            return Err(self.err(j, found, "unknown escape; use \\\" \\\\ \\n \\r \\t or \\u{HEX}"));
+                            let found = esc
+                                .map(|c| format!("\\{}", c as char))
+                                .unwrap_or_else(|| "\\".into());
+                            return Err(self.err(
+                                j,
+                                found,
+                                "unknown escape; use \\\" \\\\ \\n \\r \\t or \\u{HEX}",
+                            ));
                         }
                     }
                     j += 2;

@@ -141,8 +141,11 @@ pub(super) fn emit_port_rerouters(
             };
 
             // Coloured to match the inner chip-I/O gate.
-            let (mut brick, rer_brick_id) =
-                rerouter_brick(position, rerouter_orientation(side, is_input), io_node_color(node));
+            let (mut brick, rer_brick_id) = rerouter_brick(
+                position,
+                rerouter_orientation(side, is_input),
+                io_node_color(node),
+            );
 
             // `@invisible` ports: hide the rerouter, drop all collision so it
             // doesn't block players/weapons/tools, and skip its name label.

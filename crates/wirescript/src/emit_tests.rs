@@ -105,7 +105,12 @@ fn the_scalar_coercions_agree() {
         Literal::String(String::new()),
         Literal::String("x".into()),
     ];
-    let slots = [(Type::Int, "i64"), (Type::Float, "f64"), (Type::Bool, "Bool"), (Type::String, "Str")];
+    let slots = [
+        (Type::Int, "i64"),
+        (Type::Float, "f64"),
+        (Type::Bool, "Bool"),
+        (Type::String, "Str"),
+    ];
     for lit in &lits {
         for (ty, wire) in &slots {
             let baked = scalar_in_type(lit.clone(), ty);
@@ -116,7 +121,10 @@ fn the_scalar_coercions_agree() {
             );
             let numbered = number_in_type(lit.clone(), ty);
             if numbered != *lit {
-                assert_eq!(numbered, baked, "{lit:?} in a {ty:?} slot: number_in_type and scalar_in_type disagree");
+                assert_eq!(
+                    numbered, baked,
+                    "{lit:?} in a {ty:?} slot: number_in_type and scalar_in_type disagree"
+                );
             }
         }
     }

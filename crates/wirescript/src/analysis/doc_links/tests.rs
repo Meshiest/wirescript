@@ -21,7 +21,11 @@ fn table_loads() {
 /// finding them, or new builtins went undocumented.
 #[test]
 fn builtins_link_to_their_docs() {
-    let mut missing: Vec<&str> = calls().keys().copied().filter(|n| doc_url(Doc::Builtin(n)).is_none()).collect();
+    let mut missing: Vec<&str> = calls()
+        .keys()
+        .copied()
+        .filter(|n| doc_url(Doc::Builtin(n)).is_none())
+        .collect();
     missing.sort();
     assert!(
         missing.len() * 20 <= calls().len(),
@@ -35,7 +39,10 @@ fn builtins_link_to_their_docs() {
 #[test]
 fn hover_link_is_its_own_line() {
     let h = with_doc_link("```wirescript\nint\n```".into(), Doc::Type("int"));
-    assert!(h.ends_with("\n\n[Docs](https://wirescript.brickadia.dev/docs/types.html#primitive-types)"), "{h}");
+    assert!(
+        h.ends_with("\n\n[Docs](https://wirescript.brickadia.dev/docs/types.html#primitive-types)"),
+        "{h}"
+    );
     assert_eq!(with_doc_link("x".into(), Doc::Type("nope")), "x");
 }
 

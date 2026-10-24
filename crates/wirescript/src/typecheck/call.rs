@@ -28,7 +28,10 @@ fn union_output_type(
 ) -> Type {
     let declared = c.outputs[out_index].ty.clone();
     // Get/Add Component give a reference of the type their `$Component/...` names.
-    if matches!(c.gate_class, crate::ir::gate_class::GET_COMPONENT | crate::ir::gate_class::ADD_COMPONENT) {
+    if matches!(
+        c.gate_class,
+        crate::ir::gate_class::GET_COMPONENT | crate::ir::gate_class::ADD_COMPONENT
+    ) {
         let pos = c.params.iter().position(|p| p.name == "componentType");
         let arg = args
             .iter()
@@ -48,10 +51,14 @@ fn union_output_type(
             Some(class) => Type::Component(class.to_string()),
             None => {
                 // A `$Component/...` that names nothing has its own WS110.
-                if !matches!(arg, Some(Expr::AssetRef { asset_type, .. }) if asset_type == crate::analysis::assets::COMPONENT) {
+                if !matches!(arg, Some(Expr::AssetRef { asset_type, .. }) if asset_type == crate::analysis::assets::COMPONENT)
+                {
                     ctx.emit(
                         "WS110",
-                        format!("`{}` takes the component type as `$Component/<name>`", c.name),
+                        format!(
+                            "`{}` takes the component type as `$Component/<name>`",
+                            c.name
+                        ),
                         arg.map_or(range, |a| a.range()).clone(),
                     );
                 }
@@ -152,7 +159,11 @@ fn union_output_type(
             fields
                 .into_iter()
                 .map(|(k, ft)| {
-                    let nt = if matches!(ft, Type::Union(_)) { resolved.clone() } else { ft };
+                    let nt = if matches!(ft, Type::Union(_)) {
+                        resolved.clone()
+                    } else {
+                        ft
+                    };
                     (k, nt)
                 })
                 .collect(),
@@ -232,7 +243,11 @@ fn resolve_param_output_inner(
                     }
                 }
             }
-            let result = if conflict { Type::Any } else { joined.unwrap_or(Type::Any) };
+            let result = if conflict {
+                Type::Any
+            } else {
+                joined.unwrap_or(Type::Any)
+            };
             resolved.insert(name.clone(), result.clone());
             result
         }
@@ -240,7 +255,10 @@ fn resolve_param_output_inner(
             fields
                 .iter()
                 .map(|(k, ft)| {
-                    (k.clone(), resolve_param_output_inner(ctx, c, args, ft, range, resolved))
+                    (
+                        k.clone(),
+                        resolve_param_output_inner(ctx, c, args, ft, range, resolved),
+                    )
                 })
                 .collect(),
         ),
@@ -271,7 +289,8 @@ pub(super) fn output_record_type(
     args: &[CallArg],
     range: &SourceRange,
 ) -> Type {
-    let name = |o: &crate::catalog::calls::CallOutput| o.field.unwrap_or(o.port.as_str()).to_string();
+    let name =
+        |o: &crate::catalog::calls::CallOutput| o.field.unwrap_or(o.port.as_str()).to_string();
     let outputs = if c.outputs.len() == 1 {
         // One declared output of several ports (`SplitVec`) gives each; a
         // type argument that is a record (`Select` of two records) is one
@@ -331,10 +350,16 @@ fn spread_arity(ctx: &TypeCheckCtx, t: &Expr) -> Option<usize> {
 /// argument's own (from `positional_arg_types`, which lists the positional
 /// arguments' types in order), and each element of a `...tuple` spread. Ends
 /// at a spread whose elements are unknown, past which the slots don't line up.
-fn spread_arg_types(ctx: &TypeCheckCtx, args: &[CallArg], positional_arg_types: &[Type]) -> Vec<Type> {
+fn spread_arg_types(
+    ctx: &TypeCheckCtx,
+    args: &[CallArg],
+    positional_arg_types: &[Type],
+) -> Vec<Type> {
     let recorded = |e: &Expr| {
         let r = e.range();
-        ctx.type_of_expr.get(&(r.file.clone(), r.start.offset, r.end.offset)).cloned()
+        ctx.type_of_expr
+            .get(&(r.file.clone(), r.start.offset, r.end.offset))
+            .cloned()
     };
     let mut positional = positional_arg_types.iter();
     let mut out = Vec::new();
@@ -345,14 +370,18 @@ fn spread_arg_types(ctx: &TypeCheckCtx, args: &[CallArg], positional_arg_types: 
             CallArg::Spread(Expr::RecordLit { fields, .. }) => {
                 for f in fields {
                     match f {
-                        crate::ast::RecordLitField::Named { value, .. } => out.push(recorded(value).unwrap_or(Type::Any)),
+                        crate::ast::RecordLitField::Named { value, .. } => {
+                            out.push(recorded(value).unwrap_or(Type::Any))
+                        }
                         _ => return out,
                     }
                 }
             }
             CallArg::Spread(t) => match recorded(t).map(|t| unwrap_ref(&t)) {
                 Some(Type::Tuple(elems)) => out.extend(elems),
-                Some(Type::Record(fields) | Type::Outputs(fields)) => out.extend(fields.into_iter().map(|(_, t)| t)),
+                Some(Type::Record(fields) | Type::Outputs(fields)) => {
+                    out.extend(fields.into_iter().map(|(_, t)| t))
+                }
                 _ => return out,
             },
         }
@@ -425,11 +454,17 @@ pub(super) fn type_user_symbol_call(
         };
         if all_known && count_wrong {
             let expectation = if sig.variadic {
-                format!("at least {expected} argument{}", if expected == 1 { "" } else { "s" })
+                format!(
+                    "at least {expected} argument{}",
+                    if expected == 1 { "" } else { "s" }
+                )
             } else if required < expected {
                 format!("{required} to {expected} arguments")
             } else {
-                format!("{expected} argument{}", if expected == 1 { "" } else { "s" })
+                format!(
+                    "{expected} argument{}",
+                    if expected == 1 { "" } else { "s" }
+                )
             };
             ctx.emit(
                 "WS022",
@@ -560,9 +595,9 @@ pub(super) fn type_user_symbol_call(
                         crate::analysis::types::type_str(a),
                         crate::analysis::types::type_str(b),
                     ),
-                    crate::types::infer::InferError::Unpinnable(var) => format!(
-                        "cannot infer type parameter '{var}'; annotate the argument(s)"
-                    ),
+                    crate::types::infer::InferError::Unpinnable(var) => {
+                        format!("cannot infer type parameter '{var}'; annotate the argument(s)")
+                    }
                     crate::types::infer::InferError::OutOfMask { var, ty, .. } => format!(
                         "'{var}' = {}, which isn't allowed by its bound",
                         crate::analysis::types::type_str(ty),
@@ -598,23 +633,24 @@ pub(super) fn type_user_symbol_call(
             .iter()
             .map(|(p, _)| s.get(p).cloned().unwrap_or(Type::Any))
             .collect();
-        let named = sig.type_params.iter().map(|(p, _)| p.clone()).zip(type_args.iter().cloned()).collect();
+        let named = sig
+            .type_params
+            .iter()
+            .map(|(p, _)| p.clone())
+            .zip(type_args.iter().cloned())
+            .collect();
         let key = (sym.decl_range.file.clone(), sym.decl_range.start.offset);
         ctx.generic_call_args.entry(key).or_default().push(named);
         super::instances::demand(ctx, &sym.decl_range, type_args, call_range);
     }
     let checked = sig_of_fnchip(name, sig, subst.as_ref());
     check_args(
-        ctx,
-        &checked,
-        args,
-        0,
-        /* check_arity */ false,
+        ctx, &checked, args, 0, /* check_arity */ false,
         // A user mod/chip DOES know its full param list, so flag an unknown
         // named arg (`g(1, bogus = 5)`) as WS041 — the arity check is off
         // only to avoid double-reporting count against WS022 above.
-        /* check_named */ true,
-        call_range,
+        /* check_named */
+        true, call_range,
     );
     infer::args_fill_float_params(ctx, &checked.params, args);
     let out_ty = |t: &Type| match &subst {
@@ -659,7 +695,10 @@ pub(super) fn type_user_symbol_call(
 /// `ref T` var ref plus the opaque `zone`/`teleport` component references and
 /// the compile-time-constant `prefab` reference.
 pub(super) fn is_reference_type(t: &Type) -> bool {
-    matches!(t, Type::Ref(_) | Type::Zone | Type::Teleport | Type::PrefabRef)
+    matches!(
+        t,
+        Type::Ref(_) | Type::Zone | Type::Teleport | Type::PrefabRef
+    )
 }
 
 // ---------- generic mod/chip call-site inference ----------

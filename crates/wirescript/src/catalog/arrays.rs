@@ -8,12 +8,12 @@
 //! can't drift from the game's actual ports. The per-method input wiring is
 //! the entry's [`Lowering`], which `lower::access` builds the gate from.
 
-use crate::ir::gate_class as gc;
 use crate::ir::Type;
+use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
 use crate::types::container::ContainerKind;
 
-use super::methods::{arg, generic, opt, val, ArgKind, ArgTy, Lowering};
+use super::methods::{ArgKind, ArgTy, Lowering, arg, generic, opt, val};
 
 /// One array method: surface name, the gate it lowers to, curated display
 /// strings, and how it lowers. Its typed parameters and its return type are
@@ -53,7 +53,8 @@ impl ArrayMethod {
 
     /// The method's typed parameters on an array of `elem`.
     pub fn params(&self, elem: &Type) -> Vec<crate::types::signature::Param> {
-        self.lowering.params(&ContainerKind::Array { elem: elem.clone() })
+        self.lowering
+            .params(&ContainerKind::Array { elem: elem.clone() })
     }
 
     /// Build the [`CallSignature`](crate::types::signature::CallSignature) for a call
@@ -72,45 +73,251 @@ use WirePort as P;
 
 /// Every method callable on an array, in a stable display order.
 pub static ARRAY_METHODS: &[ArrayMethod] = &[
-    ArrayMethod { name: "push", mutates: true, gate: gc::ARRAY_PUSH, doc: "Append an element to the end of the array", lowering: generic(&[val("value", P::Value, Elem)], P::ExecOut) },
-    ArrayMethod { name: "pop", mutates: true, gate: gc::ARRAY_POP, doc: "Remove and return the last element", lowering: generic(&[], P::Value) },
-    ArrayMethod { name: "length", mutates: false, gate: gc::ARRAY_GET_LENGTH, doc: "Return the number of elements", lowering: generic(&[], P::Length) },
-    ArrayMethod { name: "remove", mutates: true, gate: gc::ARRAY_REMOVE_AT_INDEX, doc: "Remove the element at the given index", lowering: generic(&[val("index", P::Index, Int)], P::ExecOut) },
-    ArrayMethod { name: "insert", mutates: true, gate: gc::ARRAY_INSERT, doc: "Insert an element at the given index", lowering: generic(&[val("index", P::Index, Int), val("value", P::Value, Elem)], P::ExecOut) },
-    ArrayMethod { name: "clear", mutates: true, gate: gc::ARRAY_CLEAR, doc: "Remove all elements from the array", lowering: generic(&[], P::ExecOut) },
-    ArrayMethod { name: "get", mutates: false, gate: gc::ARRAY_GET, doc: "Read the element at index; gives its Value (default) and OutOfBounds", lowering: generic(&[val("index", P::Index, Int)], P::Value) },
-    ArrayMethod { name: "find", mutates: false, gate: gc::ARRAY_FIND, doc: "Find the first matching element; gives its Index (default, -1 if absent), Found, and Value", lowering: generic(&[val("value", P::Value, Elem)], P::Index) },
-    ArrayMethod { name: "sort", mutates: true, gate: gc::ARRAY_SORT, doc: "Sort the array in place", lowering: generic(&[opt("descending", P::BDescending, Bool)], P::ExecOut) },
-    ArrayMethod { name: "reverse", mutates: true, gate: gc::ARRAY_REVERSE, doc: "Reverse the element order in place", lowering: generic(&[], P::ExecOut) },
-    ArrayMethod { name: "shuffle", mutates: true, gate: gc::ARRAY_SHUFFLE, doc: "Randomly reorder all elements", lowering: generic(&[], P::ExecOut) },
-    ArrayMethod { name: "swap", mutates: true, gate: gc::ARRAY_SWAP, doc: "Swap the elements at indices a and b", lowering: generic(&[val("a", P::IndexA, Int), val("b", P::IndexB, Int)], P::ExecOut) },
-    ArrayMethod { name: "fill", mutates: true, gate: gc::ARRAY_FILL, doc: "Set every element to value", lowering: generic(&[val("value", P::Value, Elem)], P::ExecOut) },
-    ArrayMethod { name: "resize", mutates: true, gate: gc::ARRAY_RESIZE, doc: "Grow/shrink to size, filling new slots with value", lowering: generic(&[val("size", P::Size, Int), val("value", P::Value, Elem)], P::ExecOut) },
-    ArrayMethod { name: "sum", mutates: false, gate: gc::ARRAY_SUM, doc: "Sum of all elements", lowering: generic(&[], P::Value) },
-    ArrayMethod { name: "min", mutates: false, gate: gc::ARRAY_MIN, doc: "Smallest element", lowering: generic(&[], P::Value) },
-    ArrayMethod { name: "max", mutates: false, gate: gc::ARRAY_MAX, doc: "Largest element", lowering: generic(&[], P::Value) },
+    ArrayMethod {
+        name: "push",
+        mutates: true,
+        gate: gc::ARRAY_PUSH,
+        doc: "Append an element to the end of the array",
+        lowering: generic(&[val("value", P::Value, Elem)], P::ExecOut),
+    },
+    ArrayMethod {
+        name: "pop",
+        mutates: true,
+        gate: gc::ARRAY_POP,
+        doc: "Remove and return the last element",
+        lowering: generic(&[], P::Value),
+    },
+    ArrayMethod {
+        name: "length",
+        mutates: false,
+        gate: gc::ARRAY_GET_LENGTH,
+        doc: "Return the number of elements",
+        lowering: generic(&[], P::Length),
+    },
+    ArrayMethod {
+        name: "remove",
+        mutates: true,
+        gate: gc::ARRAY_REMOVE_AT_INDEX,
+        doc: "Remove the element at the given index",
+        lowering: generic(&[val("index", P::Index, Int)], P::ExecOut),
+    },
+    ArrayMethod {
+        name: "insert",
+        mutates: true,
+        gate: gc::ARRAY_INSERT,
+        doc: "Insert an element at the given index",
+        lowering: generic(
+            &[val("index", P::Index, Int), val("value", P::Value, Elem)],
+            P::ExecOut,
+        ),
+    },
+    ArrayMethod {
+        name: "clear",
+        mutates: true,
+        gate: gc::ARRAY_CLEAR,
+        doc: "Remove all elements from the array",
+        lowering: generic(&[], P::ExecOut),
+    },
+    ArrayMethod {
+        name: "get",
+        mutates: false,
+        gate: gc::ARRAY_GET,
+        doc: "Read the element at index; gives its Value (default) and OutOfBounds",
+        lowering: generic(&[val("index", P::Index, Int)], P::Value),
+    },
+    ArrayMethod {
+        name: "find",
+        mutates: false,
+        gate: gc::ARRAY_FIND,
+        doc: "Find the first matching element; gives its Index (default, -1 if absent), Found, and Value",
+        lowering: generic(&[val("value", P::Value, Elem)], P::Index),
+    },
+    ArrayMethod {
+        name: "sort",
+        mutates: true,
+        gate: gc::ARRAY_SORT,
+        doc: "Sort the array in place",
+        lowering: generic(&[opt("descending", P::BDescending, Bool)], P::ExecOut),
+    },
+    ArrayMethod {
+        name: "reverse",
+        mutates: true,
+        gate: gc::ARRAY_REVERSE,
+        doc: "Reverse the element order in place",
+        lowering: generic(&[], P::ExecOut),
+    },
+    ArrayMethod {
+        name: "shuffle",
+        mutates: true,
+        gate: gc::ARRAY_SHUFFLE,
+        doc: "Randomly reorder all elements",
+        lowering: generic(&[], P::ExecOut),
+    },
+    ArrayMethod {
+        name: "swap",
+        mutates: true,
+        gate: gc::ARRAY_SWAP,
+        doc: "Swap the elements at indices a and b",
+        lowering: generic(
+            &[val("a", P::IndexA, Int), val("b", P::IndexB, Int)],
+            P::ExecOut,
+        ),
+    },
+    ArrayMethod {
+        name: "fill",
+        mutates: true,
+        gate: gc::ARRAY_FILL,
+        doc: "Set every element to value",
+        lowering: generic(&[val("value", P::Value, Elem)], P::ExecOut),
+    },
+    ArrayMethod {
+        name: "resize",
+        mutates: true,
+        gate: gc::ARRAY_RESIZE,
+        doc: "Grow/shrink to size, filling new slots with value",
+        lowering: generic(
+            &[val("size", P::Size, Int), val("value", P::Value, Elem)],
+            P::ExecOut,
+        ),
+    },
+    ArrayMethod {
+        name: "sum",
+        mutates: false,
+        gate: gc::ARRAY_SUM,
+        doc: "Sum of all elements",
+        lowering: generic(&[], P::Value),
+    },
+    ArrayMethod {
+        name: "min",
+        mutates: false,
+        gate: gc::ARRAY_MIN,
+        doc: "Smallest element",
+        lowering: generic(&[], P::Value),
+    },
+    ArrayMethod {
+        name: "max",
+        mutates: false,
+        gate: gc::ARRAY_MAX,
+        doc: "Largest element",
+        lowering: generic(&[], P::Value),
+    },
     // The gate's `Value` is declared a float whatever the element type: the
     // mean of an int array is fractional.
-    ArrayMethod { name: "average", mutates: false, gate: gc::ARRAY_AVERAGE, doc: "Mean of all elements", lowering: Lowering::Generic { args: &[], result: P::Value, port_types: &[(P::Value, Type::Float)] } },
+    ArrayMethod {
+        name: "average",
+        mutates: false,
+        gate: gc::ARRAY_AVERAGE,
+        doc: "Mean of all elements",
+        lowering: Lowering::Generic {
+            args: &[],
+            result: P::Value,
+            port_types: &[(P::Value, Type::Float)],
+        },
+    },
     // The gate declares `Separator` and `Output` `any`, but saves both as
     // strings: every element is converted to text.
-    ArrayMethod { name: "join", mutates: false, gate: gc::ARRAY_JOIN, doc: "Join every element into one string, with separator between them", lowering: Lowering::Generic { args: &[opt("separator", P::Separator, Str)], result: P::Output, port_types: &[(P::Separator, Type::String), (P::Output, Type::String)] } },
-    ArrayMethod { name: "append", mutates: true, gate: gc::ARRAY_APPEND, doc: "Append all elements of another array", lowering: generic(&[arg("source", P::SourceRef, ArgKind::ArrayRef(Elem))], P::ExecOut) },
-    ArrayMethod { name: "copyFrom", mutates: true, gate: gc::ARRAY_COPY_FROM, doc: "Replace contents with a copy of another array", lowering: generic(&[arg("source", P::SourceRef, ArgKind::ArrayRef(Elem))], P::ExecOut) },
-    ArrayMethod { name: "slice", mutates: true, gate: gc::ARRAY_SLICE, doc: "Copy source[start..start+count] into this array", lowering: generic(&[arg("source", P::SourceRef, ArgKind::ArrayRef(Elem)), val("start", P::Start, Int), val("count", P::Count, Int)], P::ExecOut) },
-    ArrayMethod { name: "fillFromPlayers", mutates: true, gate: gc::GAMEMODE_FILL_FROM_PLAYERS, doc: "Fill this array with all current players", lowering: generic(&[], P::ExecOut) },
-    ArrayMethod { name: "fillFromTeam", mutates: true, gate: gc::GAMEMODE_FILL_FROM_TEAM, doc: "Fill this array with the members of a team", lowering: generic(&[val("team", P::Team, Entity)], P::ExecOut) },
+    ArrayMethod {
+        name: "join",
+        mutates: false,
+        gate: gc::ARRAY_JOIN,
+        doc: "Join every element into one string, with separator between them",
+        lowering: Lowering::Generic {
+            args: &[opt("separator", P::Separator, Str)],
+            result: P::Output,
+            port_types: &[(P::Separator, Type::String), (P::Output, Type::String)],
+        },
+    },
+    ArrayMethod {
+        name: "append",
+        mutates: true,
+        gate: gc::ARRAY_APPEND,
+        doc: "Append all elements of another array",
+        lowering: generic(
+            &[arg("source", P::SourceRef, ArgKind::ArrayRef(Elem))],
+            P::ExecOut,
+        ),
+    },
+    ArrayMethod {
+        name: "copyFrom",
+        mutates: true,
+        gate: gc::ARRAY_COPY_FROM,
+        doc: "Replace contents with a copy of another array",
+        lowering: generic(
+            &[arg("source", P::SourceRef, ArgKind::ArrayRef(Elem))],
+            P::ExecOut,
+        ),
+    },
+    ArrayMethod {
+        name: "slice",
+        mutates: true,
+        gate: gc::ARRAY_SLICE,
+        doc: "Copy source[start..start+count] into this array",
+        lowering: generic(
+            &[
+                arg("source", P::SourceRef, ArgKind::ArrayRef(Elem)),
+                val("start", P::Start, Int),
+                val("count", P::Count, Int),
+            ],
+            P::ExecOut,
+        ),
+    },
+    ArrayMethod {
+        name: "fillFromPlayers",
+        mutates: true,
+        gate: gc::GAMEMODE_FILL_FROM_PLAYERS,
+        doc: "Fill this array with all current players",
+        lowering: generic(&[], P::ExecOut),
+    },
+    ArrayMethod {
+        name: "fillFromTeam",
+        mutates: true,
+        gate: gc::GAMEMODE_FILL_FROM_TEAM,
+        doc: "Fill this array with the members of a team",
+        lowering: generic(&[val("team", P::Team, Entity)], P::ExecOut),
+    },
     // `fillFromZone*` take a `zone` rerouter reference ONLY (`in z: zone` ->
     // `Type::Zone`). The `Zone` slot never accepts a plain entity, only a
     // zone; the gate input is declared `entity`, the object wire a `ZoneRef`
     // connection carries. `TagFilter` is declared `any`.
-    ArrayMethod { name: "fillFromZoneEntities", mutates: true, gate: gc::ZONE_GET_ENTITIES, doc: "Fill this array with the entities inside a zone", lowering: Lowering::Generic { args: &[val("zone", P::Zone, Zone), opt("tagFilter", P::TagFilter, Str)], result: P::ExecOut, port_types: &[(P::TagFilter, Type::Any)] } },
-    ArrayMethod { name: "fillFromZonePlayers", mutates: true, gate: gc::ZONE_GET_PLAYERS, doc: "Fill this array with the players inside a zone", lowering: Lowering::Generic { args: &[val("zone", P::Zone, Zone), opt("tagFilter", P::TagFilter, Str)], result: P::ExecOut, port_types: &[(P::TagFilter, Type::Any)] } },
+    ArrayMethod {
+        name: "fillFromZoneEntities",
+        mutates: true,
+        gate: gc::ZONE_GET_ENTITIES,
+        doc: "Fill this array with the entities inside a zone",
+        lowering: Lowering::Generic {
+            args: &[
+                val("zone", P::Zone, Zone),
+                opt("tagFilter", P::TagFilter, Str),
+            ],
+            result: P::ExecOut,
+            port_types: &[(P::TagFilter, Type::Any)],
+        },
+    },
+    ArrayMethod {
+        name: "fillFromZonePlayers",
+        mutates: true,
+        gate: gc::ZONE_GET_PLAYERS,
+        doc: "Fill this array with the players inside a zone",
+        lowering: Lowering::Generic {
+            args: &[
+                val("zone", P::Zone, Zone),
+                opt("tagFilter", P::TagFilter, Str),
+            ],
+            result: P::ExecOut,
+            port_types: &[(P::TagFilter, Type::Any)],
+        },
+    },
     // `sortMultiple` is a true variadic (this array + up to 7 parallel arrays,
     // then an optional `descending?`) that a fixed argument list can't
     // express; its empty params opt it out of `check_args`'s arity/type
     // checking rather than rejecting valid calls against a fake fixed arity.
-    ArrayMethod { name: "sortMultiple", mutates: true, gate: gc::ARRAY_SORT_MULTIPLE, doc: "Sort this array and up to 7 parallel arrays together, by this array's order", lowering: Lowering::Custom },
+    ArrayMethod {
+        name: "sortMultiple",
+        mutates: true,
+        gate: gc::ARRAY_SORT_MULTIPLE,
+        doc: "Sort this array and up to 7 parallel arrays together, by this array's order",
+        lowering: Lowering::Custom,
+    },
 ];
 
 /// All array methods.
@@ -163,7 +370,11 @@ pub fn array_return_type(method: &str, elem: &Type) -> Option<Type> {
         return Some(Type::call_result(vec![("Value".into(), elem.clone())]));
     }
     let m = array_method(method)?;
-    Some(super::methods::method_return_type(m.gate, &m.lowering, &ContainerKind::Array { elem: elem.clone() }))
+    Some(super::methods::method_return_type(
+        m.gate,
+        &m.lowering,
+        &ContainerKind::Array { elem: elem.clone() },
+    ))
 }
 
 #[cfg(test)]

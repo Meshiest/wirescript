@@ -37,15 +37,15 @@ pub use ctx::*;
 pub(crate) mod narrow;
 pub use narrow::NarrowedRead;
 pub mod resolution;
-pub use resolution::{ContainerKind, MethodTarget, Resolutions, ResolutionKey, classify_method};
+pub use resolution::{ContainerKind, MethodTarget, ResolutionKey, Resolutions, classify_method};
 pub mod enums;
 pub mod patterns;
 mod resolve;
 pub(crate) use resolve::*;
 mod labels;
 use labels::*;
-mod styles;
 mod parked_kick;
+mod styles;
 use parked_kick::*;
 mod config;
 use config::*;
@@ -64,9 +64,9 @@ pub(crate) use stmt::*;
 mod decl;
 mod fn_decl;
 use decl::*;
+mod instances;
 mod register;
 mod shadow;
-mod instances;
 mod untyped_arrays;
 use register::*;
 
@@ -134,8 +134,12 @@ fn typecheck_round(
     // Constant `let`s, resolved before any decl is checked so a `var` / `array`
     // initializer may name one. Built from the same function lowering uses, so
     // the two can't disagree about what counts as a compile-time constant.
-    ctx.consts =
-        crate::const_scope::ConstScope::for_program(&script.decls, &ctx.enum_defs, &script.imports, &ctx.top_names);
+    ctx.consts = crate::const_scope::ConstScope::for_program(
+        &script.decls,
+        &ctx.enum_defs,
+        &script.imports,
+        &ctx.top_names,
+    );
     untyped_arrays::type_constant_elements(&mut ctx, &script.decls);
     // `@label(expr)` on a port/chip/nested-var must fold to a compile-time
     // constant (the folded text is baked as the label) — a runtime value there
@@ -276,7 +280,11 @@ fn typecheck_round(
     // A port's stored type and a type argument hold a gate read as the
     // record of its outputs.
     let r = &mut ctx.resolutions;
-    for t in r.untyped_port_types.values_mut().chain(r.call_type_args.values_mut().flatten()) {
+    for t in r
+        .untyped_port_types
+        .values_mut()
+        .chain(r.call_type_args.values_mut().flatten())
+    {
         if t.holds_outputs() {
             *t = t.as_record();
         }
@@ -348,7 +356,13 @@ fn warn_top_redeclarations(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
 fn explain_hidden_enum_types(ctx: &mut TypeCheckCtx) {
     let mut found = Vec::new();
     for (i, d) in ctx.diagnostics.iter().enumerate() {
-        let Some(name) = d.message.strip_prefix("unknown type '").and_then(|r| r.strip_suffix('\'')) else { continue };
+        let Some(name) = d
+            .message
+            .strip_prefix("unknown type '")
+            .and_then(|r| r.strip_suffix('\''))
+        else {
+            continue;
+        };
         if d.code == "WS002"
             && let Some(message) = infer::hidden_enum_message(ctx, name, &d.range)
         {

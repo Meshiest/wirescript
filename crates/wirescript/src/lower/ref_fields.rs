@@ -101,7 +101,11 @@ pub(super) fn rebind_typed(
 ) {
     let fields: Vec<(String, Type)> = match unwrap_ref(ty) {
         Type::Record(fields) => fields,
-        Type::Tuple(elems) => elems.into_iter().enumerate().map(|(i, t)| (i.to_string(), t)).collect(),
+        Type::Tuple(elems) => elems
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| (i.to_string(), t))
+            .collect(),
         _ => return,
     };
     for (name, ft) in fields {
@@ -129,14 +133,24 @@ pub(super) fn rebind_typed(
 /// read: `*T` for a value, `T` for a place. The boundaries above give every
 /// binding the kind typecheck does, so this rebinds nothing unless a route
 /// was missed; the read then still means what its type says.
-pub(super) fn as_typed(ctx: &mut LowerCtx, obj: &Expr, e: &Expr, b: Binding, range: &SourceRange) -> Binding {
+pub(super) fn as_typed(
+    ctx: &mut LowerCtx,
+    obj: &Expr,
+    e: &Expr,
+    b: Binding,
+    range: &SourceRange,
+) -> Binding {
     let Expr::FieldAccess { field, .. } = e else {
         return b;
     };
     let Type::Record(fields) = unwrap_ref(&ctx.type_of(obj)) else {
         return b;
     };
-    let Some(Type::Ref(inner)) = fields.iter().find(|(n, _)| n == field).map(|(_, t)| t.clone()) else {
+    let Some(Type::Ref(inner)) = fields
+        .iter()
+        .find(|(n, _)| n == field)
+        .map(|(_, t)| t.clone())
+    else {
         return b;
     };
     if inner.ref_kind().is_some() || matches!(*inner, Type::Record(_) | Type::Tuple(_)) {
@@ -148,14 +162,21 @@ pub(super) fn as_typed(ctx: &mut LowerCtx, obj: &Expr, e: &Expr, b: Binding, ran
         _ => return b,
     };
     debug_assert!(
-        binds_place(&b) == (kind == FieldKind::Place) || !matches!(b, Binding::Var(_) | Binding::DynRef(_) | Binding::Local(_)),
+        binds_place(&b) == (kind == FieldKind::Place)
+            || !matches!(b, Binding::Var(_) | Binding::DynRef(_) | Binding::Local(_)),
         "`{field}` is bound as the other kind of `*T` field than its read is typed"
     );
     rebind_leaf(ctx, &b, kind, *inner, range).unwrap_or(b)
 }
 
 /// One scalar `*T` field's binding as `kind`, or `None` when it already is.
-fn rebind_leaf(ctx: &mut LowerCtx, b: &Binding, kind: FieldKind, inner: Type, range: &SourceRange) -> Option<Binding> {
+fn rebind_leaf(
+    ctx: &mut LowerCtx,
+    b: &Binding,
+    kind: FieldKind,
+    inner: Type,
+    range: &SourceRange,
+) -> Option<Binding> {
     if binds_place(b) == (kind == FieldKind::Place) {
         return None;
     }
@@ -175,7 +196,11 @@ fn rebind_leaf(ctx: &mut LowerCtx, b: &Binding, kind: FieldKind, inner: Type, ra
 
 /// `&r` for a record `r`: each field's ref, as `*` on a record distributes over
 /// its fields. An array or map field is its own ref.
-pub(super) fn refs_of(ctx: &mut LowerCtx, fields: &HashMap<Sym, Binding>, range: &SourceRange) -> HashMap<Sym, Binding> {
+pub(super) fn refs_of(
+    ctx: &mut LowerCtx,
+    fields: &HashMap<Sym, Binding>,
+    range: &SourceRange,
+) -> HashMap<Sym, Binding> {
     let mut out = HashMap::default();
     for (k, b) in fields {
         let b = match b {

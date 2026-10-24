@@ -1,5 +1,5 @@
 use std::{env, fs, path::Path, process};
-use wirescript::{diagnostics_only, CompileInput, FoldMode, Severity};
+use wirescript::{CompileInput, FoldMode, Severity, diagnostics_only};
 
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -35,12 +35,15 @@ fn main() {
         // typecheck-only check reports "no errors" for those and lets a silent
         // miscompile through. `diagnostics_only` mirrors `compile` up to (not
         // including) emit, on the big compile stack.
-        let all = diagnostics_only(CompileInput {
-            source: &source,
-            file: &file_str,
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        }, &wirescript::FsLoader);
+        let all = diagnostics_only(
+            CompileInput {
+                source: &source,
+                file: &file_str,
+                module_name: None,
+                fold_mode: FoldMode::Auto,
+            },
+            &wirescript::FsLoader,
+        );
         // Diagnostics from an imported module are reported too, against the file
         // they came from. Dropping them printed "no errors" for programs the
         // compiler rejects outright, and every real project here is multi-file.
@@ -51,19 +54,27 @@ fn main() {
 
         for d in all.iter() {
             let (label, color) = match d.severity {
-                Severity::Error => { total_errors += 1; ("ERROR", "\x1b[31m") }
-                Severity::Warning => { total_warnings += 1; ("WARN", "\x1b[33m") }
-                _ => { ("INFO", "\x1b[36m") }
+                Severity::Error => {
+                    total_errors += 1;
+                    ("ERROR", "\x1b[31m")
+                }
+                Severity::Warning => {
+                    total_warnings += 1;
+                    ("WARN", "\x1b[33m")
+                }
+                _ => ("INFO", "\x1b[36m"),
             };
-            eprintln!("{color}{label}\x1b[0m [{}] {} ({})", d.code, d.message, d.location_or(file_arg));
+            eprintln!(
+                "{color}{label}\x1b[0m [{}] {} ({})",
+                d.code,
+                d.message,
+                d.location_or(file_arg)
+            );
         }
     }
 
     if total_errors > 0 || total_warnings > 0 {
-        eprintln!(
-            "\n{} error(s), {} warning(s)",
-            total_errors, total_warnings
-        );
+        eprintln!("\n{} error(s), {} warning(s)", total_errors, total_warnings);
     }
     process::exit(if total_errors > 0 { 1 } else { 0 });
 }

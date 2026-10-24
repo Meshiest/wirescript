@@ -59,12 +59,18 @@ pub(crate) struct ReadAt {
 impl ReadAt {
     /// Code written at `range`.
     pub(crate) fn code(range: &SourceRange) -> Self {
-        Self { range: range.clone(), body: false }
+        Self {
+            range: range.clone(),
+            body: false,
+        }
     }
 
     /// The body of a declaration written at `range`.
     pub(crate) fn body(range: &SourceRange) -> Self {
-        Self { range: range.clone(), body: true }
+        Self {
+            range: range.clone(),
+            body: true,
+        }
     }
 
     /// Code written just above `range`: what the initializer of the storage
@@ -90,7 +96,9 @@ pub(crate) struct TopNames {
 }
 
 fn contains(outer: &SourceRange, inner: &SourceRange) -> bool {
-    outer.file == inner.file && outer.start.offset <= inner.start.offset && inner.end.offset <= outer.end.offset
+    outer.file == inner.file
+        && outer.start.offset <= inner.start.offset
+        && inner.end.offset <= outer.end.offset
 }
 
 /// Whether `inner` is written inside `outer`.
@@ -103,7 +111,10 @@ pub(crate) fn within(outer: &SourceRange, inner: &SourceRange) -> bool {
 /// storage: a `let` or `const`, a `var`, `buffer`, `array` or `map`.
 pub(crate) fn declared_names_of(d: &TopDecl) -> Vec<(String, bool)> {
     match d {
-        TopDecl::Let(l) => crate::const_eval::bound_names(&l.binding).into_iter().map(|n| (n, false)).collect(),
+        TopDecl::Let(l) => crate::const_eval::bound_names(&l.binding)
+            .into_iter()
+            .map(|n| (n, false))
+            .collect(),
         TopDecl::Var(v) => vec![(v.name.clone(), true)],
         TopDecl::Array(a) => vec![(a.name.clone(), true)],
         TopDecl::Map(m) => vec![(m.name.clone(), true)],
@@ -135,7 +146,10 @@ impl TopNames {
         fn walk(block: &Block, chips: &mut Vec<TopChip>) {
             for s in &block.stmts {
                 if let Stmt::AnonChip(ac) = s {
-                    chips.push(TopChip { range: ac.range.clone(), names: declared_names(&ac.body.stmts) });
+                    chips.push(TopChip {
+                        range: ac.range.clone(),
+                        names: declared_names(&ac.body.stmts),
+                    });
                     walk(&ac.body, chips);
                 }
             }
@@ -147,8 +161,16 @@ impl TopNames {
         for d in decls {
             let r = d.range();
             for (name, storage) in declared_names_of(d) {
-                let visible_from = if storage { r.start.offset } else { r.end.offset };
-                let dup = TopDup { range: r.clone(), visible_from, storage };
+                let visible_from = if storage {
+                    r.start.offset
+                } else {
+                    r.end.offset
+                };
+                let dup = TopDup {
+                    range: r.clone(),
+                    visible_from,
+                    storage,
+                };
                 dups.entry((r.file.clone(), name)).or_default().push(dup);
             }
         }
@@ -162,7 +184,10 @@ impl TopNames {
         for d in decls {
             let names = match d {
                 TopDecl::AnonChip(ac) => {
-                    chips.push(TopChip { range: ac.range.clone(), names: declared_names(&ac.body.stmts) });
+                    chips.push(TopChip {
+                        range: ac.range.clone(),
+                        names: declared_names(&ac.body.stmts),
+                    });
                     walk(&ac.body, &mut chips);
                     Vec::new()
                 }
@@ -176,20 +201,30 @@ impl TopNames {
                 _ => Vec::new(),
             };
             for name in names {
-                values.entry((d.range().file.clone(), name)).or_insert_with(|| d.range().clone());
+                values
+                    .entry((d.range().file.clone(), name))
+                    .or_insert_with(|| d.range().clone());
             }
         }
         let mut chip_index = crate::collections::HashMap::default();
         for (i, c) in chips.iter().enumerate() {
             chip_index.entry(c.range.clone()).or_insert(i);
         }
-        Self { chips, chip_index, values, dups }
+        Self {
+            chips,
+            chip_index,
+            values,
+            dups,
+        }
     }
 
     /// Only the names declared more than once at the top level of a file:
     /// what a chip body compiled on its own reads the top level by.
     pub(crate) fn dups_only(&self) -> Self {
-        Self { dups: self.dups.clone(), ..Default::default() }
+        Self {
+            dups: self.dups.clone(),
+            ..Default::default()
+        }
     }
 
     /// Whether some file declares a name more than once at its top level.
@@ -200,7 +235,9 @@ impl TopNames {
     /// Every name declared more than once at the top level of a file, with
     /// its declarations in source order.
     pub(crate) fn dups(&self) -> impl Iterator<Item = (&str, &[TopDup])> {
-        self.dups.iter().map(|((_, name), v)| (name.as_str(), v.as_slice()))
+        self.dups
+            .iter()
+            .map(|((_, name), v)| (name.as_str(), v.as_slice()))
     }
 
     /// Whether `name` is declared more than once at the top level of `file`.
@@ -221,9 +258,15 @@ impl TopNames {
     /// `at` yet.
     pub(crate) fn visible_decl(&self, name: &str, at: &ReadAt) -> Option<Option<&TopDup>> {
         let decls = self.dups.get(&(at.range.file.clone(), name.to_string()))?;
-        let seen = decls.iter().rev().find(|d| d.visible_from <= at.range.start.offset);
+        let seen = decls
+            .iter()
+            .rev()
+            .find(|d| d.visible_from <= at.range.start.offset);
         let storage = || decls.iter().find(|d| d.storage);
-        Some(seen.or_else(storage).or_else(|| decls.first().filter(|_| at.body)))
+        Some(
+            seen.or_else(storage)
+                .or_else(|| decls.first().filter(|_| at.body)),
+        )
     }
 
     /// Where the initializer of the top-level `var` declared at `range`
@@ -233,7 +276,10 @@ impl TopNames {
     /// tick). `None` for any other declaration.
     pub(crate) fn initializer_read(&self, name: &str, range: &SourceRange) -> Option<ReadAt> {
         let decls = self.dups.get(&(range.file.clone(), name.to_string()))?;
-        decls.iter().any(|d| d.storage && d.range == *range).then(|| ReadAt::above(range))
+        decls
+            .iter()
+            .any(|d| d.storage && d.range == *range)
+            .then(|| ReadAt::above(range))
     }
 
     /// Whether code written in `file` names the top-level value `name`
@@ -264,7 +310,10 @@ impl TopNames {
     }
 
     /// The chips written around `at`, outermost first.
-    pub(crate) fn chips_around<'t>(&'t self, at: &'t SourceRange) -> impl Iterator<Item = &'t TopChip> + 't {
+    pub(crate) fn chips_around<'t>(
+        &'t self,
+        at: &'t SourceRange,
+    ) -> impl Iterator<Item = &'t TopChip> + 't {
         self.chips.iter().filter(move |c| contains(&c.range, at))
     }
 
@@ -277,7 +326,8 @@ impl TopNames {
     /// top level: both outside every chip, or both written directly in the
     /// same chip.
     pub(crate) fn same_level(&self, a: &SourceRange, b: &SourceRange) -> bool {
-        let innermost = |r: &SourceRange| self.chips.iter().rev().position(|c| contains(&c.range, r));
+        let innermost =
+            |r: &SourceRange| self.chips.iter().rev().position(|c| contains(&c.range, r));
         innermost(a) == innermost(b)
     }
 }
@@ -294,7 +344,11 @@ mod tests {
 
     fn at(src: &str, needle: &str) -> SourceRange {
         let start = src.find(needle).expect(needle);
-        let pos = |o: usize| crate::diagnostic::Pos { offset: o, line: 0, col: 0 };
+        let pos = |o: usize| crate::diagnostic::Pos {
+            offset: o,
+            line: 0,
+            col: 0,
+        };
         SourceRange::new("t", pos(start), pos(start + needle.len()))
     }
 
@@ -302,10 +356,20 @@ mod tests {
     fn a_name_resolves_to_the_chip_written_around_it() {
         let src = "let x = 4\nchip { var x: int = 1\n mod rd() -> int { return x * 10 }\n chip { const k = 2 } }\nmod out() -> int { return x }\n";
         let (_, top) = names(src);
-        assert!(matches!(top.resolve_name("x", &at(src, "x * 10")), Home::Chip(c) if c.names == ["x"]));
-        assert!(matches!(top.resolve_name("x", &at(src, "return x }\n")), Home::Top));
-        assert!(matches!(top.resolve_name("k", &at(src, "const k")), Home::Chip(c) if c.names == ["k"]));
-        assert!(matches!(top.resolve_name("y", &at(src, "x * 10")), Home::Top));
+        assert!(
+            matches!(top.resolve_name("x", &at(src, "x * 10")), Home::Chip(c) if c.names == ["x"])
+        );
+        assert!(matches!(
+            top.resolve_name("x", &at(src, "return x }\n")),
+            Home::Top
+        ));
+        assert!(
+            matches!(top.resolve_name("k", &at(src, "const k")), Home::Chip(c) if c.names == ["k"])
+        );
+        assert!(matches!(
+            top.resolve_name("y", &at(src, "x * 10")),
+            Home::Top
+        ));
         assert!(top.same_level(&at(src, "let x"), &at(src, "mod out")));
         assert!(!top.same_level(&at(src, "let x"), &at(src, "var x")));
         assert!(!top.same_level(&at(src, "var x"), &at(src, "const k")));
@@ -317,8 +381,13 @@ mod tests {
         let src = "on a { }\nlet k = 1\non b { }\nvar k: int = 2\non c { }\nconst j = 1\nconst j = k\non d { }\n";
         let (_, top) = names(src);
         let named = |name: &str, place: &str, body: bool| {
-            let read = if body { ReadAt::body(&at(src, place)) } else { ReadAt::code(&at(src, place)) };
-            top.visible_decl(name, &read).map(|d| d.map(|d| d.range.start.offset))
+            let read = if body {
+                ReadAt::body(&at(src, place))
+            } else {
+                ReadAt::code(&at(src, place))
+            };
+            top.visible_decl(name, &read)
+                .map(|d| d.map(|d| d.range.start.offset))
         };
         let (let_k, var_k) = (src.find("let k").unwrap(), src.find("var k").unwrap());
         // Storage is declared ahead of everything; a `let` from its end on.
@@ -326,7 +395,10 @@ mod tests {
         assert_eq!(named("k", "on b", false), Some(Some(let_k)));
         assert_eq!(named("k", "on c", false), Some(Some(var_k)));
         // With no storage, code above both names none and a body the first.
-        let (j1, j2) = (src.find("const j = 1").unwrap(), src.find("const j = k").unwrap());
+        let (j1, j2) = (
+            src.find("const j = 1").unwrap(),
+            src.find("const j = k").unwrap(),
+        );
         assert_eq!(named("j", "on a", false), Some(None));
         assert_eq!(named("j", "on a", true), Some(Some(j1)));
         assert_eq!(named("j", "const j = k", false), Some(Some(j1)));

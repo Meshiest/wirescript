@@ -36,9 +36,7 @@ use crate::collections::{HashMap, HashSet};
 use crate::intern::sym;
 use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
-use crate::ir::{
-    GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire,
-};
+use crate::ir::{GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire};
 
 /// Chip-node path from the root module; the root itself is `[]`.
 type ModPath = Vec<NodeId>;
@@ -178,7 +176,13 @@ fn extract_crossings(root: &mut Module, owner: &HashMap<NodeId, ModPath>, out: &
         let mut kids: Vec<NodeId> = m.chips.keys().copied().collect();
         kids.sort();
         for k in kids {
-            walk(m.chips.get_mut(&k).unwrap(), owner, literal_ids, shells, out);
+            walk(
+                m.chips.get_mut(&k).unwrap(),
+                owner,
+                literal_ids,
+                shells,
+                out,
+            );
         }
     }
     walk(root, owner, &literal_ids, &shells, out);
@@ -228,7 +232,8 @@ fn rewire(
     for k in (lca + 1..=sp.len()).rev() {
         let mpath = sp[..k].to_vec();
         if mpath == sp
-            && root.at(&mpath)
+            && root
+                .at(&mpath)
                 .nodes
                 .get(&wire.source.node_id)
                 .is_some_and(|n| n.gate_class == gc::MICROCHIP_OUTPUT)
@@ -236,7 +241,16 @@ fn rewire(
             feeder_path = mpath;
             continue;
         }
-        let (pin, is_new) = pin_for(root, owner, pins, &mpath, feeder, NodeKind::Output, &ty, &label);
+        let (pin, is_new) = pin_for(
+            root,
+            owner,
+            pins,
+            &mpath,
+            feeder,
+            NodeKind::Output,
+            &ty,
+            &label,
+        );
         // `pin_for` dedupes on (mpath, feeder): a pin reused by another
         // crossing already has its feeding wire from that earlier call, so
         // only a freshly created pin needs one now — otherwise two
@@ -267,14 +281,24 @@ fn rewire(
     for k in lca + 1..=tp.len() {
         let mpath = tp[..k].to_vec();
         if mpath == tp
-            && root.at(&mpath)
+            && root
+                .at(&mpath)
                 .nodes
                 .get(&wire.target.node_id)
                 .is_some_and(|n| n.gate_class == gc::MICROCHIP_INPUT)
         {
             break;
         }
-        let (pin, is_new) = pin_for(root, owner, pins, &mpath, feeder, NodeKind::Input, &ty, &label);
+        let (pin, is_new) = pin_for(
+            root,
+            owner,
+            pins,
+            &mpath,
+            feeder,
+            NodeKind::Input,
+            &ty,
+            &label,
+        );
         if is_new {
             push_wire_at_lca(
                 root,
@@ -298,7 +322,13 @@ fn rewire(
 
 /// New wires live in the LCA module of their endpoints — the parent for a
 /// parent<->child-pin hop, the module itself for a local hop.
-fn push_wire_at_lca(root: &mut Module, a: &[NodeId], b: &[NodeId], source: PortRef, target: PortRef) {
+fn push_wire_at_lca(
+    root: &mut Module,
+    a: &[NodeId],
+    b: &[NodeId],
+    source: PortRef,
+    target: PortRef,
+) {
     let lca = a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count();
     root.at_mut(&a[..lca.min(a.len())])
         .wires
@@ -329,7 +359,15 @@ fn pin_for(
     };
     let mut props = HashMap::default();
     props.insert(*sym::PORT_LABEL, Literal::String(label.to_string()));
-    let node = Node::new(id, kind, gate_class, GateIO::pin(ty.clone()), props, None, Some("boundary_pin"));
+    let node = Node::new(
+        id,
+        kind,
+        gate_class,
+        GateIO::pin(ty.clone()),
+        props,
+        None,
+        Some("boundary_pin"),
+    );
     let m = root.at_mut(mpath);
     m.nodes.insert(id, node);
     if kind == NodeKind::Input {
@@ -395,8 +433,7 @@ fn assign_pin_labels(m: &mut Module) {
         .nodes
         .values()
         .filter(|n| {
-            matches!(n.kind, NodeKind::Input | NodeKind::Output)
-                && n.note != Some("boundary_pin")
+            matches!(n.kind, NodeKind::Input | NodeKind::Output) && n.note != Some("boundary_pin")
         })
         .filter_map(|n| match n.properties.get(&*sym::PORT_LABEL) {
             Some(Literal::String(s)) if !s.is_empty() => Some(s.clone()),

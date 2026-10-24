@@ -16,7 +16,9 @@ use super::*;
 fn as_tuple_fields(t: &Type) -> Option<Vec<Type>> {
     match t {
         Type::Tuple(fields) => Some(fields.clone()),
-        Type::Record(fields) | Type::Outputs(fields) => Some(fields.iter().map(|(_, ft)| ft.clone()).collect()),
+        Type::Record(fields) | Type::Outputs(fields) => {
+            Some(fields.iter().map(|(_, ft)| ft.clone()).collect())
+        }
         _ => None,
     }
 }
@@ -48,7 +50,9 @@ impl LetRefValues {
                 set.iter().any(|p| {
                     p.is_empty()
                         || *p == joined
-                        || joined.strip_prefix(p.as_str()).is_some_and(|r| r.starts_with('.'))
+                        || joined
+                            .strip_prefix(p.as_str())
+                            .is_some_and(|r| r.starts_with('.'))
                 })
             }
         }
@@ -67,7 +71,9 @@ impl LetRefValues {
         };
         let prefix = format!("{}.", path.join("."));
         normalized(LetRefValues::Fields(
-            set.iter().filter_map(|p| p.strip_prefix(prefix.as_str()).map(str::to_string)).collect(),
+            set.iter()
+                .filter_map(|p| p.strip_prefix(prefix.as_str()).map(str::to_string))
+                .collect(),
         ))
     }
 }
@@ -130,18 +136,28 @@ pub(crate) fn ref_values_of(ctx: &TypeCheckCtx, value: &Expr) -> Option<LetRefVa
 /// field path projected off it. A call's result is a value whatever the callee
 /// returned, as a chip's output pins are: a place it returns leaves as that
 /// place's ref.
-pub(crate) fn ref_values_at(ctx: &TypeCheckCtx, root: &Expr, segs: &[String]) -> Option<LetRefValues> {
+pub(crate) fn ref_values_at(
+    ctx: &TypeCheckCtx,
+    root: &Expr,
+    segs: &[String],
+) -> Option<LetRefValues> {
     let Expr::Ident { name, range } = root else {
         return Some(LetRefValues::All);
     };
     let sym = ctx.scope.lookup(name)?;
     let whole = segs.is_empty();
-    let record = matches!(crate::types::mono::unwrap_ref(&sym.ty), Type::Record(_) | Type::Outputs(_) | Type::Tuple(_));
-    let of_let = |key: &LetKey, rest: &[String]| ctx.let_ref_values.get(key).and_then(|v| v.below(rest));
+    let record = matches!(
+        crate::types::mono::unwrap_ref(&sym.ty),
+        Type::Record(_) | Type::Outputs(_) | Type::Tuple(_)
+    );
+    let of_let =
+        |key: &LetKey, rest: &[String]| ctx.let_ref_values.get(key).and_then(|v| v.below(rest));
     match sym.kind {
         // A var holding a ref is a value; any other var (a `*T` parameter is
         // bound as one) names storage, as each field of a record var does.
-        SymbolKind::Var if whole && matches!(crate::types::mono::unwrap_ref(&sym.ty), Type::Ref(_)) => {
+        SymbolKind::Var
+            if whole && matches!(crate::types::mono::unwrap_ref(&sym.ty), Type::Ref(_)) =>
+        {
             Some(LetRefValues::All)
         }
         SymbolKind::Var => None,
@@ -158,19 +174,22 @@ pub(crate) fn ref_values_at(ctx: &TypeCheckCtx, root: &Expr, segs: &[String]) ->
         SymbolKind::Namespace => {
             let (member, rest) = segs.split_first()?;
             let info = ctx.ns_members(name, &range.file)?.get(member.as_str())?;
-            let record = matches!(&info.value_type, Some(Type::Record(_) | Type::Outputs(_) | Type::Tuple(_)));
+            let record = matches!(
+                &info.value_type,
+                Some(Type::Record(_) | Type::Outputs(_) | Type::Tuple(_))
+            );
             match info.kind {
-                SymbolKind::LetBinding if rest.is_empty() && !record => {
-                    match &info.let_decl {
-                        Some(key) if ctx.let_places.contains(key) => None,
-                        _ => Some(LetRefValues::All),
-                    }
-                }
+                SymbolKind::LetBinding if rest.is_empty() && !record => match &info.let_decl {
+                    Some(key) if ctx.let_places.contains(key) => None,
+                    _ => Some(LetRefValues::All),
+                },
                 SymbolKind::LetBinding => match &info.let_decl {
                     Some(key) => of_let(key, rest),
                     None => Some(LetRefValues::All),
                 },
-                SymbolKind::Var if rest.is_empty() && matches!(&info.value_type, Some(Type::Ref(_))) => {
+                SymbolKind::Var
+                    if rest.is_empty() && matches!(&info.value_type, Some(Type::Ref(_))) =>
+                {
                     Some(LetRefValues::All)
                 }
                 SymbolKind::Var | SymbolKind::Array | SymbolKind::Map => None,
@@ -208,7 +227,13 @@ fn collect_value_fields(
                 }
             }
             RecordLitField::Shorthand { name, range } => merge_field_source(
-                ref_values_of(ctx, &Expr::Ident { name: name.clone(), range: range.clone() }),
+                ref_values_of(
+                    ctx,
+                    &Expr::Ident {
+                        name: name.clone(),
+                        range: range.clone(),
+                    },
+                ),
                 &join_path(prefix, name),
                 set,
             ),
@@ -254,7 +279,9 @@ pub(super) fn record_single_output_alias(ctx: &mut TypeCheckCtx, b: &LetBinding,
         // `let g = f` — inherit whatever `f` may be projected by.
         Expr::Ident { name: src, .. } => ctx.single_output_alias.get(src).cloned(),
         Expr::Call { callee, .. } => match callee.as_ref() {
-            Expr::Ident { name: callee_name, .. } => ctx
+            Expr::Ident {
+                name: callee_name, ..
+            } => ctx
                 .scope
                 .lookup(callee_name)
                 .and_then(|s| s.signature.as_ref())
@@ -266,7 +293,10 @@ pub(super) fn record_single_output_alias(ctx: &mut TypeCheckCtx, b: &LetBinding,
             // so mark it unindexed rather than risk calling a valid
             // projection a typo.
             Expr::FieldAccess { obj, field, .. } => match obj.as_ref() {
-                Expr::Ident { name: ns, range: ns_range } => ctx
+                Expr::Ident {
+                    name: ns,
+                    range: ns_range,
+                } => ctx
                     .ns_members(ns, &ns_range.file)
                     .and_then(|m| m.get(field.as_str()))
                     .and_then(|info| info.return_type.as_ref())
@@ -358,7 +388,11 @@ pub(super) fn check_const_recorded(ctx: &mut TypeCheckCtx, l: &LetDecl) {
 /// the annotation's shape (`infer::literal_fits`); the value's own type
 /// otherwise. `let L: float = 9` binds a float and `let I: int = 2.5` an
 /// integer, as `var` does.
-pub(super) fn let_binding_type(ctx: &mut TypeCheckCtx, l: &crate::ast::LetDecl, inferred: &Type) -> Type {
+pub(super) fn let_binding_type(
+    ctx: &mut TypeCheckCtx,
+    l: &crate::ast::LetDecl,
+    inferred: &Type,
+) -> Type {
     let Some(te) = &l.typ else {
         return inferred.clone();
     };
@@ -368,9 +402,12 @@ pub(super) fn let_binding_type(ctx: &mut TypeCheckCtx, l: &crate::ast::LetDecl, 
     let r = l.value.range();
     let annotated_number = crate::types::mono::unwrap_ref(&annotated);
     let number_constant = matches!(annotated_number, Type::Float | Type::Int)
-        && ctx.type_of_expr.get(&(r.file.clone(), r.start.offset, r.end.offset)) == Some(&annotated_number);
-    let fitted_literal =
-        coerce(inferred, &annotated) == CoerceRule::Mismatch && infer::literal_fits(ctx, &l.value, &annotated);
+        && ctx
+            .type_of_expr
+            .get(&(r.file.clone(), r.start.offset, r.end.offset))
+            == Some(&annotated_number);
+    let fitted_literal = coerce(inferred, &annotated) == CoerceRule::Mismatch
+        && infer::literal_fits(ctx, &l.value, &annotated);
     // A record the annotation rejects is reported there, once.
     let rejected = infer::rejected_where_one_value_goes(inferred, &annotated);
     if number_constant || fitted_literal || rejected {
@@ -410,8 +447,7 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type, value: 
             // `rest` takes everything past `names`, so the source only has to
             // be AT LEAST as wide as the named positions when one is present.
             if let Some(fields) = as_tuple_fields(t)
-                && (fields.len() == names.len()
-                    || (rest.is_some() && fields.len() >= names.len()))
+                && (fields.len() == names.len() || (rest.is_some() && fields.len() >= names.len()))
             {
                 // The source's own key for each position.
                 let key = |i: usize| match t {
@@ -425,8 +461,9 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type, value: 
                         .map(|(i, ft)| (i.to_string(), ft.clone()))
                         .collect();
                     declare_let(ctx, rest_name, Type::Record(tail), range);
-                    let moved: Vec<(String, String)> =
-                        (names.len()..fields.len()).map(|i| (key(i), (i - names.len()).to_string())).collect();
+                    let moved: Vec<(String, String)> = (names.len()..fields.len())
+                        .map(|i| (key(i), (i - names.len()).to_string()))
+                        .collect();
                     set_let_ref_values(ctx, let_key(range, rest_name), rekeyed(src, &moved));
                 }
                 for (i, (n, ft)) in names.iter().zip(fields.iter()).enumerate() {
@@ -482,15 +519,16 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type, value: 
                 let (name, ty, path) = match field {
                     crate::ast::RecordDestructField::Named { name, alias, .. } => {
                         let bind_name = alias.as_ref().unwrap_or(name);
-                        let field_ty = if let Type::Record(rec_fields) | Type::Outputs(rec_fields) = t {
-                            rec_fields
-                                .iter()
-                                .find(|(k, _)| k == name)
-                                .map(|(_, t)| t.clone())
-                                .unwrap_or(Type::Any)
-                        } else {
-                            Type::Any
-                        };
+                        let field_ty =
+                            if let Type::Record(rec_fields) | Type::Outputs(rec_fields) = t {
+                                rec_fields
+                                    .iter()
+                                    .find(|(k, _)| k == name)
+                                    .map(|(_, t)| t.clone())
+                                    .unwrap_or(Type::Any)
+                            } else {
+                                Type::Any
+                            };
                         consumed.insert(name.as_str());
                         (bind_name.clone(), field_ty, name.as_str())
                     }
@@ -506,17 +544,18 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type, value: 
                         // that could not actually be read. Only a known
                         // `Type::Record` source yields a precise type;
                         // anything else stays `Any`.
-                        let rest_ty = if let Type::Record(rec_fields) | Type::Outputs(rec_fields) = t {
-                            Type::Record(
-                                rec_fields
-                                    .iter()
-                                    .filter(|(k, _)| !consumed.contains(k.as_str()))
-                                    .cloned()
-                                    .collect(),
-                            )
-                        } else {
-                            Type::Any
-                        };
+                        let rest_ty =
+                            if let Type::Record(rec_fields) | Type::Outputs(rec_fields) = t {
+                                Type::Record(
+                                    rec_fields
+                                        .iter()
+                                        .filter(|(k, _)| !consumed.contains(k.as_str()))
+                                        .cloned()
+                                        .collect(),
+                                )
+                            } else {
+                                Type::Any
+                            };
                         declare_let(ctx, name, rest_ty, range);
                         set_let_ref_values(ctx, let_key(range, name), src.clone());
                         continue;
@@ -547,14 +586,27 @@ fn declare_field(
     let ref_place = ty.ref_kind() == Some(crate::ir::RefKind::Var);
     if sub.is_none() && (ref_place || (scalar_places && ty.is_ref_target())) {
         ctx.let_places.insert(let_key(range, name));
-        let ty = if ref_place { ty } else { Type::Ref(Box::new(ty)) };
+        let ty = if ref_place {
+            ty
+        } else {
+            Type::Ref(Box::new(ty))
+        };
         declare_let(ctx, name, ty, range);
         if let Some(sym) = ctx.scope.lookup(name).cloned() {
-            ctx.scope.declare(name, SymbolInfo { kind: SymbolKind::Param, ..sym });
+            ctx.scope.declare(
+                name,
+                SymbolInfo {
+                    kind: SymbolKind::Param,
+                    ..sym
+                },
+            );
         }
         return;
     }
-    let record = matches!(crate::types::mono::unwrap_ref(&ty), Type::Record(_) | Type::Outputs(_) | Type::Tuple(_));
+    let record = matches!(
+        crate::types::mono::unwrap_ref(&ty),
+        Type::Record(_) | Type::Outputs(_) | Type::Tuple(_)
+    );
     declare_let(ctx, name, ty, range);
     if record {
         set_let_ref_values(ctx, let_key(range, name), sub);
@@ -572,7 +624,6 @@ fn rekeyed(src: &Option<LetRefValues>, moved: &[(String, String)]) -> Option<Let
     normalized(LetRefValues::Fields(set))
 }
 
-
 /// Bind one `let` name and report the collisions the plain `let x = …` arm has
 /// always reported. Every `LetBinding` shape reaches this, so a destructuring
 /// pattern cannot hijack an in/out port or silently replace another file's
@@ -589,14 +640,14 @@ fn declare_let(ctx: &mut TypeCheckCtx, name: &str, ty: Type, range: &SourceRange
             event_data: None,
         },
     );
-            match &prev {
+    match &prev {
         Some(p) if matches!(p.kind, SymbolKind::In | SymbolKind::Out) => {
             ctx.emit(
                 "WS013",
                 format!("'{name}' shadows the in/out port of the same name; rename one"),
                 range.clone(),
             );
-}
+        }
         // In an anonymous chip a name is declared once (see `scope::top`). A
         // chip's own declaration beside the top level's is the shadowing
         // rule, and two at the top level itself are read by position
@@ -652,7 +703,7 @@ fn declare_let(ctx: &mut TypeCheckCtx, name: &str, ty: Type, range: &SourceRange
                 ),
                 range.clone(),
             );
-}
+        }
         _ => {}
     }
 }
@@ -775,7 +826,9 @@ pub(super) fn check_let_type_annotation(
                         }
                         RecordLitField::Spread { value, range } => {
                             let spread_ty = infer::infer(ctx, value);
-                            if let Type::Record(spread_fields) | Type::Outputs(spread_fields) = &spread_ty {
+                            if let Type::Record(spread_fields) | Type::Outputs(spread_fields) =
+                                &spread_ty
+                            {
                                 let extras: Vec<&str> = spread_fields
                                     .iter()
                                     .filter(|(n, _)| !expected_fields.iter().any(|(en, _)| en == n))
@@ -861,7 +914,10 @@ pub(super) fn check_let_type_annotation(
             // array/map ref (`let a1: float[] = row0`) keeps the existing
             // WS016: the spec's no-conversion rule covers `*T`/`brick` only.
             let is_var_or_brick_ref = |t: &Type| {
-                matches!(t.ref_kind(), Some(crate::ir::RefKind::Var | crate::ir::RefKind::Brick))
+                matches!(
+                    t.ref_kind(),
+                    Some(crate::ir::RefKind::Var | crate::ir::RefKind::Brick)
+                )
             };
             if is_var_or_brick_ref(inferred) || is_var_or_brick_ref(&expected) {
                 ctx.emit("WS003", message, l.range.clone());

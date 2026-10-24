@@ -54,10 +54,18 @@ pub(super) fn input_slots(ctx: &LowerCtx, decl: &ChipDecl) -> Vec<Slot> {
         match ctx.record_fields_of(&p.typ) {
             Some(fields) => {
                 for f in fields {
-                    out.push(Slot { param: i, field: Some(f.name.clone()), ty: ctx.resolve_local_type(&f.typ) });
+                    out.push(Slot {
+                        param: i,
+                        field: Some(f.name.clone()),
+                        ty: ctx.resolve_local_type(&f.typ),
+                    });
                 }
             }
-            None => out.push(Slot { param: i, field: None, ty: ctx.resolve_local_type(&p.typ) }),
+            None => out.push(Slot {
+                param: i,
+                field: None,
+                ty: ctx.resolve_local_type(&p.typ),
+            }),
         }
     }
     out
@@ -76,7 +84,11 @@ fn param_default(ctx: &LowerCtx, param: &crate::ast::Param, slot: &Slot) -> Opti
         (None, lit) => lit,
         _ => return None,
     };
-    Some(crate::const_eval::coerce_const_to_type(lit, &slot.ty, ctx.consts.types()))
+    Some(crate::const_eval::coerce_const_to_type(
+        lit,
+        &slot.ty,
+        ctx.consts.types(),
+    ))
 }
 
 fn decl_key(decl: &ChipDecl) -> (std::sync::Arc<str>, usize) {
@@ -85,7 +97,12 @@ fn decl_key(decl: &ChipDecl) -> (std::sync::Arc<str>, usize) {
 
 /// Lower a call to the `fn` `decl`: build its plane on first use, then a
 /// Function Call bound to it at this point of the exec chain.
-pub(super) fn lower_fn_call(ctx: &mut LowerCtx, decl: &ChipDecl, args: &[CallArg], range: &SourceRange) -> PortRef {
+pub(super) fn lower_fn_call(
+    ctx: &mut LowerCtx,
+    decl: &ChipDecl,
+    args: &[CallArg],
+    range: &SourceRange,
+) -> PortRef {
     // `exec = trigger` runs the call off the given trigger, from pure context
     // too. The trigger is the caller's expression, lowered in its scope.
     let exec_arg = args.iter().find_map(|a| match a {
@@ -136,13 +153,18 @@ pub(super) fn lower_fn_call(ctx: &mut LowerCtx, decl: &ChipDecl, args: &[CallArg
             CallArg::Named { name, value, .. } if *name == param.name => Some(value),
             _ => None,
         });
-        let Some(arg) = positional.get(i).copied().or(named) else { continue };
+        let Some(arg) = positional.get(i).copied().or(named) else {
+            continue;
+        };
         let param_slots: Vec<usize> = (0..slots.len()).filter(|s| slots[*s].param == i).collect();
         if slots[param_slots[0]].field.is_some() {
             let Some(fields) = record_arg(ctx, arg) else {
                 ctx.error(
                     "WS112",
-                    format!("this argument to `{}` gives `{}` no record fields to pass", decl.name, param.name),
+                    format!(
+                        "this argument to `{}` gives `{}` no record fields to pass",
+                        decl.name, param.name
+                    ),
                     arg.range(),
                 );
                 continue;
@@ -180,7 +202,10 @@ pub(super) fn lower_fn_call(ctx: &mut LowerCtx, decl: &ChipDecl, args: &[CallArg
     let caller_exec = ctx.current_exec;
     let exec = exec_src.or(caller_exec).unwrap_or(exec);
     ctx.connect(exec, call.port(WirePort::Exec));
-    ctx.connect(plane.shell.port(WirePort::Definition), call.port(WirePort::Definition));
+    ctx.connect(
+        plane.shell.port(WirePort::Definition),
+        call.port(WirePort::Definition),
+    );
     for (s, src) in sources.iter().enumerate() {
         if let Some(src) = src {
             ctx.connect(*src, call.port(input_pin(slot_pin(s))));
@@ -198,10 +223,19 @@ pub(super) fn lower_fn_call(ctx: &mut LowerCtx, decl: &ChipDecl, args: &[CallArg
             .iter()
             .enumerate()
             .map(|(k, o)| {
-                (crate::intern::intern(&o.name), Binding::Local(LocalRecord { port: call.port(output_pin(slot_pin(k))) }))
+                (
+                    crate::intern::intern(&o.name),
+                    Binding::Local(LocalRecord {
+                        port: call.port(output_pin(slot_pin(k))),
+                    }),
+                )
             })
             .collect();
-        record.entry(crate::intern::intern("exec")).or_insert(Binding::Local(LocalRecord { port: call.port(WirePort::Completed) }));
+        record
+            .entry(crate::intern::intern("exec"))
+            .or_insert(Binding::Local(LocalRecord {
+                port: call.port(WirePort::Completed),
+            }));
         ctx.pending_inline_record = Some(record);
         return match decl.outputs.is_empty() {
             true => call.port(WirePort::Completed),
@@ -221,7 +255,9 @@ pub(super) fn lower_fn_call(ctx: &mut LowerCtx, decl: &ChipDecl, args: &[CallArg
                 .map(|(k, o)| {
                     (
                         crate::intern::intern(&o.name),
-                        Binding::Local(LocalRecord { port: call.port(output_pin(slot_pin(k))) }),
+                        Binding::Local(LocalRecord {
+                            port: call.port(output_pin(slot_pin(k))),
+                        }),
                     )
                 })
                 .collect();
@@ -234,7 +270,12 @@ pub(super) fn lower_fn_call(ctx: &mut LowerCtx, decl: &ChipDecl, args: &[CallArg
 /// The value a scalar, ref or container parameter receives: the argument's
 /// value, or, for a `*T` or container parameter given storage, that storage's
 /// ref, which the body reads and writes through.
-fn value_arg(ctx: &mut LowerCtx, decl: &ChipDecl, param: &crate::ast::Param, arg: &Expr) -> PortRef {
+fn value_arg(
+    ctx: &mut LowerCtx,
+    decl: &ChipDecl,
+    param: &crate::ast::Param,
+    arg: &Expr,
+) -> PortRef {
     use crate::lower::call::{RefArg, classify_ref_arg};
     let storage = ctx.ref_storage(Some(decl), &param.typ);
     if storage.is_none() {
@@ -256,7 +297,11 @@ fn value_arg(ctx: &mut LowerCtx, decl: &ChipDecl, param: &crate::ast::Param, arg
 fn record_arg(ctx: &mut LowerCtx, arg: &Expr) -> Option<HashMap<crate::intern::Sym, Binding>> {
     if let Expr::RecordLit { fields, .. } = arg {
         let ty = ctx.type_of(arg);
-        return Some(crate::lower::decl::lower_record_lit(ctx, fields, crate::lower::decl::Slots::Of(&ty)));
+        return Some(crate::lower::decl::lower_record_lit(
+            ctx,
+            fields,
+            crate::lower::decl::Slots::Of(&ty),
+        ));
     }
     if let Some(Binding::Record(f)) = crate::lower::access::resolve_field_chain(ctx, arg).cloned() {
         return Some(f);
@@ -278,7 +323,10 @@ fn output_pin(k: usize) -> WirePort {
 }
 
 fn call_io() -> GateIO {
-    let mut inputs = vec![PortSpec::new(WirePort::Definition.sym(), Type::Any), PortSpec::exec(*sym::EXEC)];
+    let mut inputs = vec![
+        PortSpec::new(WirePort::Definition.sym(), Type::Any),
+        PortSpec::exec(*sym::EXEC),
+    ];
     let mut outputs = vec![
         PortSpec::exec(WirePort::Completed.sym()),
         PortSpec::new(WirePort::BAborted.sym(), Type::Bool),
@@ -303,7 +351,10 @@ fn build_plane(ctx: &mut LowerCtx, decl: &ChipDecl) -> FnPlane {
     let shell = ctx.add_gate(AddNodeOpts {
         gate_class: spec.shell_class,
         source_range: decl.range.clone(),
-        ports: GateIO { inputs: vec![], outputs: vec![PortSpec::new(WirePort::Definition.sym(), Type::Any)] },
+        ports: GateIO {
+            inputs: vec![],
+            outputs: vec![PortSpec::new(WirePort::Definition.sym(), Type::Any)],
+        },
         properties: {
             let mut p = HashMap::default();
             p.insert(*sym::NAME_LABEL, Literal::String(decl.name.clone()));
@@ -324,7 +375,10 @@ fn build_plane(ctx: &mut LowerCtx, decl: &ChipDecl) -> FnPlane {
     let entry = ctx.add_gate(AddNodeOpts {
         gate_class: spec.entry_class,
         source_range: decl.range.clone(),
-        ports: GateIO { inputs: vec![], outputs: vec![PortSpec::exec(WirePort::Body.sym())] },
+        ports: GateIO {
+            inputs: vec![],
+            outputs: vec![PortSpec::exec(WirePort::Body.sym())],
+        },
         ..Default::default()
     });
 
@@ -343,14 +397,21 @@ fn build_plane(ctx: &mut LowerCtx, decl: &ChipDecl) -> FnPlane {
             let input = ctx.add_gate(AddNodeOpts {
                 gate_class: gc::FUNCTION_INPUT,
                 source_range: param.range.clone(),
-                ports: GateIO { inputs: vec![], outputs: vec![PortSpec::new(*sym::VALUE, slot.ty.clone())] },
+                ports: GateIO {
+                    inputs: vec![],
+                    outputs: vec![PortSpec::new(*sym::VALUE, slot.ty.clone())],
+                },
                 properties: {
                     let mut p = HashMap::default();
                     p.insert(*sym::NAME_LABEL, Literal::String(label.clone()));
                     p.insert(*sym::PORT_LABEL, Literal::String(label));
-                    p.insert(crate::intern::intern("PortOrder"), Literal::Int(slot_pin(s) as i64));
-                    let default = param_default(ctx, param, slot)
-                        .or_else(|| crate::lower::predeclare::default_literal_for_var_type(&slot.ty));
+                    p.insert(
+                        crate::intern::intern("PortOrder"),
+                        Literal::Int(slot_pin(s) as i64),
+                    );
+                    let default = param_default(ctx, param, slot).or_else(|| {
+                        crate::lower::predeclare::default_literal_for_var_type(&slot.ty)
+                    });
                     if let Some(d) = default {
                         p.insert(crate::intern::intern("DefaultValue"), d);
                     }
@@ -361,7 +422,10 @@ fn build_plane(ctx: &mut LowerCtx, decl: &ChipDecl) -> FnPlane {
             let port = input.port(WirePort::Value);
             match &slot.field {
                 Some(f) => {
-                    fields.insert(crate::intern::intern(f), Binding::Local(LocalRecord { port }));
+                    fields.insert(
+                        crate::intern::intern(f),
+                        Binding::Local(LocalRecord { port }),
+                    );
                 }
                 None => whole = Some(port),
             }
@@ -372,7 +436,10 @@ fn build_plane(ctx: &mut LowerCtx, decl: &ChipDecl) -> FnPlane {
             None => Binding::Record(fields),
         };
         ctx.scope.insert(&name, binding);
-        args.push(CallArg::Positional(Expr::Ident { name, range: param.range.clone() }));
+        args.push(CallArg::Positional(Expr::Ident {
+            name,
+            range: param.range.clone(),
+        }));
     }
 
     ctx.current_exec = Some(entry.port(WirePort::Body));
@@ -384,23 +451,36 @@ fn build_plane(ctx: &mut LowerCtx, decl: &ChipDecl) -> FnPlane {
         1 => results.push(Some(result)),
         _ => {
             for o in &decl.outputs {
-                let b = record.as_ref().and_then(|r| r.get(&crate::intern::intern(&o.name)).cloned());
-                results.push(b.and_then(|b| crate::lower::access::binding_to_port(ctx, &b, &o.range)));
+                let b = record
+                    .as_ref()
+                    .and_then(|r| r.get(&crate::intern::intern(&o.name)).cloned());
+                results
+                    .push(b.and_then(|b| crate::lower::access::binding_to_port(ctx, &b, &o.range)));
             }
         }
     }
     for (k, (o, src)) in decl.outputs.iter().zip(results).enumerate() {
         let ty = ctx.resolve_local_type(&o.typ);
-        let label = if o.name == "_" { "return".to_string() } else { o.name.clone() };
+        let label = if o.name == "_" {
+            "return".to_string()
+        } else {
+            o.name.clone()
+        };
         let out = ctx.add_gate(AddNodeOpts {
             gate_class: gc::FUNCTION_OUTPUT,
             source_range: o.range.clone(),
-            ports: GateIO { inputs: vec![PortSpec::new(*sym::VALUE, ty.clone())], outputs: vec![] },
+            ports: GateIO {
+                inputs: vec![PortSpec::new(*sym::VALUE, ty.clone())],
+                outputs: vec![],
+            },
             properties: {
                 let mut p = HashMap::default();
                 p.insert(*sym::NAME_LABEL, Literal::String(label.clone()));
                 p.insert(*sym::PORT_LABEL, Literal::String(label));
-                p.insert(crate::intern::intern("PortOrder"), Literal::Int(slot_pin(k) as i64));
+                p.insert(
+                    crate::intern::intern("PortOrder"),
+                    Literal::Int(slot_pin(k) as i64),
+                );
                 if let Some(d) = crate::lower::predeclare::default_literal_for_var_type(&ty) {
                     p.insert(crate::intern::intern("DefaultValue"), d);
                 }
@@ -433,10 +513,12 @@ type ModPath = Vec<NodeId>;
 
 /// A node's own name, for a diagnostic or a handle's label.
 fn node_name(n: &crate::ir::Node) -> Option<String> {
-    [*sym::NAME_LABEL, *sym::PORT_LABEL, *sym::BINDING_NAME].iter().find_map(|k| match n.properties.get(k) {
-        Some(Literal::String(s)) if !s.is_empty() && !s.starts_with('_') => Some(s.clone()),
-        _ => None,
-    })
+    [*sym::NAME_LABEL, *sym::PORT_LABEL, *sym::BINDING_NAME]
+        .iter()
+        .find_map(|k| match n.properties.get(k) {
+            Some(Literal::String(s)) if !s.is_empty() && !s.starts_with('_') => Some(s.clone()),
+            _ => None,
+        })
 }
 
 /// The wire binding a Function Call to its definition: out of a `fn` shell's
@@ -453,14 +535,20 @@ pub(crate) fn is_definition_wire(src: &crate::ir::Node, w: &Wire) -> bool {
 ///
 /// Runs after partition, before boundary pins, so no pin is ever made on a
 /// function plane's wall.
-pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<crate::diagnostic::Diagnostic>) {
+pub(crate) fn capture_through_handles(
+    root: &mut Module,
+    diagnostics: &mut Vec<crate::diagnostic::Diagnostic>,
+) {
     let mut owner: HashMap<NodeId, ModPath> = HashMap::default();
     let mut planes: Vec<ModPath> = Vec::new();
     // Every node's module path, and the path of every `fn` plane.
     root.walk(&mut |path, m| {
         for (id, n) in &m.nodes {
             owner.insert(*id, path.to_vec());
-            if n.kind == NodeKind::Chip && n.gate_class == gc::MICROCHIP_FUNCTION_DEFINITION && m.chips.contains_key(id) {
+            if n.kind == NodeKind::Chip
+                && n.gate_class == gc::MICROCHIP_FUNCTION_DEFINITION
+                && m.chips.contains_key(id)
+            {
                 planes.push([path, &[*id]].concat());
             }
         }
@@ -470,17 +558,32 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<c
     }
     // A node's plane: of the planes its module path starts with, the first
     // in `planes`.
-    let plane_index: HashMap<&[NodeId], usize> = planes.iter().enumerate().map(|(i, p)| (p.as_slice(), i)).collect();
+    let plane_index: HashMap<&[NodeId], usize> = planes
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.as_slice(), i))
+        .collect();
     let plane_of = |id: &NodeId| {
         let p = owner.get(id)?;
-        (1..=p.len()).filter_map(|k| plane_index.get(&p[..k]).copied()).min().map(|i| planes[i].clone())
+        (1..=p.len())
+            .filter_map(|k| plane_index.get(&p[..k]).copied())
+            .min()
+            .map(|i| planes[i].clone())
     };
     let fn_name = |root: &Module, plane: &ModPath| {
-        node_name(&root.at(&plane[..plane.len() - 1]).nodes[plane.last().unwrap()]).unwrap_or_default()
+        node_name(&root.at(&plane[..plane.len() - 1]).nodes[plane.last().unwrap()])
+            .unwrap_or_default()
     };
 
     let mut all = Vec::new();
-    root.walk(&mut |path, m| all.extend(m.wires.iter().enumerate().map(|(i, w)| (path.to_vec(), i, *w))));
+    root.walk(&mut |path, m| {
+        all.extend(
+            m.wires
+                .iter()
+                .enumerate()
+                .map(|(i, w)| (path.to_vec(), i, *w)),
+        )
+    });
     let mut handles: HashMap<(ModPath, PortRef), NodeId> = HashMap::default();
     let mut copies: HashMap<(ModPath, NodeId), NodeId> = HashMap::default();
     let fed: HashSet<NodeId> = all
@@ -523,13 +626,27 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<c
                 id
             });
             removed.entry(holder).or_default().push(at);
-            added.push((plane, Wire { source: PortRef { node_id: copy, port: w.source.port }, target: w.target }));
+            added.push((
+                plane,
+                Wire {
+                    source: PortRef {
+                        node_id: copy,
+                        port: w.source.port,
+                    },
+                    target: w.target,
+                },
+            ));
             continue;
         }
         let storage_ref = matches!(src.gate_class, gc::VAR | gc::ARRAY_VAR | gc::MAP_VAR)
-            && matches!(w.source.port, WirePort::VarRef | WirePort::ArrayVarRef | WirePort::MapVarRef);
+            && matches!(
+                w.source.port,
+                WirePort::VarRef | WirePort::ArrayVarRef | WirePort::MapVarRef
+            );
         let Some(plane) = tp.clone().filter(|_| sp.is_none() && storage_ref) else {
-            let what = node_name(&src).map(|n| format!("`{n}`")).unwrap_or_else(|| "a value".into());
+            let what = node_name(&src)
+                .map(|n| format!("`{n}`"))
+                .unwrap_or_else(|| "a value".into());
             let (message, range) = match (&sp, &tp) {
                 (Some(inside), None) => (
                     format!(
@@ -549,7 +666,9 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<c
                 ),
                 (None, None) => continue,
             };
-            diagnostics.push(crate::diagnostic::Diagnostic::error("WS113", message, range));
+            diagnostics.push(crate::diagnostic::Diagnostic::error(
+                "WS113", message, range,
+            ));
             continue;
         };
         let key = (plane.clone(), w.source);
@@ -559,11 +678,25 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<c
                 let ty = src.output_type(w.source.port).unwrap_or(Type::Any);
                 let id = NodeId::fresh();
                 let mut props = HashMap::default();
-                props.insert(*sym::NAME_LABEL, Literal::String(format!("&{}", node_name(&src).unwrap_or_default())));
-                props.insert(crate::intern::intern(HANDLE_TARGET), Literal::Int(src.id.0 as i64));
+                props.insert(
+                    *sym::NAME_LABEL,
+                    Literal::String(format!("&{}", node_name(&src).unwrap_or_default())),
+                );
+                props.insert(
+                    crate::intern::intern(HANDLE_TARGET),
+                    Literal::Int(src.id.0 as i64),
+                );
                 let node = crate::ir::Node {
                     source_range: tgt.source_range.clone(),
-                    ..crate::ir::Node::new(id, NodeKind::Gate, gc::VAR, GateIO::var_storage(ty), props, None, Some("fn handle"))
+                    ..crate::ir::Node::new(
+                        id,
+                        NodeKind::Gate,
+                        gc::VAR,
+                        GateIO::var_storage(ty),
+                        props,
+                        None,
+                        Some("fn handle"),
+                    )
                 };
                 root.at_mut(&plane).nodes.insert(id, node);
                 handles.insert(key, id);
@@ -571,7 +704,16 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<c
             }
         };
         removed.entry(holder).or_default().push(at);
-        added.push((plane, Wire { source: PortRef { node_id: handle, port: WirePort::Value }, target: w.target }));
+        added.push((
+            plane,
+            Wire {
+                source: PortRef {
+                    node_id: handle,
+                    port: WirePort::Value,
+                },
+                target: w.target,
+            },
+        ));
     }
     for (path, at) in removed {
         let at: HashSet<usize> = at.into_iter().collect();
@@ -587,12 +729,20 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<c
     }
     // A constant every plane now has its own copy of, and nothing else reads, is dead.
     let mut read: HashSet<NodeId> = HashSet::default();
-    root.walk(&mut |_, m| read.extend(m.wires.iter().filter(|w| w.source.port != WirePort::Layout).map(|w| w.source.node_id)));
+    root.walk(&mut |_, m| {
+        read.extend(
+            m.wires
+                .iter()
+                .filter(|w| w.source.port != WirePort::Layout)
+                .map(|w| w.source.node_id),
+        )
+    });
     for (_, src) in copies.keys() {
         if !read.contains(src) {
             let m = root.at_mut(&owner[src]);
             m.nodes.remove(src);
-            m.wires.retain(|w| w.source.node_id != *src && w.target.node_id != *src);
+            m.wires
+                .retain(|w| w.source.node_id != *src && w.target.node_id != *src);
         }
     }
 }

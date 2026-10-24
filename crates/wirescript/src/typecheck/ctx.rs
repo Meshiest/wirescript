@@ -150,7 +150,8 @@ impl Scope {
     /// Declare in the top-most frame. Returns the prior info if any.
     pub fn declare(&mut self, name: &str, info: SymbolInfo) -> Option<SymbolInfo> {
         if name.starts_with("__") && !info.decl_range.file.is_empty() {
-            self.reserved.push((name.to_string(), info.decl_range.clone()));
+            self.reserved
+                .push((name.to_string(), info.decl_range.clone()));
         }
         if info.kind == SymbolKind::Type {
             self.alias_gen += 1;
@@ -177,8 +178,7 @@ impl Scope {
         if let Some(info) = self.inner.get_mut(name) {
             if info.kind == SymbolKind::Type {
                 self.alias_gen += 1;
-                std::sync::Arc::make_mut(&mut self.alias_view)
-                    .insert(name.to_string(), ty.clone());
+                std::sync::Arc::make_mut(&mut self.alias_view).insert(name.to_string(), ty.clone());
             }
             info.ty = ty;
         }
@@ -186,7 +186,10 @@ impl Scope {
     pub fn lookup(&self, name: &str) -> Option<&SymbolInfo> {
         let found = self.inner.get(name);
         if let Some(info) = found
-            && matches!(info.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map | SymbolKind::Buffer)
+            && matches!(
+                info.kind,
+                SymbolKind::Var | SymbolKind::Array | SymbolKind::Map | SymbolKind::Buffer
+            )
             && *self.storage_log_paused.borrow() == 0
             && let Some(log) = self.storage_log.borrow_mut().last_mut()
         {
@@ -269,7 +272,10 @@ impl Scope {
             detached,
             floor,
             aliases: std::mem::replace(&mut self.alias_view, view.aliases.clone()),
-            alias_undo: std::mem::replace(&mut self.alias_undo, vec![Vec::new(); view.frames.len()]),
+            alias_undo: std::mem::replace(
+                &mut self.alias_undo,
+                vec![Vec::new(); view.frames.len()],
+            ),
             storage_log: std::mem::take(&mut *self.storage_log.borrow_mut()),
         }
     }
@@ -597,7 +603,8 @@ pub struct TypeCheckCtx<'a> {
     pub(crate) body_ranges: HashMap<super::shadow::DeclKey, SourceRange>,
     /// The `mod`/`chip` declarations each body calls by bare name, nested
     /// bodies' calls included (WS091).
-    pub(crate) body_calls: HashMap<super::shadow::DeclKey, crate::collections::HashSet<super::shadow::DeclKey>>,
+    pub(crate) body_calls:
+        HashMap<super::shadow::DeclKey, crate::collections::HashSet<super::shadow::DeclKey>>,
     /// Memoized `mod`/`chip`-is-exec-requiring answers, keyed by bare name (see
     /// [`infer::mod_is_exec_requiring`](crate::typecheck::infer::mod_is_exec_requiring)).
     /// A mod whose INLINED direct flow reads or writes a container (or calls an
@@ -753,10 +760,15 @@ impl<'a> TypeCheckCtx<'a> {
             } else {
                 decls.last()
             };
-            let info = seen.and_then(|d| self.top_dup_symbols.get(&crate::lower::dup_key(d, name))).cloned();
+            let info = seen
+                .and_then(|d| self.top_dup_symbols.get(&crate::lower::dup_key(d, name)))
+                .cloned();
             bound.push((name.to_string(), self.scope.set_root(name, info)));
         }
-        TopView { bound, cursor: self.consts.set_cursor(Some(at)) }
+        TopView {
+            bound,
+            cursor: self.consts.set_cursor(Some(at)),
+        }
     }
     /// Undo a [`top_view`](Self::top_view).
     pub(crate) fn restore_top_view(&mut self, view: TopView) {
@@ -774,17 +786,24 @@ impl<'a> TypeCheckCtx<'a> {
         let r = d.range();
         for (name, _) in crate::scope::top::declared_names_of(d) {
             if self.top_names.is_dup(&r.file, &name)
-                && let Some(info) =
-                    self.scope.root(&name).filter(|i| crate::scope::top::within(r, &i.decl_range)).cloned()
+                && let Some(info) = self
+                    .scope
+                    .root(&name)
+                    .filter(|i| crate::scope::top::within(r, &i.decl_range))
+                    .cloned()
             {
-                self.top_dup_symbols.insert((r.file.clone(), r.start.offset, name), info);
+                self.top_dup_symbols
+                    .insert((r.file.clone(), r.start.offset, name), info);
             }
         }
     }
     /// The enum registry with the declarations a payload field's type is read
     /// against.
     pub(crate) fn enums(&self) -> crate::typecheck::patterns::Enums<'_> {
-        crate::typecheck::patterns::Enums { defs: &self.enum_defs, types: self.consts.types() }
+        crate::typecheck::patterns::Enums {
+            defs: &self.enum_defs,
+            types: self.consts.types(),
+        }
     }
     /// Drop the `<T: string>` suggestion of each hint in
     /// `string_bound_hints` whose body a call gives another type for `T`:
@@ -794,16 +813,22 @@ impl<'a> TypeCheckCtx<'a> {
         for (range, message, body, tp) in std::mem::take(&mut self.string_bound_hints) {
             let other = self.generic_call_args.get(&body).and_then(|calls| {
                 calls.iter().flatten().find_map(|(p, t)| {
-                    (p == &tp && !matches!(t, Type::String | Type::Any | Type::Param(_))).then(|| t.clone())
+                    (p == &tp && !matches!(t, Type::String | Type::Any | Type::Param(_)))
+                        .then(|| t.clone())
                 })
             });
             let Some(t) = other else { continue };
-            let same = |d: &&mut Diagnostic| d.code == "WS003" && d.range == range && d.message == message;
+            let same =
+                |d: &&mut Diagnostic| d.code == "WS003" && d.range == range && d.message == message;
             let Some(d) = self.diagnostics.iter_mut().find(same) else {
                 continue;
             };
             let got = crate::analysis::types::type_str(&t);
-            let a = if got.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+            let a = if got.starts_with(['a', 'e', 'i', 'o', 'u']) {
+                "an"
+            } else {
+                "a"
+            };
             let cut = message.find("; bound it").unwrap_or(message.len());
             d.message = format!(
                 "{}; a call gives `{tp}` {a} `{got}`, which is not a string, so no bound on `{tp}` lets both compile",
@@ -835,7 +860,12 @@ impl<'a> TypeCheckCtx<'a> {
     /// The resolution-table key for `r`: its source range plus the current
     /// generic substitution, so each generic instantiation gets its own entry.
     pub(crate) fn resolution_key(&self, r: &SourceRange) -> ResolutionKey {
-        (r.file.clone(), r.start.offset, r.end.offset, self.resolution_subst.clone())
+        (
+            r.file.clone(),
+            r.start.offset,
+            r.end.offset,
+            self.resolution_subst.clone(),
+        )
     }
 
     /// Record `t` as the type of the expression at `r`: range-keyed, and inside
@@ -844,16 +874,23 @@ impl<'a> TypeCheckCtx<'a> {
     /// (see `error_typed`).
     pub(crate) fn is_error_typed(&self, e: &crate::ast::Expr) -> bool {
         let r = e.range();
-        !self.error_typed.is_empty() && self.error_typed.contains(&(r.file.clone(), r.start.offset, r.end.offset))
+        !self.error_typed.is_empty()
+            && self
+                .error_typed
+                .contains(&(r.file.clone(), r.start.offset, r.end.offset))
     }
 
     /// Whether `e` reads a var whose declaration is `WS098`.
     pub(crate) fn reads_untyped_var(&self, e: &crate::ast::Expr) -> bool {
-        let crate::ast::Expr::Ident { name, .. } = e else { return false };
+        let crate::ast::Expr::Ident { name, .. } = e else {
+            return false;
+        };
         !self.untyped_reported.is_empty()
             && self.scope.lookup(name).is_some_and(|sym| {
                 sym.kind == crate::typecheck::SymbolKind::Var
-                    && self.untyped_reported.contains(&(sym.decl_range.file.clone(), sym.decl_range.start.offset))
+                    && self
+                        .untyped_reported
+                        .contains(&(sym.decl_range.file.clone(), sym.decl_range.start.offset))
             })
     }
 
@@ -895,7 +932,11 @@ impl<'a> TypeCheckCtx<'a> {
     /// Record `expr` as a container of its already-recorded expression type.
     pub(crate) fn record_container_expr(&mut self, expr: &Expr) {
         let r = expr.range();
-        if let Some(t) = self.type_of_expr.get(&(r.file.clone(), r.start.offset, r.end.offset)).cloned() {
+        if let Some(t) = self
+            .type_of_expr
+            .get(&(r.file.clone(), r.start.offset, r.end.offset))
+            .cloned()
+        {
             self.record_container_kind(expr, &t);
         }
     }
@@ -923,9 +964,11 @@ impl<'a> TypeCheckCtx<'a> {
     fn const_bound(info: &SymbolInfo) -> crate::const_scope::Bound {
         use crate::const_scope::Bound;
         match info.kind {
-            SymbolKind::Fn | SymbolKind::Chip | SymbolKind::Event | SymbolKind::Namespace | SymbolKind::Type => {
-                Bound::NotAValue
-            }
+            SymbolKind::Fn
+            | SymbolKind::Chip
+            | SymbolKind::Event
+            | SymbolKind::Namespace
+            | SymbolKind::Type => Bound::NotAValue,
             SymbolKind::LetBinding | SymbolKind::Param | SymbolKind::Var => Bound::MayBeConstant,
             SymbolKind::Buffer
             | SymbolKind::Array
@@ -942,11 +985,20 @@ impl<'a> TypeCheckCtx<'a> {
     /// [`crate::const_scope`]). Lowering's `LowerCtx::const_lookup` answers
     /// the same way, so both stages agree on which name is which constant.
     pub(crate) fn const_lookup(&self) -> crate::const_scope::ConstNames {
-        self.consts.env(self.scope.stack(), &Self::const_bound, crate::const_scope::Admit::All)
+        self.consts.env(
+            self.scope.stack(),
+            &Self::const_bound,
+            crate::const_scope::Admit::All,
+        )
     }
     /// The constant `name` reads as here, when `admit` admits it.
-    pub(crate) fn constant(&self, name: &str, admit: crate::const_scope::Admit) -> Option<&crate::ir::Literal> {
-        self.consts.get(self.scope.stack(), &Self::const_bound, name, admit)
+    pub(crate) fn constant(
+        &self,
+        name: &str,
+        admit: crate::const_scope::Admit,
+    ) -> Option<&crate::ir::Literal> {
+        self.consts
+            .get(self.scope.stack(), &Self::const_bound, name, admit)
     }
     /// Is `name` a `const`-declared binding holding an array or map?
     ///
@@ -1046,9 +1098,12 @@ impl<'a> TypeCheckCtx<'a> {
     /// to [`const_ctx`](Self::const_ctx) as `lookup_mod`.
     pub(super) fn resolve_mod(&self, name: &str) -> Option<Arc<ChipDecl>> {
         match self.scope.lookup(name) {
-            Some(info) if info.kind == SymbolKind::Chip => {
-                self.mod_decls.iter().rev().find_map(|frame| frame.get(name)).cloned()
-            }
+            Some(info) if info.kind == SymbolKind::Chip => self
+                .mod_decls
+                .iter()
+                .rev()
+                .find_map(|frame| frame.get(name))
+                .cloned(),
             _ => None,
         }
     }
@@ -1057,7 +1112,8 @@ impl<'a> TypeCheckCtx<'a> {
     /// calling file must be able to name it (see
     /// [`crate::ast::ImportScope::user_mod_answers`]).
     pub(super) fn calls_user_mod(&self, name: &str, call_file: &str) -> bool {
-        self.resolve_mod(name).is_some_and(|d| self.imports.user_mod_answers(&d.range, call_file))
+        self.resolve_mod(name)
+            .is_some_and(|d| self.imports.user_mod_answers(&d.range, call_file))
     }
     /// The unbounded type parameter the receiver `recv`, of type `t`, stands
     /// for here: `recv` is, or reads a field or element of, a value declared
@@ -1068,13 +1124,19 @@ impl<'a> TypeCheckCtx<'a> {
     /// call passes through), else for the unbounded type parameter of the body
     /// this check binds to `t`.
     pub(super) fn unbounded_param_of(&self, recv: &Expr, t: &Type) -> Option<&str> {
-        let bound_to_t =
-            |tp: &str| self.scope.lookup(tp).is_some_and(|s| s.kind == SymbolKind::Type && s.ty == *t);
+        let bound_to_t = |tp: &str| {
+            self.scope
+                .lookup(tp)
+                .is_some_and(|s| s.kind == SymbolKind::Type && s.ty == *t)
+        };
         if let Some(tp) = self.unbounded_root_of(recv) {
             return bound_to_t(tp).then_some(tp);
         }
         let mut root = recv;
-        while let Expr::FieldAccess { obj, .. } | Expr::IndexAccess { obj, .. } | Expr::TuplePick { obj, .. } = root {
+        while let Expr::FieldAccess { obj, .. }
+        | Expr::IndexAccess { obj, .. }
+        | Expr::TuplePick { obj, .. } = root
+        {
             root = obj;
         }
         let Expr::Call { callee, args, .. } = root else {
@@ -1084,35 +1146,49 @@ impl<'a> TypeCheckCtx<'a> {
         // (`mod two<A, B>(a: A, b: B) -> B`) gives the value of the arguments
         // that parameter types, so those name the parameter first.
         let result_param = match callee.as_ref() {
-            Expr::Ident { name, .. } => self.resolve_mod(name).and_then(|decl| match decl.outputs.as_slice() {
-                [out] => match &out.typ {
-                    crate::ast::TypeExpr::Name { name: p, .. } if decl.type_params.iter().any(|tp| &tp.name == p) => {
-                        Some((decl.clone(), p.clone()))
-                    }
-                    _ => None,
-                },
-                _ => None,
-            }),
+            Expr::Ident { name, .. } => {
+                self.resolve_mod(name)
+                    .and_then(|decl| match decl.outputs.as_slice() {
+                        [out] => match &out.typ {
+                            crate::ast::TypeExpr::Name { name: p, .. }
+                                if decl.type_params.iter().any(|tp| &tp.name == p) =>
+                            {
+                                Some((decl.clone(), p.clone()))
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+            }
             _ => None,
         };
         let gives_result = |i: usize| match &result_param {
-            Some((decl, p)) => {
-                decl.inputs.get(i).is_some_and(|inp| matches!(&inp.typ, crate::ast::TypeExpr::Name { name, .. } if name == p))
-            }
+            Some((decl, p)) => decl.inputs.get(i).is_some_and(
+                |inp| matches!(&inp.typ, crate::ast::TypeExpr::Name { name, .. } if name == p),
+            ),
             None => true,
         };
         let of_arg = |a: &Expr| self.unbounded_param_of(a, t);
         let from_result = args.iter().enumerate().find_map(|(i, a)| match a {
-            crate::ast::CallArg::Positional(v) if result_param.is_some() && gives_result(i) => of_arg(v),
+            crate::ast::CallArg::Positional(v) if result_param.is_some() && gives_result(i) => {
+                of_arg(v)
+            }
             _ => None,
         });
         let from_arg = from_result.or_else(|| {
             args.iter().find_map(|a| match a {
-                crate::ast::CallArg::Positional(v) | crate::ast::CallArg::Named { value: v, .. } => of_arg(v),
+                crate::ast::CallArg::Positional(v)
+                | crate::ast::CallArg::Named { value: v, .. } => of_arg(v),
                 crate::ast::CallArg::Spread(_) => None,
             })
         });
-        from_arg.or_else(|| self.unbounded_typed_params.iter().rev().map(|(_, tp)| tp.as_str()).find(|tp| bound_to_t(tp)))
+        from_arg.or_else(|| {
+            self.unbounded_typed_params
+                .iter()
+                .rev()
+                .map(|(_, tp)| tp.as_str())
+                .find(|tp| bound_to_t(tp))
+        })
     }
     /// The unbounded type parameter the value at the root of `e` (the name
     /// it reads a field or an element of) is declared with.
@@ -1120,13 +1196,21 @@ impl<'a> TypeCheckCtx<'a> {
         let mut e = e;
         loop {
             e = match e {
-                Expr::FieldAccess { obj, .. } | Expr::IndexAccess { obj, .. } | Expr::TuplePick { obj, .. } => obj,
+                Expr::FieldAccess { obj, .. }
+                | Expr::IndexAccess { obj, .. }
+                | Expr::TuplePick { obj, .. } => obj,
                 _ => break,
             };
         }
-        let Expr::Ident { name, .. } = e else { return None };
+        let Expr::Ident { name, .. } = e else {
+            return None;
+        };
         let decl = &self.scope.lookup(name)?.decl_range;
-        self.unbounded_typed_params.iter().rev().find(|(d, _)| d == decl).map(|(_, tp)| tp.as_str())
+        self.unbounded_typed_params
+            .iter()
+            .rev()
+            .find(|(d, _)| d == decl)
+            .map(|(_, tp)| tp.as_str())
     }
     /// The `self` mod a method call `x.name()` written in `call_file` may
     /// call: one in scope whose first parameter is `self`, when the calling
@@ -1134,7 +1218,9 @@ impl<'a> TypeCheckCtx<'a> {
     pub(super) fn visible_self_mod(&self, name: &str, call_file: &str) -> Option<&SymbolInfo> {
         self.scope.lookup(name).filter(|s| {
             s.kind == SymbolKind::Chip
-                && s.signature.as_ref().is_some_and(|sig| sig.params.first().is_some_and(|p| p.name == "self"))
+                && s.signature
+                    .as_ref()
+                    .is_some_and(|sig| sig.params.first().is_some_and(|p| p.name == "self"))
                 && self.imports.user_mod_answers(&s.decl_range, call_file)
         })
     }
@@ -1154,7 +1240,11 @@ impl<'a> TypeCheckCtx<'a> {
         }
         let base = |f: &str| f.rsplit(['/', '\\']).next().unwrap_or(f).to_string();
         let (here, there) = (base(call_file), base(&decl.file));
-        let call = if method { format!("x.{name}(…)") } else { format!("{name}(…)") };
+        let call = if method {
+            format!("x.{name}(…)")
+        } else {
+            format!("{name}(…)")
+        };
         let fix = if self.imports.imports_file(&decl.file, call_file) {
             format!(
                 "`{there}` imports `{here}`, and a module can't import the file that imports it: \
@@ -1212,7 +1302,8 @@ impl<'a> TypeCheckCtx<'a> {
         name: &str,
         ref_file: &str,
     ) -> Option<&HashMap<String, NsDeclInfo>> {
-        self.ns_own(name, ref_file).or_else(|| self.namespaces.get(name))
+        self.ns_own(name, ref_file)
+            .or_else(|| self.namespaces.get(name))
     }
 
     /// True when `name` IS a namespace symbol but is hidden from `ref_file`
@@ -1320,7 +1411,11 @@ pub struct TypeCheckResult {
 /// against the output type is therefore correct even when a local shares the
 /// name.
 pub(super) fn current_output_ty(ctx: &TypeCheckCtx, name: &str) -> Option<Type> {
-    ctx.out_ctx.last()?.iter().find(|f| f.name == name).map(|f| f.ty.clone())
+    ctx.out_ctx
+        .last()?
+        .iter()
+        .find(|f| f.name == name)
+        .map(|f| f.ty.clone())
 }
 
 /// The type output `name` is declared with (an array or map ref read as the
@@ -1368,14 +1463,24 @@ pub(super) fn check_port_write(
     range: &SourceRange,
 ) {
     if let Some(port_ty) = declared_output_ty(ctx, name) {
-        infer::coerce_or_emit(ctx, &value_ty.clone().container_ref_as_value(), &port_ty, range);
+        infer::coerce_or_emit(
+            ctx,
+            &value_ty.clone().container_ref_as_value(),
+            &port_ty,
+            range,
+        );
     }
 }
 
 /// [`check_port_write`] for the value `value`: a record of the program's own
 /// written to a single-value port is WS003 (see
 /// [`infer::record_into_one_value`]).
-pub(super) fn check_port_write_value(ctx: &mut TypeCheckCtx, name: &str, value: &Expr, value_ty: &Type) {
+pub(super) fn check_port_write_value(
+    ctx: &mut TypeCheckCtx,
+    name: &str,
+    value: &Expr,
+    value_ty: &Type,
+) {
     check_port_write(ctx, name, value_ty, value.range());
     if let Some(port_ty) = declared_output_ty(ctx, name) {
         infer::literal_in_slot(ctx, value, value_ty, &port_ty);
@@ -1415,7 +1520,12 @@ pub(super) struct PortWrite {
 /// A `mod` body is inlined where it is called, so its write to a name that is
 /// not one of its own outputs is a write to that port too. A `chip` body
 /// writes only its own outputs.
-pub(super) fn check_untyped_port_write(ctx: &mut TypeCheckCtx, name: &str, value: &Expr, value_ty: &Type) {
+pub(super) fn check_untyped_port_write(
+    ctx: &mut TypeCheckCtx,
+    name: &str,
+    value: &Expr,
+    value_ty: &Type,
+) {
     let declared_here = if ctx.out_ctx.len() > 1 {
         ctx.inline_body_depth == 0 || current_output_ty(ctx, name).is_some()
     } else {
@@ -1425,7 +1535,11 @@ pub(super) fn check_untyped_port_write(ctx: &mut TypeCheckCtx, name: &str, value
         return;
     }
     let key = out_scope_key(name);
-    if !ctx.scope.lookup(&key).is_some_and(|s| matches!(s.kind, SymbolKind::Out) && matches!(s.ty, Type::Any)) {
+    if !ctx
+        .scope
+        .lookup(&key)
+        .is_some_and(|s| matches!(s.kind, SymbolKind::Out) && matches!(s.ty, Type::Any))
+    {
         return;
     }
     let mut ty = unwrap_ref(value_ty).container_ref_as_value();
@@ -1441,14 +1555,23 @@ pub(super) fn check_untyped_port_write(ctx: &mut TypeCheckCtx, name: &str, value
     let range = value.range();
     if let Some(seed) = ctx.untyped_port_seeds.get(&key).cloned() {
         infer::int_constants_in_slot(ctx, value, &seed);
-        ctx.resolutions.untyped_port_types.insert((range.file.clone(), range.start.offset, range.end.offset), seed);
+        ctx.resolutions.untyped_port_types.insert(
+            (range.file.clone(), range.start.offset, range.end.offset),
+            seed,
+        );
     }
     let literal = matches!(value, Expr::RecordLit { .. });
     let subst = ctx.resolution_subst.clone();
     let body = ctx.open_bodies.last().cloned();
     let writes = ctx.untyped_port_writes.entry(key).or_default();
     if !writes.iter().any(|w| w.range == *range && w.subst == subst) {
-        writes.push(PortWrite { ty, range: range.clone(), literal, subst, body });
+        writes.push(PortWrite {
+            ty,
+            range: range.clone(),
+            literal,
+            subst,
+            body,
+        });
     }
 }
 
@@ -1494,13 +1617,19 @@ pub(super) fn finish_untyped_ports(ctx: &mut TypeCheckCtx, decls: &[TopDecl], la
         made.insert(args.as_slice().into());
         made.insert(key.3.iter().chain(args).cloned().collect());
     }
-    let reached = if ctx.untyped_port_writes.values().flatten().any(|w| w.body.is_some()) {
+    let reached = if ctx
+        .untyped_port_writes
+        .values()
+        .flatten()
+        .any(|w| w.body.is_some())
+    {
         reachable_bodies(decls)
     } else {
         crate::collections::HashSet::default()
     };
     let live = |w: &PortWrite| {
-        (w.subst.is_empty() || made.contains(&w.subst)) && w.body.as_ref().is_none_or(|b| reached.contains(b))
+        (w.subst.is_empty() || made.contains(&w.subst))
+            && w.body.as_ref().is_none_or(|b| reached.contains(b))
     };
     let mut ports: Vec<(String, Vec<PortWrite>)> = ctx
         .untyped_port_writes
@@ -1518,9 +1647,17 @@ pub(super) fn finish_untyped_ports(ctx: &mut TypeCheckCtx, decls: &[TopDecl], la
         let mut conflict = None;
         for (i, w) in writes.iter().enumerate().skip(1) {
             match port_join(&acc, w) {
-                Some(t) => acc = PortWrite { ty: t, literal: acc.literal && w.literal, ..acc },
+                Some(t) => {
+                    acc = PortWrite {
+                        ty: t,
+                        literal: acc.literal && w.literal,
+                        ..acc
+                    }
+                }
                 None => {
-                    let first = (0..i).find(|&j| port_join(&writes[j], w).is_none()).unwrap_or(0);
+                    let first = (0..i)
+                        .find(|&j| port_join(&writes[j], w).is_none())
+                        .unwrap_or(0);
                     conflict = Some((first, i));
                     break;
                 }
@@ -1528,7 +1665,10 @@ pub(super) fn finish_untyped_ports(ctx: &mut TypeCheckCtx, decls: &[TopDecl], la
         }
         match conflict {
             Some((i, j)) => report_port_conflict(ctx, &key, &writes[i], &writes[j]),
-            None if writes.iter().any(|w| !crate::types::coerce::type_eq(&w.ty, &acc.ty)) => {
+            None if writes
+                .iter()
+                .any(|w| !crate::types::coerce::type_eq(&w.ty, &acc.ty)) =>
+            {
                 next.insert(key, acc.ty);
             }
             None => {}
@@ -1544,7 +1684,7 @@ pub(super) fn finish_untyped_ports(ctx: &mut TypeCheckCtx, decls: &[TopDecl], la
 /// matched to declarations by name, so a name two declarations share reaches
 /// both.
 fn reachable_bodies(decls: &[TopDecl]) -> crate::collections::HashSet<super::shadow::DeclKey> {
-    use crate::ast::walk::{walk, Ctx, Node};
+    use crate::ast::walk::{Ctx, Node, walk};
     fn declared<'a>(n: Node<'a>) -> Option<&'a ChipDecl> {
         match n {
             Node::Decl(TopDecl::Chip(c)) | Node::Stmt(Stmt::ChipDecl(c)) => Some(c),
@@ -1568,15 +1708,23 @@ fn reachable_bodies(decls: &[TopDecl]) -> crate::collections::HashSet<super::sha
         if let Some(c) = declared(node) {
             by_name.entry(c.name.as_str()).or_default().push(c);
         }
-        walk(node, Ctx { decl: declared(node).is_some(), ..Ctx::default() }, &mut |n, cx| {
-            if let Some(c) = declared(n) {
-                by_name.entry(c.name.as_str()).or_default().push(c);
-            }
-            called(n, cx, &mut pending);
-            true
-        });
+        walk(
+            node,
+            Ctx {
+                decl: declared(node).is_some(),
+                ..Ctx::default()
+            },
+            &mut |n, cx| {
+                if let Some(c) = declared(n) {
+                    by_name.entry(c.name.as_str()).or_default().push(c);
+                }
+                called(n, cx, &mut pending);
+                true
+            },
+        );
     }
-    let mut reached: crate::collections::HashSet<super::shadow::DeclKey> = crate::collections::HashSet::default();
+    let mut reached: crate::collections::HashSet<super::shadow::DeclKey> =
+        crate::collections::HashSet::default();
     while let Some(name) = pending.pop() {
         for c in by_name.get(name).into_iter().flatten() {
             if reached.insert((c.range.file.clone(), c.range.start.offset)) {
@@ -1599,7 +1747,10 @@ fn report_port_conflict(ctx: &mut TypeCheckCtx, key: &str, first: &PortWrite, he
         let file = at.file.rsplit(['/', '\\']).next().unwrap_or(&at.file);
         format!("{file} line {}:{}", at.start.line, at.start.col)
     };
-    let (a, b) = (crate::analysis::types::type_str(&first.ty), crate::analysis::types::type_str(&here.ty));
+    let (a, b) = (
+        crate::analysis::types::type_str(&first.ty),
+        crate::analysis::types::type_str(&here.ty),
+    );
     ctx.emit(
         "WS103",
         format!(
@@ -1643,7 +1794,12 @@ pub(super) fn check_annotated_port_write(
     if port_ty == annotated_ty.clone().container_ref_as_value() {
         return;
     }
-    infer::coerce_or_emit(ctx, &value_ty.clone().container_ref_as_value(), &port_ty, range);
+    infer::coerce_or_emit(
+        ctx,
+        &value_ty.clone().container_ref_as_value(),
+        &port_ty,
+        range,
+    );
 }
 
 /// Check the type an `out` site DECLARES against the port it writes, reporting
@@ -1756,7 +1912,11 @@ fn plural(n: usize) -> &'static str {
 
 /// Names as a message lists them: `a`, `b`.
 fn quoted(names: &[&str]) -> String {
-    names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+    names
+        .iter()
+        .map(|n| format!("`{n}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn check_multi_output_return(ctx: &mut TypeCheckCtx, value_ty: &Type, value: &Expr) {
@@ -1772,7 +1932,10 @@ fn check_multi_output_return(ctx: &mut TypeCheckCtx, value_ty: &Type, value: &Ex
     };
     let (Type::Record(fields) | Type::Outputs(fields)) = value_ty else {
         // One value for several outputs: lowering has no output to wire it to.
-        if !matches!(value_ty, Type::Tuple(_) | Type::Any | Type::Never | Type::Opaque | Type::Param(_)) {
+        if !matches!(
+            value_ty,
+            Type::Tuple(_) | Type::Any | Type::Never | Type::Opaque | Type::Param(_)
+        ) {
             ctx.emit(
                 "WS003",
                 format!(
@@ -1786,8 +1949,11 @@ fn check_multi_output_return(ctx: &mut TypeCheckCtx, value_ty: &Type, value: &Ex
         }
         return;
     };
-    let positional =
-        !fields.is_empty() && fields.iter().enumerate().all(|(i, (k, _))| *k == i.to_string());
+    let positional = !fields.is_empty()
+        && fields
+            .iter()
+            .enumerate()
+            .all(|(i, (k, _))| *k == i.to_string());
     // The value must line up with the outputs: a tuple with one element per
     // output (exec outputs may be left out), or a record naming only outputs
     // and every value output. Anything else (a `Point` returned whole, a
@@ -1795,7 +1961,12 @@ fn check_multi_output_return(ctx: &mut TypeCheckCtx, value_ty: &Type, value: &Ex
     let value_outs: Vec<String> = ctx
         .out_ctx
         .last()
-        .map(|o| o.iter().filter(|f| !matches!(f.ty, Type::Exec)).map(|f| f.name.clone()).collect())
+        .map(|o| {
+            o.iter()
+                .filter(|f| !matches!(f.ty, Type::Exec))
+                .map(|f| f.name.clone())
+                .collect()
+        })
         .unwrap_or_default();
     // A call result, or a gate read held whole, keeps only its value outputs
     // (an exec output carries no value), and routes by position when its
@@ -1807,21 +1978,42 @@ fn check_multi_output_return(ctx: &mut TypeCheckCtx, value_ty: &Type, value: &Ex
         .collect();
     let by_name = !positional
         && vfields.iter().all(|(k, _)| outs.contains(k))
-        && value_outs.iter().all(|n| vfields.iter().any(|(k, _)| k == n));
+        && value_outs
+            .iter()
+            .all(|n| vfields.iter().any(|(k, _)| k == n));
     // A read whose outputs share a name with the declared ones routes by
     // name, so every declared output must name one of them; one sharing none
     // routes by position.
     let shares_a_name = vfields.iter().any(|(k, _)| value_outs.contains(k));
     if is_call && !positional && shares_a_name && !by_name {
         let theirs: Vec<&str> = vfields.iter().map(|(k, _)| k.as_str()).collect();
-        let unmatched: Vec<&str> =
-            value_outs.iter().filter(|n| !theirs.contains(&n.as_str())).map(String::as_str).collect();
-        let extra: Vec<&str> = theirs.iter().copied().filter(|k| !outs.iter().any(|n| n == k)).collect();
+        let unmatched: Vec<&str> = value_outs
+            .iter()
+            .filter(|n| !theirs.contains(&n.as_str()))
+            .map(String::as_str)
+            .collect();
+        let extra: Vec<&str> = theirs
+            .iter()
+            .copied()
+            .filter(|k| !outs.iter().any(|n| n == k))
+            .collect();
         let problem = match (unmatched.as_slice(), extra.as_slice()) {
-            ([], _) => format!("its output{} {} named by none of them", plural(extra.len()), quoted(&extra)),
+            ([], _) => format!(
+                "its output{} {} named by none of them",
+                plural(extra.len()),
+                quoted(&extra)
+            ),
             (_, _) => {
-                let verb = if unmatched.len() == 1 { "names" } else { "name" };
-                format!("output{} {} {verb} none of its outputs", plural(unmatched.len()), quoted(&unmatched))
+                let verb = if unmatched.len() == 1 {
+                    "names"
+                } else {
+                    "name"
+                };
+                format!(
+                    "output{} {} {verb} none of its outputs",
+                    plural(unmatched.len()),
+                    quoted(&unmatched)
+                )
             }
         };
         ctx.emit(
@@ -1837,7 +2029,8 @@ fn check_multi_output_return(ctx: &mut TypeCheckCtx, value_ty: &Type, value: &Ex
         );
         return;
     }
-    let call_by_position = is_call && !by_name && !shares_a_name && vfields.len() == value_outs.len();
+    let call_by_position =
+        is_call && !by_name && !shares_a_name && vfields.len() == value_outs.len();
     let fits = if positional {
         fields.len() == outs.len() || fields.len() == value_outs.len()
     } else {

@@ -7,7 +7,10 @@ impl<'a> Parser<'a> {
         if !self.enter_nesting() {
             self.leave_nesting(1);
             let t = self.peek().clone();
-            return TypeExpr::Name { name: String::new(), range: self.make_range(t.start, t.end) };
+            return TypeExpr::Name {
+                name: String::new(),
+                range: self.make_range(t.start, t.end),
+            };
         }
         let ty = self.parse_type_inner();
         self.leave_nesting(1);
@@ -20,7 +23,10 @@ impl<'a> Parser<'a> {
         if !self.enter_nesting() {
             self.leave_nesting(1);
             let t = self.peek().clone();
-            return TypeExpr::Name { name: String::new(), range: self.make_range(t.start, t.end) };
+            return TypeExpr::Name {
+                name: String::new(),
+                range: self.make_range(t.start, t.end),
+            };
         }
         let ty = self.parse_type_postfix();
         self.leave_nesting(1);
@@ -129,7 +135,8 @@ impl<'a> Parser<'a> {
                 let ftyp = self.parse_type();
                 let fend = self.peek().start;
                 if let Some(doc) = doc {
-                    self.doc_comments.insert((self.file.into(), fstart.offset), doc);
+                    self.doc_comments
+                        .insert((self.file.into(), fstart.offset), doc);
                 }
                 fields.push(RecordTypeField {
                     name: fname,
@@ -155,9 +162,7 @@ impl<'a> Parser<'a> {
         let name_tok = self.expect(TokenKind::Ident, None);
         let mut name = name_tok.text;
         let mut end = name_tok.end;
-        while self.check(TokenKind::Dot, None)
-            && self.peek_at(1).kind == TokenKind::Ident
-        {
+        while self.check(TokenKind::Dot, None) && self.peek_at(1).kind == TokenKind::Ident {
             self.advance();
             let member = self.expect(TokenKind::Ident, None);
             name = format!("{name}.{}", member.text);

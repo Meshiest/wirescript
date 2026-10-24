@@ -11,7 +11,9 @@ fn main() {
 
     #[cfg(feature = "dhat-heap")]
     {
-        let file = std::env::args().nth(1).expect("usage: dhat_lower <file.ws>");
+        let file = std::env::args()
+            .nth(1)
+            .expect("usage: dhat_lower <file.ws>");
         let source = std::fs::read_to_string(&file).expect("read source");
 
         let resolved = wirescript::resolve::resolve(&source, &file, &wirescript::resolve::FsLoader);

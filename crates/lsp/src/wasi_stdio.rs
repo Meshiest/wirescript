@@ -35,11 +35,19 @@ pub fn stdin() -> Stdin {
             }
         })
         .expect("failed to spawn stdin reader thread");
-    Stdin { rx, chunk: Vec::new(), pos: 0 }
+    Stdin {
+        rx,
+        chunk: Vec::new(),
+        pos: 0,
+    }
 }
 
 impl AsyncRead for Stdin {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, out: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        out: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         if self.pos == self.chunk.len() {
             match self.rx.poll_recv(cx) {
                 Poll::Pending => return Poll::Pending,
@@ -61,7 +69,11 @@ impl AsyncRead for Stdin {
 pub struct Stdout;
 
 impl AsyncWrite for Stdout {
-    fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
         Poll::Ready(std::io::stdout().write(buf))
     }
 

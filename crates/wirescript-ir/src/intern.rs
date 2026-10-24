@@ -118,28 +118,19 @@ pub mod sym {
     def!(VAR, "BrickComponentType_Var");
     def!(VAR_GET, "BrickComponentType_Exec_Var_Get");
     def!(VAR_SET, "BrickComponentType_Exec_Var_Set");
-    def!(
-        VAR_INCREMENT,
-        "BrickComponentType_Exec_Var_Increment"
-    );
+    def!(VAR_INCREMENT, "BrickComponentType_Exec_Var_Increment");
     def!(
         ARRAY_SET_AT_INDEX,
         "BrickComponentType_Exec_ArrayVar_SetAtIndex"
     );
-    def!(
-        ARRAY_PUSH,
-        "BrickComponentType_Exec_ArrayVar_Push"
-    );
+    def!(ARRAY_PUSH, "BrickComponentType_Exec_ArrayVar_Push");
     def!(ARRAY_POP, "BrickComponentType_Exec_ArrayVar_Pop");
     def!(
         ARRAY_GET_LENGTH,
         "BrickComponentType_Exec_ArrayVar_GetLength"
     );
     def!(LOGICAL_NOT, "BrickComponentType_Expr_LogicalNOT");
-    def!(
-        STRING_LENGTH,
-        "BrickComponentType_Expr_String_Length"
-    );
+    def!(STRING_LENGTH, "BrickComponentType_Expr_String_Length");
     def!(MICROCHIP, "Component_Internal_Microchip");
 }
 

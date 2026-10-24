@@ -28,7 +28,9 @@ use crate::collections::{HashMap, HashSet};
 use crate::emit::Placement;
 use crate::intern::sym;
 use crate::ir::port_registry::WirePort;
-use crate::ir::{Literal, Module, Node, NodeId, NodeKind, PortRef, SourceComment, Type, gate_class};
+use crate::ir::{
+    Literal, Module, Node, NodeId, NodeKind, PortRef, SourceComment, Type, gate_class,
+};
 
 use super::bus::{BusDemand, allocate_lanes};
 use super::{
@@ -279,7 +281,11 @@ pub fn layout_code_with_budgets(
         });
         ado.sort_by_key(|id| {
             let n = &module.nodes[id];
-            (n.source_range.file.clone(), n.source_range.start.offset, *id)
+            (
+                n.source_range.file.clone(),
+                n.source_range.start.offset,
+                *id,
+            )
         });
     }
 
@@ -371,7 +377,11 @@ pub fn layout_code_with_budgets(
     if !overflow.is_empty() {
         overflow.sort_by_key(|id| {
             let n = &module.nodes[id];
-            (n.source_range.file.clone(), n.source_range.start.offset, *id)
+            (
+                n.source_range.file.clone(),
+                n.source_range.start.offset,
+                *id,
+            )
         });
         for id in &overflow {
             node_line.insert(*id, lines.len());
@@ -462,7 +472,15 @@ pub fn layout_code_with_budgets(
     };
     let mut plan = plan_bus(&body);
 
-    place_edge_pins(module, &adjacency, edge_pins, &node_row, &plan.pages, &mut page_infos, &mut placements);
+    place_edge_pins(
+        module,
+        &adjacency,
+        edge_pins,
+        &node_row,
+        &plan.pages,
+        &mut page_infos,
+        &mut placements,
+    );
     let body = Body {
         module,
         placements: &placements,
@@ -542,7 +560,6 @@ pub fn layout_code_with_budgets(
     }
 }
 
-
 /// What the code-layout tests in `wirescript` check. Not a stable API.
 #[cfg(feature = "test-internals")]
 #[doc(hidden)]
@@ -550,6 +567,8 @@ pub mod test_internals {
     pub use super::adjacency::{takes_exec_input, targets_exec};
     pub use super::comments::{assign_comment_owners, claimed_comments};
     pub use super::gutter::chip_owners;
-    pub use super::nodes::{cell_half_size, has_range, is_edge_pin, is_spawnable, label_sort_key, rotation_of};
+    pub use super::nodes::{
+        cell_half_size, has_range, is_edge_pin, is_spawnable, label_sort_key, rotation_of,
+    };
     pub use super::*;
 }

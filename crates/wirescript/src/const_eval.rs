@@ -11,7 +11,7 @@ mod interp;
 
 pub(crate) use destructure::{bind_destructured, bound_names};
 pub use error::{ConstError, ConstReason};
-pub use expr::{eval_expr, ConstCtx};
+pub use expr::{ConstCtx, eval_expr};
 pub(crate) use expr::{ModDups, ModuleConsts};
 pub use interp::Budget;
 
@@ -35,8 +35,8 @@ pub(crate) fn folded_ops_certified<C>(e: &crate::ast::Expr, consts: &C) -> bool
 where
     C: crate::const_scope::Constants + ?Sized,
 {
-    use crate::ast::walk::{walk, Ctx, Node};
     use crate::ast::Expr;
+    use crate::ast::walk::{Ctx, Node, walk};
     use crate::catalog::operators::op;
     use crate::ir::Literal;
     let int = |e: &Expr| match crate::lower::expr_to_literal_in(e, consts) {
@@ -45,11 +45,15 @@ where
     };
     let arithmetic = |o: &str| [op::ADD, op::SUB, op::MUL, op::DIV, op::REM].contains(&o);
     let certified = |n: &Expr| match n {
-        Expr::BinOp { op: o, left, right, .. } if arithmetic(o) => match (int(left), int(right)) {
+        Expr::BinOp {
+            op: o, left, right, ..
+        } if arithmetic(o) => match (int(left), int(right)) {
             (Some(l), Some(r)) => crate::lower::certified_binop(o, &l, &r).is_some(),
             _ => true,
         },
-        Expr::UnOp { op: o, operand, .. } => !(o == op::NEG && int(operand) == Some(Literal::Int(i64::MIN))),
+        Expr::UnOp { op: o, operand, .. } => {
+            !(o == op::NEG && int(operand) == Some(Literal::Int(i64::MIN)))
+        }
         _ => true,
     };
     let mut ok = certified(e);
@@ -76,8 +80,17 @@ pub fn eval_let_value(
         use crate::ir::Type;
         if matches!(
             t,
-            Type::Int | Type::Float | Type::Bool | Type::String | Type::Vector | Type::Rotator | Type::Quat
-                | Type::Color | Type::Entity | Type::Character | Type::Controller
+            Type::Int
+                | Type::Float
+                | Type::Bool
+                | Type::String
+                | Type::Vector
+                | Type::Rotator
+                | Type::Quat
+                | Type::Color
+                | Type::Entity
+                | Type::Character
+                | Type::Controller
         ) && let Some(lit) = crate::lower::default_literal_for_var_type(&t)
         {
             return Ok(lit);
@@ -146,7 +159,10 @@ pub fn literal_is_integer(text: &str, n: i64) -> bool {
         return false;
     }
     let mut int_digits: String = digits[..split].iter().map(|d| *d as char).collect();
-    int_digits.extend(std::iter::repeat_n('0', (point - split as i64).max(0) as usize));
+    int_digits.extend(std::iter::repeat_n(
+        '0',
+        (point - split as i64).max(0) as usize,
+    ));
     let int_digits = int_digits.trim_start_matches('0');
     let want = n.unsigned_abs().to_string();
     let sign_ok = n == 0 || negative == (n < 0);
@@ -181,7 +197,9 @@ pub fn number_in_type(lit: crate::ir::Literal, declared: &crate::ir::Type) -> cr
 pub fn scalar_in_type(lit: crate::ir::Literal, ty: &crate::ir::Type) -> crate::ir::Literal {
     use crate::ir::{Literal, Type};
     match (lit, ty) {
-        (lit @ (Literal::Int(_) | Literal::Float(_)), Type::Int | Type::Float) => number_in_type(lit, ty),
+        (lit @ (Literal::Int(_) | Literal::Float(_)), Type::Int | Type::Float) => {
+            number_in_type(lit, ty)
+        }
         (Literal::Bool(b), Type::Float) => Literal::Float(if b { 1.0 } else { 0.0 }),
         (Literal::Bool(b), Type::Int) => Literal::Int(b as i64),
         (Literal::Int(n), Type::Bool) => Literal::Bool(n != 0),
@@ -215,19 +233,32 @@ pub fn coerce_const_to_type(
         Type::Ref(inner) => inner.as_ref(),
         other => other,
     };
-    let field = |slots: &[(String, Type)], name: &str, l: Literal| match slots.iter().find(|(n, _)| n == name) {
+    let field = |slots: &[(String, Type)], name: &str, l: Literal| match slots
+        .iter()
+        .find(|(n, _)| n == name)
+    {
         Some((_, t)) => coerce_const_to_type(l, t, types),
         None => l,
     };
     match (lit, declared) {
-        (lit @ (Literal::Int(_) | Literal::Float(_)), number @ (Type::Int | Type::Float)) => number_in_type(lit, number),
-        (Literal::Array(items), Type::Array(elem)) => {
-            Literal::Array(items.into_iter().map(|l| coerce_const_to_type(l, elem, types)).collect())
+        (lit @ (Literal::Int(_) | Literal::Float(_)), number @ (Type::Int | Type::Float)) => {
+            number_in_type(lit, number)
         }
+        (Literal::Array(items), Type::Array(elem)) => Literal::Array(
+            items
+                .into_iter()
+                .map(|l| coerce_const_to_type(l, elem, types))
+                .collect(),
+        ),
         (Literal::Map(pairs), Type::Map(k, v)) => Literal::Map(
             pairs
                 .into_iter()
-                .map(|(kl, vl)| (coerce_const_to_type(kl, k, types), coerce_const_to_type(vl, v, types)))
+                .map(|(kl, vl)| {
+                    (
+                        coerce_const_to_type(kl, k, types),
+                        coerce_const_to_type(vl, v, types),
+                    )
+                })
                 .collect(),
         ),
         (Literal::Record(fields), Type::Record(slots)) => Literal::Record(
@@ -242,13 +273,15 @@ pub fn coerce_const_to_type(
         (Literal::Record(fields), Type::Tuple(slots)) => Literal::Record(
             fields
                 .into_iter()
-                .map(|(name, l)| match name.parse::<usize>().ok().and_then(|i| slots.get(i)) {
-                    Some(t) => {
-                        let l = coerce_const_to_type(l, t, types);
-                        (name, l)
-                    }
-                    None => (name, l),
-                })
+                .map(
+                    |(name, l)| match name.parse::<usize>().ok().and_then(|i| slots.get(i)) {
+                        Some(t) => {
+                            let l = coerce_const_to_type(l, t, types);
+                            (name, l)
+                        }
+                        None => (name, l),
+                    },
+                )
                 .collect(),
         ),
         (Literal::Record(fields), t @ Type::Enum { args, .. }) => {
@@ -311,7 +344,11 @@ impl crate::types::resolve::TypeNames for DeclaredScope<'_> {
     fn alias(&self, name: &str) -> Option<crate::types::resolve::AliasDef<'_>> {
         use crate::types::resolve::AliasDef;
         let (params, body) = self.table.aliases.get(name)?;
-        Some(if params.is_empty() { AliasDef::Body(body) } else { AliasDef::Generic(params, body) })
+        Some(if params.is_empty() {
+            AliasDef::Body(body)
+        } else {
+            AliasDef::Generic(params, body)
+        })
     }
 
     fn enum_named(&self, name: &str, args: Vec<crate::ir::Type>) -> Option<crate::ir::Type> {
@@ -326,7 +363,10 @@ impl crate::types::resolve::TypeNames for DeclaredScope<'_> {
         bindings: &'s crate::collections::HashMap<String, crate::ir::Type>,
         _: &'s [String],
     ) -> Box<dyn crate::types::resolve::TypeNames + 's> {
-        Box::new(DeclaredScope { table: self.table, param: Param::Bound(bindings) })
+        Box::new(DeclaredScope {
+            table: self.table,
+            param: Param::Bound(bindings),
+        })
     }
 }
 
@@ -340,7 +380,8 @@ impl DeclaredTypes {
     ) -> Self {
         let mut out = Self::for_program(decls, enum_defs);
         for (file, own) in &imports.aliases {
-            out.by_file.insert(file.clone(), Self::for_program(own, enum_defs));
+            out.by_file
+                .insert(file.clone(), Self::for_program(own, enum_defs));
         }
         out
     }
@@ -351,9 +392,18 @@ impl DeclaredTypes {
         enum_defs: &std::sync::Arc<crate::typecheck::enums::EnumRegistry>,
     ) -> Self {
         use crate::ast::TopDecl;
-        let mut out = Self { enum_defs: enum_defs.clone(), ..Self::default() };
+        let mut out = Self {
+            enum_defs: enum_defs.clone(),
+            ..Self::default()
+        };
         let alias = |ta: &crate::ast::TypeAliasDecl| {
-            (ta.type_params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), ta.typ.clone())
+            (
+                ta.type_params
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect::<Vec<_>>(),
+                ta.typ.clone(),
+            )
         };
         for d in decls {
             match d {
@@ -371,9 +421,12 @@ impl DeclaredTypes {
                         // The module's enum, registered under its own name, is
                         // the type `Ns.Name`.
                         if let TopDecl::Enum(e) = nd {
-                            let params: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
-                            let name =
-                                |n: &str| crate::ast::TypeExpr::Name { name: n.to_string(), range: e.range.clone() };
+                            let params: Vec<String> =
+                                e.type_params.iter().map(|p| p.name.clone()).collect();
+                            let name = |n: &str| crate::ast::TypeExpr::Name {
+                                name: n.to_string(),
+                                range: e.range.clone(),
+                            };
                             let body = if params.is_empty() {
                                 name(&e.name)
                             } else {
@@ -383,11 +436,13 @@ impl DeclaredTypes {
                                     range: e.range.clone(),
                                 }
                             };
-                            out.aliases.insert(format!("{}.{}", ns.name, e.name), (params, body));
+                            out.aliases
+                                .insert(format!("{}.{}", ns.name, e.name), (params, body));
                         }
                     }
                     if let Some(file) = ns.decls.first().map(|d| d.range().file.clone()) {
-                        out.by_file.insert(file, Self::for_program(&ns.decls, enum_defs));
+                        out.by_file
+                            .insert(file, Self::for_program(&ns.decls, enum_defs));
                     }
                 }
                 _ => {}
@@ -419,7 +474,9 @@ impl DeclaredTypes {
 
     /// The type parameters and body of the alias `name`.
     pub fn alias(&self, name: &str) -> Option<(&[String], &crate::ast::TypeExpr)> {
-        self.aliases.get(name).map(|(params, body)| (params.as_slice(), body))
+        self.aliases
+            .get(name)
+            .map(|(params, body)| (params.as_slice(), body))
     }
 
     /// What the non-generic alias `name` finally stands for: its body, or,
@@ -434,11 +491,16 @@ impl DeclaredTypes {
         }
         let own = |n: &str| name.rsplit_once('.').map(|(ns, _)| format!("{ns}.{n}"));
         for _ in 0..MAX_DECLARED_DEPTH {
-            let TypeExpr::Name { name: next, .. } = body else { break };
+            let TypeExpr::Name { name: next, .. } = body else {
+                break;
+            };
             if next == name {
                 break;
             }
-            match own(next).and_then(|q| self.alias(&q)).or_else(|| self.alias(next)) {
+            match own(next)
+                .and_then(|q| self.alias(&q))
+                .or_else(|| self.alias(next))
+            {
                 Some(([], b)) => body = b,
                 _ => break,
             }
@@ -455,10 +517,21 @@ impl DeclaredTypes {
     }
 
     /// Each generic alias of this table with its parameters and body.
-    pub fn generic_aliases(&self) -> impl Iterator<Item = (String, crate::types::resolve::GenericAlias)> + '_ {
-        self.aliases.iter().filter(|(_, (params, _))| !params.is_empty()).map(|(name, (params, body))| {
-            (name.clone(), crate::types::resolve::GenericAlias { params: params.clone(), body: body.clone() })
-        })
+    pub fn generic_aliases(
+        &self,
+    ) -> impl Iterator<Item = (String, crate::types::resolve::GenericAlias)> + '_ {
+        self.aliases
+            .iter()
+            .filter(|(_, (params, _))| !params.is_empty())
+            .map(|(name, (params, body))| {
+                (
+                    name.clone(),
+                    crate::types::resolve::GenericAlias {
+                        params: params.clone(),
+                        body: body.clone(),
+                    },
+                )
+            })
     }
 
     /// The type `te` names.
@@ -468,7 +541,11 @@ impl DeclaredTypes {
 
     /// The type `te` names where each type parameter in `subst` stands for its
     /// type.
-    pub fn resolve_in(&self, te: &crate::ast::TypeExpr, subst: &crate::types::infer::Subst) -> crate::ir::Type {
+    pub fn resolve_in(
+        &self,
+        te: &crate::ast::TypeExpr,
+        subst: &crate::types::infer::Subst,
+    ) -> crate::ir::Type {
         self.resolve_scoped(te, &|name, _| subst.get(name).cloned())
     }
 
@@ -482,7 +559,14 @@ impl DeclaredTypes {
         te: &crate::ast::TypeExpr,
         param: &dyn Fn(&str, &crate::diagnostic::SourceRange) -> Option<crate::ir::Type>,
     ) -> crate::ir::Type {
-        crate::types::resolve::resolve_with(te, &DeclaredScope { table: self, param: Param::Fn(param) }, &mut Vec::new())
+        crate::types::resolve::resolve_with(
+            te,
+            &DeclaredScope {
+                table: self,
+                param: Param::Fn(param),
+            },
+            &mut Vec::new(),
+        )
     }
 
     /// The declared type of each slot of the enum value `fields` (keyed
@@ -494,16 +578,27 @@ impl DeclaredTypes {
         fields: &[(String, crate::ir::Literal)],
     ) -> Vec<(String, crate::ir::Type)> {
         use crate::typecheck::enums::Payload;
-        let Some(def) = self.enum_defs.of(t) else { return Vec::new() };
+        let Some(def) = self.enum_defs.of(t) else {
+            return Vec::new();
+        };
         let disc = fields.iter().find_map(|(n, l)| match (n.as_str(), l) {
             ("__disc", crate::ir::Literal::Int(d)) => Some(*d),
             _ => None,
         });
-        let Some(variant) = def.variants.iter().find(|v| Some(v.discriminant) == disc) else { return Vec::new() };
-        let subst: crate::types::infer::Subst =
-            def.type_params.iter().map(|p| p.name.clone()).zip(args.iter().cloned()).collect();
+        let Some(variant) = def.variants.iter().find(|v| Some(v.discriminant) == disc) else {
+            return Vec::new();
+        };
+        let subst: crate::types::infer::Subst = def
+            .type_params
+            .iter()
+            .map(|p| p.name.clone())
+            .zip(args.iter().cloned())
+            .collect();
         let slot = |f: &dyn std::fmt::Display, te: &crate::ast::TypeExpr| {
-            (format!("__{}_{f}", variant.name), self.resolve_in(te, &subst))
+            (
+                format!("__{}_{f}", variant.name),
+                self.resolve_in(te, &subst),
+            )
         };
         match &variant.payload {
             Payload::Unit => Vec::new(),

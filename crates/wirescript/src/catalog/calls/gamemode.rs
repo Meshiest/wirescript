@@ -47,7 +47,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         character_exec(
             "GetTeam",
             gc::GAMEMODE_GET_TEAM,
-            vec![CallParam::req("character", WirePort::Character, Type::Character)],
+            vec![CallParam::req(
+                "character",
+                WirePort::Character,
+                Type::Character,
+            )],
             vec![CallOutput::plain(WirePort::Team, Type::Entity)],
         ),
     );

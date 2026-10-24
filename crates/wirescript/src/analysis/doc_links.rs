@@ -25,7 +25,9 @@ struct DocLinks {
 
 fn links() -> &'static DocLinks {
     static LINKS: OnceLock<DocLinks> = OnceLock::new();
-    LINKS.get_or_init(|| serde_json::from_str(include_str!("../../data/doc_links.json")).unwrap_or_default())
+    LINKS.get_or_init(|| {
+        serde_json::from_str(include_str!("../../data/doc_links.json")).unwrap_or_default()
+    })
 }
 
 /// What a link points at.

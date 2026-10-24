@@ -12,7 +12,11 @@ pub(super) struct VarRecord {
 impl VarRecord {
     /// The record of the storage gate `node_id`, holding `inner_type`.
     pub(super) fn new(node_id: NodeId, inner_type: Type, storage: VarStorage) -> Self {
-        Self { node_id, inner_type, storage }
+        Self {
+            node_id,
+            inner_type,
+            storage,
+        }
     }
 }
 
@@ -61,7 +65,10 @@ fn distribute_ref_fields(
     fields
         .into_iter()
         .map(|mut f| {
-            if !matches!(ctx.declared_shape(None, &f.typ), crate::ast::TypeExpr::Ref { .. }) {
+            if !matches!(
+                ctx.declared_shape(None, &f.typ),
+                crate::ast::TypeExpr::Ref { .. }
+            ) {
                 f.typ = crate::ast::TypeExpr::Ref {
                     inner: Box::new(f.typ),
                     range: range.clone(),
@@ -209,7 +216,11 @@ pub(super) struct TopView {
 /// declaration's chips, and each name's binding before them.
 type InsideChips = (usize, Vec<(String, Option<Binding>)>);
 
-type OutsideChips = (Vec<AnonChipShadow>, Vec<(String, Binding)>, Vec<crate::const_scope::HiddenAtTop>);
+type OutsideChips = (
+    Vec<AnonChipShadow>,
+    Vec<(String, Binding)>,
+    Vec<crate::const_scope::HiddenAtTop>,
+);
 
 /// What an anonymous chip of the top level left its names bound to and the
 /// constants it held under them, for a declaration written in it that is
@@ -241,10 +252,14 @@ pub(super) fn same_binding(a: &Binding, b: &Binding) -> bool {
         (Binding::DynRef(x), Binding::DynRef(y)) => x.port == y.port,
         (Binding::Chip(x), Binding::Chip(y)) => x.range == y.range,
         (Binding::Namespace(x), Binding::Namespace(y)) => {
-            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same_binding(v, w)))
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| same_binding(v, w)))
         }
         (Binding::Record(x), Binding::Record(y)) => {
-            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same_binding(v, w)))
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| same_binding(v, w)))
         }
         _ => false,
     }
@@ -268,9 +283,20 @@ pub(super) struct MonoFrame {
 
 impl MonoFrame {
     /// A frame for `decl`'s own type parameters `params`, bound by `subst`.
-    pub(super) fn of(decl: &ChipDecl, params: Vec<String>, subst: crate::types::infer::Subst) -> Self {
-        let scopes = params.iter().map(|p| (p.clone(), decl.range.clone())).collect();
-        MonoFrame { params, subst, scopes }
+    pub(super) fn of(
+        decl: &ChipDecl,
+        params: Vec<String>,
+        subst: crate::types::infer::Subst,
+    ) -> Self {
+        let scopes = params
+            .iter()
+            .map(|p| (p.clone(), decl.range.clone()))
+            .collect();
+        MonoFrame {
+            params,
+            subst,
+            scopes,
+        }
     }
 
     /// What `name`, written at `at`, stands for when it is one of this
@@ -285,9 +311,16 @@ impl MonoFrame {
         }
         let written_there = at.file.is_empty()
             || self.scopes.get(name).is_none_or(|d| {
-                d.file == at.file && d.start.offset <= at.start.offset && at.end.offset <= d.end.offset
+                d.file == at.file
+                    && d.start.offset <= at.start.offset
+                    && at.end.offset <= d.end.offset
             });
-        written_there.then(|| self.subst.get(name).cloned().unwrap_or_else(|| Type::Param(name.to_string())))
+        written_there.then(|| {
+            self.subst
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| Type::Param(name.to_string()))
+        })
     }
 }
 
@@ -322,7 +355,12 @@ pub(super) enum OutputPick {
 pub(super) fn takes_one_value(t: &Type) -> bool {
     !matches!(
         unwrap_ref(t),
-        Type::Record(_) | Type::Outputs(_) | Type::Tuple(_) | Type::Any | Type::Opaque | Type::Param(_)
+        Type::Record(_)
+            | Type::Outputs(_)
+            | Type::Tuple(_)
+            | Type::Any
+            | Type::Opaque
+            | Type::Param(_)
     )
 }
 
@@ -378,13 +416,26 @@ pub(super) fn in_declared_order<'r>(
         Some(outputs) => outputs.iter().map(|(n, _)| n.clone()).collect(),
         None => ctx
             .type_at(at)
-            .and_then(|t| unwrap_ref(&t).fields().map(|fs| fs.iter().map(|(n, _)| n.clone()).collect()))
+            .and_then(|t| {
+                unwrap_ref(&t)
+                    .fields()
+                    .map(|fs| fs.iter().map(|(n, _)| n.clone()).collect())
+            })
             .unwrap_or_default(),
     };
     let mut keys: Vec<crate::intern::Sym> = Vec::with_capacity(rec.len());
-    keys.extend(rec.get_key_value(&crate::intern::intern("__disc")).map(|(k, _)| *k));
-    keys.extend(declared.iter().map(|n| crate::intern::intern(n)).filter(|k| rec.contains_key(k)));
-    let mut rest: Vec<crate::intern::Sym> = rec.keys().copied().filter(|k| !keys.contains(k)).collect();
+    keys.extend(
+        rec.get_key_value(&crate::intern::intern("__disc"))
+            .map(|(k, _)| *k),
+    );
+    keys.extend(
+        declared
+            .iter()
+            .map(|n| crate::intern::intern(n))
+            .filter(|k| rec.contains_key(k)),
+    );
+    let mut rest: Vec<crate::intern::Sym> =
+        rec.keys().copied().filter(|k| !keys.contains(k)).collect();
     rest.sort_by_key(|k| crate::intern::resolve(*k));
     keys.extend(rest);
     keys.iter().filter_map(|k| rec.get(k)).collect()
@@ -684,8 +735,7 @@ pub(super) struct LowerCtx<'a> {
     /// alias. An alias is file-local, so two modules may each write
     /// `import * as Other`; `scope` keeps one binding per name, and this is what
     /// lets a module's body reach its OWN alias (see `ns_mod_scopes`).
-    pub(super) ns_by_file:
-        HashMap<std::sync::Arc<str>, HashMap<String, Binding>>,
+    pub(super) ns_by_file: HashMap<std::sync::Arc<str>, HashMap<String, Binding>>,
     /// Field->binding map stashed by a `return { ... }` record literal while an
     /// inline mod body is being lowered. A record literal is not a standalone
     /// expression, and `-> { a, b }` is a single record-typed output, so the
@@ -847,7 +897,8 @@ pub(super) struct LowerCtx<'a> {
     /// The top-level constants of the module each `ns_mod_scopes` entry's
     /// members come from, recorded in the body frame beside them so a member
     /// constant reads as the constant it is there, as typecheck has it.
-    pub(super) ns_mod_consts: crate::collections::HashMap<(Arc<str>, usize), crate::const_scope::MemberConsts>,
+    pub(super) ns_mod_consts:
+        crate::collections::HashMap<(Arc<str>, usize), crate::const_scope::MemberConsts>,
     /// Source-location dedup for STATE reached through multiple imports of one
     /// file — plain + `import * as`, `import {g}` + `import {g as h}`, or a
     /// diamond. Keyed by a decl's `(file, start.offset)`: the same SOURCE
@@ -881,7 +932,12 @@ pub(super) struct LowerCtx<'a> {
 
 /// An exec chain driven by either `a` or `b`: an `Exec_Union` of the two
 /// (`a` on `ExecA`), or whichever one there is.
-pub(super) fn merge_exec(ctx: &mut LowerCtx, a: Option<PortRef>, b: Option<PortRef>, range: &SourceRange) -> Option<PortRef> {
+pub(super) fn merge_exec(
+    ctx: &mut LowerCtx,
+    a: Option<PortRef>,
+    b: Option<PortRef>,
+    range: &SourceRange,
+) -> Option<PortRef> {
     match (a, b) {
         (Some(a), Some(b)) => {
             let union = ctx.add_gate(AddNodeOpts {
@@ -900,7 +956,11 @@ pub(super) fn merge_exec(ctx: &mut LowerCtx, a: Option<PortRef>, b: Option<PortR
 
 /// The var a mod with several `return`s stores its one `out_type` value into:
 /// each `return` sets it and [`read_return_value`] reads it once they merge.
-pub(super) fn return_value_var(ctx: &mut LowerCtx, out_type: Type, range: &SourceRange) -> VarRecord {
+pub(super) fn return_value_var(
+    ctx: &mut LowerCtx,
+    out_type: Type,
+    range: &SourceRange,
+) -> VarRecord {
     let node_id = make_scalar_var_gate(ctx, &out_type, HashMap::default(), range, Some("ret_val"));
     VarRecord::new(node_id, out_type, VarStorage::Var)
 }
@@ -908,7 +968,12 @@ pub(super) fn return_value_var(ctx: &mut LowerCtx, out_type: Type, range: &Sourc
 /// Read `ret_var` on `exec`, after a mod's returns merge, and with
 /// `drive_output`, wire the value into the mod's output when it has exactly
 /// one. Returns the value.
-pub(super) fn read_return_value(ctx: &mut LowerCtx, ret_var: &VarRecord, exec: PortRef, drive_output: bool) -> PortRef {
+pub(super) fn read_return_value(
+    ctx: &mut LowerCtx,
+    ret_var: &VarRecord,
+    exec: PortRef,
+    drive_output: bool,
+) -> PortRef {
     let var_ref = ret_var.node_id.port(WirePort::VarRef);
     let get_id = chain_var_read(
         ctx,
@@ -930,7 +995,12 @@ pub(super) fn read_return_value(ctx: &mut LowerCtx, ret_var: &VarRecord, exec: P
 /// Add the exec gate `opts`, drive its `Exec` from `exec`, wire each
 /// `(source, input port)` into it in order, and move the exec chain on to its
 /// `ExecOut`.
-pub(super) fn chain_gate(ctx: &mut LowerCtx, opts: AddNodeOpts, exec: PortRef, inputs: &[(PortRef, WirePort)]) -> NodeId {
+pub(super) fn chain_gate(
+    ctx: &mut LowerCtx,
+    opts: AddNodeOpts,
+    exec: PortRef,
+    inputs: &[(PortRef, WirePort)],
+) -> NodeId {
     let id = ctx.add_gate(opts);
     ctx.connect(exec, id.port(WirePort::Exec));
     for &(source, port) in inputs {
@@ -955,13 +1025,22 @@ pub(super) fn chain_var_write(
     note: Option<&'static str>,
 ) -> NodeId {
     let opts = AddNodeOpts {
-        gate_class: if increment { gc::VAR_INCREMENT } else { gc::VAR_SET },
+        gate_class: if increment {
+            gc::VAR_INCREMENT
+        } else {
+            gc::VAR_SET
+        },
         source_range: range,
         ports: GateIO::var_write(inner),
         note,
         ..Default::default()
     };
-    chain_gate(ctx, opts, exec, &[(var_ref, WirePort::VarRef), (value, WirePort::Value)])
+    chain_gate(
+        ctx,
+        opts,
+        exec,
+        &[(var_ref, WirePort::VarRef), (value, WirePort::Value)],
+    )
 }
 
 /// A `Var_Get` reading the var of type `inner` behind `var_ref`, chained after
@@ -975,8 +1054,14 @@ pub(super) fn chain_var_read(
     properties: HashMap<crate::intern::Sym, Literal>,
     note: Option<&'static str>,
 ) -> NodeId {
-    let opts =
-        AddNodeOpts { gate_class: gc::VAR_GET, source_range: range, properties, ports: GateIO::var_read(inner), note, ..Default::default() };
+    let opts = AddNodeOpts {
+        gate_class: gc::VAR_GET,
+        source_range: range,
+        properties,
+        ports: GateIO::var_read(inner),
+        note,
+        ..Default::default()
+    };
     chain_gate(ctx, opts, exec, &[(var_ref, WirePort::VarRef)])
 }
 
@@ -997,7 +1082,15 @@ pub(super) fn chain_var_get(
     note: Option<&'static str>,
 ) -> NodeId {
     let var_ref = var_rec.node_id.port(WirePort::VarRef);
-    chain_var_read(ctx, exec, var_ref, var_rec.inner_type.clone(), range.clone(), properties, note)
+    chain_var_read(
+        ctx,
+        exec,
+        var_ref,
+        var_rec.inner_type.clone(),
+        range.clone(),
+        properties,
+        note,
+    )
 }
 
 /// `chain_var_get` for a ref that arrives on a wire: a `Var_Get` whose `VarRef`
@@ -1010,7 +1103,15 @@ pub(super) fn chain_var_get_through(
     exec: PortRef,
     range: &SourceRange,
 ) -> NodeId {
-    chain_var_read(ctx, exec, ref_port, inner.clone(), range.clone(), HashMap::default(), Some("get through ref"))
+    chain_var_read(
+        ctx,
+        exec,
+        ref_port,
+        inner.clone(),
+        range.clone(),
+        HashMap::default(),
+        Some("get through ref"),
+    )
 }
 
 /// Write `value` through a ref that arrives on a wire: a `Var_Set`, or with
@@ -1027,7 +1128,16 @@ pub(super) fn write_through_ref(
     let Some(exec_in) = ctx.current_exec else {
         return;
     };
-    chain_var_write(ctx, exec_in, ref_port, inner.clone(), value, increment, range.clone(), Some("set through ref"));
+    chain_var_write(
+        ctx,
+        exec_in,
+        ref_port,
+        inner.clone(),
+        value,
+        increment,
+        range.clone(),
+        Some("set through ref"),
+    );
     note_dynamic_write(ctx);
 }
 
@@ -1322,7 +1432,8 @@ impl<'a> LowerCtx<'a> {
     pub(super) fn push_scope(&mut self, tag: crate::scope::ScopeTag) {
         self.scope.push(tag);
         self.consts.push(self.scope.current_id());
-        self.pass1_chips.push(std::sync::Arc::new(HashMap::default()));
+        self.pass1_chips
+            .push(std::sync::Arc::new(HashMap::default()));
     }
 
     /// If a state decl at `range`'s source location was already lowered — the
@@ -1371,7 +1482,13 @@ impl<'a> LowerCtx<'a> {
         match b {
             Binding::Chip(_) | Binding::Namespace(_) => Bound::NotAValue,
             Binding::Var(v) if self.immutable_containers.contains(&v.node_id) => {
-                match self.builder.module.nodes.get(&v.node_id).and_then(|n| n.properties.get(&*sym::INITIAL_VALUE)) {
+                match self
+                    .builder
+                    .module
+                    .nodes
+                    .get(&v.node_id)
+                    .and_then(|n| n.properties.get(&*sym::INITIAL_VALUE))
+                {
                     Some(lit) => Bound::Holds(lit.clone()),
                     None => Bound::MayBeConstant,
                 }
@@ -1392,12 +1509,21 @@ impl<'a> LowerCtx<'a> {
     /// [`crate::const_scope`]). Mirrors `typecheck::TypeCheckCtx::const_lookup`
     /// exactly, so both stages agree on which name resolves to which literal.
     pub(super) fn const_lookup(&self) -> crate::const_scope::ConstNames {
-        self.consts.env(&self.scope, &|b| self.const_bound(b), crate::const_scope::Admit::All)
+        self.consts.env(
+            &self.scope,
+            &|b| self.const_bound(b),
+            crate::const_scope::Admit::All,
+        )
     }
 
     /// The constant `name` reads as here, when `admit` admits it.
-    pub(super) fn constant(&self, name: &str, admit: crate::const_scope::Admit) -> Option<&Literal> {
-        self.consts.get(&self.scope, &|b| self.const_bound(b), name, admit)
+    pub(super) fn constant(
+        &self,
+        name: &str,
+        admit: crate::const_scope::Admit,
+    ) -> Option<&Literal> {
+        self.consts
+            .get(&self.scope, &|b| self.const_bound(b), name, admit)
     }
 
     /// The `ConstCtx` for `const_eval::eval_expr`, resolving names as
@@ -1450,7 +1576,8 @@ impl<'a> LowerCtx<'a> {
     /// declares nothing, so this is always `false` there and that program's
     /// lowering is untouched, which is the feature's own first rule.
     pub(super) fn is_declared_const(&self, name: &str) -> bool {
-        self.constant(name, crate::const_scope::Admit::Declared).is_some()
+        self.constant(name, crate::const_scope::Admit::Declared)
+            .is_some()
     }
 
     /// The `Literal::Array` / `Literal::Map` a constant `name` holds, or
@@ -1532,7 +1659,10 @@ impl<'a> LowerCtx<'a> {
         match e {
             Expr::RecordLit { fields, range } if fields.is_empty() => {
                 if matches!(unwrap_ref(&self.type_of(e)), Type::Map(..)) {
-                    Cow::Owned(Expr::MapLit { entries: Vec::new(), range: range.clone() })
+                    Cow::Owned(Expr::MapLit {
+                        entries: Vec::new(),
+                        range: range.clone(),
+                    })
                 } else {
                     Cow::Borrowed(e)
                 }
@@ -1559,7 +1689,10 @@ impl<'a> LowerCtx<'a> {
                     })
                     .collect();
                 if changed {
-                    Cow::Owned(Expr::RecordLit { fields: rewritten, range: range.clone() })
+                    Cow::Owned(Expr::RecordLit {
+                        fields: rewritten,
+                        range: range.clone(),
+                    })
                 } else {
                     Cow::Borrowed(e)
                 }
@@ -1572,7 +1705,11 @@ impl<'a> LowerCtx<'a> {
     /// recorded none for this instantiation.
     pub(super) fn type_at(&self, r: &SourceRange) -> Option<Type> {
         let t = self.typecheck_type_at(r)?;
-        Some(if t.holds_outputs() { t.as_record() } else { t.clone() })
+        Some(if t.holds_outputs() {
+            t.as_record()
+        } else {
+            t.clone()
+        })
     }
 
     /// The type typecheck gave the expression at `r` in the instantiation
@@ -1599,7 +1736,9 @@ impl<'a> LowerCtx<'a> {
     pub(super) fn held_by_var_at(&self, r: &SourceRange) -> Option<Type> {
         let t = self.typecheck_type_at(r)?;
         Some(match t {
-            Type::Ref(inner) if matches!(inner.as_ref(), Type::Outputs(_)) => inner.held_by_var().as_record(),
+            Type::Ref(inner) if matches!(inner.as_ref(), Type::Outputs(_)) => {
+                inner.held_by_var().as_record()
+            }
             Type::Ref(_) => t.as_record(),
             _ => t.held_by_var().as_record(),
         })
@@ -1632,12 +1771,21 @@ impl<'a> LowerCtx<'a> {
     /// body, lowered in one of its instantiations.
     pub(super) fn in_generic_instance(&self, r: &SourceRange) -> bool {
         !self.resolution_subst.is_empty()
-            && self.resolutions.generic_ranges.contains(&(r.file.clone(), r.start.offset, r.end.offset))
+            && self.resolutions.generic_ranges.contains(&(
+                r.file.clone(),
+                r.start.offset,
+                r.end.offset,
+            ))
     }
 
     pub(super) fn resolution_key(&self, e: &Expr) -> crate::typecheck::ResolutionKey {
         let r = e.range();
-        (r.file.clone(), r.start.offset, r.end.offset, self.resolution_subst.clone())
+        (
+            r.file.clone(),
+            r.start.offset,
+            r.end.offset,
+            self.resolution_subst.clone(),
+        )
     }
 
     /// Whether a missing resolution entry may be derived from lowering's own
@@ -1656,7 +1804,11 @@ impl<'a> LowerCtx<'a> {
     /// instantiation. The recorded expression type is not used for either: in a
     /// generic body it is the last combination typecheck checked.
     pub(super) fn container_kind(&self, obj: &Expr) -> Option<crate::typecheck::ContainerKind> {
-        if let Some(k) = self.resolutions.container_kinds.get(&self.resolution_key(obj)) {
+        if let Some(k) = self
+            .resolutions
+            .container_kinds
+            .get(&self.resolution_key(obj))
+        {
             return Some(k.clone());
         }
         if !self.resolution_fallback_allowed() {
@@ -1683,14 +1835,22 @@ impl<'a> LowerCtx<'a> {
     /// method against [`Self::container_kind`], then as a receiver builtin,
     /// then as a `self`-mod in scope.
     pub(super) fn method_target(&self, call: &Expr) -> Option<crate::typecheck::MethodTarget> {
-        if let Some(t) = self.resolutions.method_targets.get(&self.resolution_key(call)) {
+        if let Some(t) = self
+            .resolutions
+            .method_targets
+            .get(&self.resolution_key(call))
+        {
             return Some(t.clone());
         }
         if !self.resolution_fallback_allowed() {
             return None;
         }
-        let Expr::Call { callee, .. } = call else { return None };
-        let Expr::FieldAccess { obj, field, range } = callee.as_ref() else { return None };
+        let Expr::Call { callee, .. } = call else {
+            return None;
+        };
+        let Expr::FieldAccess { obj, field, range } = callee.as_ref() else {
+            return None;
+        };
         if let Some(kind) = self.container_kind(obj)
             && let Some(t) = crate::typecheck::classify_method(field, &kind.as_type())
         {
@@ -1714,7 +1874,11 @@ impl<'a> LowerCtx<'a> {
     /// enclosing param, not only the innermost body's.
     pub(super) fn record_decl_resolution_subst(&mut self, d: &ChipDecl) {
         let at = (d.range.file.clone(), d.range.start.offset);
-        match self.mono_stack.last().filter(|_| !self.resolution_subst.is_empty()) {
+        match self
+            .mono_stack
+            .last()
+            .filter(|_| !self.resolution_subst.is_empty())
+        {
             Some(frame) => {
                 self.decl_mono_frame.insert(at.clone(), frame.clone());
             }
@@ -1725,7 +1889,8 @@ impl<'a> LowerCtx<'a> {
         if self.resolution_subst.is_empty() {
             self.decl_resolution_subst.remove(&at);
         } else {
-            self.decl_resolution_subst.insert(at, self.resolution_subst.clone());
+            self.decl_resolution_subst
+                .insert(at, self.resolution_subst.clone());
         }
     }
 
@@ -1746,7 +1911,9 @@ impl<'a> LowerCtx<'a> {
             .frames()
             .skip(1)
             .map(|(_, id, entries)| {
-                let hidden = later.and_then(|l| l.iter().find(|(f, _)| *f == id)).map(|(_, names)| names);
+                let hidden = later
+                    .and_then(|l| l.iter().find(|(f, _)| *f == id))
+                    .map(|(_, names)| names);
                 let bindings = entries
                     .filter(|(k, _)| hidden.is_none_or(|names| !names.contains(k)))
                     .map(|(k, b)| (k, b.clone()))
@@ -1761,7 +1928,10 @@ impl<'a> LowerCtx<'a> {
             consts: self.consts.snapshot(),
         };
         for id in view.frame_ids() {
-            self.views_by_frame.entry(id).or_default().insert(at.clone());
+            self.views_by_frame
+                .entry(id)
+                .or_default()
+                .insert(at.clone());
         }
         self.decl_views.insert(at, Arc::new(view));
     }
@@ -1770,17 +1940,19 @@ impl<'a> LowerCtx<'a> {
     /// binding it. A mod of an `import * as` module belongs to the module
     /// level, whose own members its body frame receives (`ns_mod_scopes`).
     fn decl_frame(&self, d: &ChipDecl) -> Option<usize> {
-        if self.ns_mod_scopes.contains_key(&(d.range.file.clone(), d.range.start.offset)) {
+        if self
+            .ns_mod_scopes
+            .contains_key(&(d.range.file.clone(), d.range.start.offset))
+        {
             return Some(0);
         }
-        let is_d = |b: &Binding| {
-            matches!(b, Binding::Chip(c) if c.range.file == d.range.file && c.range.start.offset == d.range.start.offset)
-        };
+        let is_d = |b: &Binding| matches!(b, Binding::Chip(c) if c.range.file == d.range.file && c.range.start.offset == d.range.start.offset);
         self.scope
             .frame_of(crate::intern::intern(&d.name), is_d)
             .or_else(|| {
-                self.scope
-                    .frame_where(|b| is_d(b) || matches!(b, Binding::Namespace(m) if m.values().any(is_d)))
+                self.scope.frame_where(|b| {
+                    is_d(b) || matches!(b, Binding::Namespace(m) if m.values().any(is_d))
+                })
             })
     }
 
@@ -1827,7 +1999,9 @@ impl<'a> LowerCtx<'a> {
         let found = self.decl_frame(d);
         let index = found.unwrap_or(depth - 1);
         let view = if found.is_some() && index > 0 {
-            self.decl_views.get(&(d.range.file.clone(), d.range.start.offset)).cloned()
+            self.decl_views
+                .get(&(d.range.file.clone(), d.range.start.offset))
+                .cloned()
         } else {
             None
         };
@@ -1897,14 +2071,36 @@ impl<'a> LowerCtx<'a> {
         let consts = self.consts.split_off(consts_at);
         let chips_at = (self.pass1_chips.len() - above.min(self.pass1_chips.len())).max(1);
         let chips = self.pass1_chips.split_off(chips_at);
-        let own_consts = view.as_ref().map(|view| self.consts.replace(view.consts.clone()));
-        let outside = if index == 0 { self.leave_anon_chips_for(d) } else { None };
-        let inside = if index == 0 { self.enter_anon_chips_for(d) } else { None };
+        let own_consts = view
+            .as_ref()
+            .map(|view| self.consts.replace(view.consts.clone()));
+        let outside = if index == 0 {
+            self.leave_anon_chips_for(d)
+        } else {
+            None
+        };
+        let inside = if index == 0 {
+            self.enter_anon_chips_for(d)
+        } else {
+            None
+        };
         // The body reads the top level as its declaration sees it, wherever it
         // is lowered from.
-        let top =
-            if index == 0 { self.top_view(crate::scope::top::ReadAt::body(&d.range)) } else { TopView::default() };
-        DeclScope { frames, copies, consts, chips, own_consts, outside, inside, top }
+        let top = if index == 0 {
+            self.top_view(crate::scope::top::ReadAt::body(&d.range))
+        } else {
+            TopView::default()
+        };
+        DeclScope {
+            frames,
+            copies,
+            consts,
+            chips,
+            own_consts,
+            outside,
+            inside,
+            top,
+        }
     }
 
     /// The enum name an expression path's head writes, unless a binding of the
@@ -1915,9 +2111,12 @@ impl<'a> LowerCtx<'a> {
         match head {
             Expr::Ident { name, .. } => self.scope.get(name).is_none().then_some(name.as_str()),
             Expr::FieldAccess { obj, field, .. } => {
-                let Expr::Ident { name: ns, range } = obj.as_ref() else { return None };
+                let Expr::Ident { name: ns, range } = obj.as_ref() else {
+                    return None;
+                };
                 let namespace = matches!(self.scope.get(ns), Some(Binding::Namespace(_)) | None);
-                (namespace && self.enum_defs.namespaced(&range.file, ns, field).is_some()).then_some(field.as_str())
+                (namespace && self.enum_defs.namespaced(&range.file, ns, field).is_some())
+                    .then_some(field.as_str())
             }
             _ => None,
         }
@@ -1926,7 +2125,10 @@ impl<'a> LowerCtx<'a> {
     /// The enum registry with the declarations a payload field's type is read
     /// against.
     pub(super) fn enums(&self) -> crate::typecheck::patterns::Enums<'_> {
-        crate::typecheck::patterns::Enums { defs: &self.enum_defs, types: self.consts.types() }
+        crate::typecheck::patterns::Enums {
+            defs: &self.enum_defs,
+            types: self.consts.types(),
+        }
     }
 
     /// Read the top level as code (or the body of a declaration) written at
@@ -1952,13 +2154,18 @@ impl<'a> LowerCtx<'a> {
             } else {
                 decls.last()
             };
-            let mut b = seen.and_then(|d| self.top_dup_bindings.get(&crate::lower::dup_key(d, name))).cloned();
+            let mut b = seen
+                .and_then(|d| self.top_dup_bindings.get(&crate::lower::dup_key(d, name)))
+                .cloned();
             if let Some(b) = &mut b {
                 self.local_literals(b);
             }
             bound.push((name.to_string(), self.scope.set_root(name, b)));
         }
-        TopView { bound, cursor: self.consts.set_cursor(Some(at)) }
+        TopView {
+            bound,
+            cursor: self.consts.set_cursor(Some(at)),
+        }
     }
 
     /// Undo a [`top_view`](Self::top_view).
@@ -1997,8 +2204,10 @@ impl<'a> LowerCtx<'a> {
     /// gives what it left; one not lowered yet, its storage.
     fn enter_anon_chips_for(&mut self, d: &ChipDecl) -> Option<InsideChips> {
         let top = self.top_names.clone();
-        let entered: Vec<&crate::scope::top::TopChip> =
-            top.chips_around(&d.range).filter(|c| !self.anon_chip_shadows.iter().any(|s| s.body == c.range)).collect();
+        let entered: Vec<&crate::scope::top::TopChip> = top
+            .chips_around(&d.range)
+            .filter(|c| !self.anon_chip_shadows.iter().any(|s| s.body == c.range))
+            .collect();
         if entered.is_empty() {
             return None;
         }
@@ -2008,9 +2217,19 @@ impl<'a> LowerCtx<'a> {
             let (bindings, held) = match self.anon_chip_names.get(&chip.range) {
                 Some(left) => left.clone(),
                 None => {
-                    let node = self.anon_chip_nodes.iter().find(|((r, _), _)| *r == chip.range).map(|(_, n)| *n);
-                    let storage = node.and_then(|n| self.anon_chip_storage.get(&n)).cloned().unwrap_or_default();
-                    (storage, chip.names.iter().map(|n| (n.clone(), None)).collect())
+                    let node = self
+                        .anon_chip_nodes
+                        .iter()
+                        .find(|((r, _), _)| *r == chip.range)
+                        .map(|(_, n)| *n);
+                    let storage = node
+                        .and_then(|n| self.anon_chip_storage.get(&n))
+                        .cloned()
+                        .unwrap_or_default();
+                    (
+                        storage,
+                        chip.names.iter().map(|n| (n.clone(), None)).collect(),
+                    )
                 }
             };
             let mut outside = Vec::new();
@@ -2022,7 +2241,11 @@ impl<'a> LowerCtx<'a> {
                 restore.push((name, before));
             }
             let hidden_mark = self.consts.hide_held_at_top(held);
-            self.anon_chip_shadows.push(AnonChipShadow { body: chip.range.clone(), outside, hidden_mark });
+            self.anon_chip_shadows.push(AnonChipShadow {
+                body: chip.range.clone(),
+                outside,
+                hidden_mark,
+            });
         }
         Some((from, restore))
     }
@@ -2059,7 +2282,8 @@ impl<'a> LowerCtx<'a> {
             }
             (Binding::Record(x), Binding::Record(y)) => {
                 x.len() == y.len()
-                    && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| self.same_declaration(v, w)))
+                    && x.iter()
+                        .all(|(k, v)| y.get(k).is_some_and(|w| self.same_declaration(v, w)))
             }
             _ => same_binding(now, snap),
         }
@@ -2116,7 +2340,9 @@ impl<'a> LowerCtx<'a> {
     /// typecheck's body key (enclosing combo, then the decl's own). `None` for a
     /// non-generic `d` declared outside any generic body.
     pub(super) fn body_frame(&self, d: &ChipDecl, own: Option<&MonoFrame>) -> Option<MonoFrame> {
-        let outer = self.decl_mono_frame.get(&(d.range.file.clone(), d.range.start.offset));
+        let outer = self
+            .decl_mono_frame
+            .get(&(d.range.file.clone(), d.range.start.offset));
         match (outer, own) {
             (None, None) => None,
             (Some(f), None) | (None, Some(f)) => Some(f.clone()),
@@ -2137,7 +2363,11 @@ impl<'a> LowerCtx<'a> {
 
     /// The resolution key for `d`'s body: its declaration key, then, for a
     /// generic `d`, this instantiation's type arguments in declared order.
-    pub(super) fn body_resolution_subst(&self, d: &ChipDecl, frame: Option<&MonoFrame>) -> Arc<[Type]> {
+    pub(super) fn body_resolution_subst(
+        &self,
+        d: &ChipDecl,
+        frame: Option<&MonoFrame>,
+    ) -> Arc<[Type]> {
         let key = self
             .decl_resolution_subst
             .get(&(d.range.file.clone(), d.range.start.offset))
@@ -2147,7 +2377,11 @@ impl<'a> LowerCtx<'a> {
             Some(f) => key
                 .iter()
                 .cloned()
-                .chain(f.params.iter().map(|p| f.subst.get(p).cloned().unwrap_or(Type::Any)))
+                .chain(
+                    f.params
+                        .iter()
+                        .map(|p| f.subst.get(p).cloned().unwrap_or(Type::Any)),
+                )
                 .collect(),
             None => key,
         }
@@ -2233,7 +2467,11 @@ impl<'a> LowerCtx<'a> {
     /// spelling, so an alias of a ref, an array or a map binds exactly as the
     /// type it names does. The shape is kept (a `*{ .. }` stays a ref of a
     /// record, which the binding rules tell apart from a record of refs).
-    pub(super) fn declared_shape(&self, decl: Option<&ChipDecl>, te: &crate::ast::TypeExpr) -> crate::ast::TypeExpr {
+    pub(super) fn declared_shape(
+        &self,
+        decl: Option<&ChipDecl>,
+        te: &crate::ast::TypeExpr,
+    ) -> crate::ast::TypeExpr {
         self.declared_shape_at(decl, te, 0)
     }
 
@@ -2264,9 +2502,10 @@ impl<'a> LowerCtx<'a> {
                 Some(body) => self.declared_shape_at(decl, &body, depth + 1),
                 None => te.clone(),
             },
-            T::Ref { inner, range } => {
-                T::Ref { inner: Box::new(self.declared_shape_at(decl, inner, depth + 1)), range: range.clone() }
-            }
+            T::Ref { inner, range } => T::Ref {
+                inner: Box::new(self.declared_shape_at(decl, inner, depth + 1)),
+                range: range.clone(),
+            },
             _ => te.clone(),
         }
     }
@@ -2275,7 +2514,11 @@ impl<'a> LowerCtx<'a> {
     /// [`Self::declared_shape`]) takes its value: by reference to storage
     /// (`Var` for a `*T`, `Array` for an array, `Map` for a map or a `*Map`),
     /// `None` by value.
-    pub(super) fn ref_storage(&self, decl: Option<&ChipDecl>, te: &crate::ast::TypeExpr) -> Option<VarStorage> {
+    pub(super) fn ref_storage(
+        &self,
+        decl: Option<&ChipDecl>,
+        te: &crate::ast::TypeExpr,
+    ) -> Option<VarStorage> {
         container_storage(&self.declared_shape(decl, te))
     }
 
@@ -2284,7 +2527,10 @@ impl<'a> LowerCtx<'a> {
     /// ref to the caller's storage rather than a value. A map takes the value
     /// path.
     pub(super) fn ref_or_array(&self, decl: Option<&ChipDecl>, te: &crate::ast::TypeExpr) -> bool {
-        matches!(self.declared_shape(decl, te), crate::ast::TypeExpr::Ref { .. } | crate::ast::TypeExpr::Array { .. })
+        matches!(
+            self.declared_shape(decl, te),
+            crate::ast::TypeExpr::Ref { .. } | crate::ast::TypeExpr::Array { .. }
+        )
     }
 
     /// The type `te` names here: each name it writes is a type parameter of
@@ -2293,7 +2539,8 @@ impl<'a> LowerCtx<'a> {
     /// file that writes it, and an alias stands for its body as its own file
     /// reads it.
     pub(super) fn resolve_local_type(&self, te: &crate::ast::TypeExpr) -> Type {
-        self.declared_types_at(te.range()).resolve_scoped(te, &|name, at| self.type_param_at(name, at))
+        self.declared_types_at(te.range())
+            .resolve_scoped(te, &|name, at| self.type_param_at(name, at))
     }
 
     /// Expand a record-shaped type annotation into its fields, following a
@@ -2318,9 +2565,8 @@ impl<'a> LowerCtx<'a> {
                     crate::ast::TypeExpr::Record { fields, .. } => Some(fields.clone()),
                     // An alias of a generic alias, or of a ref (`type PR = *R`),
                     // as the type it names.
-                    body @ (crate::ast::TypeExpr::Generic { .. } | crate::ast::TypeExpr::Ref { .. }) => {
-                        self.record_fields_of(body)
-                    }
+                    body @ (crate::ast::TypeExpr::Generic { .. }
+                    | crate::ast::TypeExpr::Ref { .. }) => self.record_fields_of(body),
                     _ => None,
                 },
             },
@@ -2335,9 +2581,11 @@ impl<'a> LowerCtx<'a> {
             // per-field shape here routes such a param through the record path
             // in `resolve_caller_captures` / `explode_record_param_pins` /
             // `wire_chip_args_and_outputs`, which carry ref fields writably.
-            crate::ast::TypeExpr::Ref { inner, range } => {
-                Some(distribute_ref_fields(self, self.record_fields_of(inner)?, range))
-            }
+            crate::ast::TypeExpr::Ref { inner, range } => Some(distribute_ref_fields(
+                self,
+                self.record_fields_of(inner)?,
+                range,
+            )),
             _ => None,
         }
     }
@@ -2455,19 +2703,30 @@ impl<'a> LowerCtx<'a> {
         if self.nofold_depth > 0
             && let Some(node) = self.builder.module.nodes.get_mut(&id)
         {
-            std::sync::Arc::make_mut(&mut node.properties).insert(*sym::NO_FOLD, Literal::Bool(true));
+            std::sync::Arc::make_mut(&mut node.properties)
+                .insert(*sym::NO_FOLD, Literal::Bool(true));
         }
         id
     }
 
     /// A chip's boundary `MicrochipInput` rerouter (see [`LowerCtx::stamp_pin`]).
-    pub(super) fn add_input(&mut self, port_name: &str, ty: Type, source_range: SourceRange) -> NodeId {
+    pub(super) fn add_input(
+        &mut self,
+        port_name: &str,
+        ty: Type,
+        source_range: SourceRange,
+    ) -> NodeId {
         let id = self.builder.add_input(port_name, ty, source_range);
         self.stamp_pin(id)
     }
 
     /// A chip's boundary `MicrochipOutput` rerouter (see [`LowerCtx::stamp_pin`]).
-    pub(super) fn add_output(&mut self, port_name: &str, ty: Type, source_range: SourceRange) -> NodeId {
+    pub(super) fn add_output(
+        &mut self,
+        port_name: &str,
+        ty: Type,
+        source_range: SourceRange,
+    ) -> NodeId {
         let id = self.builder.add_output(port_name, ty, source_range);
         self.stamp_pin(id)
     }
@@ -2522,7 +2781,8 @@ impl<'a> LowerCtx<'a> {
                     | gc::MAP_SET
             ),
             WirePort::RerInput => {
-                target.gate_class == gc::MICROCHIP_OUTPUT && !self.inline_outputs.contains(&dst.node_id)
+                target.gate_class == gc::MICROCHIP_OUTPUT
+                    && !self.inline_outputs.contains(&dst.node_id)
             }
             WirePort::DataIn1
             | WirePort::DataIn2
@@ -2628,7 +2888,12 @@ impl<'a> LowerCtx<'a> {
                 return None;
             }
         }
-        Some(crate::lower::ops::build_format_text(self, "{0}".to_string(), vec![src], &src_range))
+        Some(crate::lower::ops::build_format_text(
+            self,
+            "{0}".to_string(),
+            vec![src],
+            &src_range,
+        ))
     }
 
     /// Run `f` with `nofold_depth` incremented for its duration when `active`
@@ -2637,11 +2902,7 @@ impl<'a> LowerCtx<'a> {
     /// gets the `_nofold` pseudo-property stamped by `add_gate`/`add_event`.
     /// Safe against early `return`s inside `f`: a `return` inside a closure
     /// only unwinds the closure, so the decrement below always runs.
-    pub(super) fn with_nofold<R>(
-        &mut self,
-        active: bool,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
+    pub(super) fn with_nofold<R>(&mut self, active: bool, f: impl FnOnce(&mut Self) -> R) -> R {
         if active {
             self.nofold_depth += 1;
         }
@@ -2804,15 +3065,24 @@ impl<'a> LowerCtx<'a> {
     /// calls: the one in scope, when the calling file can name it (see
     /// [`crate::ast::ImportScope::user_mod_answers`], which typecheck decides
     /// by too).
-    pub(super) fn call_target_chip(&self, name: &str, call_file: &str) -> Option<&std::sync::Arc<ChipDecl>> {
-        self.lookup_chip(name).filter(|d| self.imports.user_mod_answers(&d.range, call_file))
+    pub(super) fn call_target_chip(
+        &self,
+        name: &str,
+        call_file: &str,
+    ) -> Option<&std::sync::Arc<ChipDecl>> {
+        self.lookup_chip(name)
+            .filter(|d| self.imports.user_mod_answers(&d.range, call_file))
     }
 
     /// The `self` mod a method call `x.name()` written in `call_file` calls:
     /// one in scope whose first parameter is `self`, when the calling file
     /// can name it (see [`crate::ast::ImportScope::user_mod_answers`], which
     /// typecheck decides by too).
-    pub(super) fn self_mod_chip(&self, name: &str, call_file: &str) -> Option<&std::sync::Arc<ChipDecl>> {
+    pub(super) fn self_mod_chip(
+        &self,
+        name: &str,
+        call_file: &str,
+    ) -> Option<&std::sync::Arc<ChipDecl>> {
         self.lookup_chip(name)
             .filter(|d| d.is_self_receiver() && self.imports.user_mod_answers(&d.range, call_file))
     }
@@ -2864,7 +3134,10 @@ pub(super) fn snapshot_var_caches(ctx: &LowerCtx) -> VarCacheSnapshot {
 /// pre-branch read can only survive when the cache is provably unchanged. A
 /// var uncached in `snap` is left out: after a restore it is uncached anyway.
 pub(super) fn cache_touched_since(ctx: &LowerCtx, snap: &VarCacheSnapshot) -> HashSet<NodeId> {
-    snap.iter().filter(|(var, get)| ctx.var_gets.get(var) != Some(get)).map(|(var, _)| *var).collect()
+    snap.iter()
+        .filter(|(var, get)| ctx.var_gets.get(var) != Some(get))
+        .map(|(var, _)| *var)
+        .collect()
 }
 
 /// Put the cached reads back to `snap` — used to discard a branch's scratch
@@ -2878,7 +3151,10 @@ pub(super) fn restore_var_caches(ctx: &mut LowerCtx, snap: &VarCacheSnapshot) {
 /// its fields (a type has no alias name to give back), and an enum by name.
 pub(super) fn type_expr_of(t: &Type, range: &SourceRange) -> crate::ast::TypeExpr {
     use crate::ast::TypeExpr;
-    let name = |n: &str| TypeExpr::Name { name: n.to_string(), range: range.clone() };
+    let name = |n: &str| TypeExpr::Name {
+        name: n.to_string(),
+        range: range.clone(),
+    };
     let boxed = |t: &Type| Box::new(type_expr_of(t, range));
     match t {
         Type::Component(class) if class.is_empty() => name("Component"),
@@ -2906,8 +3182,14 @@ pub(super) fn type_expr_of(t: &Type, range: &SourceRange) -> crate::ast::TypeExp
         Type::Never => name("never"),
         Type::Any | Type::Opaque => name("any"),
         Type::Param(p) => name(p),
-        Type::Ref(inner) => TypeExpr::Ref { inner: boxed(inner), range: range.clone() },
-        Type::Array(inner) => TypeExpr::Array { inner: boxed(inner), range: range.clone() },
+        Type::Ref(inner) => TypeExpr::Ref {
+            inner: boxed(inner),
+            range: range.clone(),
+        },
+        Type::Array(inner) => TypeExpr::Array {
+            inner: boxed(inner),
+            range: range.clone(),
+        },
         Type::Union(opts) => TypeExpr::Union {
             options: opts.iter().map(|o| type_expr_of(o, range)).collect(),
             range: range.clone(),

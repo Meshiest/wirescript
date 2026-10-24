@@ -1,7 +1,7 @@
 use super::TypeMap;
 use super::types::type_str;
-use crate::ast::*;
 use crate::ast::walk;
+use crate::ast::*;
 use crate::ir::Type;
 use std::sync::Arc;
 
@@ -27,7 +27,10 @@ pub fn collect_inlay_hints(
 ) -> Vec<InlayHintInfo> {
     let mut hints = Vec::new();
     let f: Arc<str> = file.into();
-    let source = &Text { source, index: super::text::LineIndex::new(source) };
+    let source = &Text {
+        source,
+        index: super::text::LineIndex::new(source),
+    };
 
     for decl in &ast.decls {
         let node = walk::Node::Decl(decl);
@@ -42,9 +45,17 @@ pub fn collect_inlay_hints(
 }
 
 /// The hint a `let`, or a top-level `buffer`, gets when it names no type.
-fn hint_node(source: &Text, node: walk::Node, type_map: &TypeMap, file: &Arc<str>, hints: &mut Vec<InlayHintInfo>) {
+fn hint_node(
+    source: &Text,
+    node: walk::Node,
+    type_map: &TypeMap,
+    file: &Arc<str>,
+    hints: &mut Vec<InlayHintInfo>,
+) {
     match node {
-        walk::Node::Decl(TopDecl::Let(l)) | walk::Node::Stmt(Stmt::Let(l)) => hint_let(source, l, type_map, file, hints),
+        walk::Node::Decl(TopDecl::Let(l)) | walk::Node::Stmt(Stmt::Let(l)) => {
+            hint_let(source, l, type_map, file, hints)
+        }
         walk::Node::Decl(TopDecl::Buffer(b)) => hint_buffer(source, b, type_map, file, hints),
         _ => {}
     }

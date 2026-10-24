@@ -81,7 +81,12 @@ pub fn config_referenced_enum_types() -> Vec<&'static str> {
     // Enum properties of environments and components (`ReverbEffect`), so a
     // write can name a member (`Environment.Ambience.ReverbEffect = ReverbEffect.Cave`).
     let map = properties::property_map();
-    for p in map.environments.iter().flat_map(|e| &e.properties).chain(map.components.iter().flat_map(|c| &c.properties)) {
+    for p in map
+        .environments
+        .iter()
+        .flat_map(|e| &e.properties)
+        .chain(map.components.iter().flat_map(|c| &c.properties))
+    {
         if let Some(e) = &p.enum_type
             && !enum_member_names(e).is_empty()
         {
@@ -138,7 +143,10 @@ pub struct GameEnumVariant {
 /// onto `Direction`).
 pub fn clean_game_enum_type(raw: &str) -> String {
     let s = raw.strip_prefix('E').unwrap_or(raw);
-    let s = s.strip_prefix("BR").or_else(|| s.strip_prefix("Brick")).unwrap_or(s);
+    let s = s
+        .strip_prefix("BR")
+        .or_else(|| s.strip_prefix("Brick"))
+        .unwrap_or(s);
     s.to_string()
 }
 
@@ -233,8 +241,8 @@ fn game_enum_table() -> &'static Vec<GameEnum> {
                 let variants: Vec<GameEnumVariant> = enum_member_names(schema_type)
                     .into_iter()
                     .map(|raw_member| {
-                        let disc = enum_member_value(schema_type, &raw_member)
-                            .expect("known member");
+                        let disc =
+                            enum_member_value(schema_type, &raw_member).expect("known member");
                         GameEnumVariant {
                             clean_name: clean_game_enum_variant(&raw_member),
                             raw_member,

@@ -20,12 +20,9 @@ pub const INPUT_SPLITTER: &str = "Component_Internal_InputSplitter";
 pub const MICROCHIP_COUNT_FOR: &str = "Component_Internal_Microchip_CountFor";
 pub const MICROCHIP_FOR_EACH_ARRAY: &str = "Component_Internal_Microchip_ForEachArray";
 pub const MICROCHIP_FOR_EACH_MAP: &str = "Component_Internal_Microchip_ForEachMap";
-pub const CALLABLE_ENTRY_COUNT_FOR: &str =
-    "BrickComponentType_CallableEntry_CountFor";
-pub const CALLABLE_ENTRY_FOR_EACH_ARRAY: &str =
-    "BrickComponentType_CallableEntry_ForEachArray";
-pub const CALLABLE_ENTRY_FOR_EACH_MAP: &str =
-    "BrickComponentType_CallableEntry_ForEachMap";
+pub const CALLABLE_ENTRY_COUNT_FOR: &str = "BrickComponentType_CallableEntry_CountFor";
+pub const CALLABLE_ENTRY_FOR_EACH_ARRAY: &str = "BrickComponentType_CallableEntry_ForEachArray";
+pub const CALLABLE_ENTRY_FOR_EACH_MAP: &str = "BrickComponentType_CallableEntry_ForEachMap";
 pub const CALLABLE_BREAK: &str = "BrickComponentType_Exec_CallableBreak";
 
 // Callable function microchips
@@ -229,9 +226,12 @@ pub const CUSTOM_EVENT: &str = "BrickComponentType_Event_Custom";
 pub const SEND_CUSTOM_EVENT_GLOBAL: &str = "BrickComponentType_Exec_SendCustomEventGlobal";
 pub const CUSTOM_EVENT_GLOBAL: &str = "BrickComponentType_Event_CustomGlobal";
 pub const MATH_EASING: &str = "BrickComponentType_Expr_MathEasing";
-pub const GAMEMODE_FILL_FROM_PLAYERS: &str = "BrickComponentType_Exec_Gamemode_FillArrayFromPlayers";
-pub const GAMEMODE_FILL_FROM_TEAM: &str = "BrickComponentType_Exec_Gamemode_FillArrayFromTeamMembers";
-pub const GAMEMODE_INC_TEAM_LEADERBOARD: &str = "BrickComponentType_Exec_Gamemode_IncrementTeamLeaderboardValue";
+pub const GAMEMODE_FILL_FROM_PLAYERS: &str =
+    "BrickComponentType_Exec_Gamemode_FillArrayFromPlayers";
+pub const GAMEMODE_FILL_FROM_TEAM: &str =
+    "BrickComponentType_Exec_Gamemode_FillArrayFromTeamMembers";
+pub const GAMEMODE_INC_TEAM_LEADERBOARD: &str =
+    "BrickComponentType_Exec_Gamemode_IncrementTeamLeaderboardValue";
 
 // PlayerState / Character / Entity. The old `Exec_Controller_*` family was
 // replaced 1:1 by `Exec_PlayerState_*`; each gate's player port is now the
@@ -243,10 +243,12 @@ pub const PLAYERSTATE_GET_USER_NAME: &str = "BrickComponentType_Exec_PlayerState
 pub const PLAYERSTATE_GET_USER_ID: &str = "BrickComponentType_Exec_PlayerState_GetUserId";
 pub const PLAYERSTATE_GET_DISPLAY_NAME: &str = "BrickComponentType_Exec_PlayerState_GetDisplayName";
 pub const PLAYERSTATE_HAS_PERMISSION: &str = "BrickComponentType_Exec_PlayerState_HasPermission";
-pub const PLAYERSTATE_IS_TRUSTED: &str = "BrickComponentType_Exec_PlayerState_IsTrustedByBrickOwner";
+pub const PLAYERSTATE_IS_TRUSTED: &str =
+    "BrickComponentType_Exec_PlayerState_IsTrustedByBrickOwner";
 pub const PLAYERSTATE_SET_CAN_RESPAWN: &str = "BrickComponentType_Exec_PlayerState_SetCanRespawn";
 pub const PLAYERSTATE_FORCE_RESPAWN: &str = "BrickComponentType_Exec_PlayerState_ForceRespawn";
-pub const CHARACTER_GET_FROM_CONTROLLER: &str = "BrickComponentType_Exec_Character_GetFromController";
+pub const CHARACTER_GET_FROM_CONTROLLER: &str =
+    "BrickComponentType_Exec_Character_GetFromController";
 pub const CHARACTER_GET_AIM: &str = "BrickComponentType_Exec_Character_GetAim";
 /// Exec-form sample of the same control set the seat splitter
 /// ([`INPUT_SPLITTER`]) reads continuously. Not `Character_`-prefixed in the
@@ -257,7 +259,8 @@ pub const CHARACTER_SHOW_HINT: &str = "BrickComponentType_Exec_Character_ShowHin
 pub const CHARACTER_GET_DAMAGE: &str = "BrickComponentType_Exec_Character_GetDamage";
 pub const CHARACTER_SET_DAMAGE: &str = "BrickComponentType_Exec_Character_SetDamage";
 pub const CHARACTER_INC_DAMAGE: &str = "BrickComponentType_Exec_Character_IncDamage";
-pub const CHARACTER_SET_TEMP_PERMISSION: &str = "BrickComponentType_Exec_Character_SetTempPermission";
+pub const CHARACTER_SET_TEMP_PERMISSION: &str =
+    "BrickComponentType_Exec_Character_SetTempPermission";
 pub const ENTITY_GET_LOCATION: &str = "BrickComponentType_Exec_Entity_GetLocation";
 pub const ENTITY_GET_ROTATION: &str = "BrickComponentType_Exec_Entity_GetRotation";
 pub const ENTITY_GET_LOCATION_ROTATION: &str = "BrickComponentType_Exec_Entity_GetLocationRotation";
@@ -282,11 +285,11 @@ pub const ENTITY_SET_VISIBLE_TO: &str = "BrickComponentType_Exec_Entity_SetVisib
 // Gamemode
 pub const GAMEMODE_GET_TEAM_BY_NAME: &str = "BrickComponentType_Exec_Gamemode_GetTeamByName";
 pub const GAMEMODE_SET_LEADERBOARD: &str = "BrickComponentType_Exec_Gamemode_SetLeaderboardValue";
-pub const GAMEMODE_INC_LEADERBOARD: &str = "BrickComponentType_Exec_Gamemode_IncrementLeaderboardValue";
+pub const GAMEMODE_INC_LEADERBOARD: &str =
+    "BrickComponentType_Exec_Gamemode_IncrementLeaderboardValue";
 pub const GAMEMODE_GET_LEADERBOARD: &str = "BrickComponentType_Exec_Gamemode_GetLeaderboardValue";
 pub const GAMEMODE_GET_TEAM: &str = "BrickComponentType_Exec_Gamemode_GetTeam";
-pub const GAMEMODE_IS_BUILDER_TEAM: &str =
-    "BrickComponentType_Expr_Gamemode_IsBuilderTeam";
+pub const GAMEMODE_IS_BUILDER_TEAM: &str = "BrickComponentType_Expr_Gamemode_IsBuilderTeam";
 pub const GAMEMODE_IS_UNAFFILIATED_TEAM: &str =
     "BrickComponentType_Expr_Gamemode_IsUnaffiliatedTeam";
 pub const GAMEMODE_GET_CURRENT_ROUND: &str = "BrickComponentType_Exec_Gamemode_GetCurrentRound";
@@ -295,8 +298,10 @@ pub const GAMEMODE_SET_TEAM: &str = "BrickComponentType_Exec_Gamemode_SetTeam";
 pub const GAMEMODE_SET_TEAM_PINNED: &str = "BrickComponentType_Exec_Gamemode_SetTeamPinned";
 pub const GAMEMODE_PLAYER_WINS: &str = "BrickComponentType_Exec_Gamemode_PlayerWins";
 pub const GAMEMODE_TEAM_WINS: &str = "BrickComponentType_Exec_Gamemode_TeamWins";
-pub const GAMEMODE_GET_TEAM_LEADERBOARD: &str = "BrickComponentType_Exec_Gamemode_GetTeamLeaderboardValue";
-pub const GAMEMODE_SET_TEAM_LEADERBOARD: &str = "BrickComponentType_Exec_Gamemode_SetTeamLeaderboardValue";
+pub const GAMEMODE_GET_TEAM_LEADERBOARD: &str =
+    "BrickComponentType_Exec_Gamemode_GetTeamLeaderboardValue";
+pub const GAMEMODE_SET_TEAM_LEADERBOARD: &str =
+    "BrickComponentType_Exec_Gamemode_SetTeamLeaderboardValue";
 
 // Prefab / Sweep
 pub const PREFAB_SPAWNER: &str = "BrickComponentType_Exec_PrefabSpawner";
@@ -305,18 +310,14 @@ pub const EXEC_SPAWN_EXPLOSION_AT: &str = "BrickComponentType_Exec_SpawnExplosio
 pub const SWEEP: &str = "BrickComponentType_Exec_Sweep";
 
 // Messaging
-pub const PLAYERSTATE_SHOW_CHAT: &str =
-    "BrickComponentType_Exec_PlayerState_ShowChatMessage";
-pub const PLAYERSTATE_SHOW_MESSAGE_BOX: &str =
-    "BrickComponentType_Exec_PlayerState_ShowMessageBox";
+pub const PLAYERSTATE_SHOW_CHAT: &str = "BrickComponentType_Exec_PlayerState_ShowChatMessage";
+pub const PLAYERSTATE_SHOW_MESSAGE_BOX: &str = "BrickComponentType_Exec_PlayerState_ShowMessageBox";
 pub const PLAYERSTATE_SHOW_OK_CANCEL_BOX: &str =
     "BrickComponentType_Exec_PlayerState_ShowOkCancelBox";
-pub const PLAYERSTATE_SHOW_YES_NO_BOX: &str =
-    "BrickComponentType_Exec_PlayerState_ShowYesNoBox";
+pub const PLAYERSTATE_SHOW_YES_NO_BOX: &str = "BrickComponentType_Exec_PlayerState_ShowYesNoBox";
 pub const PLAYERSTATE_SHOW_TEXT_INPUT_BOX: &str =
     "BrickComponentType_Exec_PlayerState_ShowTextInputBox";
-pub const GAMEMODE_BROADCAST_CHAT: &str =
-    "BrickComponentType_Exec_Gamemode_BroadcastChatMessage";
+pub const GAMEMODE_BROADCAST_CHAT: &str = "BrickComponentType_Exec_Gamemode_BroadcastChatMessage";
 pub const GAMEMODE_BROADCAST_STATUS: &str =
     "BrickComponentType_Exec_Gamemode_BroadcastStatusMessage";
 
@@ -332,8 +333,10 @@ pub const ENTITY_SET_TAG: &str = "BrickComponentType_Exec_Entity_SetTag";
 // Entity custom properties
 pub const ENTITY_SET_CUSTOM_PROPERTY: &str = "BrickComponentType_Exec_Entity_SetCustomProperty";
 pub const ENTITY_GET_CUSTOM_PROPERTY: &str = "BrickComponentType_Exec_Entity_GetCustomProperty";
-pub const ENTITY_REMOVE_CUSTOM_PROPERTY: &str = "BrickComponentType_Exec_Entity_RemoveCustomProperty";
-pub const ENTITY_COPY_CUSTOM_PROPERTIES: &str = "BrickComponentType_Exec_Entity_CopyCustomProperties";
+pub const ENTITY_REMOVE_CUSTOM_PROPERTY: &str =
+    "BrickComponentType_Exec_Entity_RemoveCustomProperty";
+pub const ENTITY_COPY_CUSTOM_PROPERTIES: &str =
+    "BrickComponentType_Exec_Entity_CopyCustomProperties";
 
 // Player lookup
 pub const FIND_PLAYER: &str = "BrickComponentType_Exec_FindPlayer";
@@ -361,10 +364,8 @@ pub const SPLIT_QUATERNION: &str = "BrickComponentType_Expr_SplitQuaternion";
 pub const QUAT_DOT_PRODUCT: &str = "BrickComponentType_Expr_QuatDotProduct";
 
 // Character inventory family
-pub const CHARACTER_ADD_INVENTORY_ITEM: &str =
-    "BrickComponentType_Exec_Character_AddInventoryItem";
-pub const CHARACTER_SET_INVENTORY_ITEM: &str =
-    "BrickComponentType_Exec_Character_SetInventoryItem";
+pub const CHARACTER_ADD_INVENTORY_ITEM: &str = "BrickComponentType_Exec_Character_AddInventoryItem";
+pub const CHARACTER_SET_INVENTORY_ITEM: &str = "BrickComponentType_Exec_Character_SetInventoryItem";
 pub const CHARACTER_ADD_INVENTORY_BRICK: &str =
     "BrickComponentType_Exec_Character_AddInventoryBrick";
 pub const CHARACTER_SET_INVENTORY_BRICK: &str =
@@ -379,12 +380,10 @@ pub const CHARACTER_SET_INVENTORY_ITEM_ADV: &str =
     "BrickComponentType_Exec_Character_SetInventoryItemAdv";
 
 // Newer entity / character / zone / expr gates.
-pub const ENTITY_DESTROY_SPAWNED: &str =
-    "BrickComponentType_Exec_Entity_DestroySpawned";
+pub const ENTITY_DESTROY_SPAWNED: &str = "BrickComponentType_Exec_Entity_DestroySpawned";
 pub const ENTITY_DESTROY_SPAWNED_PREFAB: &str =
     "BrickComponentType_Exec_Entity_DestroySpawnedPrefab";
-pub const ENTITY_GET_VELOCITY_AT_POINT: &str =
-    "BrickComponentType_Exec_Entity_GetVelocityAtPoint";
+pub const ENTITY_GET_VELOCITY_AT_POINT: &str = "BrickComponentType_Exec_Entity_GetVelocityAtPoint";
 pub const ENTITY_GET_SPEED: &str = "BrickComponentType_Exec_Entity_GetSpeed";
 pub const ENTITY_GET_TEAM: &str = "BrickComponentType_Exec_Entity_GetTeam";
 pub const ENTITY_SET_TEAM: &str = "BrickComponentType_Exec_Entity_SetTeam";
@@ -396,22 +395,18 @@ pub const CHARACTER_GET_INVENTORY_ENTRY: &str =
     "BrickComponentType_Exec_Character_GetInventoryEntry";
 pub const EXPR_ENUM_TO_INTEGER: &str = "BrickComponentType_Expr_EnumToInteger";
 pub const EXPR_INTEGER_TO_ENUM: &str = "BrickComponentType_Expr_IntegerToEnum";
-pub const EXPR_BITWISE_SHR_LOGICAL: &str =
-    "BrickComponentType_Expr_BitwiseShiftRightLogical";
+pub const EXPR_BITWISE_SHR_LOGICAL: &str = "BrickComponentType_Expr_BitwiseShiftRightLogical";
 pub const EXPR_REMAP: &str = "BrickComponentType_Expr_Remap";
 pub const EXPR_ITEM_TO_PICKUP: &str = "BrickComponentType_Expr_ItemToPickup";
-pub const STRING_CHAR_TO_CODEPOINT: &str =
-    "BrickComponentType_Expr_String_CharacterToCodepoint";
-pub const STRING_CODEPOINT_TO_CHAR: &str =
-    "BrickComponentType_Expr_String_CodepointToCharacter";
+pub const STRING_CHAR_TO_CODEPOINT: &str = "BrickComponentType_Expr_String_CharacterToCodepoint";
+pub const STRING_CODEPOINT_TO_CHAR: &str = "BrickComponentType_Expr_String_CodepointToCharacter";
 pub const GET_UNIX_EPOCH: &str = "BrickComponentType_Expr_GetUnixEpoch";
 pub const FORMAT_DATE: &str = "BrickComponentType_Expr_FormatDate";
 pub const GET_OWN_TRANSFORM: &str = "BrickComponentType_Exec_GetOwnTransform";
 pub const SWEEP_SIMPLE: &str = "BrickComponentType_Exec_SweepSimple";
 pub const ZONE_GET_ENTITIES: &str = "BrickComponentType_Exec_Zone_GetEntities";
 pub const ZONE_GET_PLAYERS: &str = "BrickComponentType_Exec_Zone_GetPlayers";
-pub const ARRAY_SORT_MULTIPLE: &str =
-    "BrickComponentType_Exec_ArrayVar_SortMultiple";
+pub const ARRAY_SORT_MULTIPLE: &str = "BrickComponentType_Exec_ArrayVar_SortMultiple";
 pub const EXPR_COLOR_CONVERT: &str = "BrickComponentType_Expr_ColorConvert";
 pub const CHARACTER_GET_CURRENT_INVENTORY_SLOT: &str =
     "BrickComponentType_Exec_Character_GetCurrentInventorySlot";

@@ -58,43 +58,50 @@ fn build_gate_data_map(
     let bool_as_int = bool_input_bakes_as_int(gate_class);
     let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
     for fm in fields {
-            let field = fm.name;
-            let is_wire_value = fm.kind == FieldKind::WireValue;
-            let val: Box<dyn AsBrdbValue> = match inlined.get(&fm.sym) {
-                Some(lit) if is_wire_value => {
-                    let wv = literal_to_wire_value_or_default(lit, ports, field);
-                    Box::new(if bool_as_int { coerce_bool_to_int(wv) } else { wv })
+        let field = fm.name;
+        let is_wire_value = fm.kind == FieldKind::WireValue;
+        let val: Box<dyn AsBrdbValue> = match inlined.get(&fm.sym) {
+            Some(lit) if is_wire_value => {
+                let wv = literal_to_wire_value_or_default(lit, ports, field);
+                Box::new(if bool_as_int {
+                    coerce_bool_to_int(wv)
+                } else {
+                    wv
+                })
+            }
+            Some(lit) => match fm.kind {
+                FieldKind::AssetRef => {
+                    // Asset-reference field (AudioDescriptor, Item, …):
+                    // register the `$Type/Name` in the world's external
+                    // asset table and store the index.
+                    use brdb::schema::BrdbValue;
+                    let idx = match lit {
+                        Literal::Asset {
+                            asset_type,
+                            asset_name,
+                        } => Some(
+                            world
+                                .global_data
+                                .external_asset_references
+                                .insert_full((asset_type.clone(), asset_name.clone()))
+                                .0,
+                        ),
+                        _ => None,
+                    };
+                    Box::new(BrdbValue::Asset(idx))
                 }
-                Some(lit) => match fm.kind {
-                    FieldKind::AssetRef => {
-                        // Asset-reference field (AudioDescriptor, Item, …):
-                        // register the `$Type/Name` in the world's external
-                        // asset table and store the index.
-                        use brdb::schema::BrdbValue;
-                        let idx = match lit {
-                            Literal::Asset {
-                                asset_type,
-                                asset_name,
-                            } => Some(
-                                world
-                                    .global_data
-                                    .external_asset_references
-                                    .insert_full((asset_type.clone(), asset_name.clone()))
-                                    .0,
-                            ),
-                            _ => None,
-                        };
-                        Box::new(BrdbValue::Asset(idx))
-                    }
-                    FieldKind::Str
-                        if matches!(
-                            lit,
-                            Literal::PrefabRef { .. } | Literal::NestedPrefab { .. } | Literal::PrefabBytes(_)
-                        ) =>
-                    {
-                        Box::new(embed_prefab(lit, world, prefab_resolver, nested_compiler)?)
-                    }
-                    FieldKind::Enum(type_name) => match resolve_enum_value(type_name, &in_native_field(&fm.kind, lit)) {
+                FieldKind::Str
+                    if matches!(
+                        lit,
+                        Literal::PrefabRef { .. }
+                            | Literal::NestedPrefab { .. }
+                            | Literal::PrefabBytes(_)
+                    ) =>
+                {
+                    Box::new(embed_prefab(lit, world, prefab_resolver, nested_compiler)?)
+                }
+                FieldKind::Enum(type_name) => {
+                    match resolve_enum_value(type_name, &in_native_field(&fm.kind, lit)) {
                         Some(ev) => Box::new(ev),
                         None => literal_to_boxed_native(lit).ok_or_else(|| {
                             EmitError::UnrepresentableLiteral {
@@ -102,61 +109,70 @@ fn build_gate_data_map(
                                 literal: (**lit).clone(),
                             }
                         })?,
-                    },
-                    FieldKind::Str => Box::new(literal_to_string(lit).ok_or_else(|| {
+                    }
+                }
+                FieldKind::Str => Box::new(literal_to_string(lit).ok_or_else(|| {
+                    EmitError::UnrepresentableLiteral {
+                        field: field.to_string(),
+                        literal: (**lit).clone(),
+                    }
+                })?),
+                // A native struct field takes one representation, so a
+                // rotation constant bound for a quaternion field converts
+                // here rather than at runtime (see
+                // `reshape_literal_for_struct`).
+                FieldKind::NativeStruct(struct_ty) => {
+                    let reshaped = reshape_literal_for_struct(struct_ty, lit);
+                    let lit = reshaped.as_ref().unwrap_or(lit);
+                    literal_to_boxed_native(lit).ok_or_else(|| {
                         EmitError::UnrepresentableLiteral {
                             field: field.to_string(),
-                            literal: (**lit).clone(),
+                            literal: lit.clone(),
                         }
-                    })?),
-                    // A native struct field takes one representation, so a
-                    // rotation constant bound for a quaternion field converts
-                    // here rather than at runtime (see
-                    // `reshape_literal_for_struct`).
-                    FieldKind::NativeStruct(struct_ty) => {
-                        let reshaped = reshape_literal_for_struct(struct_ty, lit);
-                        let lit = reshaped.as_ref().unwrap_or(lit);
-                        literal_to_boxed_native(lit).ok_or_else(|| {
-                            EmitError::UnrepresentableLiteral {
-                                field: field.to_string(),
-                                literal: lit.clone(),
-                            }
-                        })?
+                    })?
+                }
+                _ => literal_to_boxed_native(&in_native_field(&fm.kind, lit)).ok_or_else(|| {
+                    EmitError::UnrepresentableLiteral {
+                        field: field.to_string(),
+                        literal: (**lit).clone(),
                     }
-                    _ => literal_to_boxed_native(&in_native_field(&fm.kind, lit)).ok_or_else(|| {
-                        EmitError::UnrepresentableLiteral { field: field.to_string(), literal: (**lit).clone() }
-                    })?,
-                },
-                // No inlined value. Wire-typed ports still need a typed default
-                // so the `WireValue` alternative matches the port type (the
-                // component_db defaults don't carry wire values). Every other
-                // (native) field is omitted from the data map entirely: the brdb
-                // writer fills missing struct fields from component_db's
-                // STRUCT_DEFAULTS — the single source of truth for gate defaults
-                // (e.g. DisplayText FontSize=16, Lifetime=5) — falling back to a
-                // type-zero when no default is registered.
-                None if is_wire_value => {
-                    // Convert's setting is a value of the type it converts to:
-                    // the variant stored in `TargetType` picks the output.
-                    let port_sym = if gate_class == crate::ir::gate_class::CONVERT && field == "TargetType" {
+                })?,
+            },
+            // No inlined value. Wire-typed ports still need a typed default
+            // so the `WireValue` alternative matches the port type (the
+            // component_db defaults don't carry wire values). Every other
+            // (native) field is omitted from the data map entirely: the brdb
+            // writer fills missing struct fields from component_db's
+            // STRUCT_DEFAULTS — the single source of truth for gate defaults
+            // (e.g. DisplayText FontSize=16, Lifetime=5) — falling back to a
+            // type-zero when no default is registered.
+            None if is_wire_value => {
+                // Convert's setting is a value of the type it converts to:
+                // the variant stored in `TargetType` picks the output.
+                let port_sym =
+                    if gate_class == crate::ir::gate_class::CONVERT && field == "TargetType" {
                         *crate::intern::sym::OUTPUT
                     } else {
                         fm.sym
                     };
-                    let port_ty = ports
-                        .inputs
-                        .iter()
-                        .chain(ports.outputs.iter())
-                        .find(|p| p.name == port_sym)
-                        .map(|p| &p.ty);
-                    let wv = var_type_to_wire_value(port_ty);
-                    Box::new(if bool_as_int { coerce_bool_to_int(wv) } else { wv })
-                }
-                None if field == "bChangeType" && sets_any_var(gate_class, ports) => Box::new(true),
-                None => continue,
-            };
-            data.insert(BString::Static(field), val);
-        }
+                let port_ty = ports
+                    .inputs
+                    .iter()
+                    .chain(ports.outputs.iter())
+                    .find(|p| p.name == port_sym)
+                    .map(|p| &p.ty);
+                let wv = var_type_to_wire_value(port_ty);
+                Box::new(if bool_as_int {
+                    coerce_bool_to_int(wv)
+                } else {
+                    wv
+                })
+            }
+            None if field == "bChangeType" && sets_any_var(gate_class, ports) => Box::new(true),
+            None => continue,
+        };
+        data.insert(BString::Static(field), val);
+    }
     Ok(Some(data))
 }
 
@@ -178,10 +194,14 @@ fn in_native_field<'l>(kind: &FieldKind, lit: &'l Literal) -> std::borrow::Cow<'
     use std::borrow::Cow;
     let truncated = |f: f64| if f.is_finite() { f as i64 } else { 0 };
     match (kind, lit) {
-        (FieldKind::Integer(_) | FieldKind::Enum(_), Literal::Float(f)) => Cow::Owned(Literal::Int(truncated(*f))),
+        (FieldKind::Integer(_) | FieldKind::Enum(_), Literal::Float(f)) => {
+            Cow::Owned(Literal::Int(truncated(*f)))
+        }
         (FieldKind::Integer(_), Literal::Bool(b)) => Cow::Owned(Literal::Int(*b as i64)),
         (FieldKind::Real(_), Literal::Int(n)) => Cow::Owned(Literal::Float(*n as f64)),
-        (FieldKind::Real(_), Literal::Bool(b)) => Cow::Owned(Literal::Float(if *b { 1.0 } else { 0.0 })),
+        (FieldKind::Real(_), Literal::Bool(b)) => {
+            Cow::Owned(Literal::Float(if *b { 1.0 } else { 0.0 }))
+        }
         (FieldKind::Boolean, Literal::Int(n)) => Cow::Owned(Literal::Bool(*n != 0)),
         (FieldKind::Boolean, Literal::Float(f)) => Cow::Owned(Literal::Bool(*f != 0.0)),
         _ => Cow::Borrowed(lit),
@@ -236,35 +256,55 @@ fn landing(kind: &FieldKind, lit: &Literal, bool_pin: bool) -> Landing {
                 _ => Landing::Invalid(format!("its field holds a whole number from {lo} to {hi}")),
             }
         }
-        (FieldKind::Integer(_), Literal::Bool(b)) if !bool_pin => Landing::Inexact((*b as i64).to_string()),
+        (FieldKind::Integer(_), Literal::Bool(b)) if !bool_pin => {
+            Landing::Inexact((*b as i64).to_string())
+        }
         (FieldKind::Real(ty), Literal::Int(n)) => {
-            let stored = if *ty == "f32" { *n as f32 as f64 } else { *n as f64 };
+            let stored = if *ty == "f32" {
+                *n as f32 as f64
+            } else {
+                *n as f64
+            };
             if stored as i128 == *n as i128 {
                 Landing::Exact
             } else {
                 Landing::Inexact(format!("{stored}"))
             }
         }
-        (FieldKind::Real("f32"), Literal::Float(f)) if f.is_finite() && f.abs() > f32::MAX as f64 => {
+        (FieldKind::Real("f32"), Literal::Float(f))
+            if f.is_finite() && f.abs() > f32::MAX as f64 =>
+        {
             Landing::Invalid("its field holds a 32-bit float".to_string())
         }
-        (FieldKind::Real(_), Literal::Bool(b)) if !bool_pin => Landing::Inexact(if *b { "1.0" } else { "0.0" }.to_string()),
-        (FieldKind::Boolean, Literal::Int(n)) if *n != 0 && *n != 1 => Landing::Inexact("true".to_string()),
-        (FieldKind::Boolean, Literal::Float(f)) if *f != 0.0 && *f != 1.0 => Landing::Inexact((*f != 0.0).to_string()),
+        (FieldKind::Real(_), Literal::Bool(b)) if !bool_pin => {
+            Landing::Inexact(if *b { "1.0" } else { "0.0" }.to_string())
+        }
+        (FieldKind::Boolean, Literal::Int(n)) if *n != 0 && *n != 1 => {
+            Landing::Inexact("true".to_string())
+        }
+        (FieldKind::Boolean, Literal::Float(f)) if *f != 0.0 && *f != 1.0 => {
+            Landing::Inexact((*f != 0.0).to_string())
+        }
         (FieldKind::Enum(ty), Literal::Int(n)) => match crate::catalog::enum_has_value(ty, *n) {
             true => Landing::Exact,
             false => Landing::Invalid(enum_choices(ty)),
         },
         (FieldKind::Enum(ty), Literal::Float(f)) => match whole(*f) {
             Some(n) if i64::try_from(n).is_ok_and(|n| crate::catalog::enum_has_value(ty, n)) => {
-                if n as f64 == *f { Landing::Exact } else { Landing::Inexact(n.to_string()) }
+                if n as f64 == *f {
+                    Landing::Exact
+                } else {
+                    Landing::Inexact(n.to_string())
+                }
             }
             _ => Landing::Invalid(enum_choices(ty)),
         },
-        (FieldKind::Enum(ty), Literal::Bool(b)) => match crate::catalog::enum_has_value(ty, *b as i64) {
-            true => Landing::Inexact((*b as i64).to_string()),
-            false => Landing::Invalid(enum_choices(ty)),
-        },
+        (FieldKind::Enum(ty), Literal::Bool(b)) => {
+            match crate::catalog::enum_has_value(ty, *b as i64) {
+                true => Landing::Inexact((*b as i64).to_string()),
+                false => Landing::Invalid(enum_choices(ty)),
+            }
+        }
         _ => Landing::Exact,
     }
 }
@@ -305,7 +345,11 @@ pub(super) fn inlined_values<V>(
 }
 
 /// A component of `class` whose data is the one field `field`.
-pub(super) fn one_field_component(class: &'static str, field: &'static str, value: Box<dyn AsBrdbValue>) -> LiteralComponent {
+pub(super) fn one_field_component(
+    class: &'static str,
+    field: &'static str,
+    value: Box<dyn AsBrdbValue>,
+) -> LiteralComponent {
     let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
     data.insert(field.into(), value);
     LiteralComponent::new_from_data(class, std::sync::Arc::new(data))
@@ -330,7 +374,8 @@ pub fn check_native_settings(
     diagnostics: &mut Vec<crate::diagnostic::Diagnostic>,
     param_of: &SettingParamOf<'_>,
 ) {
-    let mut seen: crate::collections::HashSet<(crate::diagnostic::SourceRange, String)> = Default::default();
+    let mut seen: crate::collections::HashSet<(crate::diagnostic::SourceRange, String)> =
+        Default::default();
     check_module_settings(root, &mut seen, diagnostics, param_of);
 }
 
@@ -344,31 +389,49 @@ fn check_module_settings(
     param_of: &SettingParamOf<'_>,
 ) {
     let value_sym = *sym::VALUE;
-    let mut inlined: HashMap<NodeId, Vec<(Sym, &Literal, &crate::diagnostic::SourceRange)>> = HashMap::default();
+    let mut inlined: HashMap<NodeId, Vec<(Sym, &Literal, &crate::diagnostic::SourceRange)>> =
+        HashMap::default();
     for w in &m.wires {
         if let Some(src) = m.nodes.get(&w.source.node_id)
             && src.gate_class == gc::LITERAL
             && let Some(lit) = src.properties.get(&value_sym)
         {
             let port = crate::intern::intern(w.target.port.as_str());
-            inlined.entry(w.target.node_id).or_default().push((port, lit, &src.source_range));
+            inlined
+                .entry(w.target.node_id)
+                .or_default()
+                .push((port, lit, &src.source_range));
         }
     }
     for (id, node) in m.nodes_in_order() {
         if node.kind == crate::ir::NodeKind::Chip {
             continue;
         }
-        let Some(fields) = gate_field_meta(node.gate_class) else { continue };
+        let Some(fields) = gate_field_meta(node.gate_class) else {
+            continue;
+        };
         let values = inlined_values(
-            inlined.get(id).into_iter().flatten().map(|(port, lit, range)| (*port, (*lit, *range))),
-            node.properties.iter().map(|(prop, lit)| (*prop, (lit, &node.source_range))),
+            inlined
+                .get(id)
+                .into_iter()
+                .flatten()
+                .map(|(port, lit, range)| (*port, (*lit, *range))),
+            node.properties
+                .iter()
+                .map(|(prop, lit)| (*prop, (lit, &node.source_range))),
         );
         for fm in fields {
             if matches!(fm.kind, FieldKind::WireValue) {
                 continue;
             }
-            let Some((lit, lit_range)) = values.get(&fm.sym) else { continue };
-            let bool_pin = node.ports.inputs.iter().any(|p| p.name == fm.sym && p.ty == crate::ir::Type::Bool);
+            let Some((lit, lit_range)) = values.get(&fm.sym) else {
+                continue;
+            };
+            let bool_pin = node
+                .ports
+                .inputs
+                .iter()
+                .any(|p| p.name == fm.sym && p.ty == crate::ir::Type::Bool);
             let landed = landing(&fm.kind, lit, bool_pin);
             if matches!(landed, Landing::Exact) {
                 continue;
@@ -388,8 +451,16 @@ fn check_module_settings(
                 Some((call, name)) => format!("`{call}` {what} `{name}` ({})", fm.name),
                 None => format!("{what} `{}`", fm.name),
             };
-            let range = if lit_range.file.is_empty() { node.source_range.clone() } else { (*lit_range).clone() };
-            let range = if range.file.is_empty() { node.source_range.clone() } else { range };
+            let range = if lit_range.file.is_empty() {
+                node.source_range.clone()
+            } else {
+                (*lit_range).clone()
+            };
+            let range = if range.file.is_empty() {
+                node.source_range.clone()
+            } else {
+                range
+            };
             let diagnostic = match landed {
                 Landing::Exact => continue,
                 Landing::Inexact(stored) => crate::diagnostic::Diagnostic::warning(
@@ -476,7 +547,9 @@ impl AsBrdbValue for NativeArray {
         _struct_name: brdb::schema::BrdbInterned,
         _prop_name: brdb::schema::BrdbInterned,
     ) -> Result<brdb::schema::as_brdb::BrdbArrayIter<'_>, brdb::BrdbSchemaError> {
-        Ok(Box::new(self.0.iter().map(|v| v.as_ref() as &dyn AsBrdbValue)))
+        Ok(Box::new(
+            self.0.iter().map(|v| v.as_ref() as &dyn AsBrdbValue),
+        ))
     }
 }
 
@@ -587,8 +660,7 @@ fn weapon_resource_struct(loaded: i32, reserve: i32) -> NativeStruct {
 /// A `Resources` value of exactly [`WEAPON_AMMO_RESOURCE_SLOTS`] entries: the
 /// supplied resources (capped) followed by zero-padding.
 fn weapon_resource_array(resources: &[(i32, i32)]) -> NativeArray {
-    let mut res_elems: Vec<Box<dyn AsBrdbValue>> =
-        Vec::with_capacity(WEAPON_AMMO_RESOURCE_SLOTS);
+    let mut res_elems: Vec<Box<dyn AsBrdbValue>> = Vec::with_capacity(WEAPON_AMMO_RESOURCE_SLOTS);
     for &(loaded, reserve) in resources.iter().take(WEAPON_AMMO_RESOURCE_SLOTS) {
         res_elems.push(Box::new(weapon_resource_struct(loaded, reserve)));
     }
@@ -715,8 +787,15 @@ pub(super) fn build_function_call_component(
     prefab_resolver: Option<&PrefabResolver>,
     nested_compiler: Option<&NestedCompiler>,
 ) -> Result<NativeStruct, EmitError> {
-    let mut data = build_gate_data_map(gc::FUNCTION_CALL, ports, inlined, world, prefab_resolver, nested_compiler)?
-        .unwrap_or_default();
+    let mut data = build_gate_data_map(
+        gc::FUNCTION_CALL,
+        ports,
+        inlined,
+        world,
+        prefab_resolver,
+        nested_compiler,
+    )?
+    .unwrap_or_default();
     let given: &[Literal] = match inlined.get(&intern_static("InputSources")).copied() {
         Some(Literal::Array(v)) => v.as_slice(),
         _ => &[],

@@ -33,7 +33,9 @@ pub fn collect(p: &Type, a: &Type, out: &mut Vec<Constraint>) {
     match p {
         // A gate read filling a `T` slot is one value: its first output.
         Type::Param(n) => match a {
-            Type::Outputs(fields) if !fields.is_empty() => out.push(Constraint::Eq(n.clone(), fields[0].1.clone())),
+            Type::Outputs(fields) if !fields.is_empty() => {
+                out.push(Constraint::Eq(n.clone(), fields[0].1.clone()))
+            }
             _ => out.push(Constraint::Eq(n.clone(), a.clone())),
         },
         Type::Array(pi) => {
@@ -104,7 +106,11 @@ pub fn substitute(t: &Type, s: &Subst) -> Type {
                 .map(|(n, ft)| (n.clone(), substitute(ft, s)))
                 .collect(),
         ),
-        Type::Outputs(fs) => Type::Outputs(fs.iter().map(|(n, ft)| (n.clone(), substitute(ft, s))).collect()),
+        Type::Outputs(fs) => Type::Outputs(
+            fs.iter()
+                .map(|(n, ft)| (n.clone(), substitute(ft, s)))
+                .collect(),
+        ),
         Type::Enum { name, args } => Type::Enum {
             name: name.clone(),
             args: args.iter().map(|a| substitute(a, s)).collect(),

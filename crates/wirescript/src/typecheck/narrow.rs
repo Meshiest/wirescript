@@ -48,7 +48,9 @@ fn place(e: &Expr) -> Option<(&str, Vec<&str>)> {
 /// The value whose kind `test` asks for: `x` in `x.getType()` or
 /// `GetValueType(x)`.
 pub(crate) fn kind_test_subject(test: &Expr) -> Option<&Expr> {
-    let Expr::Call { callee, args, .. } = test else { return None };
+    let Expr::Call { callee, args, .. } = test else {
+        return None;
+    };
     match (callee.as_ref(), args.as_slice()) {
         (Expr::FieldAccess { obj, field, .. }, []) if field == "getType" => Some(obj),
         (Expr::Ident { name, .. }, [CallArg::Positional(x)]) if name == "GetValueType" => Some(x),
@@ -77,7 +79,12 @@ pub(crate) fn member_type(member: &str) -> Option<Type> {
 /// The place `test` asks about, as written: `p.Value` in `p.Value.getType()`.
 pub(crate) fn test_subject_text(test: &Expr) -> Option<String> {
     let (root, fields) = place(kind_test_subject(test)?)?;
-    Some(std::iter::once(root).chain(fields).collect::<Vec<_>>().join("."))
+    Some(
+        std::iter::once(root)
+            .chain(fields)
+            .collect::<Vec<_>>()
+            .join("."),
+    )
 }
 
 /// `test` as written, from its subject: `p.Value.getType()` or
@@ -98,7 +105,12 @@ pub(crate) fn push_arm(ctx: &mut TypeCheckCtx, test: &Expr, member: &str) -> boo
     let (Some(subject), Some(written)) = (kind_test_subject(test), describe_test(test)) else {
         return false;
     };
-    push(ctx, subject, member, format!("the `{member}` arm of `match {written}`"))
+    push(
+        ctx,
+        subject,
+        member,
+        format!("the `{member}` arm of `match {written}`"),
+    )
 }
 
 /// Narrow `subject` to the type `member` names, for the arm or block about
@@ -129,20 +141,31 @@ pub(crate) fn pop(ctx: &mut TypeCheckCtx, pushed: bool) {
 /// What a narrowing gives `e`, a read of a narrowed place, if any.
 pub(crate) fn narrowed(ctx: &TypeCheckCtx, e: &Expr) -> Option<NarrowedRead> {
     let (root, fields) = place(e)?;
-    let n = ctx
-        .narrowings
-        .iter()
-        .rev()
-        .find(|n| n.root == root && n.fields.iter().map(String::as_str).eq(fields.iter().copied()))?;
+    let n = ctx.narrowings.iter().rev().find(|n| {
+        n.root == root
+            && n.fields
+                .iter()
+                .map(String::as_str)
+                .eq(fields.iter().copied())
+    })?;
     let decl = &ctx.scope.lookup(root)?.decl_range;
-    (*decl == n.decl).then(|| NarrowedRead { ty: n.ty.clone(), by: n.by.clone() })
+    (*decl == n.decl).then(|| NarrowedRead {
+        ty: n.ty.clone(),
+        by: n.by.clone(),
+    })
 }
 
 /// Narrow for the block an `if` runs when `cond` holds, when `cond` is
 /// `x.getType() is Type.X`. Gives whether it did, for [`pop`].
 pub(crate) fn push_if(ctx: &mut TypeCheckCtx, cond: &Expr) -> bool {
-    let Expr::Is { value, path, .. } = cond else { return false };
-    match (kind_test_subject(value), type_member(path), describe_test(value)) {
+    let Expr::Is { value, path, .. } = cond else {
+        return false;
+    };
+    match (
+        kind_test_subject(value),
+        type_member(path),
+        describe_test(value),
+    ) {
         (Some(x), Some(member), Some(written)) => {
             push(ctx, x, member, format!("`if {written} is Type.{member}`"))
         }

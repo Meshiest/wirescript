@@ -13,8 +13,13 @@ impl ContainerKind {
     /// The kind of a container type, looking through a ref wrapper.
     pub fn of(t: &Type) -> Option<ContainerKind> {
         match t {
-            Type::Array(e) => Some(ContainerKind::Array { elem: (**e).clone() }),
-            Type::Map(k, v) => Some(ContainerKind::Map { key: (**k).clone(), value: (**v).clone() }),
+            Type::Array(e) => Some(ContainerKind::Array {
+                elem: (**e).clone(),
+            }),
+            Type::Map(k, v) => Some(ContainerKind::Map {
+                key: (**k).clone(),
+                value: (**v).clone(),
+            }),
             Type::Ref(inner) => ContainerKind::of(inner),
             _ => None,
         }
@@ -23,7 +28,9 @@ impl ContainerKind {
     pub fn as_type(&self) -> Type {
         match self {
             ContainerKind::Array { elem } => Type::Array(Box::new(elem.clone())),
-            ContainerKind::Map { key, value } => Type::Map(Box::new(key.clone()), Box::new(value.clone())),
+            ContainerKind::Map { key, value } => {
+                Type::Map(Box::new(key.clone()), Box::new(value.clone()))
+            }
         }
     }
 }

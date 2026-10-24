@@ -1,6 +1,6 @@
 use super::*;
-use crate::lower::ordered::lower_in_order;
 use crate::catalog::methods::{ArgKind, Lowering, MethodArg};
+use crate::lower::ordered::lower_in_order;
 use crate::typecheck::ContainerKind;
 
 /// Walk a chain of `Ident` / `FieldAccess` nodes, resolving through
@@ -125,7 +125,9 @@ pub(super) fn binding_array_ref(
         Binding::Local(local) if !is_placeholder_port(ctx, local.port) => {
             elem(obj_ty).map(|e| (local.port, e))
         }
-        Binding::DynRef(d) if d.storage == VarStorage::Array => Some((d.port, d.inner_type.clone())),
+        Binding::DynRef(d) if d.storage == VarStorage::Array => {
+            Some((d.port, d.inner_type.clone()))
+        }
         _ => None,
     }
 }
@@ -197,7 +199,9 @@ pub(super) fn binding_to_port(
         Binding::Input(inp) => Some(inp.node_id.port(WirePort::RerOutput)),
         Binding::Var(var_rec) => {
             // An output of a pure mod call whose writes could not run.
-            if let Some((name, call_range, call)) = ctx.unsequenced_reads.get(&var_rec.node_id).cloned() {
+            if let Some((name, call_range, call)) =
+                ctx.unsequenced_reads.get(&var_rec.node_id).cloned()
+            {
                 ctx.unsequenced_reads.retain(|_, v| v.2 != call);
                 crate::lower::stmt::report_unsequenced_output_write(ctx, &name, &call_range);
                 return Some(synthesise_unsupported_no_warn(ctx, range));
@@ -259,9 +263,13 @@ pub(super) fn multi_output_chip_record(
         for (name, ty) in fields {
             let sub = match unwrap_ref(ty) {
                 Type::Record(f) => Some(f),
-                Type::Tuple(elems) => {
-                    Some(elems.into_iter().enumerate().map(|(i, t)| (i.to_string(), t)).collect())
-                }
+                Type::Tuple(elems) => Some(
+                    elems
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, t)| (i.to_string(), t))
+                        .collect(),
+                ),
                 _ => None,
             };
             if let Some(sub) = sub {
@@ -342,7 +350,8 @@ pub(super) fn resolve_output_field_port(
 fn index_result_port(field: &str) -> Option<WirePort> {
     if field.eq_ignore_ascii_case("value") {
         Some(WirePort::Value)
-    } else if field.eq_ignore_ascii_case("bOutOfBounds") || field.eq_ignore_ascii_case("OutOfBounds")
+    } else if field.eq_ignore_ascii_case("bOutOfBounds")
+        || field.eq_ignore_ascii_case("OutOfBounds")
     {
         Some(WirePort::BOutOfBounds)
     } else if field.eq_ignore_ascii_case("bFound") || field.eq_ignore_ascii_case("Found") {
@@ -403,10 +412,19 @@ fn split_quat_component(
 /// tuple or enum, runs on an exec chain with an arm (one of `arms`) that does
 /// more than give its value: WS097, which a field read of it reports in its
 /// own words.
-fn acting_aggregate_choice<'a>(ctx: &LowerCtx, choice: &Expr, arms: impl IntoIterator<Item = &'a Expr>) -> bool {
+fn acting_aggregate_choice<'a>(
+    ctx: &LowerCtx,
+    choice: &Expr,
+    arms: impl IntoIterator<Item = &'a Expr>,
+) -> bool {
     ctx.current_exec.is_some()
-        && matches!(unwrap_ref(&ctx.type_of(choice)), Type::Record(_) | Type::Tuple(_) | Type::Enum { .. })
-        && arms.into_iter().any(|x| crate::lower::expr::has_effects(ctx, x))
+        && matches!(
+            unwrap_ref(&ctx.type_of(choice)),
+            Type::Record(_) | Type::Tuple(_) | Type::Enum { .. }
+        )
+        && arms
+            .into_iter()
+            .any(|x| crate::lower::expr::has_effects(ctx, x))
 }
 
 pub(super) fn lower_field_access(
@@ -429,7 +447,11 @@ pub(super) fn lower_field_access(
         return lower_expr(ctx, call);
     }
     if let Some(call) = named_enum_output_call(ctx, obj) {
-        let on_call = Expr::FieldAccess { obj: Box::new(call.clone()), field: field.to_string(), range: range.clone() };
+        let on_call = Expr::FieldAccess {
+            obj: Box::new(call.clone()),
+            field: field.to_string(),
+            range: range.clone(),
+        };
         return lower_field_access(ctx, call, field, range, &on_call);
     }
     // A field access on an if-expression distributes over the branches:
@@ -469,7 +491,11 @@ pub(super) fn lower_field_access(
     // out of the per-field Select tree the value form builds) also costs one
     // Select instead of one per leaf. Block-bodied arms carry no value, so they
     // are left to the statement form.
-    if let Expr::MatchExpr { scrutinee, arms, range: m_range } = obj
+    if let Expr::MatchExpr {
+        scrutinee,
+        arms,
+        range: m_range,
+    } = obj
         && arms.iter().all(|a| matches!(a.body, MatchBody::Expr(_)))
     {
         let values = arms.iter().filter_map(|a| match &a.body {
@@ -630,15 +656,25 @@ pub(super) fn lower_field_access(
     // the quaternion arm below consults.
     // A field of a record output read straight off the call (`f(c).pp.x`):
     // walk the call's own record, as `let t = f(c)` then `t.pp.x` does.
-    if let Expr::FieldAccess { obj: base, field: first, .. } = obj {
+    if let Expr::FieldAccess {
+        obj: base,
+        field: first,
+        ..
+    } = obj
+    {
         let mut root: &Expr = base;
         let mut path = vec![first.clone()];
-        while let Expr::FieldAccess { obj: o, field: f, .. } = root {
+        while let Expr::FieldAccess {
+            obj: o, field: f, ..
+        } = root
+        {
             path.insert(0, f.clone());
             root = o;
         }
         let decl = called_chip_decl(ctx, root);
-        let by_output = decl.as_ref().is_some_and(|d| d.outputs.iter().any(|o| o.name == path[0]));
+        let by_output = decl
+            .as_ref()
+            .is_some_and(|d| d.outputs.iter().any(|o| o.name == path[0]));
         // A field of a call's one record output, reached through a nested
         // record field (`f(p).inner.y`).
         let by_field = !by_output
@@ -647,20 +683,29 @@ pub(super) fn lower_field_access(
         if by_output || by_field {
             ctx.pending_inline_record = None;
             let port = lower_expr(ctx, root);
-            let mut rec = ctx.pending_inline_record.take().or_else(|| match unwrap_ref(&ctx.type_of(root)) {
-                Type::Record(fields) => multi_output_chip_record(ctx, port, &fields),
-                _ => None,
-            });
+            let mut rec =
+                ctx.pending_inline_record
+                    .take()
+                    .or_else(|| match unwrap_ref(&ctx.type_of(root)) {
+                        Type::Record(fields) => multi_output_chip_record(ctx, port, &fields),
+                        _ => None,
+                    });
             if by_field {
                 rec = rec.map(|r| crate::lower::stmt::unwrap_call_record(ctx, root, r));
             }
             for step in &path {
-                rec = match rec.as_ref().and_then(|r| r.get(&crate::intern::intern(step))) {
+                rec = match rec
+                    .as_ref()
+                    .and_then(|r| r.get(&crate::intern::intern(step)))
+                {
                     Some(Binding::Record(inner)) => Some(inner.clone()),
                     _ => None,
                 };
             }
-            if let Some(binding) = rec.as_ref().and_then(|r| r.get(&crate::intern::intern(field))).cloned()
+            if let Some(binding) = rec
+                .as_ref()
+                .and_then(|r| r.get(&crate::intern::intern(field)))
+                .cloned()
                 && let Some(port) = binding_to_port(ctx, &binding, range)
             {
                 return port;
@@ -692,7 +737,8 @@ pub(super) fn lower_field_access(
         let entry_exec = ctx.current_exec;
         // A named output of the call is read from its record below, so the
         // call need not also read its first output as a single value.
-        let names_output = called_chip_decl(ctx, obj).is_some_and(|d| d.outputs.iter().any(|o| o.name == field));
+        let names_output =
+            called_chip_decl(ctx, obj).is_some_and(|d| d.outputs.iter().any(|o| o.name == field));
         let saved_record_call = ctx.record_result_call.clone();
         if names_output {
             ctx.record_result_call = Some(obj.range().clone());
@@ -753,7 +799,8 @@ pub(super) fn lower_field_access(
         {
             // The only output IS the call's value (`f(c).r` on `-> (r: int)`),
             // unless it is a record, which the stash above already served.
-            if decl.outputs.len() == 1 && ctx.record_or_tuple_fields(&decl.outputs[0].typ).is_none() {
+            if decl.outputs.len() == 1 && ctx.record_or_tuple_fields(&decl.outputs[0].typ).is_none()
+            {
                 return obj_port;
             }
             ctx.error(
@@ -828,9 +875,7 @@ pub(super) fn lower_field_access(
                 gate_class: gc::SPLIT_VECTOR,
                 source_range: range.clone(),
                 ports: GateIO {
-                    inputs: vec![
-                        PortSpec::new(*sym::INPUT, Type::Vector),
-                    ],
+                    inputs: vec![PortSpec::new(*sym::INPUT, Type::Vector)],
                     outputs: vec![
                         PortSpec::new(intern_static("X"), Type::Float),
                         PortSpec::new(intern_static("Y"), Type::Float),
@@ -849,9 +894,7 @@ pub(super) fn lower_field_access(
                 gate_class: gc::SPLIT_COLOR,
                 source_range: range.clone(),
                 ports: GateIO {
-                    inputs: vec![
-                        PortSpec::new(*sym::INPUT, Type::Color),
-                    ],
+                    inputs: vec![PortSpec::new(*sym::INPUT, Type::Color)],
                     outputs: vec![
                         PortSpec::new(intern_static("R"), Type::Float),
                         PortSpec::new(intern_static("G"), Type::Float),
@@ -907,7 +950,12 @@ pub(super) fn lower_discriminant(
         && let Some(def) = ctx.enum_defs.expression_path(enum_name)
         && let Some(vdef) = def.variants.iter().find(|v| &v.name == variant)
     {
-        return Some(literal_node_range(ctx, range, Type::Int, Literal::Int(vdef.discriminant)));
+        return Some(literal_node_range(
+            ctx,
+            range,
+            Type::Int,
+            Literal::Int(vdef.discriminant),
+        ));
     }
     // A gate read whose first output is an enum reads that output's tag.
     if let Some(fields) = crate::lower::expr::gate_read_enum_value(ctx, obj)
@@ -1036,9 +1084,9 @@ pub(super) fn lower_index_access(
             crate::const_eval::eval_expr(index, &ctx.const_ctx(Some(&lookup)), &mut budget)
         }
         && let Some(ArrayElem::Item(chosen)) = usize::try_from(k).ok().and_then(|k| elements.get(k))
-        && elements
-            .iter()
-            .all(|el| std::ptr::eq(el.expr(), chosen) || !crate::analysis::visit::contains_call(el.expr()))
+        && elements.iter().all(|el| {
+            std::ptr::eq(el.expr(), chosen) || !crate::analysis::visit::contains_call(el.expr())
+        })
     {
         return lower_expr(ctx, chosen);
     }
@@ -1095,10 +1143,15 @@ fn lower_string_index(
         ..Default::default()
     });
     ctx.connect(text, node_id.port(WirePort::Input));
-    ctx.connect(start, PortRef { node_id, port: WirePort::Start });
+    ctx.connect(
+        start,
+        PortRef {
+            node_id,
+            port: WirePort::Start,
+        },
+    );
     node_id.port(WirePort::Output)
 }
-
 
 /// The ordinary (gate-emitting) lowering of `obj[index]`. `None` means "no
 /// runtime form here", letting [`lower_index_access`] try a compile-time fold
@@ -1136,7 +1189,9 @@ fn lower_index_access_runtime(
             WirePort::Value,
         ));
     }
-    let ContainerKind::Array { elem } = kind else { unreachable!() };
+    let ContainerKind::Array { elem } = kind else {
+        unreachable!()
+    };
     array_get(ctx, container, elem, index, range)
 }
 
@@ -1280,7 +1335,10 @@ pub(super) fn column_exec_op(
         return synthesise_unsupported_range(ctx, cols.read(), range);
     };
     let (ref_port, ref_type) = cols.ref_port();
-    let mut inputs = vec![PortSpec::exec(*sym::EXEC), PortSpec::new(ref_port.sym(), ref_type)];
+    let mut inputs = vec![
+        PortSpec::exec(*sym::EXEC),
+        PortSpec::new(ref_port.sym(), ref_type),
+    ];
     for (port, ty, _) in &extra_in {
         inputs.push(PortSpec::new(port.sym(), ty.clone()));
     }
@@ -1290,7 +1348,13 @@ pub(super) fn column_exec_op(
     }
     let mut wired = vec![(container, ref_port)];
     wired.extend(extra_in.into_iter().map(|(port, _, src)| (src, port)));
-    let opts = AddNodeOpts { gate_class, source_range: range.clone(), ports: GateIO { inputs, outputs }, note, ..Default::default() };
+    let opts = AddNodeOpts {
+        gate_class,
+        source_range: range.clone(),
+        ports: GateIO { inputs, outputs },
+        note,
+        ..Default::default()
+    };
     chain_gate(ctx, opts, exec_in, &wired).port(ret)
 }
 
@@ -1304,7 +1368,17 @@ pub(super) fn array_exec_op(
     extra_out: Vec<(WirePort, Type)>,
     ret: WirePort,
 ) -> PortRef {
-    column_exec_op(ctx, Columns::Array, range, array_ref, gate_class, extra_in, extra_out, ret, None)
+    column_exec_op(
+        ctx,
+        Columns::Array,
+        range,
+        array_ref,
+        gate_class,
+        extra_in,
+        extra_out,
+        ret,
+        None,
+    )
 }
 
 /// [`column_exec_op`] on a map. `pub(super)` so the `m[k] = v` write desugar
@@ -1319,13 +1393,26 @@ pub(super) fn map_exec_op(
     extra_out: Vec<(WirePort, Type)>,
     ret: WirePort,
 ) -> PortRef {
-    column_exec_op(ctx, Columns::Map, range, map_ref, gate_class, extra_in, extra_out, ret, None)
+    column_exec_op(
+        ctx,
+        Columns::Map,
+        range,
+        map_ref,
+        gate_class,
+        extra_in,
+        extra_out,
+        ret,
+        None,
+    )
 }
 
 /// The leaf columns of a record container's field map, name-sorted for a
 /// stable fan-out order, recursing through nested record fields: one parallel
 /// array (or map) per record field.
-pub(super) fn leaf_columns(cols: Columns, fields: &HashMap<crate::intern::Sym, Binding>) -> Vec<VarRecord> {
+pub(super) fn leaf_columns(
+    cols: Columns,
+    fields: &HashMap<crate::intern::Sym, Binding>,
+) -> Vec<VarRecord> {
     let names = sorted_field_names(fields);
     let mut out = Vec::new();
     for k in names {
@@ -1376,7 +1463,9 @@ fn split_record_access(cols: Columns, e: &Expr) -> Option<(&Expr, &Expr, Vec<Str
             }
             _ => {
                 let (base, position) = match (cols, cur) {
-                    (Columns::Array, Expr::IndexAccess { obj, index, .. }) => (obj.as_ref(), index.as_ref()),
+                    (Columns::Array, Expr::IndexAccess { obj, index, .. }) => {
+                        (obj.as_ref(), index.as_ref())
+                    }
                     (Columns::Map, _) => record_map_key_source(cur)?,
                     _ => return None,
                 };
@@ -1388,7 +1477,13 @@ fn split_record_access(cols: Columns, e: &Expr) -> Option<(&Expr, &Expr, Vec<Str
 }
 
 /// Read column `v` at `position`: the get gate's `Value` port.
-fn column_get(ctx: &mut LowerCtx, cols: Columns, v: &VarRecord, position: PortRef, range: &SourceRange) -> PortRef {
+fn column_get(
+    ctx: &mut LowerCtx,
+    cols: Columns,
+    v: &VarRecord,
+    position: PortRef,
+    range: &SourceRange,
+) -> PortRef {
     let (class, flag) = cols.get();
     let (pos_port, pos_type) = cols.position(v);
     let value_type = cols.value_type(v);
@@ -1406,7 +1501,14 @@ fn column_get(ctx: &mut LowerCtx, cols: Columns, v: &VarRecord, position: PortRe
 }
 
 /// Write `value` into column `v` at `position`.
-fn column_set(ctx: &mut LowerCtx, cols: Columns, v: &VarRecord, position: PortRef, value: PortRef, range: &SourceRange) {
+fn column_set(
+    ctx: &mut LowerCtx,
+    cols: Columns,
+    v: &VarRecord,
+    position: PortRef,
+    value: PortRef,
+    range: &SourceRange,
+) {
     let (pos_port, pos_type) = cols.position(v);
     let value_type = cols.value_type(v);
     column_exec_op(
@@ -1415,7 +1517,10 @@ fn column_set(ctx: &mut LowerCtx, cols: Columns, v: &VarRecord, position: PortRe
         range,
         v.node_id.port(cols.ref_port().0),
         cols.set(),
-        vec![(pos_port, pos_type, position), (WirePort::Value, value_type, value)],
+        vec![
+            (pos_port, pos_type, position),
+            (WirePort::Value, value_type, value),
+        ],
         vec![],
         WirePort::ExecOut,
         None,
@@ -1436,7 +1541,10 @@ pub(super) fn record_column_read(
     for k in names {
         match fields.get(&k) {
             Some(Binding::Record(sub)) => {
-                out.insert(k, Binding::Record(record_column_read(ctx, cols, sub, position, range)));
+                out.insert(
+                    k,
+                    Binding::Record(record_column_read(ctx, cols, sub, position, range)),
+                );
             }
             Some(Binding::Var(v)) if v.storage == cols.storage() => {
                 let port = column_get(ctx, cols, v, position, range);
@@ -1465,7 +1573,8 @@ pub(super) fn lower_record_position_set(
     let Some((position_port, src)) = keyed_record(ctx, position, value) else {
         return false;
     };
-    if let Some(src) = crate::lower::stmt::fit_record_value(ctx, cols.written(), value, fields, src) {
+    if let Some(src) = crate::lower::stmt::fit_record_value(ctx, cols.written(), value, fields, src)
+    {
         record_set_walk(ctx, cols, fields, &src, position_port, range);
     }
     true
@@ -1525,7 +1634,9 @@ pub(super) fn lower_record_field_path(
     ctx.current_exec?;
     let position_port = lower_expr(ctx, position);
     match binding {
-        Binding::Var(v) if v.storage == cols.storage() => Some(column_get(ctx, cols, &v, position_port, range)),
+        Binding::Var(v) if v.storage == cols.storage() => {
+            Some(column_get(ctx, cols, &v, position_port, range))
+        }
         Binding::Record(sub) => {
             let rec = record_column_read(ctx, cols, &sub, position_port, range);
             let primary = first_leaf_port(&rec)?;
@@ -1595,7 +1706,9 @@ pub(super) fn lower_record_field_path_set(
             let Some(src) = crate::lower::stmt::value_record_fields(ctx, value) else {
                 return false;
             };
-            let Some(src) = crate::lower::stmt::fit_record_value(ctx, cols.written(), value, &sub, src) else {
+            let Some(src) =
+                crate::lower::stmt::fit_record_value(ctx, cols.written(), value, &sub, src)
+            else {
                 return true;
             };
             let position_port = lower_expr(ctx, position);
@@ -1617,7 +1730,9 @@ pub(super) fn resolve_array_ref_arg(ctx: &mut LowerCtx, e: &Expr) -> Option<Port
     if let Some(rec) = materialize_literal_container(ctx, e, "literal") {
         return Some(rec.node_id.port(WirePort::ArrayVarRef));
     }
-    let kind @ ContainerKind::Array { .. } = ctx.container_kind(e)? else { return None };
+    let kind @ ContainerKind::Array { .. } = ctx.container_kind(e)? else {
+        return None;
+    };
     match container_ref(ctx, e, &kind)? {
         ContainerSource::Ref(p) => Some(p),
         ContainerSource::Columns(_) => None,
@@ -1630,7 +1745,9 @@ pub(super) fn resolve_array_ref_arg(ctx: &mut LowerCtx, e: &Expr) -> Option<Port
 /// materialized gate.
 fn resolve_map_ref_arg(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
     materialize_const_container(ctx, e);
-    let kind @ ContainerKind::Map { .. } = ctx.container_kind(e)? else { return None };
+    let kind @ ContainerKind::Map { .. } = ctx.container_kind(e)? else {
+        return None;
+    };
     match container_ref(ctx, e, &kind)? {
         ContainerSource::Ref(p) => Some(p),
         ContainerSource::Columns(_) => None,
@@ -1687,7 +1804,10 @@ fn is_runtime_container(ctx: &LowerCtx, obj: &Expr, elem: &Type) -> bool {
         Expr::Ident { name, .. } => !matches!(
             ctx.scope.get(name),
             Some(Binding::Record(_) | Binding::Namespace(_) | Binding::Chip(_))
-                | Some(Binding::Var(VarRecord { storage: VarStorage::Array | VarStorage::Map, .. }))
+                | Some(Binding::Var(VarRecord {
+                    storage: VarStorage::Array | VarStorage::Map,
+                    ..
+                }))
         ),
         // A literal names no container; a constant one is materialized by the
         // caller (`materialize_literal_container`).
@@ -1718,8 +1838,12 @@ pub(super) fn container_ref(
     // An `in`/`out` port of columnar elements is one ref, not columns, so a
     // miss here falls through to the static binding.
     let columns = match kind {
-        ContainerKind::Array { elem } if columnar(elem) => resolve_record_columns(ctx, Columns::Array, obj),
-        ContainerKind::Map { value, .. } if columnar(value) => resolve_record_columns(ctx, Columns::Map, obj),
+        ContainerKind::Array { elem } if columnar(elem) => {
+            resolve_record_columns(ctx, Columns::Array, obj)
+        }
+        ContainerKind::Map { value, .. } if columnar(value) => {
+            resolve_record_columns(ctx, Columns::Map, obj)
+        }
         _ => None,
     };
     if let Some(fields) = columns {
@@ -1764,7 +1888,11 @@ pub(super) fn report_unresolved_container(ctx: &mut LowerCtx, what: &str, range:
 
 /// The WS044 for a container ARGUMENT (a source or destination array/map) that
 /// resolved to no container ref here, so the operation has nothing to act on.
-pub(super) fn report_unresolved_container_arg(ctx: &mut LowerCtx, method: &str, range: &SourceRange) {
+pub(super) fn report_unresolved_container_arg(
+    ctx: &mut LowerCtx,
+    method: &str,
+    range: &SourceRange,
+) {
     ctx.error(
         "WS044",
         format!(
@@ -1803,7 +1931,12 @@ pub(super) fn is_immutable_container(ctx: &LowerCtx, node: NodeId) -> bool {
             continue;
         }
         let feeds = crate::lower::ordered::feeds_of(ctx, id);
-        stack.extend(feeds.into_iter().filter(|(port, _)| passes(*port)).map(|(_, src)| src.node_id));
+        stack.extend(
+            feeds
+                .into_iter()
+                .filter(|(port, _)| passes(*port))
+                .map(|(_, src)| src.node_id),
+        );
     }
     false
 }
@@ -1899,7 +2032,13 @@ pub(super) fn lower_record_map_key_value(
     let fields = resolve_record_columns(ctx, Columns::Map, base)?;
     ctx.current_exec?;
     let key_port = lower_expr(ctx, key);
-    Some(record_column_read(ctx, Columns::Map, &fields, key_port, range))
+    Some(record_column_read(
+        ctx,
+        Columns::Map,
+        &fields,
+        key_port,
+        range,
+    ))
 }
 
 /// Fan a record-map method across the parallel per-field maps. `set` decomposes
@@ -2156,14 +2295,21 @@ pub(super) fn lower_record_array_index_value(
     let fields = resolve_record_columns(ctx, Columns::Array, base)?;
     ctx.current_exec?;
     let index_port = lower_expr(ctx, index);
-    Some(record_column_read(ctx, Columns::Array, &fields, index_port, range))
+    Some(record_column_read(
+        ctx,
+        Columns::Array,
+        &fields,
+        index_port,
+        range,
+    ))
 }
 
 /// A fresh, unbound `Pseudo_ArrayVar` scratch gate of element type `elem` (for
 /// the multi-pass record sort's key copies). Not bound in scope — only its ref
 /// port is wired.
 fn make_scratch_array(ctx: &mut LowerCtx, elem: &Type, range: &SourceRange) -> PortRef {
-    make_array_var_gate(ctx, elem, HashMap::default(), range, Some("sort key copy")).port(WirePort::ArrayVarRef)
+    make_array_var_gate(ctx, elem, HashMap::default(), range, Some("sort key copy"))
+        .port(WirePort::ArrayVarRef)
 }
 
 /// `soa.field.sort(descending?)` on a record array: sort the WHOLE record by
@@ -2214,7 +2360,15 @@ pub(super) fn lower_record_array_field_sort(
         if let Some(dp) = desc_port {
             extra.push((WirePort::BDescending, Type::Bool, dp));
         }
-        return Some(array_exec_op(ctx, range, key_ref, gc::ARRAY_SORT, extra, vec![], WirePort::ExecOut));
+        return Some(array_exec_op(
+            ctx,
+            range,
+            key_ref,
+            gc::ARRAY_SORT,
+            extra,
+            vec![],
+            WirePort::ExecOut,
+        ));
     }
 
     let groups: Vec<&[VarRecord]> = parallels.chunks(REFS.len()).collect();
@@ -2229,7 +2383,11 @@ pub(super) fn lower_record_array_field_sort(
             range,
             scratch,
             gc::ARRAY_COPY_FROM,
-            vec![(WirePort::SourceRef, Type::Array(Box::new(Type::Any)), key_ref)],
+            vec![(
+                WirePort::SourceRef,
+                Type::Array(Box::new(Type::Any)),
+                key_ref,
+            )],
             vec![],
             WirePort::ExecOut,
         );
@@ -2239,7 +2397,11 @@ pub(super) fn lower_record_array_field_sort(
     for (gi, group) in groups.iter().enumerate() {
         let mut extra: Vec<(WirePort, Type, PortRef)> = Vec::new();
         for (i, p) in group.iter().enumerate() {
-            extra.push((REFS[i], Type::Array(Box::new(Type::Any)), p.node_id.port(WirePort::ArrayVarRef)));
+            extra.push((
+                REFS[i],
+                Type::Array(Box::new(Type::Any)),
+                p.node_id.port(WirePort::ArrayVarRef),
+            ));
         }
         if let Some(dp) = desc_port {
             extra.push((WirePort::BDescending, Type::Bool, dp));
@@ -2473,14 +2635,20 @@ pub(super) fn lower_map_method(
 ) -> PortRef {
     let kind = match ContainerKind::of(&map_type) {
         Some(k @ ContainerKind::Map { .. }) => k,
-        _ => ContainerKind::Map { key: Type::Any, value: Type::Any },
+        _ => ContainerKind::Map {
+            key: Type::Any,
+            value: Type::Any,
+        },
     };
     lower_container_method(ctx, map_ref, &kind, method, args, range, e)
 }
 
 /// The table entry for `method` on a receiver of `kind`: its gate, whether it
 /// changes the receiver, and how it lowers.
-fn container_method_entry(kind: &ContainerKind, method: &str) -> Option<(&'static str, bool, &'static Lowering)> {
+fn container_method_entry(
+    kind: &ContainerKind,
+    method: &str,
+) -> Option<(&'static str, bool, &'static Lowering)> {
     match kind {
         ContainerKind::Array { .. } => {
             crate::catalog::arrays::array_method(method).map(|m| (m.gate, m.mutates, &m.lowering))
@@ -2526,7 +2694,8 @@ fn lower_container_method_inner(
     let Some((gate, mutates, lowering)) = container_method_entry(kind, method) else {
         return synthesise_unsupported(ctx, e);
     };
-    if reject_const_container_mutation(ctx, recv.node_id, mutates, &format!("`.{method}()`"), range) {
+    if reject_const_container_mutation(ctx, recv.node_id, mutates, &format!("`.{method}()`"), range)
+    {
         return synthesise_unsupported(ctx, e);
     }
     // `exec = <trigger>` named arg: drive the op off an explicit trigger instead
@@ -2573,7 +2742,13 @@ fn lower_container_method_inner(
         };
         // A destination array is refilled.
         if matches!(spec.kind, ArgKind::DestArray(_))
-            && reject_const_container_mutation(ctx, port.node_id, true, &format!("`.{method}()`"), range)
+            && reject_const_container_mutation(
+                ctx,
+                port.node_id,
+                true,
+                &format!("`.{method}()`"),
+                range,
+            )
         {
             return synthesise_unsupported_no_warn(ctx, range);
         }
@@ -2586,7 +2761,12 @@ fn lower_container_method_inner(
         .collect();
     let exprs: Vec<&Expr> = values.iter().map(|&(_, x)| x).collect();
     let ports = lower_in_order(ctx, &exprs);
-    inputs.extend(values.iter().zip(ports).map(|(&(i, _), port)| (specs[i].port, port)));
+    inputs.extend(
+        values
+            .iter()
+            .zip(ports)
+            .map(|(&(i, _), port)| (specs[i].port, port)),
+    );
     emit_container_op(ctx, range, recv, kind, gate, lowering, inputs)
 }
 
@@ -2594,7 +2774,10 @@ fn lower_container_method_inner(
 /// order, then named ones by name (`exec =` is the trigger, not an argument).
 /// Returns `(spec index, expr)` in source order, or `None` when a required
 /// argument is missing.
-fn bind_method_args<'a>(specs: &[MethodArg], args: &'a [CallArg]) -> Option<Vec<(usize, &'a Expr)>> {
+fn bind_method_args<'a>(
+    specs: &[MethodArg],
+    args: &'a [CallArg],
+) -> Option<Vec<(usize, &'a Expr)>> {
     let mut taken = vec![false; specs.len()];
     let mut bound = Vec::new();
     let mut next = 0;
@@ -2640,10 +2823,20 @@ pub(super) fn emit_container_op(
     lowering: &Lowering,
     mut inputs: Vec<(WirePort, PortRef)>,
 ) -> PortRef {
-    let Lowering::Generic { args: specs, result, port_types } = lowering else {
+    let Lowering::Generic {
+        args: specs,
+        result,
+        port_types,
+    } = lowering
+    else {
         unreachable!("a Custom container method has no generic gate")
     };
-    let spec_index = |port: WirePort| specs.iter().position(|s| s.port == port).unwrap_or(usize::MAX);
+    let spec_index = |port: WirePort| {
+        specs
+            .iter()
+            .position(|s| s.port == port)
+            .unwrap_or(usize::MAX)
+    };
     inputs.sort_by_key(|&(port, _)| spec_index(port));
     let declared = |port: WirePort| -> Type {
         if let Some((_, t)) = port_types.iter().find(|(p, _)| *p == port) {
@@ -2654,12 +2847,18 @@ pub(super) fn emit_container_op(
             .find(|s| s.port == port)
             .map_or(Type::Any, |s| s.port_type(kind))
     };
-    let extra_in: Vec<(WirePort, Type, PortRef)> =
-        inputs.into_iter().map(|(port, src)| (port, declared(port), src)).collect();
+    let extra_in: Vec<(WirePort, Type, PortRef)> = inputs
+        .into_iter()
+        .map(|(port, src)| (port, declared(port), src))
+        .collect();
     let extra_out = crate::catalog::methods::gate_outputs(gate, kind, *result, port_types);
     match kind {
-        ContainerKind::Array { .. } => array_exec_op(ctx, range, recv, gate, extra_in, extra_out, *result),
-        ContainerKind::Map { .. } => map_exec_op(ctx, range, recv, gate, extra_in, extra_out, *result),
+        ContainerKind::Array { .. } => {
+            array_exec_op(ctx, range, recv, gate, extra_in, extra_out, *result)
+        }
+        ContainerKind::Map { .. } => {
+            map_exec_op(ctx, range, recv, gate, extra_in, extra_out, *result)
+        }
     }
 }
 
@@ -2668,7 +2867,12 @@ pub(super) fn emit_container_op(
 /// or a trailing bool positional) sets `bDescending`. A record array argument
 /// is sorted along as every one of its columns. Variadic, so it has no
 /// argument list in the table.
-fn lower_sort_multiple(ctx: &mut LowerCtx, array_ref: PortRef, args: &[CallArg], range: &SourceRange) -> PortRef {
+fn lower_sort_multiple(
+    ctx: &mut LowerCtx,
+    array_ref: PortRef,
+    args: &[CallArg],
+    range: &SourceRange,
+) -> PortRef {
     const REFS: [WirePort; 7] = [
         WirePort::ArrayVarRef2,
         WirePort::ArrayVarRef3,
@@ -2681,7 +2885,10 @@ fn lower_sort_multiple(ctx: &mut LowerCtx, array_ref: PortRef, args: &[CallArg],
     let mut ports: Vec<PortRef> = Vec::new();
     let mut array_args = 0;
     let mut descending: Option<&Expr> = None;
-    let positional = args.iter().filter(|a| matches!(a, CallArg::Positional(_))).count();
+    let positional = args
+        .iter()
+        .filter(|a| matches!(a, CallArg::Positional(_)))
+        .count();
     let mut seen = 0;
     for a in args {
         match a {
@@ -2713,7 +2920,13 @@ fn lower_sort_multiple(ctx: &mut LowerCtx, array_ref: PortRef, args: &[CallArg],
                 }
                 // The gate reorders every parallel array along with the key.
                 for port in &arg_ports {
-                    if reject_const_container_mutation(ctx, port.node_id, true, "`.sortMultiple()`", expr.range()) {
+                    if reject_const_container_mutation(
+                        ctx,
+                        port.node_id,
+                        true,
+                        "`.sortMultiple()`",
+                        expr.range(),
+                    ) {
                         return synthesise_unsupported_no_warn(ctx, range);
                     }
                 }
@@ -2791,9 +3004,13 @@ pub(super) fn lower_array_set(
         report_unresolved_container(ctx, unresolved, range);
         return;
     };
-    let Some(ContainerSource::Ref(array_ref)) =
-        container_ref(ctx, obj, &ContainerKind::Array { elem: elem_ty.clone() })
-    else {
+    let Some(ContainerSource::Ref(array_ref)) = container_ref(
+        ctx,
+        obj,
+        &ContainerKind::Array {
+            elem: elem_ty.clone(),
+        },
+    ) else {
         report_unresolved_container(ctx, unresolved, range);
         return;
     };
@@ -2801,7 +3018,9 @@ pub(super) fn lower_array_set(
     // (`cur[0] = v` on `var cur: *int[]`) still holds the same ref.
     let var_name = match obj {
         Expr::Ident { name, .. }
-            if ctx.lookup_var(name).is_some_and(|v| v.storage == VarStorage::Array) =>
+            if ctx
+                .lookup_var(name)
+                .is_some_and(|v| v.storage == VarStorage::Array) =>
         {
             name.clone()
         }
@@ -2822,7 +3041,10 @@ pub(super) fn lower_array_set(
         range,
         array_ref,
         gc::ARRAY_SET_AT_INDEX,
-        vec![(WirePort::Index, Type::Int, index_port), (WirePort::Value, elem_ty, value_port)],
+        vec![
+            (WirePort::Index, Type::Int, index_port),
+            (WirePort::Value, elem_ty, value_port),
+        ],
         vec![],
         WirePort::ExecOut,
         Some("array set"),

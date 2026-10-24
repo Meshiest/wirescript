@@ -228,7 +228,11 @@ fn edge_label(m: &Module, src: NodeId, dst: NodeId) -> String {
         .iter()
         .find(|w| w.source.node_id == src && w.target.node_id == dst)
     {
-        Some(w) => format!("--[{} -> {}]--> ", w.source.port.as_str(), w.target.port.as_str()),
+        Some(w) => format!(
+            "--[{} -> {}]--> ",
+            w.source.port.as_str(),
+            w.target.port.as_str()
+        ),
         None => "-> ".to_string(),
     }
 }
@@ -236,10 +240,7 @@ fn edge_label(m: &Module, src: NodeId, dst: NodeId) -> String {
 /// Strip the noisy `BrickComponentType_*` prefix so the trace reads
 /// `Expr_MathAdd` instead of `BrickComponentType_Expr_MathAdd`.
 fn short_class(class: &str) -> &str {
-    for prefix in [
-        "BrickComponentType_Internal_",
-        "BrickComponentType_",
-    ] {
+    for prefix in ["BrickComponentType_Internal_", "BrickComponentType_"] {
         if let Some(rest) = class.strip_prefix(prefix) {
             return rest;
         }

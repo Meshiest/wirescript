@@ -6,17 +6,17 @@ use crate::lexer::{InterpPart as LexInterpPart, Token, TokenKind, TokenValue, le
 
 use crate::collections::HashMap;
 
-mod types;
 mod desugar;
+mod types;
 use desugar::*;
 mod anns;
 use anns::set_style;
 mod expr;
 mod handler;
 use handler::*;
-mod stmt;
 mod decl;
 mod pattern;
+mod stmt;
 
 /// Doc comments keyed by the file and the start offset of the declaration
 /// they precede.
@@ -532,7 +532,6 @@ impl<'a> Parser<'a> {
             imports: Default::default(),
         }
     }
-
 }
 
 #[cfg(test)]

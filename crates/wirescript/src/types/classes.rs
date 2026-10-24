@@ -12,7 +12,12 @@ pub fn class_mask(name: &str) -> Option<Vec<Type>> {
     Some(match name {
         "Scalar" => vec![Type::Int, Type::Float],
         "Numeric" => vec![
-            Type::Int, Type::Float, Type::Vector, Type::Rotator, Type::Quat, Type::Color,
+            Type::Int,
+            Type::Float,
+            Type::Vector,
+            Type::Rotator,
+            Type::Quat,
+            Type::Color,
         ],
         "Variant" => variant_mask(),
         _ => return None,
@@ -22,8 +27,17 @@ pub fn class_mask(name: &str) -> Option<Vec<Type>> {
 /// All wire value variants — the maximal mask (`Variant` / unbounded `<T>`).
 pub fn variant_mask() -> Vec<Type> {
     vec![
-        Type::Bool, Type::Int, Type::Float, Type::String, Type::Vector, Type::Rotator,
-        Type::Quat, Type::Color, Type::Entity, Type::Character, Type::Controller,
+        Type::Bool,
+        Type::Int,
+        Type::Float,
+        Type::String,
+        Type::Vector,
+        Type::Rotator,
+        Type::Quat,
+        Type::Color,
+        Type::Entity,
+        Type::Character,
+        Type::Controller,
     ]
 }
 

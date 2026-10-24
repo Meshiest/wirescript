@@ -23,10 +23,14 @@ pub(in crate::lower) fn lowered_arg_type(ctx: &LowerCtx, e: &Expr) -> Type {
     let recorded = || ctx.type_of(e);
     let binding = match e {
         Expr::Ident { name, .. } => ctx.scope.get(name),
-        Expr::FieldAccess { .. } | Expr::TuplePick { .. } if !ctx.mono_stack.is_empty() => resolve_field_chain(ctx, e),
+        Expr::FieldAccess { .. } | Expr::TuplePick { .. } if !ctx.mono_stack.is_empty() => {
+            resolve_field_chain(ctx, e)
+        }
         _ => None,
     };
-    binding.and_then(|b| binding_lowered_type(ctx, b, recorded)).unwrap_or_else(recorded)
+    binding
+        .and_then(|b| binding_lowered_type(ctx, b, recorded))
+        .unwrap_or_else(recorded)
 }
 
 /// The type a name's binding lowers to. A container binding records its
@@ -53,7 +57,9 @@ fn binding_lowered_type(ctx: &LowerCtx, b: &Binding, recorded: impl Fn() -> Type
         Binding::DynRef(d) => storage_type(d.storage, &d.inner_type),
         Binding::Input(i) => i.ty.clone(),
         Binding::Buffer(b) => b.ty.clone(),
-        Binding::Record(fields) if !ctx.mono_stack.is_empty() => return Some(refine_record(ctx, &recorded(), fields)),
+        Binding::Record(fields) if !ctx.mono_stack.is_empty() => {
+            return Some(refine_record(ctx, &recorded(), fields));
+        }
         _ => return None,
     };
     let recorded = recorded();
@@ -127,9 +133,11 @@ fn refine_record(
     template: &Type,
     fields: &HashMap<crate::intern::Sym, Binding>,
 ) -> Type {
-    refine_fields(template, |name, ft| match fields.get(&crate::intern::intern(name))? {
-        Binding::Record(inner) => Some(refine_record(ctx, ft, inner)),
-        other => binding_lowered_type(ctx, other, || ft.clone()),
+    refine_fields(template, |name, ft| {
+        match fields.get(&crate::intern::intern(name))? {
+            Binding::Record(inner) => Some(refine_record(ctx, ft, inner)),
+            other => binding_lowered_type(ctx, other, || ft.clone()),
+        }
     })
 }
 
@@ -146,14 +154,25 @@ pub(super) fn mono_frame(
     positional_args: &[&Expr],
     type_args: &[TypeExpr],
 ) -> Option<MonoFrame> {
-    let key = (call.file.clone(), call.start.offset, call.end.offset, ctx.resolution_subst.clone());
-    let params: Vec<String> = chip_decl.type_params.iter().map(|tp| tp.name.clone()).collect();
+    let key = (
+        call.file.clone(),
+        call.start.offset,
+        call.end.offset,
+        ctx.resolution_subst.clone(),
+    );
+    let params: Vec<String> = chip_decl
+        .type_params
+        .iter()
+        .map(|tp| tp.name.clone())
+        .collect();
     match ctx.resolutions.call_type_args.get(&key) {
         Some(args) => {
             let subst = params.iter().cloned().zip(args.iter().cloned()).collect();
             Some(MonoFrame::of(chip_decl, params, subst))
         }
-        None if ctx.template_build => Some(inferred_frame(ctx, chip_decl, positional_args, type_args)),
+        None if ctx.template_build => {
+            Some(inferred_frame(ctx, chip_decl, positional_args, type_args))
+        }
         None => None,
     }
 }
@@ -161,20 +180,30 @@ pub(super) fn mono_frame(
 /// Whether typecheck checked `chip_decl`'s body under `body_subst`. A body
 /// under the empty key is checked once with no instantiation to miss, and a
 /// template build lowers generic bodies typecheck checked under other keys.
-pub(super) fn instantiation_checked(ctx: &LowerCtx, chip_decl: &ChipDecl, body_subst: &Arc<[Type]>) -> bool {
+pub(super) fn instantiation_checked(
+    ctx: &LowerCtx,
+    chip_decl: &ChipDecl,
+    body_subst: &Arc<[Type]>,
+) -> bool {
     let r = &chip_decl.range;
     body_subst.is_empty()
         || ctx.template_build
-        || ctx
-            .resolutions
-            .checked_bodies
-            .contains(&(r.file.clone(), r.start.offset, r.end.offset, body_subst.clone()))
+        || ctx.resolutions.checked_bodies.contains(&(
+            r.file.clone(),
+            r.start.offset,
+            r.end.offset,
+            body_subst.clone(),
+        ))
 }
 
 /// An internal error at `call` for an instantiation of `chip_decl` typecheck
 /// never checked, whose types lowering has no record of. Typecheck checks
 /// every instantiation a call it accepted demands, so this is a compiler bug.
-pub(super) fn report_unchecked_instantiation(ctx: &mut LowerCtx, chip_decl: &ChipDecl, call: &SourceRange) -> PortRef {
+pub(super) fn report_unchecked_instantiation(
+    ctx: &mut LowerCtx,
+    chip_decl: &ChipDecl,
+    call: &SourceRange,
+) -> PortRef {
     ctx.diagnostics.push(Diagnostic::error(
         crate::diagnostic::INTERNAL_ERROR,
         format!(
@@ -216,14 +245,22 @@ fn inferred_frame(
     }
     // Aliases resolve so a `Box<T>` param is the record it names and its `T`
     // unifies with the argument's field.
-    let own_param = |name: &str, _: &SourceRange| param_names.iter().any(|p| p == name).then(|| Type::Param(name.to_string()));
+    let own_param = |name: &str, _: &SourceRange| {
+        param_names
+            .iter()
+            .any(|p| p == name)
+            .then(|| Type::Param(name.to_string()))
+    };
     let mut param_types = Vec::new();
     let mut arg_types = Vec::new();
     for (i, param) in chip_decl.inputs.iter().enumerate() {
         let Some(arg_expr) = positional_args.get(i) else {
             continue;
         };
-        param_types.push(ctx.declared_types_at(param.typ.range()).resolve_scoped(&param.typ, &own_param));
+        param_types.push(
+            ctx.declared_types_at(param.typ.range())
+                .resolve_scoped(&param.typ, &own_param),
+        );
         arg_types.push(lowered_arg_type(ctx, arg_expr));
     }
     let masks: Vec<(String, Vec<Type>)> = chip_decl
@@ -232,14 +269,15 @@ fn inferred_frame(
         .map(|tp| {
             (
                 tp.name.clone(),
-                crate::types::mono::mask_for_param(tp.bound.as_ref(), &|te| ctx.declared_types_at(te.range()).resolve(te)),
+                crate::types::mono::mask_for_param(tp.bound.as_ref(), &|te| {
+                    ctx.declared_types_at(te.range()).resolve(te)
+                }),
             )
         })
         .collect();
     let subst = crate::types::mono::infer_call_subst(&param_types, &arg_types, &masks);
     MonoFrame::of(chip_decl, param_names, subst)
 }
-
 
 /// Canonical cache/template key for one generic-chip instantiation: the chip
 /// name plus the concrete type each type param resolves to under this call's

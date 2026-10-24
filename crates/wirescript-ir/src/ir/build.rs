@@ -1,14 +1,13 @@
 use crate::collections::HashMap;
 use std::sync::Arc;
 
+use super::gate_class as gc;
 use crate::diagnostic::SourceRange;
 use crate::intern::{Sym, sym};
 use crate::ir::port_registry::WirePort;
 use crate::ir::{
-    GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, ROOT_SCOPE_ID, ScopeId,
-    Type, Wire,
+    GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, ROOT_SCOPE_ID, ScopeId, Type, Wire,
 };
-use super::gate_class as gc;
 
 pub struct ModuleBuilder {
     pub module: Module,
@@ -42,7 +41,13 @@ impl ModuleBuilder {
 
     /// A chip pin of `kind` (`Input` or `Output`) carrying `ty`, labelled
     /// `port_name` and appended to the module's input or output list.
-    pub fn add_pin(&mut self, kind: NodeKind, port_name: &str, ty: Type, source_range: SourceRange) -> NodeId {
+    pub fn add_pin(
+        &mut self,
+        kind: NodeKind,
+        port_name: &str,
+        ty: Type,
+        source_range: SourceRange,
+    ) -> NodeId {
         self.add_pin_with_id(NodeId::fresh(), kind, port_name, ty, source_range)
     }
 
@@ -57,8 +62,18 @@ impl ModuleBuilder {
     ) -> NodeId {
         let mut properties = HashMap::default();
         properties.insert(*sym::PORT_LABEL, Literal::String(port_name.into()));
-        let gate_class = if kind == NodeKind::Input { gc::MICROCHIP_INPUT } else { gc::MICROCHIP_OUTPUT };
-        let opts = AddNodeOpts { gate_class, source_range, ports: GateIO::pin(ty), properties, ..Default::default() };
+        let gate_class = if kind == NodeKind::Input {
+            gc::MICROCHIP_INPUT
+        } else {
+            gc::MICROCHIP_OUTPUT
+        };
+        let opts = AddNodeOpts {
+            gate_class,
+            source_range,
+            ports: GateIO::pin(ty),
+            properties,
+            ..Default::default()
+        };
         self.add_node_with_id(id, kind, opts);
         if kind == NodeKind::Input {
             self.module.inputs.push(id);

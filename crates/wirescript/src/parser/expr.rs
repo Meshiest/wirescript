@@ -186,7 +186,10 @@ impl<'a> Parser<'a> {
             self.leave_nesting(levels);
             self.binary_top_op = None;
             let t = self.peek().clone();
-            return Expr::Ident { name: String::new(), range: self.make_range(t.start, t.end) };
+            return Expr::Ident {
+                name: String::new(),
+                range: self.make_range(t.start, t.end),
+            };
         }
         let mut lhs = self.parse_prefix();
         // The operator of the `BinOp` this call last built around `lhs`; a
@@ -208,9 +211,7 @@ impl<'a> Parser<'a> {
             // continuation — a line that STARTS with `*` (getting here only
             // by skipping a newline to find it) is the latter, so stop the
             // expression here instead of consuming it.
-            if skipped_newline
-                && tok.kind == TokenKind::Op
-                && (tok.text == "*" || tok.text == "**")
+            if skipped_newline && tok.kind == TokenKind::Op && (tok.text == "*" || tok.text == "**")
             {
                 self.pos = saved;
                 break;
@@ -237,7 +238,10 @@ impl<'a> Parser<'a> {
                 // write it, then read it as that (`(v as entity).GetLocation()`)
                 // so the one mistake gives one error.
                 if self.peek().kind == TokenKind::LParen
-                    && let TypeExpr::Name { name, range: ty_range } = &ty
+                    && let TypeExpr::Name {
+                        name,
+                        range: ty_range,
+                    } = &ty
                     && let Some((head, method)) = name.rsplit_once('.')
                 {
                     self.error(
@@ -251,7 +255,10 @@ impl<'a> Parser<'a> {
                     let start = lhs.range().start;
                     let cast = Expr::As {
                         value: Box::new(lhs),
-                        ty: TypeExpr::Name { name: head.to_string(), range: ty_range.clone() },
+                        ty: TypeExpr::Name {
+                            name: head.to_string(),
+                            range: ty_range.clone(),
+                        },
                         range: self.make_range(start, ty_range.end),
                     };
                     let call = Expr::FieldAccess {
@@ -265,7 +272,11 @@ impl<'a> Parser<'a> {
                 }
                 let start = lhs.range().start;
                 let end = ty.range().end;
-                lhs = Expr::As { value: Box::new(lhs), ty, range: self.make_range(start, end) };
+                lhs = Expr::As {
+                    value: Box::new(lhs),
+                    ty,
+                    range: self.make_range(start, end),
+                };
                 lhs_op = None;
                 if !self.enter_nesting() {
                     break;
@@ -334,10 +345,20 @@ impl<'a> Parser<'a> {
             // is `code & (4 == 4)`: it tests bit 1, never bit 4. Unparenthesized,
             // that is almost always a mistake (WS117, a warning).
             let is_comparison = |o: &Option<String>| {
-                matches!(o.as_deref(), Some("==" | "!=" | "<" | "<=" | ">" | ">=" | "is"))
+                matches!(
+                    o.as_deref(),
+                    Some("==" | "!=" | "<" | "<=" | ">" | ">=" | "is")
+                )
             };
-            if matches!(tok.text.as_str(), "&" | "|" | "^") && (is_comparison(&lhs_op) || is_comparison(&rhs_op)) {
-                let cmp = if is_comparison(&rhs_op) { rhs_op.as_deref() } else { lhs_op.as_deref() }.unwrap_or("==");
+            if matches!(tok.text.as_str(), "&" | "|" | "^")
+                && (is_comparison(&lhs_op) || is_comparison(&rhs_op))
+            {
+                let cmp = if is_comparison(&rhs_op) {
+                    rhs_op.as_deref()
+                } else {
+                    lhs_op.as_deref()
+                }
+                .unwrap_or("==");
                 self.warn_code(
                     "WS117",
                     format!(
@@ -620,7 +641,8 @@ impl<'a> Parser<'a> {
                     self.advance();
                     let mut args: Vec<CallArg> = Vec::new();
                     self.eat_newlines();
-                    while !self.check(TokenKind::RParen, None) && self.peek().kind != TokenKind::Eof {
+                    while !self.check(TokenKind::RParen, None) && self.peek().kind != TokenKind::Eof
+                    {
                         args.push(self.parse_call_arg_delimited());
                         self.eat_newlines();
                         if self.match_tok(TokenKind::Comma, None).is_none() {
@@ -1050,7 +1072,9 @@ impl<'a> Parser<'a> {
     /// `[ … ]:` computed key.
     fn looks_like_map_lit(&self) -> bool {
         let get = |idx: usize| -> &Token {
-            self.tokens.get(idx).unwrap_or_else(|| self.tokens.last().unwrap())
+            self.tokens
+                .get(idx)
+                .unwrap_or_else(|| self.tokens.last().unwrap())
         };
         let mut i = self.pos + 1; // after `{`
         while get(i).kind == TokenKind::Newline {
@@ -1082,9 +1106,7 @@ impl<'a> Parser<'a> {
         if first.kind == TokenKind::RBrace {
             return false; // empty `{}` — not a map (defensive; call site routes it to record)
         }
-        if first.kind == TokenKind::Kw
-            && matches!(first.text.as_str(), "let" | "var" | "static")
-        {
+        if first.kind == TokenKind::Kw && matches!(first.text.as_str(), "let" | "var" | "static") {
             return false; // block-expr statement leader — never a map key
         }
         // Scan to the matching `}` at brace depth 0; a top-level `=>` ⇒ map.
@@ -1112,7 +1134,10 @@ impl<'a> Parser<'a> {
             j += 1;
         }
         // Colon literal-key form: first token is a str/atom/int then `:`.
-        if matches!(first.kind, TokenKind::Str | TokenKind::StrInterp | TokenKind::Atom | TokenKind::Int) {
+        if matches!(
+            first.kind,
+            TokenKind::Str | TokenKind::StrInterp | TokenKind::Atom | TokenKind::Int
+        ) {
             let mut k = i + 1;
             while get(k).kind == TokenKind::Newline {
                 k += 1;
@@ -1240,16 +1265,26 @@ impl<'a> Parser<'a> {
             return false;
         }
         let mut i = self.pos + 1;
-        while self.tokens.get(i).is_some_and(|t| t.kind == TokenKind::Newline) {
+        while self
+            .tokens
+            .get(i)
+            .is_some_and(|t| t.kind == TokenKind::Newline)
+        {
             i += 1;
         }
         let mut j = i + 1;
-        while self.tokens.get(j).is_some_and(|t| t.kind == TokenKind::Newline) {
+        while self
+            .tokens
+            .get(j)
+            .is_some_and(|t| t.kind == TokenKind::Newline)
+        {
             j += 1;
         }
         match (self.tokens.get(i), self.tokens.get(j)) {
             (Some(first), _) if first.kind == TokenKind::RBrace => false,
-            (Some(first), Some(next)) if first.kind == TokenKind::Ident => next.kind != TokenKind::RBrace,
+            (Some(first), Some(next)) if first.kind == TokenKind::Ident => {
+                next.kind != TokenKind::RBrace
+            }
             _ => true,
         }
     }

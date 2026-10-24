@@ -19,7 +19,10 @@ fn ns_let_member(ty: Option<Type>, range: &SourceRange, name: &str) -> NsDeclInf
 /// Field `name` of `t`, when `t` is a known record that has it.
 fn ns_record_field(t: Option<&Type>, name: &str) -> Option<Type> {
     match t? {
-        Type::Record(fields) => fields.iter().find(|(k, _)| k == name).map(|(_, ft)| ft.clone()),
+        Type::Record(fields) => fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, ft)| ft.clone()),
         _ => None,
     }
 }
@@ -69,11 +72,9 @@ fn ns_value_type(
         }
         Expr::RecordLit { fields, .. } => {
             let mut rec: Vec<(String, Type)> = Vec::new();
-            let mut set = |name: &str, ty: Type| {
-                match rec.iter_mut().find(|(n, _)| n == name) {
-                    Some(existing) => existing.1 = ty,
-                    None => rec.push((name.to_string(), ty)),
-                }
+            let mut set = |name: &str, ty: Type| match rec.iter_mut().find(|(n, _)| n == name) {
+                Some(existing) => existing.1 = ty,
+                None => rec.push((name.to_string(), ty)),
             };
             for f in fields {
                 match f {
@@ -81,14 +82,16 @@ fn ns_value_type(
                         set(name, ns_value_type(ns_map, outer, value)?)
                     }
                     RecordLitField::Shorthand { name, .. } => set(name, member(name)?),
-                    RecordLitField::Spread { value, .. } => match ns_value_type(ns_map, outer, value)? {
-                        Type::Record(inner) => {
-                            for (n, ty) in inner {
-                                set(&n, ty);
+                    RecordLitField::Spread { value, .. } => {
+                        match ns_value_type(ns_map, outer, value)? {
+                            Type::Record(inner) => {
+                                for (n, ty) in inner {
+                                    set(&n, ty);
+                                }
                             }
+                            _ => return None,
                         }
-                        _ => return None,
-                    },
+                    }
                 }
             }
             Some(Type::Record(rec))
@@ -266,7 +269,9 @@ fn register_port_site(ctx: &mut TypeCheckCtx, o: &OutBinding, always_live: bool)
     // tuple-shaped one is not registered: the annotation states that shape
     // when there is one, the value states it otherwise. Registering it would
     // let a bare read type-check and then lower to nothing. WS002 instead.
-    if resolved.as_ref().is_some_and(port_dissolves_into_field_pins)
+    if resolved
+        .as_ref()
+        .is_some_and(port_dissolves_into_field_pins)
         || o.value.as_ref().is_some_and(value_needs_more_than_one_wire)
     {
         return;
@@ -402,9 +407,14 @@ pub(super) fn register_anon_chip_decls(ctx: &mut TypeCheckCtx, stmts: &[Stmt]) {
         }
         if let Some((name, range)) = anon_chip_storage_decl(s)
             && ctx.scope.depth() == 1
-            && let Some(sym) = ctx.scope.lookup(name).filter(|sym| &sym.decl_range == range).cloned()
+            && let Some(sym) = ctx
+                .scope
+                .lookup(name)
+                .filter(|sym| &sym.decl_range == range)
+                .cloned()
         {
-            ctx.anon_chip_storage.insert((range.file.clone(), range.start.offset), sym);
+            ctx.anon_chip_storage
+                .insert((range.file.clone(), range.start.offset), sym);
         }
     }
     register_anon_chip_outputs(ctx, stmts);
@@ -687,7 +697,10 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             if c.is_self_receiver()
                 && let Some(recv) = params.first().map(|p| p.ty.clone())
                 && let Some(builtin_recv) = find_call(&c.name).and_then(|b| b.receiver.clone())
-                && matches!(coerce(&recv, &builtin_recv), CoerceRule::Same | CoerceRule::Coerce)
+                && matches!(
+                    coerce(&recv, &builtin_recv),
+                    CoerceRule::Same | CoerceRule::Coerce
+                )
             {
                 ctx.emit(
                     "WS035",
@@ -990,7 +1003,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             .collect();
                         let signature = Some({
                             let sig = FnOrChipSig {
-                                required: c.inputs.iter().take_while(|p| p.default.is_none()).count(),
+                                required: c
+                                    .inputs
+                                    .iter()
+                                    .take_while(|p| p.default.is_none())
+                                    .count(),
                                 params: params.clone(),
                                 variadic: c.rest.is_some(),
                                 outputs: c
@@ -1005,7 +1022,9 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 type_params: c
                                     .type_params
                                     .iter()
-                                    .map(|tp| (tp.name.clone(), super::resolve::type_param_mask(ctx, tp)))
+                                    .map(|tp| {
+                                        (tp.name.clone(), super::resolve::type_param_mask(ctx, tp))
+                                    })
                                     .collect(),
                                 is_fn: c.is_fn,
                             };
@@ -1019,7 +1038,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             NsDeclInfo {
                                 kind: SymbolKind::Chip,
                                 return_type,
-                                outputs: c.outputs.iter().map(|o| (o.name.clone(), o.typ.clone())).collect(),
+                                outputs: c
+                                    .outputs
+                                    .iter()
+                                    .map(|o| (o.name.clone(), o.typ.clone()))
+                                    .collect(),
                                 params,
                                 value_type: None,
                                 let_decl: None,
@@ -1042,7 +1065,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             NsDeclInfo {
                                 kind: SymbolKind::Fn,
                                 return_type: f.return_type.clone(),
-                                outputs: f.return_type.iter().map(|t| ("_".to_string(), t.clone())).collect(),
+                                outputs: f
+                                    .return_type
+                                    .iter()
+                                    .map(|t| ("_".to_string(), t.clone()))
+                                    .collect(),
                                 params,
                                 value_type: None,
                                 let_decl: None,
@@ -1169,7 +1196,10 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             SymbolInfo {
                                 kind: SymbolKind::Type,
                                 name: qualified.clone(),
-                                ty: Type::Enum { name: e.name.clone(), args: vec![] },
+                                ty: Type::Enum {
+                                    name: e.name.clone(),
+                                    args: vec![],
+                                },
                                 decl_range: e.range.clone(),
                                 signature: None,
                                 event_data: None,
@@ -1302,12 +1332,22 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
 /// the builtin is what that name means wherever a type is written, so the
 /// declaration would never be read. Any other builtin generic name (`Map`) is
 /// the user declaration's wherever the program declares one.
-fn reject_builtin_type_name(ctx: &mut TypeCheckCtx, what: &str, name: &str, type_params: usize, range: &SourceRange) {
+fn reject_builtin_type_name(
+    ctx: &mut TypeCheckCtx,
+    what: &str,
+    name: &str,
+    type_params: usize,
+    range: &SourceRange,
+) {
     let spelled = matches!(name, "Array" | "Ref") && type_params == 1;
     if crate::types::resolve::primitive(name).is_none() && !spelled {
         return;
     }
-    if ctx.diagnostics.iter().any(|d| d.code == "WS107" && d.range == *range) {
+    if ctx
+        .diagnostics
+        .iter()
+        .any(|d| d.code == "WS107" && d.range == *range)
+    {
         return;
     }
     let message = if spelled {

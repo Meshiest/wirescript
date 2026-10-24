@@ -9,11 +9,17 @@ use crate::types::mono::unwrap_ref;
 /// its first output as the trigger, so a misspelt or removed exec field (a
 /// dialog's old `NoClicked`) would compile to the wrong wire.
 fn check_field_trigger(ctx: &mut TypeCheckCtx, obj: &str, field: &str, range: &SourceRange) {
-    let Some(sym) = ctx.scope.lookup(obj) else { return };
+    let Some(sym) = ctx.scope.lookup(obj) else {
+        return;
+    };
     if let Type::Record(fields) | Type::Outputs(fields) = unwrap_ref(&sym.ty)
         && !fields.iter().any(|(k, _)| k == field)
     {
-        let names = fields.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ");
+        let names = fields
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         ctx.emit(
             "WS010",
             format!("no field `{field}` on record (has: {names})"),
@@ -33,7 +39,12 @@ fn check_removed_bindings(
     if removed.is_empty() {
         return;
     }
-    let valid = evt.data.iter().map(|d| format!("`{}`", d.name)).collect::<Vec<_>>().join(", ");
+    let valid = evt
+        .data
+        .iter()
+        .map(|d| format!("`{}`", d.name))
+        .collect::<Vec<_>>()
+        .join(", ");
     for (i, pname) in h.params.iter().enumerate() {
         let lower = pname.name.to_ascii_lowercase();
         let annotated = match &pname.ty {
@@ -147,9 +158,15 @@ pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
                     other => other,
                 };
                 match part {
-                    Trigger::Field { obj, field, range } => check_field_trigger(ctx, obj, field, range),
+                    Trigger::Field { obj, field, range } => {
+                        check_field_trigger(ctx, obj, field, range)
+                    }
                     Trigger::Ident { name, range } if !trigger_is_known(ctx, name) => {
-                        ctx.emit("WS001", format!("unknown event or trigger '{name}'"), range.clone());
+                        ctx.emit(
+                            "WS001",
+                            format!("unknown event or trigger '{name}'"),
+                            range.clone(),
+                        );
                     }
                     _ => {}
                 }
@@ -323,39 +340,50 @@ pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
 /// suppresses the WS013 unassigned-output warning). Reaches every branch,
 /// `match` arm (statement or value), `on` handler, anonymous chip and `for`
 /// body; nested named chips own their outputs and are skipped.
-pub(super) fn collect_output_assignments(block: &Block, assigned: &mut std::collections::HashSet<String>) {
-    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, _| {
-        match n {
-            walk::Node::Stmt(Stmt::OutBinding(o)) => {
-                assigned.insert(o.name.clone());
-            }
-            walk::Node::Stmt(Stmt::Emit(e)) => {
-                assigned.insert(e.name.clone());
-            }
-            walk::Node::Stmt(Stmt::Assign(a)) => {
-                if let Expr::Ident { name, .. } = &a.target {
-                    assigned.insert(name.clone());
+pub(super) fn collect_output_assignments(
+    block: &Block,
+    assigned: &mut std::collections::HashSet<String>,
+) {
+    walk::walk(
+        walk::Node::Block(block),
+        walk::Ctx::default(),
+        &mut |n, _| {
+            match n {
+                walk::Node::Stmt(Stmt::OutBinding(o)) => {
+                    assigned.insert(o.name.clone());
                 }
+                walk::Node::Stmt(Stmt::Emit(e)) => {
+                    assigned.insert(e.name.clone());
+                }
+                walk::Node::Stmt(Stmt::Assign(a)) => {
+                    if let Expr::Ident { name, .. } = &a.target {
+                        assigned.insert(name.clone());
+                    }
+                }
+                walk::Node::Stmt(Stmt::ChipDecl(_)) => return false,
+                _ => {}
             }
-            walk::Node::Stmt(Stmt::ChipDecl(_)) => return false,
-            _ => {}
-        }
-        true
-    });
+            true
+        },
+    );
 }
 
 /// Whether a `return <value>` is reached anywhere in the body outside a nested
 /// named chip: a branch, a `match` arm, an anonymous chip or a nested handler.
 pub(super) fn block_has_return_value(block: &Block) -> bool {
     let mut found = false;
-    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, _| match n {
-        walk::Node::Stmt(Stmt::Return { value: Some(_), .. }) => {
-            found = true;
-            false
-        }
-        walk::Node::Stmt(Stmt::ChipDecl(_)) => false,
-        _ => !found,
-    });
+    walk::walk(
+        walk::Node::Block(block),
+        walk::Ctx::default(),
+        &mut |n, _| match n {
+            walk::Node::Stmt(Stmt::Return { value: Some(_), .. }) => {
+                found = true;
+                false
+            }
+            walk::Node::Stmt(Stmt::ChipDecl(_)) => false,
+            _ => !found,
+        },
+    );
     found
 }
 
@@ -399,10 +427,7 @@ fn validate_handler_config(
                     EventArgKind::Unknown => {
                         ctx.emit(
                             "WS041",
-                            format!(
-                                "'{}' has no config or input '{name}'",
-                                evt.surface_name
-                            ),
+                            format!("'{}' has no config or input '{name}'", evt.surface_name),
                             value.range().clone(),
                         );
                     }
@@ -416,10 +441,7 @@ fn validate_handler_config(
 /// (`on ZoneEntered(zone = z) -> (character)` — `z` must be a `zone`; Clock's
 /// `interval`/`enabled` must be float/bool). The value flows on a pure wire, so
 /// it is inferred in pure context.
-pub(super) fn check_handler_input_wires(
-    ctx: &mut TypeCheckCtx,
-    h: &Handler,
-) {
+pub(super) fn check_handler_input_wires(ctx: &mut TypeCheckCtx, h: &Handler) {
     let name = match &h.trigger {
         Trigger::Ident { name, .. } => name,
         Trigger::Not { inner, .. } => match inner.as_ref() {
@@ -433,7 +455,11 @@ pub(super) fn check_handler_input_wires(
         return;
     }
     for arg in &h.config {
-        let HandlerConfigArg::Named { name: argname, value } = arg else {
+        let HandlerConfigArg::Named {
+            name: argname,
+            value,
+        } = arg
+        else {
             continue;
         };
         let Some((_, _, port_ty)) = evt

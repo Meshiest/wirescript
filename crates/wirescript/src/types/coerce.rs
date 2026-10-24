@@ -75,19 +75,16 @@ pub(crate) fn type_eq(a: &Type, b: &Type) -> bool {
         (Array(ai), Array(bi)) => type_eq(ai, bi),
         (Map(ak, av), Map(bk, bv)) => type_eq(ak, bk) && type_eq(av, bv),
         (Union(ax), Union(bx)) => {
-            ax.len() == bx.len()
-                && ax
-                    .iter()
-                    .all(|at| bx.iter().any(|bt| type_eq(at, bt)))
+            ax.len() == bx.len() && ax.iter().all(|at| bx.iter().any(|bt| type_eq(at, bt)))
         }
         (Tuple(ax), Tuple(bx)) => {
             ax.len() == bx.len() && ax.iter().zip(bx).all(|(a, b)| type_eq(a, b))
         }
         (Record(ax), Record(bx)) | (Outputs(ax), Outputs(bx)) => {
             ax.len() == bx.len()
-                && ax.iter().all(|(k1, t1)| {
-                    bx.iter().any(|(k2, t2)| k1 == k2 && type_eq(t1, t2))
-                })
+                && ax
+                    .iter()
+                    .all(|(k1, t1)| bx.iter().any(|(k2, t2)| k1 == k2 && type_eq(t1, t2)))
         }
         // A param is invariant/nominal — it doesn't coerce to anything; this
         // arm is defensive since substitution normally removes params before
@@ -105,7 +102,16 @@ pub(crate) fn type_eq(a: &Type, b: &Type) -> bool {
 /// Is `from` pulsing — i.e. does a value-changed edge on this wire trip
 /// downstream execs?
 pub(crate) fn is_pulsing(t: &Type) -> bool {
-    matches!(t, Type::Bool | Type::Int | Type::Float | Type::Vector | Type::Character | Type::Controller | Type::Entity)
+    matches!(
+        t,
+        Type::Bool
+            | Type::Int
+            | Type::Float
+            | Type::Vector
+            | Type::Character
+            | Type::Controller
+            | Type::Entity
+    )
 }
 
 /// Narrower than the `Numeric` constraint class (`class_mask("Numeric")` also
@@ -201,7 +207,10 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
         return CoerceRule::Coerce;
     }
     // Character <-> Controller: bidirectional coercion (auto ControllerOf / CharacterOf).
-    if matches!((from, to), (Character, Controller) | (Controller, Character)) {
+    if matches!(
+        (from, to),
+        (Character, Controller) | (Controller, Character)
+    ) {
         return CoerceRule::Coerce;
     }
     // Entity -> Character/Controller: wires carry plain object refs and an
@@ -353,8 +362,7 @@ pub fn widening_join(a: &Type, b: &Type) -> Option<Type> {
     use Type::*;
     // Two gate reads naming the same outputs in another order are equal as
     // records but not as reads: a place for one value takes each one's first.
-    let reordered =
-        matches!((a, b), (Outputs(fa), Outputs(fb)) if fa.iter().zip(fb).any(|((na, _), (nb, _))| na != nb));
+    let reordered = matches!((a, b), (Outputs(fa), Outputs(fb)) if fa.iter().zip(fb).any(|((na, _), (nb, _))| na != nb));
     if type_eq(a, b) && !reordered {
         return Some(a.clone());
     }
@@ -373,7 +381,9 @@ pub fn widening_join(a: &Type, b: &Type) -> Option<Type> {
     }
     // A gate read beside one value is its first output.
     let one = |t: &Type| !matches!(t, Outputs(_) | Record(_) | Tuple(_));
-    let first = |fields: &[(std::string::String, Type)]| Some(crate::types::mono::unwrap_ref(&fields.first()?.1));
+    let first = |fields: &[(std::string::String, Type)]| {
+        Some(crate::types::mono::unwrap_ref(&fields.first()?.1))
+    };
     match (a, b) {
         (Outputs(fields), other) | (other, Outputs(fields)) if one(other) => {
             return widening_join(&first(fields)?, other);
@@ -381,7 +391,8 @@ pub fn widening_join(a: &Type, b: &Type) -> Option<Type> {
         // Two gate reads join output by output when they declare the same
         // outputs, and otherwise by their first outputs.
         (Outputs(fa), Outputs(fb)) => {
-            let same_names = fa.len() == fb.len() && fa.iter().zip(fb).all(|((na, _), (nb, _))| na == nb);
+            let same_names =
+                fa.len() == fb.len() && fa.iter().zip(fb).all(|((na, _), (nb, _))| na == nb);
             let each = fa
                 .iter()
                 .zip(fb)

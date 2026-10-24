@@ -30,12 +30,13 @@ use context::*;
 mod predeclare;
 use predeclare::*;
 pub use predeclare::{
-    ConstEnv, build_const_declared_names, build_const_env, build_const_env_in, build_const_uncertified, expr_to_literal,
+    ConstEnv, build_const_declared_names, build_const_env, build_const_env_in,
+    build_const_uncertified, expr_to_literal,
 };
 pub(crate) use predeclare::{
-    DupConsts, build_const_env_at, certified_binop, default_literal_for_var_type, dup_key, eval_const_binop,
-    eval_const_unop, expr_to_literal_in, fold_ammo_override, fold_constructor, fold_mesh_colors, holds_refs,
-    ref_shaped,
+    DupConsts, build_const_env_at, certified_binop, default_literal_for_var_type, dup_key,
+    eval_const_binop, eval_const_unop, expr_to_literal_in, fold_ammo_override, fold_constructor,
+    fold_mesh_colors, holds_refs, ref_shaped,
 };
 
 mod decl;
@@ -48,8 +49,8 @@ mod stmt;
 use stmt::*;
 
 mod expr;
-use expr::*;
 pub(crate) use expr::wire_type_of_literal;
+use expr::*;
 
 mod pattern_test;
 use pattern_test::*;
@@ -188,8 +189,15 @@ pub(super) fn count_emits_in_block(
     count_emits_in(walk::Node::Block(block), in_branch, counts);
 }
 
-fn count_emits_in(node: walk::Node<'_>, in_branch: bool, counts: &mut HashMap<String, (usize, bool)>) {
-    let start = walk::Ctx { branch: in_branch, ..walk::Ctx::default() };
+fn count_emits_in(
+    node: walk::Node<'_>,
+    in_branch: bool,
+    counts: &mut HashMap<String, (usize, bool)>,
+) {
+    let start = walk::Ctx {
+        branch: in_branch,
+        ..walk::Ctx::default()
+    };
     walk::walk(node, start, &mut |n, cx| {
         let name = match n {
             walk::Node::Stmt(Stmt::Emit(e)) if e.value.is_some() => &e.name,
@@ -211,14 +219,18 @@ fn count_emits_in(node: walk::Node<'_>, in_branch: bool, counts: &mut HashMap<St
 /// Every name `block` sets with `emit name = v`, at any depth (branches,
 /// loops, handlers and anonymous chips included; not a named chip's body).
 pub(in crate::lower) fn collect_value_emit_names(block: &Block, names: &mut HashSet<String>) {
-    walk::walk(walk::Node::Block(block), walk::Ctx::default(), &mut |n, _| match n {
-        walk::Node::Stmt(Stmt::Emit(e)) if e.value.is_some() => {
-            names.insert(e.name.clone());
-            true
-        }
-        walk::Node::Stmt(Stmt::ChipDecl(_)) => false,
-        _ => true,
-    });
+    walk::walk(
+        walk::Node::Block(block),
+        walk::Ctx::default(),
+        &mut |n, _| match n {
+            walk::Node::Stmt(Stmt::Emit(e)) if e.value.is_some() => {
+                names.insert(e.name.clone());
+                true
+            }
+            walk::Node::Stmt(Stmt::ChipDecl(_)) => false,
+            _ => true,
+        },
+    );
 }
 
 /// A declaration scope of the program: its own top level (`None`), or an
@@ -245,9 +257,10 @@ pub(in crate::lower) fn output_write_counts(
             match d {
                 TopDecl::Handler(h) => count_emits_in_handler(h, false, counts),
                 TopDecl::AnonChip(ac) => count_emits_in_block(&ac.body, false, counts),
-                TopDecl::Event(EventDecl { captured: Some(Handler { body: b, .. }), .. }) => {
-                    count_emits_in_block(b, false, counts)
-                }
+                TopDecl::Event(EventDecl {
+                    captured: Some(Handler { body: b, .. }),
+                    ..
+                }) => count_emits_in_block(b, false, counts),
                 _ => {}
             }
         }
@@ -330,7 +343,10 @@ impl<'a> Program<'a> {
                     node: walk::Node::Expr(&f.body),
                     scope: si,
                     inline: true,
-                    self_receiver: f.params.first().is_some_and(|p| p.name == "self" && p.pattern.is_none()),
+                    self_receiver: f
+                        .params
+                        .first()
+                        .is_some_and(|p| p.name == "self" && p.pattern.is_none()),
                     outputs: Vec::new(),
                 },
                 TopDecl::Namespace(ns) => {
@@ -349,18 +365,26 @@ impl<'a> Program<'a> {
     /// A body named `name` as seen from scope `si`: its own, else the
     /// program's top level.
     fn body(&self, si: usize, name: &str) -> Option<usize> {
-        self.body_by_name.get(&(si, name)).or_else(|| self.body_by_name.get(&(0, name))).copied()
+        self.body_by_name
+            .get(&(si, name))
+            .or_else(|| self.body_by_name.get(&(0, name)))
+            .copied()
     }
 
     /// The bodies a call in scope `si` may instantiate: a plain call names its
     /// callee, `ns.f()` a member of a namespace, and a receiver call `x.f()` a
     /// body whose first parameter is `self`.
     fn callees(&self, si: usize, call: &Expr) -> Vec<usize> {
-        let Expr::Call { callee, .. } = call else { return Vec::new() };
+        let Expr::Call { callee, .. } = call else {
+            return Vec::new();
+        };
         match callee.as_ref() {
             Expr::Ident { name, range } => self
                 .body(si, name)
-                .filter(|&b| self.imports.user_mod_answers(self.bodies[b].range, &range.file))
+                .filter(|&b| {
+                    self.imports
+                        .user_mod_answers(self.bodies[b].range, &range.file)
+                })
                 .into_iter()
                 .collect(),
             Expr::FieldAccess { obj, field, range } => {
@@ -376,7 +400,9 @@ impl<'a> Program<'a> {
                 }
                 if let Some(b) = self.body(si, field)
                     && self.bodies[b].self_receiver
-                    && self.imports.user_mod_answers(self.bodies[b].range, &range.file)
+                    && self
+                        .imports
+                        .user_mod_answers(self.bodies[b].range, &range.file)
                     && !found.contains(&b)
                 {
                     found.push(b);
@@ -409,16 +435,21 @@ impl<'a> Program<'a> {
                     }
                     _ => (walk::Node::Decl(d), None),
                 };
-                call_sites(node, walk::Ctx::default(), 1, &mut |call, branched, reps| {
-                    for callee in self.callees(si, call) {
-                        let entry = match caller {
-                            Some(c) => inside[c].entry(callee).or_insert((0, false)),
-                            None => &mut top[callee],
-                        };
-                        entry.0 += reps;
-                        entry.1 |= branched;
-                    }
-                });
+                call_sites(
+                    node,
+                    walk::Ctx::default(),
+                    1,
+                    &mut |call, branched, reps| {
+                        for callee in self.callees(si, call) {
+                            let entry = match caller {
+                                Some(c) => inside[c].entry(callee).or_insert((0, false)),
+                                None => &mut top[callee],
+                            };
+                            entry.0 += reps;
+                            entry.1 |= branched;
+                        }
+                    },
+                );
             }
         }
         // Each body's callers, in caller order: (caller, calls, any branched).
@@ -455,7 +486,9 @@ impl<'a> Program<'a> {
             (n, branched)
         }
         let mut memo = vec![None; n];
-        (0..n).map(|b| instances(b, &top, &callers, &mut memo, &mut HashSet::default())).collect()
+        (0..n)
+            .map(|b| instances(b, &top, &callers, &mut memo, &mut HashSet::default()))
+            .collect()
     }
 }
 
@@ -473,12 +506,17 @@ fn call_sites<'a>(
     }
     let reps = match node {
         walk::Node::Stmt(Stmt::Handler(h))
-        | walk::Node::Decl(TopDecl::Handler(h) | TopDecl::Event(EventDecl { captured: Some(h), .. })) => {
-            reps * trigger_multiplicity(&h.trigger)
-        }
+        | walk::Node::Decl(
+            TopDecl::Handler(h)
+            | TopDecl::Event(EventDecl {
+                captured: Some(h), ..
+            }),
+        ) => reps * trigger_multiplicity(&h.trigger),
         _ => reps,
     };
-    walk::children(node, &mut |child, flow| call_sites(child, cx.enter(flow), reps, &mut *on));
+    walk::children(node, &mut |child, flow| {
+        call_sites(child, cx.enter(flow), reps, &mut *on)
+    });
 }
 
 /// Give output `name` a backing PseudoVar (idempotent). An output value-driven
@@ -491,11 +529,21 @@ pub(in crate::lower) fn create_output_backing_var(ctx: &mut LowerCtx, name: &str
     if ctx.output_backing_vars.contains_key(name) {
         return;
     }
-    let Some(out) = ctx.lookup_output(name).or_else(|| ctx.output_tag(name)).cloned() else {
+    let Some(out) = ctx
+        .lookup_output(name)
+        .or_else(|| ctx.output_tag(name))
+        .cloned()
+    else {
         return;
     };
     let inner = out.ty.clone();
-    let var_id = make_scalar_var_gate(ctx, &inner, HashMap::default(), &SourceRange::default(), Some("out_backing"));
+    let var_id = make_scalar_var_gate(
+        ctx,
+        &inner,
+        HashMap::default(),
+        &SourceRange::default(),
+        Some("out_backing"),
+    );
     ctx.output_backing_vars.insert(
         name.to_string(),
         VarRecord::new(var_id, inner, VarStorage::Var),
@@ -522,31 +570,34 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     let top_names = Arc::new(crate::scope::top::TopNames::of(&input.ast.decls));
     let mut ctx = LowerCtx {
         file: input.file.to_string(),
-        type_aliases: expand_alias_bodies({
-            let mut m = HashMap::default();
-            for d in &input.ast.decls {
-                match d {
-                    crate::ast::TopDecl::TypeAlias(ta) => {
-                        m.insert(ta.name.clone(), ta.typ.clone());
-                    }
-                    // `import * as Ns` arrives as a Namespace decl holding the
-                    // imported module's declarations. Its aliases are keyed
-                    // `Ns.Name`, the spelling the parser produces for a
-                    // qualified type and the keying
-                    // `collect_generic_type_aliases` uses for the generic half
-                    // of this map.
-                    crate::ast::TopDecl::Namespace(ns) => {
-                        for nd in &ns.decls {
-                            if let crate::ast::TopDecl::TypeAlias(ta) = nd {
-                                m.insert(format!("{}.{}", ns.name, ta.name), ta.typ.clone());
+        type_aliases: expand_alias_bodies(
+            {
+                let mut m = HashMap::default();
+                for d in &input.ast.decls {
+                    match d {
+                        crate::ast::TopDecl::TypeAlias(ta) => {
+                            m.insert(ta.name.clone(), ta.typ.clone());
+                        }
+                        // `import * as Ns` arrives as a Namespace decl holding the
+                        // imported module's declarations. Its aliases are keyed
+                        // `Ns.Name`, the spelling the parser produces for a
+                        // qualified type and the keying
+                        // `collect_generic_type_aliases` uses for the generic half
+                        // of this map.
+                        crate::ast::TopDecl::Namespace(ns) => {
+                            for nd in &ns.decls {
+                                if let crate::ast::TopDecl::TypeAlias(ta) = nd {
+                                    m.insert(format!("{}.{}", ns.name, ta.name), ta.typ.clone());
+                                }
                             }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
-            m
-        }, &generic_type_aliases),
+                m
+            },
+            &generic_type_aliases,
+        ),
         // The enum registry is built by the SHARED `enums::build_registry`
         // (which numbers via `enums::variant_defs`) so lowering reads the exact
         // discriminant typecheck assigned - one source of truth for the tag,
@@ -584,7 +635,9 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             TopDecl::Var(v) => ctx.top_names.initializer_read(&v.name, &v.range),
             _ => None,
         };
-        ctx.consts.set_cursor(Some(above.unwrap_or_else(|| crate::scope::top::ReadAt::code(d.range()))));
+        ctx.consts.set_cursor(Some(
+            above.unwrap_or_else(|| crate::scope::top::ReadAt::code(d.range())),
+        ));
         pre_declare_decl(&mut ctx, d);
         ctx.keep_top_dup_bindings(d);
     }
@@ -645,7 +698,12 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     ctx.namespace_output_writes = Arc::new(write_counts);
     ctx.output_write_sites = root_writes
         .iter()
-        .map(|(name, (count, _))| (name.clone(), count + usize::from(defaulted_outputs.contains(name))))
+        .map(|(name, (count, _))| {
+            (
+                name.clone(),
+                count + usize::from(defaulted_outputs.contains(name)),
+            )
+        })
         .collect();
     for (name, (count, in_branch)) in root_writes {
         let has_default = defaulted_outputs.contains(&name);
@@ -658,7 +716,9 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             .decls
             .iter()
             .find_map(|d| match d {
-                TopDecl::Out(o) if o.name == name => o.typ.as_ref().map(|t| (t.clone(), o.range.clone())),
+                TopDecl::Out(o) if o.name == name => {
+                    o.typ.as_ref().map(|t| (t.clone(), o.range.clone()))
+                }
                 _ => None,
             })
             .and_then(|(t, range)| ctx.record_or_tuple_fields(&t).map(|f| (f, range)));
@@ -714,7 +774,11 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // Runtime `@color` / `@material` on top-level vars and the module, the
     // same way and for the same reason.
     style::resolve_dynamic_var_styles(&mut ctx, &input.ast.decls);
-    style::resolve_module_style(&mut ctx, input.ast.module_color.as_ref(), input.ast.module_material.as_ref());
+    style::resolve_module_style(
+        &mut ctx,
+        input.ast.module_color.as_ref(),
+        input.ast.module_material.as_ref(),
+    );
 
     // Feed each multi-emit output's backing PseudoVar value into its
     // output rerouter — one wire, placed after every handler's Var_Set exists.
@@ -724,18 +788,27 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     for (name, backing) in backings {
-        if let Some(out) = ctx.lookup_output(&name).or_else(|| ctx.output_tag(&name)).cloned() {
+        if let Some(out) = ctx
+            .lookup_output(&name)
+            .or_else(|| ctx.output_tag(&name))
+            .cloned()
+        {
             ctx.connect(
                 backing.node_id.port(WirePort::Value),
                 out.node_id.port(WirePort::RerInput),
             );
         }
     }
-    let mut records: Vec<(String, HashMap<crate::intern::Sym, Binding>)> =
-        ctx.output_record_backing.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut records: Vec<(String, HashMap<crate::intern::Sym, Binding>)> = ctx
+        .output_record_backing
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     records.sort_by(|a, b| a.0.cmp(&b.0));
     for (name, backing) in records {
-        if let Some(Binding::Record(pins)) = ctx.scope.get(&context::output_scope_key(&name)).cloned() {
+        if let Some(Binding::Record(pins)) =
+            ctx.scope.get(&context::output_scope_key(&name)).cloned()
+        {
             call::wire_record_backing(&mut ctx, &backing, &pins);
         }
     }
@@ -770,33 +843,75 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // EXPRESSION is untouched here and still materializes a carrier below
     // (matching the unfolded compute gate), so the fold invariant holds.
     inline_bare_scalar_literals(&mut module);
-    check_wires_resolve(&module, "inline_bare_scalar_literals", false, &whole_file, &mut ctx.diagnostics);
+    check_wires_resolve(
+        &module,
+        "inline_bare_scalar_literals",
+        false,
+        &whole_file,
+        &mut ctx.diagnostics,
+    );
     if run_fold {
         fold::fold_certified_constants(&mut module);
         localize_foreign_literals(&mut module);
-        check_wires_resolve(&module, "fold_certified_constants", false, &whole_file, &mut ctx.diagnostics);
+        check_wires_resolve(
+            &module,
+            "fold_certified_constants",
+            false,
+            &whole_file,
+            &mut ctx.diagnostics,
+        );
     }
     materialize_unfoldable_constants(&mut module);
-    check_wires_resolve(&module, "materialize_unfoldable_constants", false, &whole_file, &mut ctx.diagnostics);
+    check_wires_resolve(
+        &module,
+        "materialize_unfoldable_constants",
+        false,
+        &whole_file,
+        &mut ctx.diagnostics,
+    );
     inline_orphan_literals(&mut module);
-    check_wires_resolve(&module, "inline_orphan_literals", false, &whole_file, &mut ctx.diagnostics);
+    check_wires_resolve(
+        &module,
+        "inline_orphan_literals",
+        false,
+        &whole_file,
+        &mut ctx.diagnostics,
+    );
     // Folding an operand into its consumer can leave a bare `_Literal` wired to
     // nothing; sweep those literal orphans too (always safe — a literal has no
     // inputs, so it can never be a user computation whose operands were inlined).
     prune_dead_pure_gates(&mut module, true);
-    check_wires_resolve(&module, "prune_dead_pure_gates", false, &whole_file, &mut ctx.diagnostics);
+    check_wires_resolve(
+        &module,
+        "prune_dead_pure_gates",
+        false,
+        &whole_file,
+        &mut ctx.diagnostics,
+    );
     // Merge the constant gates that survived inlining (a `"PREFIX: " ..` concat
     // wrapper repeated per use, a multi-consumer literal) so an identical
     // constant is emitted once and fans out, per chip.
     dedup_constant_gates(&mut module);
-    check_wires_resolve(&module, "dedup_constant_gates", false, &whole_file, &mut ctx.diagnostics);
+    check_wires_resolve(
+        &module,
+        "dedup_constant_gates",
+        false,
+        &whole_file,
+        &mut ctx.diagnostics,
+    );
     // Common-subexpression elimination: the same generalized merge, extended to
     // pure `Expr_*` gates WITH wired inputs — a repeated `x + 1`, a duplicated
     // inline-`mod` body — collapse to one gate that fans out. Runs after all the
     // literal-inlining/fold passes so properties are final, and before
     // partition so keepers stay in their consumers' chip.
     cse_pure_gates(&mut module);
-    check_wires_resolve(&module, "cse_pure_gates", false, &whole_file, &mut ctx.diagnostics);
+    check_wires_resolve(
+        &module,
+        "cse_pure_gates",
+        false,
+        &whole_file,
+        &mut ctx.diagnostics,
+    );
     // `@flat` inlines every chip body onto one grid. It stands in for the
     // anon-chip partition rather than following it — that pass moves nodes
     // INTO child modules, which is what flattening undoes (see
@@ -804,20 +919,41 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // `synthesize_boundary_pins` finds no cross-module wire and adds no pins.
     if input.ast.flat {
         flatten::flatten_chips(&mut module, &mut ctx.diagnostics);
-        check_wires_resolve(&module, "flatten_chips", false, &whole_file, &mut ctx.diagnostics);
+        check_wires_resolve(
+            &module,
+            "flatten_chips",
+            false,
+            &whole_file,
+            &mut ctx.diagnostics,
+        );
     } else {
         crate::emit::partition_anon_chips(&mut module);
-        check_wires_resolve(&module, "partition_anon_chips", false, &whole_file, &mut ctx.diagnostics);
+        check_wires_resolve(
+            &module,
+            "partition_anon_chips",
+            false,
+            &whole_file,
+            &mut ctx.diagnostics,
+        );
     }
     function::capture_through_handles(&mut module, &mut ctx.diagnostics);
     boundary_pins::synthesize_boundary_pins(&mut module);
-    check_wires_resolve(&module, "synthesize_boundary_pins", true, &whole_file, &mut ctx.diagnostics);
+    check_wires_resolve(
+        &module,
+        "synthesize_boundary_pins",
+        true,
+        &whole_file,
+        &mut ctx.diagnostics,
+    );
     // Last: the wire set is final, and the brick size follows the ports in use.
     gate_variants::select_gate_variants(&mut module);
     check_no_exec_into_value(&module, &whole_file, &mut ctx.diagnostics);
     crate::emit::check_native_settings(&module, &mut ctx.diagnostics, &|note, field| {
         let spec = crate::catalog::calls::find_call(note)?;
-        spec.params.iter().find(|p| p.port.as_str() == field).map(|p| (spec.name, p.name))
+        spec.params
+            .iter()
+            .find(|p| p.port.as_str() == field)
+            .map(|p| (spec.name, p.name))
     });
     LowerResult {
         module,
@@ -890,7 +1026,11 @@ fn check_wires_resolve(
                 .get(id)
                 .copied()
         };
-        let range_of = |id: &NodeId| owner_of(id).and_then(|o| o.nodes.get(id)).map(|n| n.source_range.clone());
+        let range_of = |id: &NodeId| {
+            owner_of(id)
+                .and_then(|o| o.nodes.get(id))
+                .map(|n| n.source_range.clone())
+        };
         // Every pin of `m`'s child chips, gathered on the first wire that asks.
         let pins: std::cell::OnceCell<HashSet<NodeId>> = std::cell::OnceCell::new();
         for w in &m.wires {
@@ -903,17 +1043,27 @@ fn check_wires_resolve(
                     crate::intern::resolve(m.name)
                 )
             };
-            let carries_value = w.source.port != WirePort::Layout && w.target.port != WirePort::Layout;
+            let carries_value =
+                w.source.port != WirePort::Layout && w.target.port != WirePort::Layout;
             for (end, other) in [(src, dst), (dst, src)] {
                 if m.nodes.contains_key(&end) || (zero_expected && end == NodeId(0)) {
                     continue;
                 }
                 let Some(end_owner) = owner_of(&end) else {
-                    return Some((format!("{} references {end}, which no module holds", wire()), range_of(&other)));
+                    return Some((
+                        format!("{} references {end}, which no module holds", wire()),
+                        range_of(&other),
+                    ));
                 };
                 let is_pin = || {
-                    pins.get_or_init(|| m.chips.values().flat_map(|c| c.inputs.iter().chain(&c.outputs)).copied().collect())
-                        .contains(&end)
+                    pins.get_or_init(|| {
+                        m.chips
+                            .values()
+                            .flat_map(|c| c.inputs.iter().chain(&c.outputs))
+                            .copied()
+                            .collect()
+                    })
+                    .contains(&end)
                 };
                 let definition = || {
                     owner_of(&src)
@@ -923,7 +1073,11 @@ fn check_wires_resolve(
                 if !pinned || !carries_value || is_pin() || definition() {
                     continue;
                 }
-                let what = if end_owner.nodes.get(&end).is_some_and(|n| n.gate_class == gc::LITERAL) {
+                let what = if end_owner
+                    .nodes
+                    .get(&end)
+                    .is_some_and(|n| n.gate_class == gc::LITERAL)
+                {
                     "reads another module's literal"
                 } else {
                     "reaches a node in another module without a boundary pin"
@@ -953,7 +1107,9 @@ fn check_wires_resolve(
 /// reports the untyped data (`WS045`).
 pub(crate) fn exec_may_drive(dst: &crate::ir::Node, port: WirePort, ty: &Type) -> bool {
     matches!(ty, Type::Exec | Type::Bool)
-        || dst.gate_class.starts_with("BrickComponentType_Expr_Logical")
+        || dst
+            .gate_class
+            .starts_with("BrickComponentType_Expr_Logical")
         || (matches!(ty, Type::Any | Type::Opaque)
             && [gc::SEND_CUSTOM_EVENT, gc::SEND_CUSTOM_EVENT_GLOBAL].contains(&dst.gate_class)
             && port.as_str().starts_with("DataIn"))
@@ -972,13 +1128,26 @@ pub(crate) fn exec_may_drive(dst: &crate::ir::Node, port: WirePort, ty: &Type) -
 /// tree. A debug build (every test) also panics on a direct one, in
 /// [`crate::diagnostic::drop_internal_errors_beside_errors`], when the program
 /// reports no other error.
-pub(crate) fn check_no_exec_into_value(root: &Module, fallback: &SourceRange, diagnostics: &mut Vec<Diagnostic>) {
-    if diagnostics.iter().any(|d| d.code == crate::diagnostic::INTERNAL_ERROR) {
+pub(crate) fn check_no_exec_into_value(
+    root: &Module,
+    fallback: &SourceRange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if diagnostics
+        .iter()
+        .any(|d| d.code == crate::diagnostic::INTERNAL_ERROR)
+    {
         return;
     }
-    fn index<'m>(m: &'m Module, nodes: &mut HashMap<NodeId, &'m crate::ir::Node>, wires: &mut Vec<crate::ir::Wire>) {
+    fn index<'m>(
+        m: &'m Module,
+        nodes: &mut HashMap<NodeId, &'m crate::ir::Node>,
+        wires: &mut Vec<crate::ir::Wire>,
+    ) {
         nodes.extend(m.nodes.iter().map(|(id, n)| (*id, n)));
-        let laid_out = |w: &&crate::ir::Wire| w.source.port == WirePort::Layout || w.target.port == WirePort::Layout;
+        let laid_out = |w: &&crate::ir::Wire| {
+            w.source.port == WirePort::Layout || w.target.port == WirePort::Layout
+        };
         wires.extend(m.wires.iter().filter(|w| !laid_out(w)).copied());
         for c in m.chips.values() {
             index(c, nodes, wires);
@@ -990,13 +1159,19 @@ pub(crate) fn check_no_exec_into_value(root: &Module, fallback: &SourceRange, di
     let ends = |w: &crate::ir::Wire| {
         let (src, dst) = (nodes.get(&w.source.node_id)?, nodes.get(&w.target.node_id)?);
         let from = src.ports.find_output(w.source.port.sym()).map(|p| &p.ty);
-        Some((*src, from, *dst, dst.ports.find_input(w.target.port.sym()).map(|p| &p.ty)?))
+        Some((
+            *src,
+            from,
+            *dst,
+            dst.ports.find_input(w.target.port.sym()).map(|p| &p.ty)?,
+        ))
     };
     // The rerouters an exec reaches through a pin of no type: their output
     // carries it on.
     let mut carriers: HashSet<NodeId> = HashSet::default();
     let carries = |carriers: &HashSet<NodeId>, w: &crate::ir::Wire, from: Option<&Type>| {
-        from == Some(&Type::Exec) || (w.source.port == WirePort::RerOutput && carriers.contains(&w.source.node_id))
+        from == Some(&Type::Exec)
+            || (w.source.port == WirePort::RerOutput && carriers.contains(&w.source.node_id))
     };
     let untyped_pin = |w: &crate::ir::Wire, into: &Type| {
         w.target.port == WirePort::RerInput && matches!(into, Type::Any | Type::Opaque)
@@ -1017,9 +1192,17 @@ pub(crate) fn check_no_exec_into_value(root: &Module, fallback: &SourceRange, di
     }
     // An array write takes its value untyped; a `bool` array's is a `bool`
     // place, as a `bool` map's value is.
-    let feeds: HashMap<(NodeId, WirePort), crate::ir::PortRef> =
-        wires.iter().map(|w| ((w.target.node_id, w.target.port), w.source)).collect();
-    let array_writes = [gc::ARRAY_PUSH, gc::ARRAY_SET_AT_INDEX, gc::ARRAY_INSERT, gc::ARRAY_FILL, gc::ARRAY_RESIZE];
+    let feeds: HashMap<(NodeId, WirePort), crate::ir::PortRef> = wires
+        .iter()
+        .map(|w| ((w.target.node_id, w.target.port), w.source))
+        .collect();
+    let array_writes = [
+        gc::ARRAY_PUSH,
+        gc::ARRAY_SET_AT_INDEX,
+        gc::ARRAY_INSERT,
+        gc::ARRAY_FILL,
+        gc::ARRAY_RESIZE,
+    ];
     let stored_bool = |w: &crate::ir::Wire, dst: &crate::ir::Node| {
         if w.target.port != WirePort::Value || !array_writes.contains(&dst.gate_class) {
             return false;
@@ -1027,9 +1210,13 @@ pub(crate) fn check_no_exec_into_value(root: &Module, fallback: &SourceRange, di
         let mut at = feeds.get(&(w.target.node_id, WirePort::ArrayVarRef));
         for _ in 0..nodes.len() {
             let Some(src) = at else { return false };
-            let Some(node) = nodes.get(&src.node_id) else { return false };
+            let Some(node) = nodes.get(&src.node_id) else {
+                return false;
+            };
             match node.ports.find_output(src.port.sym()).map(|p| &p.ty) {
-                Some(Type::Ref(t)) if matches!(t.as_ref(), Type::Array(e) if **e == Type::Bool) => return true,
+                Some(Type::Ref(t)) if matches!(t.as_ref(), Type::Array(e) if **e == Type::Bool) => {
+                    return true;
+                }
                 Some(Type::Array(e)) if **e == Type::Bool => return true,
                 Some(Type::Any | Type::Opaque) if src.port == WirePort::RerOutput => {
                     at = feeds.get(&(src.node_id, WirePort::RerInput));
@@ -1042,9 +1229,18 @@ pub(crate) fn check_no_exec_into_value(root: &Module, fallback: &SourceRange, di
     let mut reported: HashSet<(NodeId, WirePort)> = HashSet::default();
     let mut found = Vec::new();
     for w in &wires {
-        let Some((src, from, dst, into)) = ends(w) else { continue };
-        let into = if stored_bool(w, dst) { &Type::Bool } else { into };
-        if !carries(&carriers, w, from) || untyped_pin(w, into) || exec_may_drive(dst, w.target.port, into) {
+        let Some((src, from, dst, into)) = ends(w) else {
+            continue;
+        };
+        let into = if stored_bool(w, dst) {
+            &Type::Bool
+        } else {
+            into
+        };
+        if !carries(&carriers, w, from)
+            || untyped_pin(w, into)
+            || exec_may_drive(dst, w.target.port, into)
+        {
             continue;
         }
         if !reported.insert((w.target.node_id, w.target.port)) {
@@ -1082,9 +1278,20 @@ pub(crate) fn check_no_exec_into_value(root: &Module, fallback: &SourceRange, di
                 src.gate_class,
             )
         };
-        found.push(Diagnostic::error(crate::diagnostic::INTERNAL_ERROR, message, range));
+        found.push(Diagnostic::error(
+            crate::diagnostic::INTERNAL_ERROR,
+            message,
+            range,
+        ));
     }
-    let at = |d: &Diagnostic| (d.range.file.clone(), d.range.start.line, d.range.start.col, d.message.clone());
+    let at = |d: &Diagnostic| {
+        (
+            d.range.file.clone(),
+            d.range.start.line,
+            d.range.start.col,
+            d.message.clone(),
+        )
+    };
     found.sort_by_key(at);
     diagnostics.extend(found);
 }
@@ -1171,8 +1378,12 @@ fn expand_alias_bodies(
                     .filter(|_| !generic.contains_key(name) && name != key)
                     .cloned(),
                 TypeExpr::Generic { name, args, .. } => own(name)
-                    .and_then(|n| crate::types::resolve::instantiate_generic_alias(&n, args, generic))
-                    .or_else(|| crate::types::resolve::instantiate_generic_alias(name, args, generic)),
+                    .and_then(|n| {
+                        crate::types::resolve::instantiate_generic_alias(&n, args, generic)
+                    })
+                    .or_else(|| {
+                        crate::types::resolve::instantiate_generic_alias(name, args, generic)
+                    }),
                 _ => None,
             };
             match next {
@@ -1666,9 +1877,20 @@ fn materialize_unfoldable_constants(module: &mut Module) {
                 if no_fold {
                     properties.insert(*sym::NO_FOLD, Literal::Bool(true));
                 }
-                let ports = GateIO { inputs: vec![], outputs: vec![PortSpec::new(out_port_sym, ty.clone())] };
+                let ports = GateIO {
+                    inputs: vec![],
+                    outputs: vec![PortSpec::new(out_port_sym, ty.clone())],
+                };
                 let note = Some("materialized constant (dataless target)");
-                make_nodes.push(Node::new(id, NodeKind::Gate, const_class, ports, properties, Some(src), note));
+                make_nodes.push(Node::new(
+                    id,
+                    NodeKind::Gate,
+                    const_class,
+                    ports,
+                    properties,
+                    Some(src),
+                    note,
+                ));
                 id
             });
             rewires.push((i, const_id, out_port));
@@ -1693,7 +1915,15 @@ fn materialize_unfoldable_constants(module: &mut Module) {
                 .map(|(port, lit)| (port.sym(), lit.clone()))
                 .collect();
             let ports = GateIO::source(out_ty.clone());
-            make_nodes.push(Node::new(id, NodeKind::Gate, gate_class, ports, properties, Some(src), Some("materialized constant")));
+            make_nodes.push(Node::new(
+                id,
+                NodeKind::Gate,
+                gate_class,
+                ports,
+                properties,
+                Some(src),
+                Some("materialized constant"),
+            ));
             id
         });
         rewires.push((i, make_id, WirePort::Output));
@@ -1842,7 +2072,9 @@ fn inline_orphan_literals_in(module: &mut Module, external: &ExternalWires) {
                 .nodes
                 .iter()
                 .filter(|(id, n)| {
-                    n.gate_class == gc::STRING_CONCATENATE && !removed.contains(id) && !external.touches(id)
+                    n.gate_class == gc::STRING_CONCATENATE
+                        && !removed.contains(id)
+                        && !external.touches(id)
                 })
                 .map(|(id, _)| *id),
         );
@@ -1945,7 +2177,11 @@ fn dedup_constant_gates(root: &mut Module) {
     // consumer keeps its own `source.port` and only the node id changes).
     let mut redirect: HashMap<NodeId, NodeId> = HashMap::default();
 
-    fn collect(module: &mut Module, external: &ExternalWires, redirect: &mut HashMap<NodeId, NodeId>) {
+    fn collect(
+        module: &mut Module,
+        external: &ExternalWires,
+        redirect: &mut HashMap<NodeId, NodeId>,
+    ) {
         let has_incoming: HashSet<NodeId> = module
             .wires
             .iter()
@@ -1963,9 +2199,8 @@ fn dedup_constant_gates(root: &mut Module) {
         // future module as its consumers.
         let mut groups: HashMap<(Option<NodeId>, String), Vec<NodeId>> = HashMap::default();
         for (id, n) in &module.nodes {
-            let is_pure = n.gate_class == gc::LITERAL
-                || n.gate_class
-                    .starts_with("BrickComponentType_Expr_");
+            let is_pure =
+                n.gate_class == gc::LITERAL || n.gate_class.starts_with("BrickComponentType_Expr_");
             let fed = has_incoming.contains(id) || external.targets.contains(id);
             if n.kind == NodeKind::Gate && is_pure && !fed {
                 groups
@@ -2032,7 +2267,10 @@ fn apply_gate_redirect(module: &mut Module, redirect: &HashMap<NodeId, NodeId>) 
         .chain(module.dynamic_materials.values_mut())
         .chain(module.root_dynamic_label.iter_mut())
         .for_each(follow);
-    for style in [&mut module.root_style.color, &mut module.root_style.material] {
+    for style in [
+        &mut module.root_style.color,
+        &mut module.root_style.material,
+    ] {
         if let Some(crate::ir::StyleValue::Wired(p)) = style {
             follow(p);
         }
@@ -2075,8 +2313,7 @@ fn apply_gate_redirect(module: &mut Module, redirect: &HashMap<NodeId, NodeId>) 
 fn cse_pure_gates(root: &mut Module) {
     fn eligible(n: &crate::ir::Node) -> bool {
         n.kind == NodeKind::Gate
-            && n.gate_class
-                .starts_with("BrickComponentType_Expr_")
+            && n.gate_class.starts_with("BrickComponentType_Expr_")
             && !n.gate_class.contains("ChangeDetector")
             && !n.gate_class.contains("EdgeDetector")
             && !n.properties.contains_key(&*sym::NO_FOLD)
@@ -2096,7 +2333,10 @@ fn cse_pure_gates(root: &mut Module) {
         Vec<(WirePort, NodeId, WirePort)>,
         Vec<String>,
     );
-    fn cse_key(n: &crate::ir::Node, incoming: Option<&Vec<(WirePort, NodeId, WirePort)>>) -> CseKey {
+    fn cse_key(
+        n: &crate::ir::Node,
+        incoming: Option<&Vec<(WirePort, NodeId, WirePort)>>,
+    ) -> CseKey {
         let mut props: Vec<(&'static str, String)> = n
             .properties
             .iter()
@@ -2105,21 +2345,31 @@ fn cse_pure_gates(root: &mut Module) {
         props.sort_unstable();
         let mut ins: Vec<(WirePort, NodeId, WirePort)> = incoming.cloned().unwrap_or_default();
         ins.sort_unstable_by_key(|(tp, sid, sp)| (*tp as u16, sid.0, *sp as u16));
-        let outs = n.ports.outputs.iter().map(|p| format!("{}:{:?}", crate::intern::resolve(p.name), p.ty)).collect();
+        let outs = n
+            .ports
+            .outputs
+            .iter()
+            .map(|p| format!("{}:{:?}", crate::intern::resolve(p.name), p.ty))
+            .collect();
         (n.gate_class, props, ins, outs)
     }
 
-    fn cse_module(module: &mut Module, external: &ExternalWires, redirect: &mut HashMap<NodeId, NodeId>) {
+    fn cse_module(
+        module: &mut Module,
+        external: &ExternalWires,
+        redirect: &mut HashMap<NodeId, NodeId>,
+    ) {
         // Per-node incoming data wires (skip Layout edges — they're not inputs).
         let mut incoming: HashMap<NodeId, Vec<(WirePort, NodeId, WirePort)>> = HashMap::default();
         for w in &module.wires {
             if w.target.port == WirePort::Layout {
                 continue;
             }
-            incoming
-                .entry(w.target.node_id)
-                .or_default()
-                .push((w.target.port, w.source.node_id, w.source.port));
+            incoming.entry(w.target.node_id).or_default().push((
+                w.target.port,
+                w.source.node_id,
+                w.source.port,
+            ));
         }
 
         // In-degree over the eligible-gate subgraph (an edge is an eligible
@@ -2163,11 +2413,12 @@ fn cse_pure_gates(root: &mut Module) {
             let id = queue[qi];
             qi += 1;
             if let Some(n) = module.nodes.get(&id) {
-                let key_ins: Option<Vec<(WirePort, NodeId, WirePort)>> = incoming.get(&id).map(|ins| {
-                    ins.iter()
-                        .map(|(tp, sid, sp)| (*tp, *redirect.get(sid).unwrap_or(sid), *sp))
-                        .collect()
-                });
+                let key_ins: Option<Vec<(WirePort, NodeId, WirePort)>> =
+                    incoming.get(&id).map(|ins| {
+                        ins.iter()
+                            .map(|(tp, sid, sp)| (*tp, *redirect.get(sid).unwrap_or(sid), *sp))
+                            .collect()
+                    });
                 let key = (n.chip_id, cse_key(n, key_ins.as_ref()));
                 match seen.get(&key) {
                     Some(&keeper) => {
@@ -2295,7 +2546,13 @@ fn prune_dead_pure_gates(module: &mut Module, literals_only: bool) {
 /// as in [`prune_dead_pure_gates`].
 fn prune_unread_gate_read_choices(module: &mut Module) {
     fn read(module: &Module, out: &mut HashSet<NodeId>) {
-        out.extend(module.wires.iter().filter(|w| w.source.port != WirePort::Layout).map(|w| w.source.node_id));
+        out.extend(
+            module
+                .wires
+                .iter()
+                .filter(|w| w.source.port != WirePort::Layout)
+                .map(|w| w.source.node_id),
+        );
         for child in module.chips.values() {
             read(child, out);
         }
@@ -2312,7 +2569,9 @@ fn prune_unread_gate_read_choices(module: &mut Module) {
     }
     fn remove(module: &mut Module, dead: &HashSet<NodeId>) {
         module.nodes.retain(|id, _| !dead.contains(id));
-        module.wires.retain(|w| !dead.contains(&w.source.node_id) && !dead.contains(&w.target.node_id));
+        module
+            .wires
+            .retain(|w| !dead.contains(&w.source.node_id) && !dead.contains(&w.target.node_id));
         module.scope_captures.retain(|id| !dead.contains(id));
         for child in module.chips.values_mut() {
             remove(child, dead);
@@ -2618,7 +2877,10 @@ pub fn compile_chip_template(
             ctx.scope.insert(&inp.name, Binding::Record(record_fields));
         } else if ctx.ref_or_array(Some(chip_decl), &inp.typ) {
             let t = ctx.resolve_local_type(&inp.typ);
-            let is_array = matches!(ctx.declared_shape(Some(chip_decl), &inp.typ), TypeExpr::Array { .. });
+            let is_array = matches!(
+                ctx.declared_shape(Some(chip_decl), &inp.typ),
+                TypeExpr::Array { .. }
+            );
             let inner = match &t {
                 Type::Ref(inner) => inner.as_ref().clone(),
                 Type::Array(inner) => inner.as_ref().clone(),
@@ -2630,7 +2892,11 @@ pub fn compile_chip_template(
                 Binding::Var(VarRecord::new(
                     node_id,
                     inner,
-                    if is_array { VarStorage::Array } else { VarStorage::Var },
+                    if is_array {
+                        VarStorage::Array
+                    } else {
+                        VarStorage::Var
+                    },
                 )),
             );
         } else {

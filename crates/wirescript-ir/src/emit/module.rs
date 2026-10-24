@@ -115,13 +115,29 @@ fn check_ends(conn: &WireConnection) -> Result<(), EmitError> {
         // A composite sub-port (`Position.X`) is named by its parent in the
         // inventory.
         let base = port.split('.').next().unwrap_or(port);
-        let is_in = spec.component.inputs.iter().any(|p| p.name == port || p.name == base);
-        let is_out = spec.component.outputs.iter().any(|p| p.name == port || p.name == base);
+        let is_in = spec
+            .component
+            .inputs
+            .iter()
+            .any(|p| p.name == port || p.name == base);
+        let is_out = spec
+            .component
+            .outputs
+            .iter()
+            .any(|p| p.name == port || p.name == base);
         if !is_in && !is_out {
             return Err(EmitError::UnknownPort(format!(
                 "{class} has no port `{port}` (catalog inputs {:?}, outputs {:?})",
-                spec.component.inputs.iter().map(|p| &p.name).collect::<Vec<_>>(),
-                spec.component.outputs.iter().map(|p| &p.name).collect::<Vec<_>>(),
+                spec.component
+                    .inputs
+                    .iter()
+                    .map(|p| &p.name)
+                    .collect::<Vec<_>>(),
+                spec.component
+                    .outputs
+                    .iter()
+                    .map(|p| &p.name)
+                    .collect::<Vec<_>>(),
             )));
         }
         if is_src && !is_out {
@@ -182,10 +198,14 @@ pub(super) fn emit_module(
         if src_node.map(|n| n.gate_class) == Some(gc::LITERAL)
             && let Some(lit) = src_node.and_then(|n| n.properties.get(&value_sym)).cloned()
         {
-            inlined_by_node.entry(w.target.node_id).or_default().push((w.target.port, lit));
+            inlined_by_node
+                .entry(w.target.node_id)
+                .or_default()
+                .push((w.target.port, lit));
         }
         wire_target_index.insert((w.target.node_id, w.target.port), w.source.node_id);
-        ctx.wire_sources.insert((w.target.node_id, w.target.port), w.source.node_id);
+        ctx.wire_sources
+            .insert((w.target.node_id, w.target.port), w.source.node_id);
     }
 
     let nodes: Vec<(&NodeId, &Node)> = module.nodes_in_order().collect();
@@ -202,7 +222,17 @@ pub(super) fn emit_module(
     // module tries to wire to them via scope captures.
     for &(id, node) in &nodes {
         if is_spawnable(node.kind, node.gate_class) {
-            emit_gate(world, ctx, module, layout, bricks, &inlined_by_node, &wire_target_index, id, node)?;
+            emit_gate(
+                world,
+                ctx,
+                module,
+                layout,
+                bricks,
+                &inlined_by_node,
+                &wire_target_index,
+                id,
+                node,
+            )?;
         }
     }
 
@@ -216,8 +246,21 @@ pub(super) fn emit_module(
         if node.kind != crate::ir::NodeKind::Chip {
             continue;
         }
-        let Some(child_module) = module.chips.get(id) else { continue };
-        emit_chip(world, ctx, module, layout, bricks, wall, &inlined_by_node, id, node, child_module)?;
+        let Some(child_module) = module.chips.get(id) else {
+            continue;
+        };
+        emit_chip(
+            world,
+            ctx,
+            module,
+            layout,
+            bricks,
+            wall,
+            &inlined_by_node,
+            id,
+            node,
+            child_module,
+        )?;
     }
 
     // ── Pass 3: emit this module's wires ──
@@ -239,23 +282,33 @@ pub(super) fn emit_module(
         let mut labels: Vec<(&NodeId, &PortRef)> = module.dynamic_labels.iter().collect();
         labels.sort_unstable_by_key(|(host, _)| **host);
         for (host, src) in labels {
-            let Some(source) = label_source(ctx, src, &port_index) else { continue };
+            let Some(source) = label_source(ctx, src, &port_index) else {
+                continue;
+            };
             // FATAL — same class as a dropped module wire: a `@label` that
             // asks for a runtime value but silently gets none is exactly
             // the miscompile-laundering `EmitError::DroppedWire` guards.
-            let source =
-                source.map_err(|e| EmitError::DroppedWire(format!("@label source for {}: {e}", src.node_id)))?;
+            let source = source.map_err(|e| {
+                EmitError::DroppedWire(format!("@label source for {}: {e}", src.node_id))
+            })?;
             let Some(&host_brick) = ctx.node_brick_ids.get(host) else {
                 continue;
             };
-            ctx.add_wire(world, WireConnection { source, target: label_text_port(host_brick) })?;
+            ctx.add_wire(
+                world,
+                WireConnection {
+                    source,
+                    target: label_text_port(host_brick),
+                },
+            )?;
         }
         if let Some(src) = &module.root_dynamic_label
             && let Some(source) = label_source(ctx, src, &port_index)
         {
             // FATAL — a root `@label` that loses its runtime source
             // would ship a chip with a blank title and no diagnostic.
-            let source = source.map_err(|e| EmitError::DroppedWire(format!("root @label source: {e}")))?;
+            let source =
+                source.map_err(|e| EmitError::DroppedWire(format!("root @label source: {e}")))?;
             let target = label_text_port(ctx.root_shell_brick_id);
             ctx.add_wire(world, WireConnection { source, target })?;
         }
@@ -270,23 +323,43 @@ pub(super) fn emit_module(
         .dynamic_colors
         .iter()
         .map(|(host, src)| (*host, "Color", src))
-        .chain(module.dynamic_materials.iter().map(|(host, src)| (*host, "Material", src)))
+        .chain(
+            module
+                .dynamic_materials
+                .iter()
+                .map(|(host, src)| (*host, "Material", src)),
+        )
         .collect();
     styles.sort_unstable_by_key(|(host, port, _)| (*host, *port));
     for (host, port, src) in styles {
-        let Some(source) = label_source(ctx, src, &port_index) else { continue };
+        let Some(source) = label_source(ctx, src, &port_index) else {
+            continue;
+        };
         // FATAL for the same reason as a lost `@label` source.
-        let source = source.map_err(|e| EmitError::DroppedWire(format!("@{} source for {host}: {e}", port.to_lowercase())))?;
+        let source = source.map_err(|e| {
+            EmitError::DroppedWire(format!("@{} source for {host}: {e}", port.to_lowercase()))
+        })?;
         let Some(&host_brick) = ctx.node_brick_ids.get(&host) else {
             continue;
         };
-        ctx.add_wire(world, WireConnection { source, target: property_changer_port(host_brick, port) })?;
+        ctx.add_wire(
+            world,
+            WireConnection {
+                source,
+                target: property_changer_port(host_brick, port),
+            },
+        )?;
     }
-    for (port, value) in [("Color", &module.root_style.color), ("Material", &module.root_style.material)] {
+    for (port, value) in [
+        ("Color", &module.root_style.color),
+        ("Material", &module.root_style.material),
+    ] {
         if let Some(src) = value.as_ref().and_then(crate::ir::StyleValue::wired)
             && let Some(source) = label_source(ctx, src, &port_index)
         {
-            let source = source.map_err(|e| EmitError::DroppedWire(format!("root @{} source: {e}", port.to_lowercase())))?;
+            let source = source.map_err(|e| {
+                EmitError::DroppedWire(format!("root @{} source: {e}", port.to_lowercase()))
+            })?;
             let target = property_changer_port(ctx.root_shell_brick_id, port);
             ctx.add_wire(world, WireConnection { source, target })?;
         }
@@ -310,13 +383,18 @@ fn emit_gate(
     id: &NodeId,
     node: &Node,
 ) -> Result<(), EmitError> {
-    let pos = layout.placements.get(id).ok_or_else(|| EmitError::MissingPlacement(id.to_string()))?;
+    let pos = layout
+        .placements
+        .get(id)
+        .ok_or_else(|| EmitError::MissingPlacement(id.to_string()))?;
     // One catalog lookup per brick: brick asset + half-size both come
     // from the same entry. Unknown classes (synthetic IR-only nodes)
     // fall back to a reroute node. The catalog is 'static, so the
     // asset name needs no per-brick String clone.
     let catalog_entry = crate::catalog::default_catalog().find_by_class(node.gate_class);
-    let brick_asset: &'static str = catalog_entry.map(|g| g.brick_asset.as_str()).unwrap_or("B_1x1_Reroute_Node");
+    let brick_asset: &'static str = catalog_entry
+        .map(|g| g.brick_asset.as_str())
+        .unwrap_or("B_1x1_Reroute_Node");
     // Offset each brick by its half-size so the brick's min corner aligns
     // with the cell grid line at (pos.x, pos.y). This keeps every brick
     // inside its own cell regardless of size (1x1, wide DisplayText, etc.)
@@ -327,7 +405,9 @@ fn emit_gate(
     let placed = catalog_entry.map(|g| g.placed_half_size(crate::catalog::node_variant(node)));
     let half = placed.map_or((5, 5), |h| (h.x, h.y));
     let asset = match (catalog_entry, placed) {
-        (Some(g), Some(h)) if g.is_procedural() => BrickType::from((brick_asset, (h.x as u16, h.y as u16, h.z as u16))),
+        (Some(g), Some(h)) if g.is_procedural() => {
+            BrickType::from((brick_asset, (h.x as u16, h.y as u16, h.z as u16)))
+        }
         _ => BrickType::from(brick_asset),
     };
     // A quarter-turned brick swaps its footprint, so its center sits at
@@ -337,7 +417,11 @@ fn emit_gate(
     // here — the game would just drop the overlapping bricks at load.
     let rotation = layout.rotations.get(id).copied().unwrap_or_default();
     let (offset_x, offset_y) = rotation.footprint(half);
-    let inner_pos = brdb::Position { x: pos.x + offset_x, y: pos.y + offset_y, z: pos.z };
+    let inner_pos = brdb::Position {
+        x: pos.x + offset_x,
+        y: pos.y + offset_y,
+        z: pos.z,
+    };
     let (mut brick, brick_id) = brdb::Brick {
         asset,
         position: inner_pos,
@@ -385,9 +469,17 @@ fn emit_gate(
 
 /// The literals inlined into `id`'s data: the `_Literal` values wired into
 /// it, then its own properties for the names no wire fills.
-fn node_inlined<'a>(inlined_by_node: &'a InlinedByNode, id: &NodeId, node: &'a Node) -> HashMap<Sym, &'a Literal> {
+fn node_inlined<'a>(
+    inlined_by_node: &'a InlinedByNode,
+    id: &NodeId,
+    node: &'a Node,
+) -> HashMap<Sym, &'a Literal> {
     inlined_values(
-        inlined_by_node.get(id).into_iter().flatten().map(|(port, lit)| (crate::intern::intern(port.as_str()), lit)),
+        inlined_by_node
+            .get(id)
+            .into_iter()
+            .flatten()
+            .map(|(port, lit)| (crate::intern::intern(port.as_str()), lit)),
         node.properties.iter().map(|(k, v)| (*k, v)),
     )
 }
@@ -404,7 +496,9 @@ fn node_component(
     // The advanced-inventory gates carry composite (array/struct) config
     // (`MeshColors: Color[]`, `WeaponAmmoOverride`) that a `LiteralComponent`
     // can't serialize — build them with an array-capable `NativeStruct`.
-    if class == gc::CHARACTER_ADD_INVENTORY_ITEM_ADV || class == gc::CHARACTER_SET_INVENTORY_ITEM_ADV {
+    if class == gc::CHARACTER_ADD_INVENTORY_ITEM_ADV
+        || class == gc::CHARACTER_SET_INVENTORY_ITEM_ADV
+    {
         return Ok(Box::new(build_adv_inventory_component(
             class,
             &node.ports,
@@ -433,7 +527,11 @@ fn node_component(
                 .chain(node.ports.outputs.iter())
                 .find(|p| resolve(p.name) == "Value")
                 .map(|p| &p.ty);
-            let wv: WireValue = match node.properties.get(&*sym::INITIAL_VALUE).or_else(|| node.properties.get(&*sym::VALUE)) {
+            let wv: WireValue = match node
+                .properties
+                .get(&*sym::INITIAL_VALUE)
+                .or_else(|| node.properties.get(&*sym::VALUE))
+            {
                 Some(lit) => literal_to_wire_value(lit).unwrap_or(WireValue::Number(0.0)),
                 None => var_type_to_wire_value(value_ty),
             };
@@ -489,7 +587,9 @@ fn node_component(
         // external-asset table and build the EntryPlan struct (Type=Item).
         // NOTE: the exact binary encoding (enum repr, asset-in-class field,
         // nested defaults) needs in-game verification.
-        "BrickComponentType_Exec_Character_SetInventoryEntry" => set_inventory_entry_component(world, node),
+        "BrickComponentType_Exec_Character_SetInventoryEntry" => {
+            set_inventory_entry_component(world, node)
+        }
         _ => build_gate_component(
             class,
             &node.ports,
@@ -508,23 +608,43 @@ fn set_inventory_entry_component(world: &mut World, node: &Node) -> LiteralCompo
         _ => 0,
     };
     let item_idx = match node.properties.get(&intern_static("ItemTypeIfItem")) {
-        Some(Literal::Asset { asset_type, asset_name }) => {
-            let (idx, _) =
-                world.global_data.external_asset_references.insert_full((asset_type.clone(), asset_name.clone()));
+        Some(Literal::Asset {
+            asset_type,
+            asset_name,
+        }) => {
+            let (idx, _) = world
+                .global_data
+                .external_asset_references
+                .insert_full((asset_type.clone(), asset_name.clone()));
             Some(idx)
         }
         _ => None,
     };
     let brick_wrapper = LiteralComponent::new("BrickTypeNetWrapper").with_data([
-        ("BrickAsset", Box::new(BrdbValue::Asset(None)) as Box<dyn AsBrdbValue>),
-        ("ProceduralSize", Box::new(IntVector::default()) as Box<dyn AsBrdbValue>),
+        (
+            "BrickAsset",
+            Box::new(BrdbValue::Asset(None)) as Box<dyn AsBrdbValue>,
+        ),
+        (
+            "ProceduralSize",
+            Box::new(IntVector::default()) as Box<dyn AsBrdbValue>,
+        ),
     ]);
     let entry_plan = LiteralComponent::new("BRInventoryEntryPlan").with_data([
         // EBRInventoryEntryPlanType::Item = 3
         ("Type", Box::new(3u8) as Box<dyn AsBrdbValue>),
-        ("BrickTypeIfBrick", Box::new(brick_wrapper) as Box<dyn AsBrdbValue>),
-        ("EntityTypeIfEntity", Box::new(BrdbValue::Asset(None)) as Box<dyn AsBrdbValue>),
-        ("ItemTypeIfItem", Box::new(BrdbValue::Asset(item_idx)) as Box<dyn AsBrdbValue>),
+        (
+            "BrickTypeIfBrick",
+            Box::new(brick_wrapper) as Box<dyn AsBrdbValue>,
+        ),
+        (
+            "EntityTypeIfEntity",
+            Box::new(BrdbValue::Asset(None)) as Box<dyn AsBrdbValue>,
+        ),
+        (
+            "ItemTypeIfItem",
+            Box::new(BrdbValue::Asset(item_idx)) as Box<dyn AsBrdbValue>,
+        ),
     ]);
     // `Item` is a BRInventoryEntryVariant (the entry's current
     // contents); a freshly-planned entry is `Nothing` (an empty
@@ -550,13 +670,21 @@ fn set_inventory_entry_component(world: &mut World, node: &Node) -> LiteralCompo
 /// get theirs in pass 2 / `build_world`. `_`-prefixed names are synthesized
 /// plumbing — chip I/O maps the well-known ones to friendly labels (see
 /// `microchip_io_label`); everywhere else they stay unlabeled.
-fn node_label(ctx: &mut EmitContext, module: &Module, id: &NodeId, node: &Node) -> Option<(String, f32)> {
+fn node_label(
+    ctx: &mut EmitContext,
+    module: &Module,
+    id: &NodeId,
+    node: &Node,
+) -> Option<(String, f32)> {
     let named = |l: &Literal| match l {
         Literal::String(s) if !s.is_empty() && !s.starts_with('_') => Some(s.clone()),
         _ => None,
     };
     match node.gate_class {
-        gc::MICROCHIP_INPUT | gc::MICROCHIP_OUTPUT | "BrickComponentType_FunctionInput" | "BrickComponentType_FunctionOutput" => {
+        gc::MICROCHIP_INPUT
+        | gc::MICROCHIP_OUTPUT
+        | "BrickComponentType_FunctionInput"
+        | "BrickComponentType_FunctionOutput" => {
             let label = microchip_io_label(node);
             // A container access gate (Var/ArrayVar/MapVar_*) reads its small
             // tag by tracing its ref wire back to the source's label. When the
@@ -592,9 +720,11 @@ fn node_label(ctx: &mut EmitContext, module: &Module, id: &NodeId, node: &Node) 
             }
         }
         // A Function Call: the name of the `fn` it runs.
-        c if c == gc::FUNCTION_CALL => {
-            node.properties.get(&*sym::NAME_LABEL).and_then(named).map(|s| (s, LABEL_LINE_HEIGHT))
-        }
+        c if c == gc::FUNCTION_CALL => node
+            .properties
+            .get(&*sym::NAME_LABEL)
+            .and_then(named)
+            .map(|s| (s, LABEL_LINE_HEIGHT)),
         // Var/ArrayVar exec gates: a smaller tag naming the variable
         // they access, traced through the gate's (Array)VarRef wire.
         // The var node is always emitted first, so its label is known.
@@ -635,7 +765,11 @@ fn emit_chip(
 ) -> Result<(), EmitError> {
     let missing = || EmitError::MissingPlacement(id.to_string());
     let pos = layout.placements.get(id).ok_or_else(missing)?;
-    let inner_pos = brdb::Position { x: pos.x + 5, y: pos.y + 5, z: pos.z };
+    let inner_pos = brdb::Position {
+        x: pos.x + 5,
+        y: pos.y + 5,
+        z: pos.z,
+    };
     let child_layout = layout.chip_layouts.get(id).ok_or_else(missing)?;
     let slot = wall.chips.get(id).ok_or_else(missing)?;
 
@@ -655,7 +789,14 @@ fn emit_chip(
     };
 
     let mut child_bricks: Vec<brdb::Brick> = Vec::new();
-    emit_module(world, ctx, child_module, child_layout, &mut child_bricks, wall)?;
+    emit_module(
+        world,
+        ctx,
+        child_module,
+        child_layout,
+        &mut child_bricks,
+        wall,
+    )?;
 
     let header_doc = match node.properties.get(&*sym::DOC_TEXT) {
         Some(Literal::String(s)) if !s.is_empty() => Some(s.clone()),
@@ -698,10 +839,13 @@ fn emit_chip(
         Box::new(LiteralComponent::new(shell_component))
     };
 
-    let (mut chip_brick, chip_brick_id) =
-        brdb::Brick { asset: shell_asset, position: inner_pos, ..Default::default() }
-            .with_component_box(shell_comp)
-            .with_id_split();
+    let (mut chip_brick, chip_brick_id) = brdb::Brick {
+        asset: shell_asset,
+        position: inner_pos,
+        ..Default::default()
+    }
+    .with_component_box(shell_comp)
+    .with_id_split();
     // Named chips get a floating name label (the `@label` override wins
     // over the declared name); anonymous groupings (ModuleRoot-scoped
     // partitions) stay unlabeled. Dropped under `no_gate_labels` for the
@@ -730,14 +874,22 @@ fn emit_module_wires(
     layout: &LayoutResult,
     port_index: &PortIndex,
 ) -> Result<(), EmitError> {
-    let inline_only = |ctx: &EmitContext, id: &NodeId| ctx.class_index.get(id).is_some_and(|c| gc::is_inline_only(c));
+    let inline_only = |ctx: &EmitContext, id: &NodeId| {
+        ctx.class_index
+            .get(id)
+            .is_some_and(|c| gc::is_inline_only(c))
+    };
     for w in &module.wires {
         if w.source.port == WirePort::Layout || w.target.port == WirePort::Layout {
             continue;
         }
         // A bus lane already carries this value to the port; drawing the
         // direct wire too would fan in and the game would reject one.
-        if layout.bus.suppressed.contains(&(w.target.node_id, w.target.port)) {
+        if layout
+            .bus
+            .suppressed
+            .contains(&(w.target.node_id, w.target.port))
+        {
             continue;
         }
         if inline_only(ctx, &w.source.node_id) || inline_only(ctx, &w.target.node_id) {
@@ -788,10 +940,20 @@ fn label_source(
     src: &PortRef,
     port_index: &PortIndex,
 ) -> Option<Result<BrdbWirePort, EmitError>> {
-    if ctx.class_index.get(&src.node_id).is_some_and(|c| gc::is_inline_only(c)) {
+    if ctx
+        .class_index
+        .get(&src.node_id)
+        .is_some_and(|c| gc::is_inline_only(c))
+    {
         return None;
     }
-    Some(resolve_wire_end(src.node_id, src.port, &ctx.node_brick_ids, &ctx.class_index, port_index))
+    Some(resolve_wire_end(
+        src.node_id,
+        src.port,
+        &ctx.node_brick_ids,
+        &ctx.class_index,
+        port_index,
+    ))
 }
 
 /// The `Text` input of the label on `brick_id`.
@@ -823,15 +985,18 @@ fn emit_bus_wires(
      -> Result<BrdbWirePort, EmitError> {
         match e {
             BusEnd::Bus(i) => {
-                let brick_id =
-                    *bus_brick_ids.get(i).ok_or_else(|| EmitError::UnknownWireNode(format!("bus node {i}")))?;
+                let brick_id = *bus_brick_ids
+                    .get(i)
+                    .ok_or_else(|| EmitError::UnknownWireNode(format!("bus node {i}")))?;
                 Ok(BrdbWirePort {
                     brick_id,
                     component_type: BString::Static(gc::REROUTER),
                     port_name: BString::Static(if as_source { "RER_Output" } else { "RER_Input" }),
                 })
             }
-            BusEnd::Node(p) => resolve_wire_end(p.node_id, p.port, node_brick_ids, class_index, port_index),
+            BusEnd::Node(p) => {
+                resolve_wire_end(p.node_id, p.port, node_brick_ids, class_index, port_index)
+            }
         }
     };
     // Name an end the way a reader can act on: a lane brick by its index,

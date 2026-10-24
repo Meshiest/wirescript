@@ -5,9 +5,9 @@
 //! lowering. Children within a region are sorted by their scope's
 //! `source_range.start` (then `ScopeId`) so the tree is deterministic.
 
-use crate::ir::{Node, ScopeId};
 #[cfg(any(test, feature = "test-internals"))]
 use crate::ir::ScopeInfo;
+use crate::ir::{Node, ScopeId};
 
 /// Pure view over a single scope's contents in a `Module`.
 #[derive(Debug)]
@@ -18,7 +18,8 @@ pub struct Region<'a> {
     /// The scope this region came from. Only [`build_region_tree`] and its
     /// tests inspect it — the production layout path builds one flat region.
     #[cfg(any(test, feature = "test-internals"))]
-    #[cfg_attr(not(feature = "test-internals"), allow(dead_code))] // read by the region tests in `wirescript`
+    #[cfg_attr(not(feature = "test-internals"), allow(dead_code))]
+    // read by the region tests in `wirescript`
     pub info: &'a ScopeInfo,
     /// Nodes whose `scope_id` is exactly this region's id. Sorted by
     /// `(source_range.start, node_id)` for determinism.
@@ -31,9 +32,9 @@ pub struct Region<'a> {
 }
 
 #[cfg(any(test, feature = "test-internals"))]
-use crate::ir::{Module, ROOT_SCOPE_ID};
-#[cfg(any(test, feature = "test-internals"))]
 use crate::collections::HashMap;
+#[cfg(any(test, feature = "test-internals"))]
+use crate::ir::{Module, ROOT_SCOPE_ID};
 
 /// Build the region tree rooted at `ROOT_SCOPE_ID`.
 ///
@@ -120,4 +121,3 @@ pub fn region_node_count(r: &Region<'_>) -> usize {
 pub fn region_scope_count(r: &Region<'_>) -> usize {
     1 + r.children.iter().map(region_scope_count).sum::<usize>()
 }
-

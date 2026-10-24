@@ -18,7 +18,10 @@ fn environment_unshadowed(ctx: &LowerCtx) -> bool {
 ///
 /// `None` means `e` is not an environment property path; an error, that it is
 /// but names nothing (typecheck reported it, and nothing is lowered for it).
-fn environment_property(ctx: &LowerCtx, e: &Expr) -> Option<Result<ResolvedProperty, PropertyError>> {
+fn environment_property(
+    ctx: &LowerCtx,
+    e: &Expr,
+) -> Option<Result<ResolvedProperty, PropertyError>> {
     let (env, property) = props::environment_path(e)?;
     if !environment_unshadowed(ctx) {
         return None;
@@ -32,10 +35,19 @@ fn environment_property(ctx: &LowerCtx, e: &Expr) -> Option<Result<ResolvedPrope
 /// goes through a Convert gate to `int`, which gives the number (measured in
 /// game: `as-probes/06_followup.ws`).
 fn read_port_type(r: &ResolvedProperty) -> Type {
-    if r.enum_type.is_some() { Type::Any } else { r.ty.clone() }
+    if r.enum_type.is_some() {
+        Type::Any
+    } else {
+        r.ty.clone()
+    }
 }
 
-fn read_value(ctx: &mut LowerCtx, r: &ResolvedProperty, value: PortRef, range: &SourceRange) -> PortRef {
+fn read_value(
+    ctx: &mut LowerCtx,
+    r: &ResolvedProperty,
+    value: PortRef,
+    range: &SourceRange,
+) -> PortRef {
     if r.enum_type.is_some() {
         crate::lower::convert::convert_port(ctx, value, &Type::Any, &Type::Int, range)
     } else {
@@ -45,8 +57,14 @@ fn read_value(ctx: &mut LowerCtx, r: &ResolvedProperty, value: PortRef, range: &
 
 fn settings(r: &ResolvedProperty) -> HashMap<crate::intern::Sym, Literal> {
     let mut out = HashMap::default();
-    out.insert(intern_static("Environment"), Literal::String(r.owner.to_string()));
-    out.insert(intern_static("PropertyName"), Literal::String(r.name.to_string()));
+    out.insert(
+        intern_static("Environment"),
+        Literal::String(r.owner.to_string()),
+    );
+    out.insert(
+        intern_static("PropertyName"),
+        Literal::String(r.name.to_string()),
+    );
     out
 }
 
@@ -57,7 +75,11 @@ pub(super) fn lower_environment_read(ctx: &mut LowerCtx, e: &Expr) -> Option<Por
         return Some(synthesise_unsupported_no_warn(ctx, e.range()));
     };
     let Some(exec) = ctx.current_exec else {
-        return Some(synthesise_unsupported_range(ctx, "an environment read with no exec chain to run on", e.range()));
+        return Some(synthesise_unsupported_range(
+            ctx,
+            "an environment read with no exec chain to run on",
+            e.range(),
+        ));
     };
     let node = chain_gate(
         ctx,
@@ -66,7 +88,10 @@ pub(super) fn lower_environment_read(ctx: &mut LowerCtx, e: &Expr) -> Option<Por
             source_range: e.range().clone(),
             ports: GateIO {
                 inputs: vec![PortSpec::exec(*sym::EXEC)],
-                outputs: vec![PortSpec::exec(*sym::EXEC_OUT), PortSpec::new(*sym::VALUE, read_port_type(&r))],
+                outputs: vec![
+                    PortSpec::exec(*sym::EXEC_OUT),
+                    PortSpec::new(*sym::VALUE, read_port_type(&r)),
+                ],
             },
             properties: settings(&r),
             note: Some("environment read"),
@@ -93,7 +118,11 @@ pub(super) fn lower_environment_write(ctx: &mut LowerCtx, s: &Assign) -> bool {
         None => lower_expr(ctx, &s.value),
     };
     let Some(exec) = ctx.current_exec else {
-        synthesise_unsupported_range(ctx, "an environment write with no exec chain to run on", &s.range);
+        synthesise_unsupported_range(
+            ctx,
+            "an environment write with no exec chain to run on",
+            &s.range,
+        );
         return true;
     };
     chain_gate(
@@ -102,7 +131,10 @@ pub(super) fn lower_environment_write(ctx: &mut LowerCtx, s: &Assign) -> bool {
             gate_class: gc::SET_ENVIRONMENT_PROPERTY,
             source_range: s.range.clone(),
             ports: GateIO {
-                inputs: vec![PortSpec::exec(*sym::EXEC), PortSpec::new(*sym::VALUE, r.ty.clone())],
+                inputs: vec![
+                    PortSpec::exec(*sym::EXEC),
+                    PortSpec::new(*sym::VALUE, r.ty.clone()),
+                ],
                 outputs: vec![PortSpec::exec(*sym::EXEC_OUT)],
             },
             properties: settings(&r),
@@ -121,9 +153,15 @@ fn component_settings(r: &ResolvedProperty) -> HashMap<crate::intern::Sym, Liter
     let mut out = HashMap::default();
     out.insert(
         intern_static("ComponentType"),
-        Literal::Asset { asset_type: "BrickComponentTypeBase".to_string(), asset_name: r.owner.to_string() },
+        Literal::Asset {
+            asset_type: "BrickComponentTypeBase".to_string(),
+            asset_name: r.owner.to_string(),
+        },
     );
-    out.insert(intern_static("PropertyName"), Literal::String(r.name.to_string()));
+    out.insert(
+        intern_static("PropertyName"),
+        Literal::String(r.name.to_string()),
+    );
     out
 }
 
@@ -137,14 +175,23 @@ fn component_class(ctx: &LowerCtx, obj: &Expr) -> Option<String> {
 
 /// `obj.field` read off a component reference, run on the exec chain. `None`
 /// when `obj` is not a component.
-pub(super) fn lower_component_read(ctx: &mut LowerCtx, obj: &Expr, field: &str, e: &Expr) -> Option<PortRef> {
+pub(super) fn lower_component_read(
+    ctx: &mut LowerCtx,
+    obj: &Expr,
+    field: &str,
+    e: &Expr,
+) -> Option<PortRef> {
     let class = component_class(ctx, obj)?;
     let Ok(r) = props::resolve_component(&class, field) else {
         return Some(synthesise_unsupported_no_warn(ctx, e.range()));
     };
     let component = lower_expr(ctx, obj);
     let Some(exec) = ctx.current_exec else {
-        return Some(synthesise_unsupported_range(ctx, "a component read with no exec chain to run on", e.range()));
+        return Some(synthesise_unsupported_range(
+            ctx,
+            "a component read with no exec chain to run on",
+            e.range(),
+        ));
     };
     let node = chain_gate(
         ctx,
@@ -156,7 +203,10 @@ pub(super) fn lower_component_read(ctx: &mut LowerCtx, obj: &Expr, field: &str, 
                     PortSpec::exec(*sym::EXEC),
                     PortSpec::new(WirePort::Component.sym(), Type::Component(class)),
                 ],
-                outputs: vec![PortSpec::exec(*sym::EXEC_OUT), PortSpec::new(*sym::VALUE, read_port_type(&r))],
+                outputs: vec![
+                    PortSpec::exec(*sym::EXEC_OUT),
+                    PortSpec::new(*sym::VALUE, read_port_type(&r)),
+                ],
             },
             properties: component_settings(&r),
             note: Some("component read"),
@@ -171,8 +221,12 @@ pub(super) fn lower_component_read(ctx: &mut LowerCtx, obj: &Expr, field: &str, 
 /// `obj.field = value` on a component reference, run on the exec chain.
 /// Returns whether `s` was one.
 pub(super) fn lower_component_write(ctx: &mut LowerCtx, s: &Assign) -> bool {
-    let Expr::FieldAccess { obj, field, .. } = &s.target else { return false };
-    let Some(class) = component_class(ctx, obj) else { return false };
+    let Expr::FieldAccess { obj, field, .. } = &s.target else {
+        return false;
+    };
+    let Some(class) = component_class(ctx, obj) else {
+        return false;
+    };
     let Ok(r) = props::resolve_component(&class, field) else {
         return true;
     };
@@ -182,7 +236,11 @@ pub(super) fn lower_component_write(ctx: &mut LowerCtx, s: &Assign) -> bool {
         None => lower_expr(ctx, &s.value),
     };
     let Some(exec) = ctx.current_exec else {
-        synthesise_unsupported_range(ctx, "a component write with no exec chain to run on", &s.range);
+        synthesise_unsupported_range(
+            ctx,
+            "a component write with no exec chain to run on",
+            &s.range,
+        );
         return true;
     };
     chain_gate(

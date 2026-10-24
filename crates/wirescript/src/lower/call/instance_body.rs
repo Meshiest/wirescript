@@ -64,8 +64,11 @@ pub(super) fn build_chip_module(
             entries.iter().for_each(|(_, b)| note(b));
         }
         ctx.top_dup_bindings.values().for_each(&mut note);
-        let keys: HashSet<&(std::sync::Arc<str>, usize)> =
-            frame_ids.iter().filter_map(|id| ctx.views_by_frame.get(id)).flatten().collect();
+        let keys: HashSet<&(std::sync::Arc<str>, usize)> = frame_ids
+            .iter()
+            .filter_map(|id| ctx.views_by_frame.get(id))
+            .flatten()
+            .collect();
         for key in keys {
             if let Some(view) = ctx.decl_views.get(key) {
                 view.bindings().for_each(&mut note);
@@ -231,7 +234,10 @@ pub(super) fn build_chip_module(
         // later param's pin index and silently mis-wire the whole call.
         if inp.is_const {
             if let Some(lit) = const_params.get(&inp.name) {
-                let marks = crate::const_scope::Marks { declared: true, ..Default::default() };
+                let marks = crate::const_scope::Marks {
+                    declared: true,
+                    ..Default::default()
+                };
                 child_ctx.consts.record(&inp.name, lit.clone(), marks);
                 let ty = child_ctx
                     .declared_type(chip_decl, &inp.typ, child_ctx.mono_stack.last())
@@ -266,13 +272,19 @@ pub(super) fn build_chip_module(
                 }
                 child_ctx.scope.insert(
                     &inp.name,
-                    Binding::Var(VarRecord::new(captured.node_id, captured.inner_type.clone(), captured.storage)),
+                    Binding::Var(VarRecord::new(
+                        captured.node_id,
+                        captured.inner_type.clone(),
+                        captured.storage,
+                    )),
                 );
             } else {
                 let t = child_ctx.resolve_local_type(&inp.typ);
-                let (storage, inner) =
-                    super::context::container_binding(child_ctx.ref_storage(Some(chip_decl), &inp.typ), &t)
-                        .expect("gated by ref_storage");
+                let (storage, inner) = super::context::container_binding(
+                    child_ctx.ref_storage(Some(chip_decl), &inp.typ),
+                    &t,
+                )
+                .expect("gated by ref_storage");
                 let node_id = child_ctx.add_input(&inp.name, t.clone(), chip_decl.range.clone());
                 if immutable_params.contains(&inp.name) {
                     child_ctx.immutable_containers.insert(node_id);
@@ -336,19 +348,26 @@ pub(super) fn build_chip_module(
     // constants, each one a parameter does not rebind, as a namespaced `mod`
     // body does (see `inline.rs`).
     let ns_key = (chip_decl.range.file.clone(), chip_decl.range.start.offset);
-    if let (Some(ns_scope), Some(ns_consts)) =
-        (child_ctx.ns_mod_scopes.get(&ns_key).cloned(), child_ctx.ns_mod_consts.get(&ns_key).cloned())
-    {
+    if let (Some(ns_scope), Some(ns_consts)) = (
+        child_ctx.ns_mod_scopes.get(&ns_key).cloned(),
+        child_ctx.ns_mod_consts.get(&ns_key).cloned(),
+    ) {
         for (name, lit, marks) in ns_consts.iter() {
             if child_ctx.scope.get_current(name).is_some() {
                 continue;
             }
             if let Some(member) = ns_scope.get(name) {
-                let member = literal_copy(ctx, &mut child_ctx, member).unwrap_or_else(|| member.clone());
+                let member =
+                    literal_copy(ctx, &mut child_ctx, member).unwrap_or_else(|| member.clone());
                 child_ctx.scope.insert(name, member);
             }
             child_ctx.consts.record(name, lit.clone(), *marks);
-            crate::lower::predeclare::own_constant_container(&mut child_ctx, name, lit, &chip_decl.range);
+            crate::lower::predeclare::own_constant_container(
+                &mut child_ctx,
+                name,
+                lit,
+                &chip_decl.range,
+            );
         }
     }
     for out in &chip_decl.outputs {
@@ -469,13 +488,20 @@ pub(super) fn build_chip_module(
         .filter(|o| !super::inline::is_exec_type(&child_ctx, &o.typ))
         .map(|o| o.name.as_str())
         .collect();
-    let record_only_output =
-        chip_decl.outputs.len() == 1 && child_ctx.record_or_tuple_fields(&chip_decl.outputs[0].typ).is_some();
+    let record_only_output = chip_decl.outputs.len() == 1
+        && child_ctx
+            .record_or_tuple_fields(&chip_decl.outputs[0].typ)
+            .is_some();
     if chip_decl.outputs.len() > 1 || record_only_output {
         child_ctx.chip_return_outputs = chip_decl
             .outputs
             .iter()
-            .map(|o| (o.name.clone(), super::inline::is_exec_type(&child_ctx, &o.typ)))
+            .map(|o| {
+                (
+                    o.name.clone(),
+                    super::inline::is_exec_type(&child_ctx, &o.typ),
+                )
+            })
             .collect();
     }
     {
@@ -537,7 +563,10 @@ pub(super) fn build_chip_module(
     // stores into its backing var, like the emit.
     if ((auto_exec && returns >= 1) || handler_returns >= 1)
         && chip_decl.outputs.len() == 1
-        && let Some(backing) = child_ctx.output_backing_vars.get(&chip_decl.outputs[0].name).cloned()
+        && let Some(backing) = child_ctx
+            .output_backing_vars
+            .get(&chip_decl.outputs[0].name)
+            .cloned()
     {
         child_ctx.mod_return_var = Some(backing);
     }
@@ -555,7 +584,11 @@ pub(super) fn build_chip_module(
         && child_ctx.mod_return_var.is_none()
     {
         let out_type = child_ctx.resolve_local_type(&chip_decl.outputs[0].typ);
-        child_ctx.mod_return_var = Some(return_value_var(&mut child_ctx, out_type, &chip_decl.body.range));
+        child_ctx.mod_return_var = Some(return_value_var(
+            &mut child_ctx,
+            out_type,
+            &chip_decl.body.range,
+        ));
     }
 
     for stmt in &chip_decl.body.stmts {
@@ -578,7 +611,10 @@ pub(super) fn build_chip_module(
         // Var_Get's exec becomes the chip's exec tail.
         // An output backing var drives its output itself (below).
         if let Some(ret_var) = child_ctx.mod_return_var.clone()
-            && !child_ctx.output_backing_vars.values().any(|v| v.node_id == ret_var.node_id)
+            && !child_ctx
+                .output_backing_vars
+                .values()
+                .any(|v| v.node_id == ret_var.node_id)
             && let Some(exec) = child_ctx.current_exec
         {
             // A backed output is driven by its backing var, wired below.
@@ -598,8 +634,11 @@ pub(super) fn build_chip_module(
     // awaiting caller never resumes). The root module flushes in `lower`; each
     // chip body must flush its own, since its emits target its own outputs/hubs.
     // Each record backing drives its output's field pins once.
-    let mut records: Vec<(String, HashMap<crate::intern::Sym, Binding>)> =
-        child_ctx.output_record_backing.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut records: Vec<(String, HashMap<crate::intern::Sym, Binding>)> = child_ctx
+        .output_record_backing
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     records.sort_by(|a, b| a.0.cmp(&b.0));
     for (name, backing) in records {
         if let Some(Binding::Record(pins)) = child_ctx
@@ -611,12 +650,18 @@ pub(super) fn build_chip_module(
         }
     }
     // Each backing var drives its output once, after every site's write.
-    let mut backings: Vec<(String, VarRecord)> =
-        child_ctx.output_backing_vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut backings: Vec<(String, VarRecord)> = child_ctx
+        .output_backing_vars
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     backings.sort_by(|a, b| a.0.cmp(&b.0));
     for (name, backing) in backings {
         if let Some(out) = child_ctx.lookup_output(&name).cloned() {
-            child_ctx.connect(backing.node_id.port(WirePort::Value), out.node_id.port(WirePort::RerInput));
+            child_ctx.connect(
+                backing.node_id.port(WirePort::Value),
+                out.node_id.port(WirePort::RerInput),
+            );
         }
     }
     super::stmt::flush_pending_emits(&mut child_ctx);
@@ -647,7 +692,8 @@ fn explode_record_param_pins(
         let ft = child_ctx.resolve_local_type(&field.typ);
         // Array / Map / ref fields bind a container ref-port; classified via
         // `container_binding` so a `Map<K,V>` field wires its `MapVarRef`.
-        let container = super::context::container_binding(child_ctx.ref_storage(None, &field.typ), &ft);
+        let container =
+            super::context::container_binding(child_ctx.ref_storage(None, &field.typ), &ft);
         if let Some(captured) = container
             .is_some()
             .then(|| caller_captures.get(&port_name))
@@ -655,7 +701,11 @@ fn explode_record_param_pins(
         {
             record_fields.insert(
                 crate::intern::intern(&field.name),
-                Binding::Var(VarRecord::new(captured.node_id, captured.inner_type.clone(), captured.storage)),
+                Binding::Var(VarRecord::new(
+                    captured.node_id,
+                    captured.inner_type.clone(),
+                    captured.storage,
+                )),
             );
             continue;
         }
@@ -705,9 +755,14 @@ pub(in crate::lower) fn wire_record_backing(
     names.sort_by_key(|k| crate::intern::resolve(*k));
     for k in names {
         match (backing.get(&k), &pins[&k]) {
-            (Some(Binding::Record(b)), Binding::Record(p)) => wire_record_backing(ctx, &b.clone(), &p.clone()),
+            (Some(Binding::Record(b)), Binding::Record(p)) => {
+                wire_record_backing(ctx, &b.clone(), &p.clone())
+            }
             (Some(Binding::Var(v)), Binding::Output(out)) => {
-                ctx.connect(v.node_id.port(WirePort::Value), out.node_id.port(WirePort::RerInput));
+                ctx.connect(
+                    v.node_id.port(WirePort::Value),
+                    out.node_id.port(WirePort::RerInput),
+                );
             }
             _ => {}
         }
@@ -716,13 +771,18 @@ pub(in crate::lower) fn wire_record_backing(
 
 /// Record every `_Literal` of this module that `b` names a port of, into
 /// `out` (see `LowerCtx::foreign_literals`).
-fn collect_literals(ctx: &LowerCtx, b: &Binding, out: &mut HashMap<NodeId, std::sync::Arc<crate::ir::Node>>) {
+fn collect_literals(
+    ctx: &LowerCtx,
+    b: &Binding,
+    out: &mut HashMap<NodeId, std::sync::Arc<crate::ir::Node>>,
+) {
     match b {
         Binding::Local(l) => {
             if let Some(n) = ctx.builder.module.nodes.get(&l.port.node_id)
                 && n.gate_class == gc::LITERAL
             {
-                out.entry(l.port.node_id).or_insert_with(|| std::sync::Arc::new(n.clone()));
+                out.entry(l.port.node_id)
+                    .or_insert_with(|| std::sync::Arc::new(n.clone()));
             }
         }
         Binding::Record(fields) => fields.values().for_each(|f| collect_literals(ctx, f, out)),
@@ -734,8 +794,15 @@ fn collect_literals(ctx: &LowerCtx, b: &Binding, out: &mut HashMap<NodeId, std::
 /// enclosing module points at a `_Literal` there, so the chip gets a copy of
 /// that literal (`None` for any other binding).
 fn literal_copy(ctx: &LowerCtx, child_ctx: &mut LowerCtx, binding: &Binding) -> Option<Binding> {
-    let Binding::Local(local) = binding else { return None };
-    let src = ctx.builder.module.nodes.get(&local.port.node_id).filter(|src| src.gate_class == gc::LITERAL)?;
+    let Binding::Local(local) = binding else {
+        return None;
+    };
+    let src = ctx
+        .builder
+        .module
+        .nodes
+        .get(&local.port.node_id)
+        .filter(|src| src.gate_class == gc::LITERAL)?;
     let opts = AddNodeOpts {
         gate_class: gc::LITERAL,
         source_range: src.source_range.clone(),

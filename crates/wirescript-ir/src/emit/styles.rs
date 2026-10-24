@@ -19,31 +19,56 @@ const MATERIALS: [BString; 6] = [
 /// `_material` properties, or a runtime value whose source is a literal emit
 /// inlines, since no wire will carry it), and whether a real runtime value is
 /// wired into either. `None` when the node is not styled at all.
-pub(super) fn node_style<'a>(module: &'a Module, id: &NodeId, node: &'a Node) -> Option<(Option<Literal>, Option<Literal>, bool)> {
+pub(super) fn node_style<'a>(
+    module: &'a Module,
+    id: &NodeId,
+    node: &'a Node,
+) -> Option<(Option<Literal>, Option<Literal>, bool)> {
     let inlined = |src: Option<&PortRef>| -> Option<&'a Literal> {
         let n = module.nodes.get(&src?.node_id)?;
-        (n.gate_class == gc::LITERAL).then(|| n.properties.get(&*sym::VALUE)).flatten()
+        (n.gate_class == gc::LITERAL)
+            .then(|| n.properties.get(&*sym::VALUE))
+            .flatten()
     };
     let wired_color = module.dynamic_colors.get(id);
     let wired_material = module.dynamic_materials.get(id);
-    let color = node.properties.get(&*sym::BRICK_COLOR).or_else(|| inlined(wired_color));
-    let material = node.properties.get(&*sym::BRICK_MATERIAL).or_else(|| inlined(wired_material));
+    let color = node
+        .properties
+        .get(&*sym::BRICK_COLOR)
+        .or_else(|| inlined(wired_color));
+    let material = node
+        .properties
+        .get(&*sym::BRICK_MATERIAL)
+        .or_else(|| inlined(wired_material));
     let wired = (wired_color.is_some() && inlined(wired_color).is_none())
         || (wired_material.is_some() && inlined(wired_material).is_none());
     let styled = color.is_some() || material.is_some() || wired;
-    styled.then(|| (color.and_then(crate::ir::brick_color), material.cloned(), wired))
+    styled.then(|| {
+        (
+            color.and_then(crate::ir::brick_color),
+            material.cloned(),
+            wired,
+        )
+    })
 }
 
 /// Style `brick`: a constant color or material is the brick's own, set on it
 /// directly. Only a runtime value needs a Brick Property Changer, whose
 /// inputs Pass 3.5 wires; its other fields copy the brick, which already
 /// carries any constant, so the changer leaves them as they are.
-pub(super) fn apply_style(brick: &mut brdb::Brick, color: Option<&Literal>, material: Option<&Literal>, wired: bool) {
+pub(super) fn apply_style(
+    brick: &mut brdb::Brick,
+    color: Option<&Literal>,
+    material: Option<&Literal>,
+    wired: bool,
+) {
     if let Some(Literal::Color { r, g, b, .. }) = color {
         brick.color = brdb::Color::new(*r, *g, *b);
     }
     if let Some(Literal::Int(n)) = material
-        && let Some(asset) = usize::try_from(*n).ok().and_then(|i| MATERIALS.get(i).cloned())
+        && let Some(asset) = usize::try_from(*n)
+            .ok()
+            .and_then(|i| MATERIALS.get(i).cloned())
     {
         brick.material = asset;
     }
@@ -62,7 +87,10 @@ pub(super) fn apply_style(brick: &mut brdb::Brick, color: Option<&Literal>, mate
 pub(super) fn property_changer(brick: &brdb::Brick) -> LiteralComponent {
     let own = brick.color;
     let color = brdb::SavedBrickColor::rgb(own.r, own.g, own.b);
-    let material = MATERIALS.iter().position(|m| *m == brick.material).unwrap_or(0) as u8;
+    let material = MATERIALS
+        .iter()
+        .position(|m| *m == brick.material)
+        .unwrap_or(0) as u8;
     let c = &brick.collision;
     let player = |p: Option<bool>| p.unwrap_or(c.player);
     let any = c.player
@@ -74,7 +102,10 @@ pub(super) fn property_changer(brick: &brdb::Brick) -> LiteralComponent {
         || c.tool
         || c.physics;
     LiteralComponent::new(PROPERTY_CHANGER).with_data([
-        ("bVisibility", Box::new(brick.visible) as Box<dyn AsBrdbValue>),
+        (
+            "bVisibility",
+            Box::new(brick.visible) as Box<dyn AsBrdbValue>,
+        ),
         ("bCollisionEnabled", Box::new(any)),
         ("bCollisionEnabled_Player", Box::new(c.player)),
         ("bCollisionEnabled_Player1", Box::new(player(c.player1))),

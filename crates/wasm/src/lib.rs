@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use wirescript::{
-    resolve::MemLoader,
     emit::{EmitOptions, NestedCompiler, PrefabResolver},
+    resolve::MemLoader,
 };
 
 mod analysis;
@@ -38,14 +38,26 @@ pub fn wirescript_diagnostics(source: String, files_json: Option<String>) -> Str
 }
 
 #[wasm_bindgen]
-pub fn wirescript_completions(source: String, line: u32, col: u32, files_json: Option<String>, prefabs_json: Option<String>) -> String {
+pub fn wirescript_completions(
+    source: String,
+    line: u32,
+    col: u32,
+    files_json: Option<String>,
+    prefabs_json: Option<String>,
+) -> String {
     let registry = parse_prefab_registry(prefabs_json.as_deref().unwrap_or("{}"));
     let prefab_paths: Vec<String> = {
         let mut p: Vec<String> = registry.into_keys().collect();
         p.sort();
         p
     };
-    analysis::completions(&source, line, col, files_json.as_deref().unwrap_or("{}"), &prefab_paths)
+    analysis::completions(
+        &source,
+        line,
+        col,
+        files_json.as_deref().unwrap_or("{}"),
+        &prefab_paths,
+    )
 }
 
 #[wasm_bindgen]
@@ -54,13 +66,25 @@ pub fn wirescript_hover(source: String, line: u32, col: u32, files_json: Option<
 }
 
 #[wasm_bindgen]
-pub fn wirescript_definition(source: String, line: u32, col: u32, files_json: Option<String>) -> String {
-    analysis::definition_with_files(&source, line, col, files_json.as_deref().unwrap_or("{}")).unwrap_or_default()
+pub fn wirescript_definition(
+    source: String,
+    line: u32,
+    col: u32,
+    files_json: Option<String>,
+) -> String {
+    analysis::definition_with_files(&source, line, col, files_json.as_deref().unwrap_or("{}"))
+        .unwrap_or_default()
 }
 
 #[wasm_bindgen]
-pub fn wirescript_references(source: String, line: u32, col: u32, files_json: Option<String>) -> String {
-    analysis::references_with_files(&source, line, col, files_json.as_deref().unwrap_or("{}")).unwrap_or_else(|| "[]".into())
+pub fn wirescript_references(
+    source: String,
+    line: u32,
+    col: u32,
+    files_json: Option<String>,
+) -> String {
+    analysis::references_with_files(&source, line, col, files_json.as_deref().unwrap_or("{}"))
+        .unwrap_or_else(|| "[]".into())
 }
 
 #[wasm_bindgen]
@@ -85,12 +109,24 @@ pub fn wirescript_inlay_hints(source: String, files_json: Option<String>) -> Str
 const MAX_NESTED_DEPTH: usize = 8;
 
 #[wasm_bindgen]
-pub fn wirescript_compile(source: String, module_name: Option<String>, files_json: Option<String>, prefabs_json: Option<String>) -> Result<Vec<u8>, JsValue> {
+pub fn wirescript_compile(
+    source: String,
+    module_name: Option<String>,
+    files_json: Option<String>,
+    prefabs_json: Option<String>,
+) -> Result<Vec<u8>, JsValue> {
     let file = module_name.as_deref().unwrap_or("inline");
     let files_json = files_json.unwrap_or_else(|| "{}".into());
     let registry = parse_prefab_registry(prefabs_json.as_deref().unwrap_or("{}"));
-    compile_source_to_brz(&source, file, module_name.as_deref(), &files_json, registry, 0)
-        .map_err(|e| JsValue::from_str(&e))
+    compile_source_to_brz(
+        &source,
+        file,
+        module_name.as_deref(),
+        &files_json,
+        registry,
+        0,
+    )
+    .map_err(|e| JsValue::from_str(&e))
 }
 
 /// Compile a single Wirescript source to `.brz` bytes against the in-memory
@@ -237,8 +273,15 @@ mod tests {
     /// handed the user a `.brz` for a program every other entry point refuses.
     #[test]
     fn an_unbarriered_cycle_is_refused_here_too() {
-        let err = compile_source_to_brz("out y: int = y + 1\n", "t.ws", None, "{}", HashMap::new(), 0)
-            .expect_err("an unbarriered cycle must not compile");
+        let err = compile_source_to_brz(
+            "out y: int = y + 1\n",
+            "t.ws",
+            None,
+            "{}",
+            HashMap::new(),
+            0,
+        )
+        .expect_err("an unbarriered cycle must not compile");
         assert!(err.contains("WS005"), "expected WS005, got: {err}");
     }
 
@@ -260,4 +303,3 @@ mod tests {
         );
     }
 }
-

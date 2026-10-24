@@ -12,7 +12,9 @@ use super::*;
 /// see [`derived_gate_data`]. A class in neither place has no data component.
 /// Per-field schema checks in `build_gate_component` decide variant vs native
 /// handling, so the `use_wire_variant` flag is always false here.
-pub(crate) fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'static str], bool)> {
+pub(crate) fn data_struct_for_gate(
+    gate_class: &str,
+) -> Option<(&'static str, &'static [&'static str], bool)> {
     derived_gate_data()
         .get(gate_class)
         .map(|(s, f)| (*s, f.as_slice(), false))
@@ -23,7 +25,8 @@ pub(crate) fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'
 /// Hand-written arms in [`data_struct_for_gate`] take precedence — they
 /// encode the deliberate exceptions (wire-only gates, struct overrides,
 /// classes absent from the pair table).
-pub(super) fn derived_gate_data() -> &'static HashMap<&'static str, (&'static str, Vec<&'static str>)> {
+pub(super) fn derived_gate_data()
+-> &'static HashMap<&'static str, (&'static str, Vec<&'static str>)> {
     static MAP: std::sync::OnceLock<HashMap<&'static str, (&'static str, Vec<&'static str>)>> =
         std::sync::OnceLock::new();
     MAP.get_or_init(|| {
@@ -102,12 +105,10 @@ pub(super) fn gate_field_meta(gate_class: &str) -> Option<&'static [FieldMeta]> 
                             Some("class") | Some("object") => FieldKind::AssetRef,
                             Some("str") => FieldKind::Str,
                             Some(n) if schema.get_enum(n).is_some() => FieldKind::Enum(n),
-                            Some(n @ ("Vector" | "Rotator" | "Quat")) => {
-                                FieldKind::NativeStruct(n)
-                            }
-                            Some(n @ ("i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64")) => {
-                                FieldKind::Integer(n)
-                            }
+                            Some(n @ ("Vector" | "Rotator" | "Quat")) => FieldKind::NativeStruct(n),
+                            Some(
+                                n @ ("i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"),
+                            ) => FieldKind::Integer(n),
                             Some(n @ ("f32" | "f64")) => FieldKind::Real(n),
                             Some("bool") => FieldKind::Boolean,
                             _ => FieldKind::Native,
@@ -148,7 +149,11 @@ pub fn field_enum_values(gate_class: &str, field: &str) -> Option<Vec<String>> {
     // Delegate to the catalog's schema-backed enum helpers, which drop the
     // trailing `<Enum>_MAX` / bare `MAX` sentinel (not a selectable member).
     let members = crate::catalog::enum_member_names(field_enum_type(gate_class, field)?);
-    if members.is_empty() { None } else { Some(members) }
+    if members.is_empty() {
+        None
+    } else {
+        Some(members)
+    }
 }
 
 /// The schema enum type name of a gate's data field, if it is an enum (e.g.

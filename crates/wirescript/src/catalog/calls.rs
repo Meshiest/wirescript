@@ -120,7 +120,11 @@ impl CallSpec {
     /// `Random`, `CharacterOf`) have none.
     pub fn has_effect(&self) -> bool {
         self.exec
-            && (self.outputs.is_empty() || matches!(self.name, "DisplayText" | "SpawnPrefab" | "Cycle" | "Toggle"))
+            && (self.outputs.is_empty()
+                || matches!(
+                    self.name,
+                    "DisplayText" | "SpawnPrefab" | "Cycle" | "Toggle"
+                ))
     }
 
     /// For a receiver method whose object binds to a NAMED param instead of the

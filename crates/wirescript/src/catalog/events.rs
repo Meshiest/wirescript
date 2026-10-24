@@ -228,10 +228,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             "BrickComponentType_Event_Gamemode_ControllerLeft",
             // No player reference: the player is already gone, so the event
             // carries only who they were.
-            vec![
-                string("userId", "UserId"),
-                string("userName", "UserName"),
-            ],
+            vec![string("userId", "UserId"), string("userName", "UserName")],
         ),
         // Team join/leave: like ControllerJoined/Left, but fired when a player
         // joins/leaves a team, and additionally exposing the `team` entity. The
@@ -271,7 +268,11 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             "BrickChanged",
             "BrickComponentType_Internal_ZoneEvent_BrickChanged",
             vec![
-                EventDataBinding { name: "brick", port: "Brick", ty: Type::Brick },
+                EventDataBinding {
+                    name: "brick",
+                    port: "Brick",
+                    ty: Type::Brick,
+                },
                 character("character", "Character"),
             ],
         ),
@@ -279,7 +280,11 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             "BrickRemoved",
             "BrickComponentType_Internal_ZoneEvent_BrickRemoved",
             vec![
-                EventDataBinding { name: "brick", port: "Brick", ty: Type::Brick },
+                EventDataBinding {
+                    name: "brick",
+                    port: "Brick",
+                    ty: Type::Brick,
+                },
                 character("character", "Character"),
             ],
         ),
@@ -469,14 +474,46 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                 surface_name: "CustomEvent",
                 gate_class: "BrickComponentType_Event_Custom",
                 data: vec![
-                    EventDataBinding { name: "data1", port: "DataOut1", ty: Type::Any },
-                    EventDataBinding { name: "data2", port: "DataOut2", ty: Type::Any },
-                    EventDataBinding { name: "data3", port: "DataOut3", ty: Type::Any },
-                    EventDataBinding { name: "data4", port: "DataOut4", ty: Type::Any },
-                    EventDataBinding { name: "data5", port: "DataOut5", ty: Type::Any },
-                    EventDataBinding { name: "data6", port: "DataOut6", ty: Type::Any },
-                    EventDataBinding { name: "data7", port: "DataOut7", ty: Type::Any },
-                    EventDataBinding { name: "data8", port: "DataOut8", ty: Type::Any },
+                    EventDataBinding {
+                        name: "data1",
+                        port: "DataOut1",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data2",
+                        port: "DataOut2",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data3",
+                        port: "DataOut3",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data4",
+                        port: "DataOut4",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data5",
+                        port: "DataOut5",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data6",
+                        port: "DataOut6",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data7",
+                        port: "DataOut7",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data8",
+                        port: "DataOut8",
+                        ty: Type::Any,
+                    },
                 ],
                 config_positional: vec!["EventName"],
                 config_named: vec![("isObject", "bIsObjectEvent")],
@@ -494,14 +531,46 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                 surface_name: "GlobalCustomEvent",
                 gate_class: "BrickComponentType_Event_CustomGlobal",
                 data: vec![
-                    EventDataBinding { name: "data1", port: "DataOut1", ty: Type::Any },
-                    EventDataBinding { name: "data2", port: "DataOut2", ty: Type::Any },
-                    EventDataBinding { name: "data3", port: "DataOut3", ty: Type::Any },
-                    EventDataBinding { name: "data4", port: "DataOut4", ty: Type::Any },
-                    EventDataBinding { name: "data5", port: "DataOut5", ty: Type::Any },
-                    EventDataBinding { name: "data6", port: "DataOut6", ty: Type::Any },
-                    EventDataBinding { name: "data7", port: "DataOut7", ty: Type::Any },
-                    EventDataBinding { name: "data8", port: "DataOut8", ty: Type::Any },
+                    EventDataBinding {
+                        name: "data1",
+                        port: "DataOut1",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data2",
+                        port: "DataOut2",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data3",
+                        port: "DataOut3",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data4",
+                        port: "DataOut4",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data5",
+                        port: "DataOut5",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data6",
+                        port: "DataOut6",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data7",
+                        port: "DataOut7",
+                        ty: Type::Any,
+                    },
+                    EventDataBinding {
+                        name: "data8",
+                        port: "DataOut8",
+                        ty: Type::Any,
+                    },
                 ],
                 config_positional: vec!["EventName"],
                 config_named: vec![("isObject", "bIsObjectEvent")],
@@ -543,7 +612,15 @@ pub fn removed_bindings(surface_name: &str) -> &'static [RemovedBinding] {
         "ControllerLeft" => CONTROLLER_LEFT.get_or_init(|| {
             vec![RemovedBinding {
                 name: "controller",
-                aliases: &["controller", "ctrl", "c", "pc", "player", "playerstate", "ps"],
+                aliases: &[
+                    "controller",
+                    "ctrl",
+                    "c",
+                    "pc",
+                    "player",
+                    "playerstate",
+                    "ps",
+                ],
                 ty_name: "controller",
                 reason: "the player has already left",
             }]

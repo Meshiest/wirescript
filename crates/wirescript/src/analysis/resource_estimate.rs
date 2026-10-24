@@ -1,7 +1,7 @@
 use crate::collections::HashMap;
 use std::sync::Arc;
 
-use crate::ast::{Script, TopDecl, ChipDecl, AnonChipDecl, Handler, Stmt, Block, Expr, CallArg};
+use crate::ast::{AnonChipDecl, Block, CallArg, ChipDecl, Expr, Handler, Script, Stmt, TopDecl};
 use crate::ir::{Module, NodeKind};
 use crate::lower::compile_chip_template;
 use crate::template_cache::TemplateCache;
@@ -104,7 +104,13 @@ pub fn collect_estimates(
     let mut expanded: HashMap<String, ResourceEstimate> = HashMap::default();
     let keys: Vec<String> = base_estimates.keys().cloned().collect();
     for key in &keys {
-        let est = expand_estimate(key, &base_estimates, &call_graph, &mut expanded, &mut Vec::new());
+        let est = expand_estimate(
+            key,
+            &base_estimates,
+            &call_graph,
+            &mut expanded,
+            &mut Vec::new(),
+        );
         expanded.insert(key.clone(), est);
     }
 
@@ -115,7 +121,9 @@ pub fn collect_estimates(
     // count. Aliased after expansion so the qualified key carries the callee
     // totals too, not just the member's own body.
     for decl in &ast.decls {
-        let TopDecl::Namespace(ns) = decl else { continue };
+        let TopDecl::Namespace(ns) = decl else {
+            continue;
+        };
         for d in &ns.decls {
             let TopDecl::Chip(c) = d else { continue };
             if c.name.is_empty() {
@@ -256,14 +264,21 @@ fn collect_from_block(
                 let then_gates = count_gates_in_block(&i.then_block);
                 let else_gates = i.else_block.as_ref().map_or(0, count_gates_in_block);
                 let then_calls = collect_calls_in_block(&i.then_block);
-                let else_calls = i.else_block.as_ref().map(collect_calls_in_block).unwrap_or_default();
+                let else_calls = i
+                    .else_block
+                    .as_ref()
+                    .map(collect_calls_in_block)
+                    .unwrap_or_default();
                 let mut all_calls = then_calls;
                 all_calls.extend(else_calls);
-                estimates.insert(key.clone(), ResourceEstimate {
-                    gates: 1 + then_gates + else_gates,
-                    is_inline: true,
-                    ..Default::default()
-                });
+                estimates.insert(
+                    key.clone(),
+                    ResourceEstimate {
+                        gates: 1 + then_gates + else_gates,
+                        is_inline: true,
+                        ..Default::default()
+                    },
+                );
                 if !all_calls.is_empty() {
                     call_graph.insert(key, all_calls);
                 }
@@ -336,23 +351,27 @@ fn estimate_handler(
 /// entry per call (duplicates = multiple calls).
 fn collect_calls_in_block(block: &Block) -> Vec<String> {
     let mut calls = Vec::new();
-    crate::ast::walk::walk(crate::ast::walk::Node::Block(block), Default::default(), &mut |node, _| {
-        // Only USER mod/chip calls belong in the call graph. A builtin call
-        // is a single gate (already counted by the template/gate heuristic),
-        // NOT a microchip — the same distinction `count_gates_in_expr` makes.
-        // Without this guard, `expand_estimate` treats every builtin callee
-        // (absent from `base_estimates`, so its default `is_inline` is
-        // `false`) as a non-inline chip and fabricates one phantom microchip
-        // per call: a `mod` whose only call was `BroadcastChatMessage`
-        // reported "1 chip per call" for a gate that never was one.
-        if let crate::ast::walk::Node::Expr(Expr::Call { callee, .. }) = node
-            && let Expr::Ident { name, .. } = callee.as_ref()
-            && !crate::catalog::calls::calls().contains_key(name.as_str())
-        {
-            calls.push(name.clone());
-        }
-        true
-    });
+    crate::ast::walk::walk(
+        crate::ast::walk::Node::Block(block),
+        Default::default(),
+        &mut |node, _| {
+            // Only USER mod/chip calls belong in the call graph. A builtin call
+            // is a single gate (already counted by the template/gate heuristic),
+            // NOT a microchip — the same distinction `count_gates_in_expr` makes.
+            // Without this guard, `expand_estimate` treats every builtin callee
+            // (absent from `base_estimates`, so its default `is_inline` is
+            // `false`) as a non-inline chip and fabricates one phantom microchip
+            // per call: a `mod` whose only call was `BroadcastChatMessage`
+            // reported "1 chip per call" for a gate that never was one.
+            if let crate::ast::walk::Node::Expr(Expr::Call { callee, .. }) = node
+                && let Expr::Ident { name, .. } = callee.as_ref()
+                && !crate::catalog::calls::calls().contains_key(name.as_str())
+            {
+                calls.push(name.clone());
+            }
+            true
+        },
+    );
     calls
 }
 
@@ -401,17 +420,32 @@ fn count_gates_in_expr(expr: &Expr) -> usize {
                 }
                 _ => 1,
             };
-            self_cost + args.iter().map(|a| match a {
-                CallArg::Positional(v) | CallArg::Spread(v) => count_gates_in_expr(v),
-                CallArg::Named { value, .. } => count_gates_in_expr(value),
-            }).sum::<usize>()
+            self_cost
+                + args
+                    .iter()
+                    .map(|a| match a {
+                        CallArg::Positional(v) | CallArg::Spread(v) => count_gates_in_expr(v),
+                        CallArg::Named { value, .. } => count_gates_in_expr(value),
+                    })
+                    .sum::<usize>()
         }
-        Expr::BinOp { left, right, .. } => 1 + count_gates_in_expr(left) + count_gates_in_expr(right),
+        Expr::BinOp { left, right, .. } => {
+            1 + count_gates_in_expr(left) + count_gates_in_expr(right)
+        }
         Expr::UnOp { operand, .. } => 1 + count_gates_in_expr(operand),
-        Expr::IfExpr { cond, then_branch, else_branch, .. } => {
-            1 + count_gates_in_expr(cond) + count_gates_in_expr(then_branch) + count_gates_in_expr(else_branch)
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            1 + count_gates_in_expr(cond)
+                + count_gates_in_expr(then_branch)
+                + count_gates_in_expr(else_branch)
         }
-        Expr::IndexAccess { obj, index, .. } => 1 + count_gates_in_expr(obj) + count_gates_in_expr(index),
+        Expr::IndexAccess { obj, index, .. } => {
+            1 + count_gates_in_expr(obj) + count_gates_in_expr(index)
+        }
         Expr::FieldAccess { obj, .. } => count_gates_in_expr(obj),
         Expr::BlockExpr { stmts, value, .. } => {
             stmts.iter().map(count_gates_in_stmt).sum::<usize>() + count_gates_in_expr(value)
@@ -425,7 +459,10 @@ fn count_gates_in_expr(expr: &Expr) -> usize {
 fn best_estimate(template_est: ResourceEstimate, body: &Block) -> ResourceEstimate {
     let heuristic_gates = count_gates_in_block(body);
     if heuristic_gates > template_est.gates {
-        ResourceEstimate { gates: heuristic_gates, ..template_est }
+        ResourceEstimate {
+            gates: heuristic_gates,
+            ..template_est
+        }
     } else {
         template_est
     }
@@ -450,12 +487,15 @@ fn estimate_chip(
     // fallback's cost: see `ResourceEstimate::is_const_eval` for why this
     // estimator can't cheaply tell a const-position call from a non-const one.
     if chip.is_const {
-        estimates.insert(key, ResourceEstimate {
-            is_inline: chip.inline,
-            is_fn: chip.is_fn,
-            is_const_eval: true,
-            ..Default::default()
-        });
+        estimates.insert(
+            key,
+            ResourceEstimate {
+                is_inline: chip.inline,
+                is_fn: chip.is_fn,
+                is_const_eval: true,
+                ..Default::default()
+            },
+        );
         return;
     }
     let template_est = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

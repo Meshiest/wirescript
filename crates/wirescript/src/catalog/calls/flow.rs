@@ -228,7 +228,10 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("cond", WirePort::BCond, Type::Bool),
                 CallParam::req("exec", WirePort::Exec, Type::Exec),
             ],
-            vec![("A", WirePort::ExecOutA, Type::Exec), ("B", WirePort::ExecOutB, Type::Exec)],
+            vec![
+                ("A", WirePort::ExecOutA, Type::Exec),
+                ("B", WirePort::ExecOutB, Type::Exec),
+            ],
         ),
     );
     // Read Brick Grid — the brick grid this gate's microchip is placed on.
@@ -362,7 +365,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         vec_expr(
             "ContainerChange",
             gc::CONTAINER_CHANGE_DETECTOR,
-            vec![CallParam::req("container", WirePort::ContainerRef, Type::Any)],
+            vec![CallParam::req(
+                "container",
+                WirePort::ContainerRef,
+                Type::Any,
+            )],
             WirePort::OnChanged,
             Type::Exec,
         ),
@@ -401,7 +408,10 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
     // Which kind of value is on the wire, as the built-in enum `Type`
     // (`catalog::WIRE_KIND_MEMBERS`). `v.getType()` is the same gate as a method
     // of every value.
-    let value_type = || Type::Enum { name: "Type".into(), args: vec![] };
+    let value_type = || Type::Enum {
+        name: "Type".into(),
+        args: vec![],
+    };
     m.insert(
         "GetValueType",
         CallSpec {

@@ -11,10 +11,7 @@ const RECORD_ELEMENT_MESSAGE: &str = "a record-typed array or map is stored as o
      per field, so this loop has no single reference for its driver pin. Iterate the index \
      instead (`for i in 0..arr.length()`) and read the record's fields inside the body.";
 
-pub(super) fn check_block(
-    ctx: &mut TypeCheckCtx,
-    block: &Block,
-) {
+pub(super) fn check_block(ctx: &mut TypeCheckCtx, block: &Block) {
     ctx.push_scope();
     for s in &block.stmts {
         check_stmt(ctx, s);
@@ -51,13 +48,24 @@ pub(super) fn evaluate_let(ctx: &TypeCheckCtx, l: &LetDecl) -> LetValue {
         .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit));
     let from_placeholder = pairs.is_ok() && {
         let mut probe = crate::const_eval::Budget::default();
-        crate::const_eval::eval_expr(&l.value, &ctx.const_ctx_without_placeholders(Some(&lookup)), &mut probe)
-            .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit))
-            .is_err()
+        crate::const_eval::eval_expr(
+            &l.value,
+            &ctx.const_ctx_without_placeholders(Some(&lookup)),
+            &mut probe,
+        )
+        .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit))
+        .is_err()
     };
-    let uncertified =
-        pairs.is_ok() && !crate::const_eval::integer_ops_certified(&l.value, &ctx.certified_const_ctx(Some(&lookup)));
-    LetValue { pairs, from_placeholder, uncertified }
+    let uncertified = pairs.is_ok()
+        && !crate::const_eval::integer_ops_certified(
+            &l.value,
+            &ctx.certified_const_ctx(Some(&lookup)),
+        );
+    LetValue {
+        pairs,
+        from_placeholder,
+        uncertified,
+    }
 }
 
 /// Record what `l` bound, now that its binding exists: each name it binds to a
@@ -124,18 +132,29 @@ pub(super) fn record_let(ctx: &mut TypeCheckCtx, l: &LetDecl, value: LetValue) {
 /// pulses for a
 /// tick (`on reset || start` works), so neither is reported.
 pub(super) fn reject_event_logic_trigger(ctx: &mut TypeCheckCtx, l: &LetDecl) {
-    let LetBinding::Ident { name, .. } = &l.binding else { return };
+    let LetBinding::Ident { name, .. } = &l.binding else {
+        return;
+    };
     if !name.starts_with("_on_expr_") {
         return;
     }
-    let Expr::BinOp { op, left, right, range } = &l.value else { return };
+    let Expr::BinOp {
+        op,
+        left,
+        right,
+        range,
+    } = &l.value
+    else {
+        return;
+    };
     if op != "||" {
         return;
     }
     let object = |e: &Expr| {
         let r = e.range();
         matches!(
-            ctx.type_of_expr.get(&(r.file.clone(), r.start.offset, r.end.offset)),
+            ctx.type_of_expr
+                .get(&(r.file.clone(), r.start.offset, r.end.offset)),
             Some(Type::Entity | Type::Controller | Type::Character)
         )
     };
@@ -189,16 +208,16 @@ fn block_ends(block: &Block, emit_ends: bool) -> bool {
     }
 }
 
-pub(super) fn check_anon_chip_stmts(
-    ctx: &mut TypeCheckCtx,
-    stmts: &[Stmt],
-    pre_registered: bool,
-) {
+pub(super) fn check_anon_chip_stmts(ctx: &mut TypeCheckCtx, stmts: &[Stmt], pre_registered: bool) {
     // At the top level, a declaration a name the chip declares shares is
     // what the name means again after the chip, and inside the chip no read
     // takes the name for a top-level constant (see `scope::top`).
     let top_level = ctx.scope.depth() == 1;
-    let names = if top_level { crate::scope::top::declared_names(stmts) } else { Vec::new() };
+    let names = if top_level {
+        crate::scope::top::declared_names(stmts)
+    } else {
+        Vec::new()
+    };
     let within = |r: &SourceRange| {
         stmts.first().zip(stmts.last()).is_some_and(|(a, b)| {
             let (a, b) = (a.range(), b.range());
@@ -208,7 +227,11 @@ pub(super) fn check_anon_chip_stmts(
     let earlier: Vec<(String, SymbolInfo)> = names
         .iter()
         .filter_map(|name| {
-            let now = ctx.scope.binding_frame(name).map(|(_, s)| s).filter(|now| !within(&now.decl_range))?;
+            let now = ctx
+                .scope
+                .binding_frame(name)
+                .map(|(_, s)| s)
+                .filter(|now| !within(&now.decl_range))?;
             Some((name.clone(), now.clone()))
         })
         .collect();
@@ -220,8 +243,14 @@ pub(super) fn check_anon_chip_stmts(
     // level declared of the name before the chip.
     for s in stmts {
         if let Some((name, range)) = super::register::anon_chip_storage_decl(s)
-            && let Some(sym) = ctx.anon_chip_storage.get(&(range.file.clone(), range.start.offset)).cloned()
-            && ctx.scope.lookup(name).is_none_or(|now| now.decl_range != *range)
+            && let Some(sym) = ctx
+                .anon_chip_storage
+                .get(&(range.file.clone(), range.start.offset))
+                .cloned()
+            && ctx
+                .scope
+                .lookup(name)
+                .is_none_or(|now| now.decl_range != *range)
         {
             ctx.scope.declare(name, sym);
         }
@@ -308,10 +337,7 @@ fn stmt_no_fold(s: &Stmt) -> bool {
     }
 }
 
-pub(super) fn check_stmt(
-    ctx: &mut TypeCheckCtx,
-    s: &Stmt,
-) {
+pub(super) fn check_stmt(ctx: &mut TypeCheckCtx, s: &Stmt) {
     ctx.with_nofold(stmt_no_fold(s), |ctx| check_stmt_inner(ctx, s));
     // A `let` declared with a type naming `T`, or taking a value declared
     // so, is declared with that type parameter too.
@@ -320,7 +346,11 @@ pub(super) fn check_stmt(
         && !ctx.unbounded_type_params.is_empty()
     {
         let tp = match &l.typ {
-            Some(te) => ctx.unbounded_type_params.iter().find(|p| super::enums::type_expr_mentions(te, p)).cloned(),
+            Some(te) => ctx
+                .unbounded_type_params
+                .iter()
+                .find(|p| super::enums::type_expr_mentions(te, p))
+                .cloned(),
             None => ctx.unbounded_root_of(&l.value).map(str::to_string),
         };
         if let Some(tp) = tp
@@ -331,17 +361,17 @@ pub(super) fn check_stmt(
     }
 }
 
-fn check_stmt_inner(
-    ctx: &mut TypeCheckCtx,
-    s: &Stmt,
-) {
+fn check_stmt_inner(ctx: &mut TypeCheckCtx, s: &Stmt) {
     match s {
         Stmt::Var(v) => {
             // `var x = <init reading x>`: the initializer reads the `x` around
             // the declaration, as a `let`'s does, so the var is declared under
             // a name of its own and `x` names it once it exists.
             let here = ctx.scope.depth() - 1;
-            if !ctx.scope.binding_frame(&v.name).is_some_and(|(i, _)| i == here)
+            if !ctx
+                .scope
+                .binding_frame(&v.name)
+                .is_some_and(|(i, _)| i == here)
                 && let Some(apart) = v.declared_apart()
             {
                 let mark = ctx.diagnostics.len();
@@ -360,7 +390,11 @@ fn check_stmt_inner(
                         .map(|t| crate::analysis::types::type_str(&t)),
                 };
                 let declared = ty.map_or(String::new(), |ty| {
-                    format!(" (`{}var {}: {ty}`)", if v.is_static { "static " } else { "" }, v.name)
+                    format!(
+                        " (`{}var {}: {ty}`)",
+                        if v.is_static { "static " } else { "" },
+                        v.name
+                    )
                 });
                 for d in &mut ctx.diagnostics[mark..] {
                     if d.code == "WS002" && d.message == unknown {
@@ -389,7 +423,10 @@ fn check_stmt_inner(
             if !v.is_static
                 && v.init.is_none()
                 && ctx.exec_mode() == ExecMode::Exec
-                && let Some(SymbolInfo { ty: Type::Ref(held), .. }) = ctx.scope.lookup(&v.name).cloned()
+                && let Some(SymbolInfo {
+                    ty: Type::Ref(held),
+                    ..
+                }) = ctx.scope.lookup(&v.name).cloned()
                 && matches!(held.as_ref(), Type::Ref(_) | Type::Brick)
             {
                 ctx.emit(
@@ -443,10 +480,15 @@ fn check_stmt_inner(
                     // non-literal init, same as the top-level decl path.
                     if v.typ.is_none() && matches!(inner, Type::Any) {
                         // A ref value is what the var holds, not a place to read.
-                        let u =
-                            if matches!(t, Type::Ref(_)) { t.clone() } else { unwrap_ref(&t).held_by_var() };
+                        let u = if matches!(t, Type::Ref(_)) {
+                            t.clone()
+                        } else {
+                            unwrap_ref(&t).held_by_var()
+                        };
                         let storable = match &u {
-                            Type::Array(elem) => untyped_array && super::untyped_arrays::inferable_element(elem),
+                            Type::Array(elem) => {
+                                untyped_array && super::untyped_arrays::inferable_element(elem)
+                            }
                             other => super::resolve::unannotated_var_holds(other),
                         };
                         if storable {
@@ -545,24 +587,24 @@ fn check_stmt_inner(
             if super::props::check_property_write(ctx, &a.target, &a.value) {
                 // A property write, checked against the property map.
             } else {
-            let (target_ty, through_ref) = match &a.target {
-                Expr::Deref { operand, range } => infer_deref_target(ctx, operand, range),
-                target => (infer_assign_target(ctx, target), false),
-            };
-            if let Some(entries) = map_init_entries(&a.value)
-                && let Type::Map(k, v) = &target_ty
-            {
-                // Assigning a map literal to a map var: the other valid slot —
-                // validate entries directly instead of routing through the
-                // generic `infer` position guard. An empty `{}` empties it.
-                check_map_literal(ctx, entries, k, v);
-                ctx.record_expr_type(a.value.range(), &target_ty);
-            } else {
-                infer::check_stored_value(ctx, &a.value, &target_ty);
-                if through_ref {
-                    check_deref_write_is_exact(ctx, &a.value, &target_ty);
+                let (target_ty, through_ref) = match &a.target {
+                    Expr::Deref { operand, range } => infer_deref_target(ctx, operand, range),
+                    target => (infer_assign_target(ctx, target), false),
+                };
+                if let Some(entries) = map_init_entries(&a.value)
+                    && let Type::Map(k, v) = &target_ty
+                {
+                    // Assigning a map literal to a map var: the other valid slot —
+                    // validate entries directly instead of routing through the
+                    // generic `infer` position guard. An empty `{}` empties it.
+                    check_map_literal(ctx, entries, k, v);
+                    ctx.record_expr_type(a.value.range(), &target_ty);
+                } else {
+                    infer::check_stored_value(ctx, &a.value, &target_ty);
+                    if through_ref {
+                        check_deref_write_is_exact(ctx, &a.value, &target_ty);
+                    }
                 }
-            }
             }
         }
         Stmt::OutBinding(b) => {
@@ -570,7 +612,10 @@ fn check_stmt_inner(
             // it was declared; only a port this statement declares is new.
             let boundary = ctx.out_ctx.len() <= 1;
             let declared = !boundary
-                && ctx.out_ctx.last().is_some_and(|o| o.iter().any(|f| f.name == b.name));
+                && ctx
+                    .out_ctx
+                    .last()
+                    .is_some_and(|o| o.iter().any(|f| f.name == b.name));
             // An anon-chip's statement-level `out` carries a type annotation
             // too (`chip { @bottom out done: any = 5 }`). Like the top-level
             // `TopDecl::Out` it is a port, which cannot take a type parameter,
@@ -599,13 +644,7 @@ fn check_stmt_inner(
                     // would leave the conversion unwired and drive the port
                     // with an `int`. And the value has to fit the port on any
                     // leg the annotation does not already cover.
-                    check_annotated_port_write(
-                        ctx,
-                        &b.name,
-                        &resolved,
-                        &value_ty,
-                        value.range(),
-                    );
+                    check_annotated_port_write(ctx, &b.name, &resolved, &value_ty, value.range());
                     check_port_declaration(ctx, &b.name, &resolved, &type_expr_range(te));
                     infer::int_constants_in_slot(ctx, value, &resolved);
                 }
@@ -643,9 +682,11 @@ fn check_stmt_inner(
                 // A gate read ferries its first output, as does each field
                 // of a record literal, which ferries field by field.
                 let payload = match &t {
-                    Type::Record(fs) if matches!(val, Expr::RecordLit { .. }) => {
-                        Type::Record(fs.iter().map(|(n, ft)| (n.clone(), infer::first_output(ft))).collect())
-                    }
+                    Type::Record(fs) if matches!(val, Expr::RecordLit { .. }) => Type::Record(
+                        fs.iter()
+                            .map(|(n, ft)| (n.clone(), infer::first_output(ft)))
+                            .collect(),
+                    ),
                     other => infer::first_output(other),
                 };
                 ctx.signal_payload_types.insert(e.name.clone(), payload);
@@ -1096,7 +1137,9 @@ fn check_stmt_inner(
             // A name taken from a container declared with a type naming an
             // unbounded `T` is declared with it too.
             let over = match &f.source {
-                ForSource::Collection { expr, .. } => ctx.unbounded_root_of(expr).map(str::to_string),
+                ForSource::Collection { expr, .. } => {
+                    ctx.unbounded_root_of(expr).map(str::to_string)
+                }
                 ForSource::Range(_) => None,
             };
             for (pat, slot) in f.bindings.iter().zip(&slots) {
@@ -1116,7 +1159,11 @@ fn check_stmt_inner(
                 }
             }
             if f.sliced && ctx.loop_depth > 0 {
-                ctx.warn("WS119", crate::lower::for_loop::SLICED_NESTED.to_string(), f.range.clone());
+                ctx.warn(
+                    "WS119",
+                    crate::lower::for_loop::SLICED_NESTED.to_string(),
+                    f.range.clone(),
+                );
             }
             ctx.loop_depth += 1;
             check_block(ctx, &f.body);
@@ -1186,7 +1233,9 @@ fn check_for_range(ctx: &mut TypeCheckCtx, r: &RangeSource) {
     let mut budget = crate::const_eval::Budget::default();
     let got = match crate::const_eval::eval_expr(step, &cx, &mut budget) {
         Ok(crate::ir::Literal::Int(n)) if n <= 0 => Some(n.to_string()),
-        Ok(crate::ir::Literal::Float(f)) if f.is_nan() || f <= 0.0 => Some(stride_as_written(step, f)),
+        Ok(crate::ir::Literal::Float(f)) if f.is_nan() || f <= 0.0 => {
+            Some(stride_as_written(step, f))
+        }
         _ => None,
     };
     if let Some(got) = got {
@@ -1225,22 +1274,30 @@ fn is_variable_ref(ctx: &TypeCheckCtx, e: &Expr) -> bool {
     match e {
         Expr::Ident { name, .. } => match ctx.scope.lookup(name) {
             Some(s) => {
-                matches!(s.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map)
-                    || (matches!(s.kind, SymbolKind::LetBinding | SymbolKind::Param)
-                        && matches!(unwrap_ref(&s.ty), Type::Array(_) | Type::Map(_, _)))
+                matches!(
+                    s.kind,
+                    SymbolKind::Var | SymbolKind::Array | SymbolKind::Map
+                ) || (matches!(s.kind, SymbolKind::LetBinding | SymbolKind::Param)
+                    && matches!(unwrap_ref(&s.ty), Type::Array(_) | Type::Map(_, _)))
                     || (s.kind == SymbolKind::In && matches!(&s.ty, Type::Array(_)))
             }
             None => false,
         },
         Expr::FieldAccess { obj, field, .. } => {
-            if let Expr::Ident { name: ns, range: ns_range } = obj.as_ref()
+            if let Expr::Ident {
+                name: ns,
+                range: ns_range,
+            } = obj.as_ref()
                 && ctx.scope.lookup(ns).map(|s| s.kind) == Some(SymbolKind::Namespace)
             {
                 return ctx
                     .ns_members(ns, &ns_range.file)
                     .and_then(|m| m.get(field))
                     .is_some_and(|info| {
-                        matches!(info.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map)
+                        matches!(
+                            info.kind,
+                            SymbolKind::Var | SymbolKind::Array | SymbolKind::Map
+                        )
                     });
             }
             is_variable_ref(ctx, obj)
@@ -1344,7 +1401,12 @@ fn bind_for_pat(ctx: &mut TypeCheckCtx, pat: &ForPat, ty: &Type) {
                 for field in fields {
                     match field {
                         RecordDestructField::Named { name, alias, range } => {
-                            declare_for_binding(ctx, alias.as_ref().unwrap_or(name), Type::Any, range);
+                            declare_for_binding(
+                                ctx,
+                                alias.as_ref().unwrap_or(name),
+                                Type::Any,
+                                range,
+                            );
                         }
                         RecordDestructField::Rest { name, range } => {
                             declare_for_binding(ctx, name, Type::Any, range);
@@ -1374,12 +1436,17 @@ fn bind_for_pat(ctx: &mut TypeCheckCtx, pat: &ForPat, ty: &Type) {
                     RecordDestructField::Named { name, alias, range } => {
                         let bind_name = alias.as_ref().unwrap_or(name);
                         match rec.iter().find(|(k, _)| k == name) {
-                            Some((_, fty)) => declare_for_binding(ctx, bind_name, fty.clone(), range),
+                            Some((_, fty)) => {
+                                declare_for_binding(ctx, bind_name, fty.clone(), range)
+                            }
                             None => ctx.emit(
                                 "WS076",
                                 format!(
                                     "`{name}` is not a field of `{ty}`. Available: {}.",
-                                    rec.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+                                    rec.iter()
+                                        .map(|(n, _)| n.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
                                 ),
                                 range.clone(),
                             ),
@@ -1447,31 +1514,32 @@ pub(crate) fn scrutinee_is_mutable(ctx: &TypeCheckCtx, scrutinee: &Expr) -> bool
 pub(crate) fn is_ref_able(ctx: &TypeCheckCtx, e: &Expr) -> bool {
     match e {
         Expr::Ident { name, .. } => match ctx.scope.lookup(name) {
-            Some(s) => matches!(s.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map)
+            Some(s) => {
+                matches!(s.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map)
                 // A `let` is only writable/ref-able when it's reference-backed
                 // (an array/map binding); a scalar `let` is a computed wire, so
                 // `&scalarLet` (and `scalarLet = …`) would silently no-op.
                 || (s.kind == SymbolKind::LetBinding
                     && matches!(unwrap_ref(&s.ty), Type::Array(_) | Type::Map(_, _)))
                 || (s.kind == SymbolKind::Param && matches!(&s.ty, Type::Ref(_)))
-                || (s.kind == SymbolKind::In && matches!(&s.ty, Type::Array(_))),
+                || (s.kind == SymbolKind::In && matches!(&s.ty, Type::Array(_)))
+            }
             None => false,
         },
         Expr::IndexAccess { obj, .. } => is_ref_able(ctx, obj),
         // A field of a record `let` (a namespace member included) that names
         // a var is that var: `&s.cpsr` on `let s = { cpsr }` is cpsr's ref.
-        Expr::FieldAccess { .. } | Expr::TuplePick { .. }
-            if let_place(ctx, e) =>
-        {
-            true
-        }
+        Expr::FieldAccess { .. } | Expr::TuplePick { .. } if let_place(ctx, e) => true,
         Expr::TuplePick { .. } => false,
         // A namespaced state member (`S.g`): ref-able when the member is a
         // var/array/map, exactly like its plain-imported form. Lowering wires
         // `&S.g` correctly, so without this arm the `&` check would wrongly
         // reject it as WS008.
         Expr::FieldAccess { obj, field, .. } => {
-            if let Expr::Ident { name: ns, range: ns_range } = obj.as_ref()
+            if let Expr::Ident {
+                name: ns,
+                range: ns_range,
+            } = obj.as_ref()
                 && ctx.scope.lookup(ns).map(|s| s.kind) == Some(SymbolKind::Namespace)
             {
                 return ctx
@@ -1519,10 +1587,7 @@ fn let_place(ctx: &TypeCheckCtx, e: &Expr) -> bool {
     is_let && crate::typecheck::infer::projection_is_place(ctx, e)
 }
 
-fn infer_assign_target(
-    ctx: &mut TypeCheckCtx,
-    e: &Expr,
-) -> Type {
+fn infer_assign_target(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     if let Expr::Ident { name, range } = e {
         if name == "_" {
             return Type::Any;
@@ -1530,7 +1595,8 @@ fn infer_assign_target(
         let sym = ctx.scope.lookup(name).cloned();
         #[cfg(test)]
         if let Some(s) = &sym {
-            ctx.ident_decls.push((range.clone(), s.decl_range.clone(), true));
+            ctx.ident_decls
+                .push((range.clone(), s.decl_range.clone(), true));
         }
         match sym {
             None => {
@@ -1579,10 +1645,9 @@ fn infer_assign_target(
             // of the matched value, writable only when the scrutinee is storage.
             Some(s)
                 if s.kind == SymbolKind::LetBinding
-                    && ctx.readonly_captures.contains(&(
-                        s.decl_range.file.clone(),
-                        s.decl_range.start.offset,
-                    )) =>
+                    && ctx
+                        .readonly_captures
+                        .contains(&(s.decl_range.file.clone(), s.decl_range.start.offset)) =>
             {
                 ctx.emit(
                     "WS007",
@@ -1690,9 +1755,10 @@ fn infer_assign_target(
         let obj_ty = unwrap_ref(&infer::infer(ctx, obj));
         match &obj_ty {
             Type::Tuple(fields) => fields.get(*index).map(unwrap_ref).unwrap_or(Type::Any),
-            Type::Record(fields) | Type::Outputs(fields) => {
-                fields.get(*index).map(|(_, t)| unwrap_ref(t)).unwrap_or(Type::Any)
-            }
+            Type::Record(fields) | Type::Outputs(fields) => fields
+                .get(*index)
+                .map(|(_, t)| unwrap_ref(t))
+                .unwrap_or(Type::Any),
             _ => Type::Any,
         }
     } else if let Expr::Deref { operand, range } = e {
@@ -1728,7 +1794,10 @@ fn infer_deref_target(ctx: &mut TypeCheckCtx, operand: &Expr, range: &SourceRang
         other => {
             ctx.emit(
                 "WS003",
-                format!("`*` needs a reference, got {}", crate::analysis::types::type_str(&other)),
+                format!(
+                    "`*` needs a reference, got {}",
+                    crate::analysis::types::type_str(&other)
+                ),
                 range.clone(),
             );
             (Type::Any, false)
@@ -1781,7 +1850,9 @@ fn check_deref_write_is_exact(ctx: &mut TypeCheckCtx, value: &Expr, target_ty: &
 pub(crate) fn int_literal(e: &Expr) -> Option<i64> {
     match e {
         Expr::IntLit { value, .. } => Some(*value),
-        Expr::UnOp { op, operand, .. } if op == "-" => int_literal(operand).map(|v| v.wrapping_neg()),
+        Expr::UnOp { op, operand, .. } if op == "-" => {
+            int_literal(operand).map(|v| v.wrapping_neg())
+        }
         _ => None,
     }
 }
@@ -1802,7 +1873,9 @@ fn describe_cond(e: &Expr) -> String {
         Expr::FloatLit { text, .. } => text.clone(),
         Expr::StringLit { value, .. } => format!("\"{value}\""),
         Expr::UnOp { op, operand, .. } => format!("{op}{}", describe_cond(operand)),
-        Expr::BinOp { op, left, right, .. } => {
+        Expr::BinOp {
+            op, left, right, ..
+        } => {
             format!("{} {op} {}", describe_cond(left), describe_cond(right))
         }
         Expr::FieldAccess { obj, field, .. } => format!("{}.{field}", describe_cond(obj)),
@@ -1833,9 +1906,8 @@ fn is_plain_value(e: &Expr) -> bool {
         | Expr::Ident { .. } => true,
         Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } => is_plain_value(obj),
         Expr::RecordLit { fields, .. } => fields.iter().all(|f| match f {
-            crate::ast::RecordLitField::Named { value, .. } | crate::ast::RecordLitField::Spread { value, .. } => {
-                is_plain_value(value)
-            }
+            crate::ast::RecordLitField::Named { value, .. }
+            | crate::ast::RecordLitField::Spread { value, .. } => is_plain_value(value),
             crate::ast::RecordLitField::Shorthand { .. } => true,
         }),
         _ => false,

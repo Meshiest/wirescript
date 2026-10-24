@@ -25,7 +25,11 @@ impl LineEnding {
     pub fn dominant_in(source: &str) -> Self {
         let crlf = source.matches("\r\n").count();
         let lf = source.matches('\n').count() - crlf;
-        if crlf > lf { LineEnding::Crlf } else { LineEnding::Lf }
+        if crlf > lf {
+            LineEnding::Crlf
+        } else {
+            LineEnding::Lf
+        }
     }
 }
 
@@ -57,7 +61,11 @@ impl Default for FormatOptions {
 impl FormatOptions {
     /// Indent with a tab, or with `size` spaces.
     pub fn indent_with(mut self, tabs: bool, size: usize) -> Self {
-        self.indent = if tabs { "\t".to_string() } else { " ".repeat(size) };
+        self.indent = if tabs {
+            "\t".to_string()
+        } else {
+            " ".repeat(size)
+        };
         self
     }
 
@@ -69,7 +77,9 @@ impl FormatOptions {
     /// Trailing whitespace is always trimmed outside `fmt-ignore` lines and
     /// nested-prefab blocks, so `trim_trailing_whitespace` is not read.
     pub fn with_editorconfig(mut self, file: &Path) -> Self {
-        use ec4rs::property::{EndOfLine, FinalNewline, IndentSize, IndentStyle, MaxLineLen, TabWidth};
+        use ec4rs::property::{
+            EndOfLine, FinalNewline, IndentSize, IndentStyle, MaxLineLen, TabWidth,
+        };
         let file = if file.is_absolute() {
             file.to_path_buf()
         } else {

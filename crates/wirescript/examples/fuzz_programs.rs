@@ -43,7 +43,9 @@ use wirescript::analyze::analyze_cycles;
 use wirescript::diagnostic::Severity;
 use wirescript::intern::{intern, intern_static, resolve as sym_resolve, sym};
 use wirescript::ir::port_registry::WirePort;
-use wirescript::ir::{Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire, gate_class as gc};
+use wirescript::ir::{
+    Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire, gate_class as gc,
+};
 use wirescript::layout::layout;
 // `fold::eval` is the `#[doc(hidden)] pub` surface opened up specifically
 // for this harness (see the visibility note on `pub mod fold`
@@ -52,8 +54,8 @@ use wirescript::layout::layout;
 // `eval::eval` is a pure lookup against a probed truth table (a match over
 // gate-class strings), NOT a dynamic/JS-style code-execution `eval` — no
 // user input, code, or expression string ever reaches it.
-use wirescript::lower::fold::eval::{self, Value as FoldValue};
 use wirescript::lower::FoldMode;
+use wirescript::lower::fold::eval::{self, Value as FoldValue};
 use wirescript::resolve::{FsLoader, MemLoader};
 use wirescript::{EmitOptions, FrontEnd, FrontEndStage, build_world, front_end_staged};
 
@@ -75,7 +77,11 @@ impl Rng {
         x.wrapping_mul(0x2545F4914F6CDD1D)
     }
     fn below(&mut self, n: usize) -> usize {
-        if n == 0 { 0 } else { (self.next() % n as u64) as usize }
+        if n == 0 {
+            0
+        } else {
+            (self.next() % n as u64) as usize
+        }
     }
     /// inclusive range
     fn range(&mut self, lo: usize, hi: usize) -> usize {
@@ -285,9 +291,12 @@ fn check_wires(root: &Module, out: &mut Outcome) {
                     w.source.port.as_str(),
                 )
             };
-            let missing_kind = if missing_id.0 == 0 { "null-node" } else { "orphan" };
-            let key =
-                format!("dangling-{kind_end} missing={missing_kind} port={missing_port}");
+            let missing_kind = if missing_id.0 == 0 {
+                "null-node"
+            } else {
+                "orphan"
+            };
+            let key = format!("dangling-{kind_end} missing={missing_kind} port={missing_port}");
             out.wire_detail.push(format!(
                 "{key} id={missing_id} other={other_cls}.{other_port}"
             ));
@@ -329,8 +338,7 @@ fn check_wires(root: &Module, out: &mut Outcome) {
     for ((tgt, port), srcs) in &by_target {
         if srcs.len() >= 2 {
             let tc = short_class(classes[tgt]);
-            let mut src_cls: Vec<&str> =
-                srcs.iter().map(|s| short_class(classes[s])).collect();
+            let mut src_cls: Vec<&str> = srcs.iter().map(|s| short_class(classes[s])).collect();
             src_cls.sort();
             src_cls.dedup();
             // Coarse bucket key: target class + port only. Source-class
@@ -364,7 +372,10 @@ struct Bundle {
 
 fn split_bundle(src: &str) -> Bundle {
     if !src.contains(FILE_MARKER) {
-        return Bundle { entry: src.to_string(), files: Vec::new() };
+        return Bundle {
+            entry: src.to_string(),
+            files: Vec::new(),
+        };
     }
     let mut sections: Vec<(String, Vec<&str>)> = Vec::new();
     let mut pre: Vec<&str> = Vec::new();
@@ -387,7 +398,10 @@ fn split_bundle(src: &str) -> Bundle {
             files.push((name, text));
         }
     }
-    Bundle { entry: entry.unwrap_or_else(|| pre.join("\n")), files }
+    Bundle {
+        entry: entry.unwrap_or_else(|| pre.join("\n")),
+        files,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -446,13 +460,17 @@ fn scan_record_types(src: &str) -> StdMap<String, Vec<String>> {
         if line.starts_with(char::is_whitespace) {
             continue;
         }
-        let Some(rest) = line.strip_prefix("type ") else { continue };
+        let Some(rest) = line.strip_prefix("type ") else {
+            continue;
+        };
         let name = ident_at(rest.trim_start());
         if name.is_empty() {
             continue;
         }
         let Some(open) = rest.find('{') else { continue };
-        let Some(close) = rest.rfind('}') else { continue };
+        let Some(close) = rest.rfind('}') else {
+            continue;
+        };
         if close <= open {
             continue;
         }
@@ -460,7 +478,11 @@ fn scan_record_types(src: &str) -> StdMap<String, Vec<String>> {
             .split(',')
             .filter_map(|part| {
                 let fname = ident_at(part.trim());
-                if fname.is_empty() { None } else { Some(fname.to_string()) }
+                if fname.is_empty() {
+                    None
+                } else {
+                    Some(fname.to_string())
+                }
             })
             .collect();
         out.insert(name.to_string(), fields);
@@ -514,13 +536,17 @@ fn scan_enum_types(src: &str) -> StdMap<String, Vec<(String, Vec<String>)>> {
         if line.starts_with(char::is_whitespace) {
             continue;
         }
-        let Some(rest) = line.strip_prefix("enum ") else { continue };
+        let Some(rest) = line.strip_prefix("enum ") else {
+            continue;
+        };
         let name = ident_at(rest.trim_start());
         if name.is_empty() {
             continue;
         }
         let Some(open) = rest.find('{') else { continue };
-        let Some(close) = rest.rfind('}') else { continue };
+        let Some(close) = rest.rfind('}') else {
+            continue;
+        };
         if close <= open {
             continue;
         }
@@ -677,7 +703,9 @@ fn scan_imports(entry: &str) -> Vec<(String, Option<Vec<String>>)> {
             Some(rest[..e].trim_end_matches(".ws").to_string())
         };
         if let Some(body) = rest.strip_prefix('{') {
-            let Some(close) = body.find('}') else { continue };
+            let Some(close) = body.find('}') else {
+                continue;
+            };
             let names: Vec<String> = body[..close]
                 .split(',')
                 .filter_map(|part| {
@@ -729,7 +757,9 @@ fn scan_enum_var_variants(src: &str) -> StdMap<String, StdMap<String, Vec<String
             continue;
         }
         let l = line.strip_prefix("static ").unwrap_or(line);
-        let Some(rest) = l.strip_prefix("var ") else { continue };
+        let Some(rest) = l.strip_prefix("var ") else {
+            continue;
+        };
         let rest = rest.trim_start();
         let name = ident_at(rest);
         if name.is_empty() {
@@ -842,7 +872,9 @@ fn scan_writes(
         // Leading dotted path.
         let mut end = 0;
         let bytes: Vec<char> = t.chars().collect();
-        while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == '_' || bytes[end] == '.') {
+        while end < bytes.len()
+            && (bytes[end].is_ascii_alphanumeric() || bytes[end] == '_' || bytes[end] == '.')
+        {
             end += 1;
         }
         if end == 0 {
@@ -857,8 +889,23 @@ fn scan_writes(
         let first = segs[0];
         if matches!(
             first,
-            "let" | "var" | "static" | "buffer" | "array" | "out" | "in" | "emit" | "chip"
-                | "mod" | "on" | "if" | "else" | "await" | "return" | "type" | "import"
+            "let"
+                | "var"
+                | "static"
+                | "buffer"
+                | "array"
+                | "out"
+                | "in"
+                | "emit"
+                | "chip"
+                | "mod"
+                | "on"
+                | "if"
+                | "else"
+                | "await"
+                | "return"
+                | "type"
+                | "import"
         ) {
             continue;
         }
@@ -942,7 +989,9 @@ fn derive_storage_expect(bundle: &Bundle) -> StorageExpect {
     }
     let mut reached_files: BTreeSet<String> = BTreeSet::new();
     for (module, named) in scan_imports(&bundle.entry) {
-        let Some(decls) = by_file.get(module.as_str()) else { continue };
+        let Some(decls) = by_file.get(module.as_str()) else {
+            continue;
+        };
         reached_files.insert(module.clone());
         match &named {
             None => {
@@ -1006,9 +1055,13 @@ fn is_writer_class(kind: StoreKind, class: &str) -> bool {
             gc::ARRAY_SLICE,
         ]
         .contains(&class),
-        StoreKind::Map => {
-            [gc::MAP_SET, gc::MAP_REMOVE, gc::MAP_CLEAR, gc::MAP_COPY_FROM].contains(&class)
-        }
+        StoreKind::Map => [
+            gc::MAP_SET,
+            gc::MAP_REMOVE,
+            gc::MAP_CLEAR,
+            gc::MAP_COPY_FROM,
+        ]
+        .contains(&class),
         StoreKind::Buffer => false,
     }
 }
@@ -1060,8 +1113,10 @@ fn check_storage(root: &Module, expect: &StorageExpect, out: &mut Outcome) {
                 "collapse {} `{name}`: {exp} declared -> {actual} storage gate(s)",
                 kind.name()
             ));
-            out.storage_issues
-                .push((Kind::StorageCollapse, format!("storage-collapse {}", kind.name())));
+            out.storage_issues.push((
+                Kind::StorageCollapse,
+                format!("storage-collapse {}", kind.name()),
+            ));
         }
     }
     if buffer_actual < expect.buffer_total {
@@ -1162,20 +1217,29 @@ fn run_pipeline_inner(src: &str) -> Outcome {
     // `compile_multi` tests use). Unfolded on purpose: the general fuzz mode
     // hunts crashes in resolve/typecheck/lower itself; `--fold-diff` below is
     // the dedicated differential mode that exercises fold on/off agreement.
-    let mut loader = MemLoader { files: Default::default() };
+    let mut loader = MemLoader {
+        files: Default::default(),
+    };
     for (name, text) in &bundle.files {
         loader.files.insert(format!("{name}.ws"), text.clone());
     }
     let loader: &dyn wirescript::resolve::FileLoader = if is_bundle { &loader } else { &FsLoader };
     let mut stage = "resolve";
     let fe = match catch_unwind(AssertUnwindSafe(|| {
-        front_end_staged(&bundle.entry, file, None, FoldMode::ForceOff, loader, &mut |s| {
-            stage = match s {
-                FrontEndStage::Resolve => "resolve",
-                FrontEndStage::Typecheck => "typecheck",
-                FrontEndStage::Lower(_) => "lower",
-            }
-        })
+        front_end_staged(
+            &bundle.entry,
+            file,
+            None,
+            FoldMode::ForceOff,
+            loader,
+            &mut |s| {
+                stage = match s {
+                    FrontEndStage::Resolve => "resolve",
+                    FrontEndStage::Typecheck => "typecheck",
+                    FrontEndStage::Lower(_) => "lower",
+                }
+            },
+        )
     })) {
         Ok(fe) => fe,
         Err(p) => {
@@ -1183,7 +1247,12 @@ fn run_pipeline_inner(src: &str) -> Outcome {
             return out;
         }
     };
-    let FrontEnd { resolved, typecheck: tc, lowered, .. } = fe;
+    let FrontEnd {
+        resolved,
+        typecheck: tc,
+        lowered,
+        ..
+    } = fe;
     record_diags(&mut out, &resolved.diagnostics);
     record_diags(&mut out, &tc.diagnostics);
     record_diags(&mut out, &lowered.diagnostics);
@@ -1249,16 +1318,83 @@ fn run_pipeline_inner(src: &str) -> Outcome {
 // ─────────────────────────── snippet normalization ───────────────────────────
 
 const KEYWORDS: &[&str] = &[
-    "if", "then", "else", "let", "var", "on", "out", "in", "emit", "await", "chip", "mod",
-    "return", "buffer", "static", "type", "true", "false", "exec", "ref", "int", "float",
-    "bool", "string", "vector", "entity", "controller", "character", "array", "import", "from",
-    "as", "event",
+    "if",
+    "then",
+    "else",
+    "let",
+    "var",
+    "on",
+    "out",
+    "in",
+    "emit",
+    "await",
+    "chip",
+    "mod",
+    "return",
+    "buffer",
+    "static",
+    "type",
+    "true",
+    "false",
+    "exec",
+    "ref",
+    "int",
+    "float",
+    "bool",
+    "string",
+    "vector",
+    "entity",
+    "controller",
+    "character",
+    "array",
+    "import",
+    "from",
+    "as",
+    "event",
 ];
 const BUILTINS: &[&str] = &[
-    "abs", "min", "max", "clamp", "sqrt", "sin", "cos", "atan", "atan2", "pow", "floor", "ceil",
-    "round", "exp", "ln", "sign", "Vec", "Dot", "Random", "Sleep", "SleepTicks", "Value", "prev",
-    "push", "pop", "length", "clear", "insert", "remove", "sort", "reverse", "shuffle", "sum",
-    "find", "Found", "Index", "DisplayText", "SetLocation", "Fmt", "Deg2Rad", "Rad2Deg", "value",
+    "abs",
+    "min",
+    "max",
+    "clamp",
+    "sqrt",
+    "sin",
+    "cos",
+    "atan",
+    "atan2",
+    "pow",
+    "floor",
+    "ceil",
+    "round",
+    "exp",
+    "ln",
+    "sign",
+    "Vec",
+    "Dot",
+    "Random",
+    "Sleep",
+    "SleepTicks",
+    "Value",
+    "prev",
+    "push",
+    "pop",
+    "length",
+    "clear",
+    "insert",
+    "remove",
+    "sort",
+    "reverse",
+    "shuffle",
+    "sum",
+    "find",
+    "Found",
+    "Index",
+    "DisplayText",
+    "SetLocation",
+    "Fmt",
+    "Deg2Rad",
+    "Rad2Deg",
+    "value",
     "bOutOfBounds",
 ];
 
@@ -1569,7 +1705,12 @@ impl Gen {
                 2 => format!("-{}.25", self.rng.below(9)),
                 _ => format!("{}.{}", self.rng.below(50), self.rng.below(10)),
             },
-            Ty::Bool => if self.rng.chance(1, 2) { "true" } else { "false" }.into(),
+            Ty::Bool => if self.rng.chance(1, 2) {
+                "true"
+            } else {
+                "false"
+            }
+            .into(),
             Ty::Str => match self.rng.below(8) {
                 0 => "\"\"".into(),
                 1 => "\"héllo wörld\"".into(),
@@ -1776,8 +1917,8 @@ impl Gen {
                                 && !s.name.contains('.')
                         })
                         .collect();
-                    if let Some(v) = (!vars.is_empty())
-                        .then(|| vars[self.rng.below(vars.len())].name.clone())
+                    if let Some(v) =
+                        (!vars.is_empty()).then(|| vars[self.rng.below(vars.len())].name.clone())
                     {
                         if sc.exec {
                             format!("({v} != {v}.prev)")
@@ -1855,8 +1996,7 @@ impl Gen {
     fn record_lit(&mut self, sc: &Scope, ridx: usize, d: u32) -> String {
         let rec = self.records[ridx].clone();
         // spread form
-        let same: Vec<&(String, usize)> =
-            sc.rec_binds.iter().filter(|(_, i)| *i == ridx).collect();
+        let same: Vec<&(String, usize)> = sc.rec_binds.iter().filter(|(_, i)| *i == ridx).collect();
         if !same.is_empty() && self.rng.chance(1, 3) {
             let base = same[self.rng.below(same.len())].0.clone();
             let f = rec.fields[self.rng.below(rec.fields.len())].clone();
@@ -2009,7 +2149,11 @@ impl Gen {
                     let h = self.fresh("h");
                     let t = *self.rng.pick(&SCALAR_TYS);
                     let e = self.expr(sc, t, d);
-                    sc.scalars.push(Sca { name: h.clone(), ty: t, acc: Acc::Direct });
+                    sc.scalars.push(Sca {
+                        name: h.clone(),
+                        ty: t,
+                        acc: Acc::Direct,
+                    });
                     return format!("let {h} = {e}");
                 }
                 let v = self.rng.pick(&vars).clone();
@@ -2050,12 +2194,8 @@ impl Gen {
             }
             // array ops
             6 | 7 => {
-                let arrs: Vec<(String, Ty, bool)> = sc
-                    .arrays
-                    .iter()
-                    .filter(|(_, _, w)| *w)
-                    .cloned()
-                    .collect();
+                let arrs: Vec<(String, Ty, bool)> =
+                    sc.arrays.iter().filter(|(_, _, w)| *w).cloned().collect();
                 if arrs.is_empty() {
                     return String::new();
                 }
@@ -2068,7 +2208,11 @@ impl Gen {
                     3 => format!("{a}.clear()"),
                     4 => {
                         let h = self.fresh("h");
-                        sc.scalars.push(Sca { name: h.clone(), ty: Ty::Int, acc: Acc::Direct });
+                        sc.scalars.push(Sca {
+                            name: h.clone(),
+                            ty: Ty::Int,
+                            acc: Acc::Direct,
+                        });
                         format!("let {h} = {a}.length()")
                     }
                     5 => {
@@ -2079,13 +2223,21 @@ impl Gen {
                     6 => {
                         let h = self.fresh("h");
                         let i = self.expr(sc, Ty::Int, 0);
-                        sc.scalars.push(Sca { name: h.clone(), ty: et, acc: Acc::Direct });
+                        sc.scalars.push(Sca {
+                            name: h.clone(),
+                            ty: et,
+                            acc: Acc::Direct,
+                        });
                         format!("let {h} = {a}[{i}]")
                     }
                     7 => format!("{a}.{}()", self.rng.pick(&["sort", "reverse", "shuffle"])),
                     8 if matches!(et, Ty::Int | Ty::Float) => {
                         let h = self.fresh("h");
-                        sc.scalars.push(Sca { name: h.clone(), ty: et, acc: Acc::Direct });
+                        sc.scalars.push(Sca {
+                            name: h.clone(),
+                            ty: et,
+                            acc: Acc::Direct,
+                        });
                         format!("let {h} = {a}.sum()")
                     }
                     9 => {
@@ -2113,7 +2265,11 @@ impl Gen {
                     }
                     _ => {
                         let h = self.fresh("h");
-                        sc.scalars.push(Sca { name: h.clone(), ty: et, acc: Acc::Direct });
+                        sc.scalars.push(Sca {
+                            name: h.clone(),
+                            ty: et,
+                            acc: Acc::Direct,
+                        });
                         format!("let {h} = {a}.pop()")
                     }
                 }
@@ -2126,7 +2282,11 @@ impl Gen {
                     .filter(|m| !m.pure_call || m.ret.is_none())
                     .cloned()
                     .collect();
-                let mods = if mods.is_empty() { self.mods.clone() } else { mods };
+                let mods = if mods.is_empty() {
+                    self.mods.clone()
+                } else {
+                    mods
+                };
                 if mods.is_empty() {
                     return String::new();
                 }
@@ -2157,7 +2317,11 @@ impl Gen {
                 match &m.ret {
                     Some(RetTy::Val(t)) => {
                         let h = self.fresh("h");
-                        sc.scalars.push(Sca { name: h.clone(), ty: *t, acc: Acc::Direct });
+                        sc.scalars.push(Sca {
+                            name: h.clone(),
+                            ty: *t,
+                            acc: Acc::Direct,
+                        });
                         format!("let {h} = {}({})", m.name, args.join(", "))
                     }
                     _ => format!("{}({})", m.name, args.join(", ")),
@@ -2218,10 +2382,12 @@ impl Gen {
                         format!("await {s}")
                     } else {
                         let h = self.fresh("h");
-                        let src = self
-                            .sym_read(sc, Ty::Int)
-                            .unwrap_or_else(|| "1".into());
-                        sc.scalars.push(Sca { name: h.clone(), ty: Ty::Int, acc: Acc::Direct });
+                        let src = self.sym_read(sc, Ty::Int).unwrap_or_else(|| "1".into());
+                        sc.scalars.push(Sca {
+                            name: h.clone(),
+                            ty: Ty::Int,
+                            acc: Acc::Direct,
+                        });
                         format!("let {h} = await {src} on {s}")
                     }
                 }
@@ -2253,27 +2419,43 @@ impl Gen {
             14 | 15 => match self.rng.below(5) {
                 0 => {
                     let h = self.fresh("h");
-                    sc.scalars.push(Sca { name: h.clone(), ty: Ty::Int, acc: Acc::Direct });
+                    sc.scalars.push(Sca {
+                        name: h.clone(),
+                        ty: Ty::Int,
+                        acc: Acc::Direct,
+                    });
                     format!("let {h} = Random(0, {})", self.rng.range(1, 20))
                 }
                 1 => {
                     let h = self.fresh("hv");
                     let init = self.lit(Ty::Int);
-                    sc.scalars.push(Sca { name: h.clone(), ty: Ty::Int, acc: Acc::Var });
+                    sc.scalars.push(Sca {
+                        name: h.clone(),
+                        ty: Ty::Int,
+                        acc: Acc::Var,
+                    });
                     format!("static var {h}: int = {init}")
                 }
                 2 => {
                     let h = self.fresh("hv");
                     let t = *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool]);
                     let init = self.lit(t);
-                    sc.scalars.push(Sca { name: h.clone(), ty: t, acc: Acc::Var });
+                    sc.scalars.push(Sca {
+                        name: h.clone(),
+                        ty: t,
+                        acc: Acc::Var,
+                    });
                     format!("var {h}: {} = {init}", t.name())
                 }
                 _ => {
                     let h = self.fresh("h");
                     let t = *self.rng.pick(&SCALAR_TYS);
                     let e = self.expr(sc, t, d);
-                    sc.scalars.push(Sca { name: h.clone(), ty: t, acc: Acc::Direct });
+                    sc.scalars.push(Sca {
+                        name: h.clone(),
+                        ty: t,
+                        acc: Acc::Direct,
+                    });
                     format!("let {h} = {e}")
                 }
             },
@@ -2315,7 +2497,11 @@ impl Gen {
                 }
                 let h = self.fresh("h");
                 if let Some((_, Some(t))) = c.outs.first() {
-                    sc.scalars.push(Sca { name: h.clone(), ty: *t, acc: Acc::Direct });
+                    sc.scalars.push(Sca {
+                        name: h.clone(),
+                        ty: *t,
+                        acc: Acc::Direct,
+                    });
                 }
                 format!("let {h} = {}({})", c.name, args.join(", "))
             }
@@ -2397,11 +2583,17 @@ impl Gen {
             EnumPayload::Unit => (v.name.clone(), "0".to_string()),
             EnumPayload::Positional(tys) => {
                 let binds: Vec<String> = (0..tys.len()).map(|i| format!("{prefix}{i}")).collect();
-                (format!("{}({})", v.name, binds.join(", ")), binds[0].clone())
+                (
+                    format!("{}({})", v.name, binds.join(", ")),
+                    binds[0].clone(),
+                )
             }
             EnumPayload::Named(fields) => {
                 let binds: Vec<String> = fields.iter().map(|(n, _)| n.clone()).collect();
-                (format!("{} {{ {} }}", v.name, binds.join(", ")), binds[0].clone())
+                (
+                    format!("{} {{ {} }}", v.name, binds.join(", ")),
+                    binds[0].clone(),
+                )
             }
         }
     }
@@ -2450,12 +2642,23 @@ impl Gen {
                 EnumPayload::Positional(tys) => Some(tys[0]),
                 EnumPayload::Named(fields) => Some(fields[0].1),
             };
-            let value = if first_ty == Some(Ty::Int) { read } else { "0".to_string() };
+            let value = if first_ty == Some(Ty::Int) {
+                read
+            } else {
+                "0".to_string()
+            };
             arms.push(format!("{inner_pad}{pattern} => {value}"));
         }
         let h = self.fresh("mh");
-        sc.scalars.push(Sca { name: h.clone(), ty: Ty::Int, acc: Acc::Direct });
-        format!("let {h} = match {ev_name} {{\n{}\n{pad}}}", arms.join(",\n"))
+        sc.scalars.push(Sca {
+            name: h.clone(),
+            ty: Ty::Int,
+            acc: Acc::Direct,
+        });
+        format!(
+            "let {h} = match {ev_name} {{\n{}\n{pad}}}",
+            arms.join(",\n")
+        )
     }
 
     /// `if let PATTERN = enumVar { .. } else { .. }` - a single-variant
@@ -2484,7 +2687,9 @@ impl Gen {
         let mut fields = Vec::new();
         for i in 0..nf {
             let fname = format!("f{}_{}", self.records.len(), i);
-            let ty = *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str, Ty::Int]);
+            let ty = *self
+                .rng
+                .pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str, Ty::Int]);
             fields.push((fname, ty));
         }
         let body = fields
@@ -2516,8 +2721,9 @@ impl Gen {
                 0 => EnumPayload::Unit,
                 1 => {
                     let n = self.rng.range(1, 2);
-                    let tys: Vec<Ty> =
-                        (0..n).map(|_| *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool])).collect();
+                    let tys: Vec<Ty> = (0..n)
+                        .map(|_| *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool]))
+                        .collect();
                     EnumPayload::Positional(tys)
                 }
                 _ => {
@@ -2546,9 +2752,13 @@ impl Gen {
                     format!("{vname} {{ {fs} }}")
                 }
             });
-            variants.push(EnumVariantDef { name: vname, payload });
+            variants.push(EnumVariantDef {
+                name: vname,
+                payload,
+            });
         }
-        self.blocks.push(format!("enum {name} {{ {} }}", parts.join(", ")));
+        self.blocks
+            .push(format!("enum {name} {{ {} }}", parts.join(", ")));
         self.enums.push(EnumDef { name, variants });
     }
 
@@ -2567,8 +2777,10 @@ impl Gen {
             }
             EnumPayload::Named(fields) => {
                 let fields = fields.clone();
-                let args: Vec<String> =
-                    fields.iter().map(|(n, t)| format!("{n}: {}", self.lit(*t))).collect();
+                let args: Vec<String> = fields
+                    .iter()
+                    .map(|(n, t)| format!("{n}: {}", self.lit(*t)))
+                    .collect();
                 format!("{ename}.{} {{ {} }}", variant.name, args.join(", "))
             }
         }
@@ -2620,13 +2832,23 @@ impl Gen {
         for _ in 0..n_val {
             let p = self.fresh("p");
             let ty = *self.rng.pick(&SCALAR_TYS);
-            let ann = if self.rng.chance(1, 5) { "@bottom " } else { "" };
+            let ann = if self.rng.chance(1, 5) {
+                "@bottom "
+            } else {
+                ""
+            };
             self.blocks.push(format!("{ann}in {p}: {}", ty.name()));
-            self.scalars.push(Sca { name: p, ty, acc: Acc::Direct });
+            self.scalars.push(Sca {
+                name: p,
+                ty,
+                acc: Acc::Direct,
+            });
         }
         if self.rng.chance(1, 3) {
             let o = self.fresh("obj");
-            let k = *self.rng.pick(&[Obj::Entity, Obj::Controller, Obj::Character]);
+            let k = *self
+                .rng
+                .pick(&[Obj::Entity, Obj::Controller, Obj::Character]);
             self.blocks.push(format!("in {o}: {}", k.name()));
             self.objs.push((o, k));
         }
@@ -2644,14 +2866,25 @@ impl Gen {
             let v = self.fresh("v");
             let ty = *self.rng.pick(&SCALAR_TYS);
             let init = self.lit(ty);
-            let kw = if self.rng.chance(1, 8) { "static var" } else { "var" };
-            self.blocks.push(format!("{kw} {v}: {} = {init}", ty.name()));
-            self.scalars.push(Sca { name: v, ty, acc: Acc::Var });
+            let kw = if self.rng.chance(1, 8) {
+                "static var"
+            } else {
+                "var"
+            };
+            self.blocks
+                .push(format!("{kw} {v}: {} = {init}", ty.name()));
+            self.scalars.push(Sca {
+                name: v,
+                ty,
+                acc: Acc::Var,
+            });
         }
         let n_arr = self.rng.range(0, 2);
         for _ in 0..n_arr {
             let a = self.fresh("a");
-            let ty = *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str, Ty::Vec3]);
+            let ty = *self
+                .rng
+                .pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str, Ty::Vec3]);
             if self.rng.chance(1, 3) && matches!(ty, Ty::Int | Ty::Float | Ty::Str) {
                 let k = self.rng.range(2, 4);
                 let items: Vec<String> = (0..k).map(|_| self.lit(ty)).collect();
@@ -2676,7 +2909,11 @@ impl Gen {
             } else {
                 self.blocks.push(format!("buffer {b} = {e}"));
             }
-            self.scalars.push(Sca { name: b, ty, acc: Acc::Direct });
+            self.scalars.push(Sca {
+                name: b,
+                ty,
+                acc: Acc::Direct,
+            });
         }
     }
 
@@ -2722,7 +2959,10 @@ impl Gen {
             0 | 1 => {
                 let np = self.rng.range(1, 3);
                 let mut params = Vec::new();
-                let mut body_sc = Scope { exec: false, ..Default::default() };
+                let mut body_sc = Scope {
+                    exec: false,
+                    ..Default::default()
+                };
                 for i in 0..np {
                     // occasionally name a parameter after an existing global
                     // (parameter shadowing an outer name)
@@ -2737,12 +2977,20 @@ impl Gen {
                     }
                     let t = *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool]);
                     params.push((pn.clone(), PTy::Val(t)));
-                    body_sc.scalars.push(Sca { name: pn, ty: t, acc: Acc::Direct });
+                    body_sc.scalars.push(Sca {
+                        name: pn,
+                        ty: t,
+                        acc: Acc::Direct,
+                    });
                 }
                 if params.is_empty() {
                     let t = *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool]);
                     params.push(("q0".to_string(), PTy::Val(t)));
-                    body_sc.scalars.push(Sca { name: "q0".into(), ty: t, acc: Acc::Direct });
+                    body_sc.scalars.push(Sca {
+                        name: "q0".into(),
+                        ty: t,
+                        acc: Acc::Direct,
+                    });
                 }
                 let rt = *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool]);
                 let sig = params
@@ -2758,7 +3006,11 @@ impl Gen {
                 // fixed params (captured, dropped). Exercises the parse of `...rest`,
                 // the WS022 arity relaxation, and the per-call-site rest capture.
                 let make_variadic = self.rng.chance(1, 5);
-                let sig = if make_variadic { format!("{sig}, ...rest") } else { sig };
+                let sig = if make_variadic {
+                    format!("{sig}, ...rest")
+                } else {
+                    sig
+                };
                 // multi-return via if?
                 if self.rng.chance(1, 2) {
                     let c = self.expr(&body_sc, Ty::Bool, 2);
@@ -2770,8 +3022,10 @@ impl Gen {
                     ));
                 } else {
                     let e = self.expr(&body_sc, rt, 3);
-                    self.blocks
-                        .push(format!("mod {name}({sig}) -> {} {{\n  return {e}\n}}", rt.name()));
+                    self.blocks.push(format!(
+                        "mod {name}({sig}) -> {} {{\n  return {e}\n}}",
+                        rt.name()
+                    ));
                 }
                 self.mods.push(ModSig {
                     name,
@@ -2786,12 +3040,23 @@ impl Gen {
             2 | 3 => {
                 let t = *self.rng.pick(&[Ty::Int, Ty::Float]);
                 let mut params = vec![("w".to_string(), PTy::Ref(t))];
-                let mut body_sc = Scope { exec: true, ..Default::default() };
-                body_sc.scalars.push(Sca { name: "w".into(), ty: t, acc: Acc::Var });
+                let mut body_sc = Scope {
+                    exec: true,
+                    ..Default::default()
+                };
+                body_sc.scalars.push(Sca {
+                    name: "w".into(),
+                    ty: t,
+                    acc: Acc::Var,
+                });
                 let mut sig = format!("w: *{}", t.name());
                 if self.rng.chance(1, 2) {
                     params.push(("dd".to_string(), PTy::Val(t)));
-                    body_sc.scalars.push(Sca { name: "dd".into(), ty: t, acc: Acc::Direct });
+                    body_sc.scalars.push(Sca {
+                        name: "dd".into(),
+                        ty: t,
+                        acc: Acc::Direct,
+                    });
                     sig.push_str(&format!(", dd: {}", t.name()));
                 }
                 let cnt = self.rng.range(1, 3);
@@ -2801,8 +3066,16 @@ impl Gen {
                 } else {
                     stmts.join("\n")
                 };
-                self.blocks.push(format!("mod {name}({sig}) {{\n{body}\n}}"));
-                self.mods.push(ModSig { name, params, ret: None, pure_call: false, generic: false, variadic: false });
+                self.blocks
+                    .push(format!("mod {name}({sig}) {{\n{body}\n}}"));
+                self.mods.push(ModSig {
+                    name,
+                    params,
+                    ret: None,
+                    pure_call: false,
+                    generic: false,
+                    variadic: false,
+                });
             }
             // destructured record param mod
             4 => {
@@ -2843,8 +3116,15 @@ impl Gen {
                 }
                 let ridx = self.rng.below(self.records.len());
                 let rec = self.records[ridx].clone();
-                let mut body_sc = Scope { exec: false, ..Default::default() };
-                body_sc.scalars.push(Sca { name: "q0".into(), ty: Ty::Int, acc: Acc::Direct });
+                let mut body_sc = Scope {
+                    exec: false,
+                    ..Default::default()
+                };
+                body_sc.scalars.push(Sca {
+                    name: "q0".into(),
+                    ty: Ty::Int,
+                    acc: Acc::Direct,
+                });
                 let lit = self.record_lit(&body_sc, ridx, 1);
                 self.blocks.push(format!(
                     "mod {name}(q0: int) -> {} {{\n  return {lit}\n}}",
@@ -2895,8 +3175,15 @@ impl Gen {
     }
 
     fn gen_mod_fallback(&mut self, name: String) {
-        let mut body_sc = Scope { exec: false, ..Default::default() };
-        body_sc.scalars.push(Sca { name: "q0".into(), ty: Ty::Int, acc: Acc::Direct });
+        let mut body_sc = Scope {
+            exec: false,
+            ..Default::default()
+        };
+        body_sc.scalars.push(Sca {
+            name: "q0".into(),
+            ty: Ty::Int,
+            acc: Acc::Direct,
+        });
         let e = self.expr(&body_sc, Ty::Int, 2);
         self.blocks
             .push(format!("mod {name}(q0: int) -> int {{\n  return {e}\n}}"));
@@ -2921,7 +3208,10 @@ impl Gen {
             // pure chip
             let np = self.rng.range(1, 3);
             let mut params = Vec::new();
-            let mut body_sc = Scope { exec: false, ..Default::default() };
+            let mut body_sc = Scope {
+                exec: false,
+                ..Default::default()
+            };
             let mut sig_parts = Vec::new();
             for i in 0..np {
                 let pn = format!("k{i}");
@@ -2931,15 +3221,23 @@ impl Gen {
                     params.push((pn.clone(), PTy::Rec(ridx)));
                     body_sc.rec_binds.push((pn, ridx));
                 } else {
-                    let t = *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str, Ty::Vec3]);
+                    let t = *self
+                        .rng
+                        .pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str, Ty::Vec3]);
                     sig_parts.push(format!("{pn}: {}", t.name()));
                     params.push((pn.clone(), PTy::Val(t)));
-                    body_sc.scalars.push(Sca { name: pn, ty: t, acc: Acc::Direct });
+                    body_sc.scalars.push(Sca {
+                        name: pn,
+                        ty: t,
+                        acc: Acc::Direct,
+                    });
                 }
             }
             let single = self.rng.chance(1, 2);
             if single {
-                let ot = *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str, Ty::Vec3]);
+                let ot = *self
+                    .rng
+                    .pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str, Ty::Vec3]);
                 let e = self.expr(&body_sc, ot, 3);
                 self.blocks.push(format!(
                     "{ann}chip {name}({}) -> {} {{\n  out _ = {e}\n}}",
@@ -2983,15 +3281,26 @@ impl Gen {
             // stateful chip: exec param + handler + value out (+ maybe exec out)
             let mut params = vec![("bump".to_string(), PTy::Exec)];
             let mut sig_parts = vec!["bump: exec".to_string()];
-            let mut body_sc = Scope { exec: true, ..Default::default() };
+            let mut body_sc = Scope {
+                exec: true,
+                ..Default::default()
+            };
             if self.rng.chance(1, 2) {
                 let t = *self.rng.pick(&[Ty::Int, Ty::Float]);
                 sig_parts.push(format!("k0: {}", t.name()));
                 params.push(("k0".into(), PTy::Val(t)));
-                body_sc.scalars.push(Sca { name: "k0".into(), ty: t, acc: Acc::Direct });
+                body_sc.scalars.push(Sca {
+                    name: "k0".into(),
+                    ty: t,
+                    acc: Acc::Direct,
+                });
             }
             let vt = *self.rng.pick(&[Ty::Int, Ty::Float]);
-            body_sc.scalars.push(Sca { name: "n".into(), ty: vt, acc: Acc::Var });
+            body_sc.scalars.push(Sca {
+                name: "n".into(),
+                ty: vt,
+                acc: Acc::Var,
+            });
             let with_exec_out = self.rng.chance(1, 3);
             let mut outs = vec![("z0".to_string(), Some(vt))];
             let mut out_sig = format!("z0: {}", vt.name());
@@ -3070,7 +3379,11 @@ impl Gen {
                         .collect();
                     if vouts.len() == 1 && c.outs.len() == 1 {
                         // auto-unwrap
-                        self.scalars.push(Sca { name: l, ty: vouts[0].1, acc: Acc::Direct });
+                        self.scalars.push(Sca {
+                            name: l,
+                            ty: vouts[0].1,
+                            acc: Acc::Direct,
+                        });
                     } else {
                         for (on, ot) in &vouts {
                             self.scalars.push(Sca {
@@ -3086,7 +3399,11 @@ impl Gen {
                     if let Some(call) = self.pure_call(&sc, Ty::Int, 2) {
                         let l = self.fresh("l");
                         self.blocks.push(format!("let {l} = {call}"));
-                        self.scalars.push(Sca { name: l, ty: Ty::Int, acc: Acc::Direct });
+                        self.scalars.push(Sca {
+                            name: l,
+                            ty: Ty::Int,
+                            acc: Acc::Direct,
+                        });
                     }
                 }
                 // record-returning mod call + field access
@@ -3126,8 +3443,16 @@ impl Gen {
                         let a = self.fresh("l");
                         let b = self.fresh("l");
                         self.blocks.push(format!("let ({a}, {b}) = {t}"));
-                        self.scalars.push(Sca { name: a, ty: Ty::Int, acc: Acc::Direct });
-                        self.scalars.push(Sca { name: b, ty: Ty::Float, acc: Acc::Direct });
+                        self.scalars.push(Sca {
+                            name: a,
+                            ty: Ty::Int,
+                            acc: Acc::Direct,
+                        });
+                        self.scalars.push(Sca {
+                            name: b,
+                            ty: Ty::Float,
+                            acc: Acc::Direct,
+                        });
                     }
                 }
                 // chip let
@@ -3136,7 +3461,11 @@ impl Gen {
                     let ty = *self.rng.pick(&[Ty::Int, Ty::Bool, Ty::Float]);
                     let e = self.expr(&sc, ty, 3);
                     self.blocks.push(format!("chip let {l} = {e}"));
-                    self.scalars.push(Sca { name: l.clone(), ty, acc: Acc::Direct });
+                    self.scalars.push(Sca {
+                        name: l.clone(),
+                        ty,
+                        acc: Acc::Direct,
+                    });
                     if ty == Ty::Bool {
                         self.bool_lets.push(l);
                     }
@@ -3157,7 +3486,11 @@ impl Gen {
                     } else {
                         self.blocks.push(format!("let {l} = {e}"));
                     }
-                    self.scalars.push(Sca { name: l.clone(), ty, acc: Acc::Direct });
+                    self.scalars.push(Sca {
+                        name: l.clone(),
+                        ty,
+                        acc: Acc::Direct,
+                    });
                     if ty == Ty::Bool {
                         self.bool_lets.push(l);
                     }
@@ -3222,12 +3555,20 @@ impl Gen {
                         let c = self.fresh("ct");
                         let u = self.fresh("uid");
                         sc.objs.push((c.clone(), Obj::Controller));
-                        sc.scalars.push(Sca { name: u.clone(), ty: Ty::Str, acc: Acc::Direct });
+                        sc.scalars.push(Sca {
+                            name: u.clone(),
+                            ty: Ty::Str,
+                            acc: Acc::Direct,
+                        });
                         trigger = format!("ControllerJoined({c}, {u})");
                     }
                     _ => {
                         let u = self.fresh("uid");
-                        sc.scalars.push(Sca { name: u.clone(), ty: Ty::Str, acc: Acc::Direct });
+                        sc.scalars.push(Sca {
+                            name: u.clone(),
+                            ty: Ty::Str,
+                            acc: Acc::Direct,
+                        });
                         trigger = format!("ControllerLeft({u})");
                     }
                 }
@@ -3254,8 +3595,13 @@ impl Gen {
         } else {
             stmts.join("\n")
         };
-        let prefix = if self.rng.chance(1, 4) { "chip on" } else { "on" };
-        self.blocks.push(format!("{prefix} {trigger} {{\n{body}\n}}"));
+        let prefix = if self.rng.chance(1, 4) {
+            "chip on"
+        } else {
+            "on"
+        };
+        self.blocks
+            .push(format!("{prefix} {trigger} {{\n{body}\n}}"));
     }
 
     fn gen_outs(&mut self) {
@@ -3333,12 +3679,20 @@ impl Gen {
         let v = self.fresh("v");
         let ty = *self.rng.pick(&[Ty::Int, Ty::Float]);
         let init = self.lit(ty);
-        let ann = if self.rng.chance(1, 4) { "@closed " } else { "" };
+        let ann = if self.rng.chance(1, 4) {
+            "@closed "
+        } else {
+            ""
+        };
         self.blocks.push(format!(
             "{ann}chip {{\n  var {v}: {} = {init}\n}}",
             ty.name()
         ));
-        self.scalars.push(Sca { name: v, ty, acc: Acc::Var });
+        self.scalars.push(Sca {
+            name: v,
+            ty,
+            acc: Acc::Var,
+        });
     }
 
     /// Top-level shadowing declarations exploiting the WS013 escape (`let` /
@@ -3576,7 +3930,11 @@ fn gen_import_program(seed: u64) -> String {
                 match rng.below(3) {
                     0 => {
                         src.push_str(&format!("\nvar {name}: int = {}", rng.below(9)));
-                        exports.vars.push(Sca { name, ty: Ty::Int, acc: Acc::Var });
+                        exports.vars.push(Sca {
+                            name,
+                            ty: Ty::Int,
+                            acc: Acc::Var,
+                        });
                     }
                     1 => {
                         src.push_str(&format!("\nvar {name}: int[]"));
@@ -3584,7 +3942,11 @@ fn gen_import_program(seed: u64) -> String {
                     }
                     _ => {
                         src.push_str(&format!("\nbuffer {name} = {}", rng.below(9)));
-                        exports.buffers.push(Sca { name, ty: Ty::Int, acc: Acc::Direct });
+                        exports.buffers.push(Sca {
+                            name,
+                            ty: Ty::Int,
+                            acc: Acc::Direct,
+                        });
                     }
                 }
             }
@@ -3665,7 +4027,11 @@ fn gen_import_program(seed: u64) -> String {
         if !cands.is_empty() {
             let name = rng.pick(&cands).clone();
             prelude.push(format!("var {name}: int = {}", rng.below(9)));
-            eg.scalars.push(Sca { name, ty: Ty::Int, acc: Acc::Var });
+            eg.scalars.push(Sca {
+                name,
+                ty: Ty::Int,
+                acc: Acc::Var,
+            });
         }
     }
 
@@ -3767,7 +4133,10 @@ fn gen_import_canary(seed: u64) -> String {
             if items.iter().any(|it| it.name == name) {
                 continue;
             }
-            items.push(CItem { kind: *r.pick(&KINDS), name });
+            items.push(CItem {
+                kind: *r.pick(&KINDS),
+                name,
+            });
         }
         modules.push(items);
         // ~half the modules also carry a record container - occasionally
@@ -3783,7 +4152,11 @@ fn gen_import_canary(seed: u64) -> String {
                 format!("rc{i}")
             };
             let kind = *r.pick(&[RecKind::Var, RecKind::Array, RecKind::Map]);
-            ritems.push(RecItem { kind, name, type_name: format!("Rec{}", i + 1) });
+            ritems.push(RecItem {
+                kind,
+                name,
+                type_name: format!("Rec{}", i + 1),
+            });
         }
         rec_items.push(ritems);
         file_of.push(i);
@@ -3904,10 +4277,7 @@ fn gen_import_canary(seed: u64) -> String {
                                 *use_refw = true;
                                 push_line(body, format!("  refw({path})"));
                             }
-                            _ => push_line(
-                                body,
-                                format!("  {path} = {path} + {}", r.range(1, 5)),
-                            ),
+                            _ => push_line(body, format!("  {path} = {path} + {}", r.range(1, 5))),
                         }
                     }
                 }
@@ -3969,7 +4339,10 @@ fn gen_import_canary(seed: u64) -> String {
             }
         }
         if let Some(name) = &local_collision {
-            let it = CItem { kind: StoreKind::Var, name: name.clone() };
+            let it = CItem {
+                kind: StoreKind::Var,
+                name: name.clone(),
+            };
             emit_item(
                 &it,
                 name,
@@ -4087,7 +4460,9 @@ fn gen_import_canary(seed: u64) -> String {
 
 fn oracle_holds(src: &str, kind: Kind, bucket: &str) -> bool {
     let out = run_pipeline(src);
-    out.findings().iter().any(|(k, b)| *k == kind && b == bucket)
+    out.findings()
+        .iter()
+        .any(|(k, b)| *k == kind && b == bucket)
 }
 
 fn minimize(src: &str, kind: Kind, bucket: &str, max_runs: usize) -> String {
@@ -4181,8 +4556,14 @@ fn selftest() -> bool {
         let b = m.add_node(mk(2));
         let c = m.add_node(mk(3));
         let w = |s: NodeId, t: NodeId, p: WirePort| Wire {
-            source: PortRef { node_id: s, port: WirePort::Output },
-            target: PortRef { node_id: t, port: p },
+            source: PortRef {
+                node_id: s,
+                port: WirePort::Output,
+            },
+            target: PortRef {
+                node_id: t,
+                port: p,
+            },
         };
         m.add_wire(w(a, c, WirePort::InputA)); // fan-in pair
         m.add_wire(w(b, c, WirePort::InputA));
@@ -4255,7 +4636,9 @@ out o: int = acc.Value";
         );
         ok = false;
     } else {
-        eprintln!("[selftest] ok: known-good storage canary is silent (shared state stays one gate)");
+        eprintln!(
+            "[selftest] ok: known-good storage canary is silent (shared state stays one gate)"
+        );
     }
 
     // 5. REGRESSION GUARD: two modules each declaring `var g`, imported as
@@ -4299,7 +4682,9 @@ out o: int = acc.Value";
         );
         ok = false;
     } else {
-        eprintln!("[selftest] ok: two-namespace `var g` stays distinct (namespace direct-state fix holds)");
+        eprintln!(
+            "[selftest] ok: two-namespace `var g` stays distinct (namespace direct-state fix holds)"
+        );
     }
 
     // 6. REGRESSION GUARD: a namespace-imported module's `on` handler used
@@ -4441,7 +4826,11 @@ fn calibrate(dir: &str) {
         let out = run_pipeline(&src);
         let f = out.findings();
         if out.has_errors() {
-            eprintln!("[calibrate] {} has ERRORS: {:?}", p.display(), &out.error_diags[..out.error_diags.len().min(3)]);
+            eprintln!(
+                "[calibrate] {} has ERRORS: {:?}",
+                p.display(),
+                &out.error_diags[..out.error_diags.len().min(3)]
+            );
         }
         if !f.is_empty() {
             hits += 1;
@@ -4544,7 +4933,10 @@ fn literal_carrier_value(n: &Node) -> Option<FoldValue> {
         return None;
     }
     if n.gate_class.ends_with("MathAdd") {
-        return match (n.properties.get(&*sym::INPUT_A), n.properties.get(&*sym::INPUT_B)) {
+        return match (
+            n.properties.get(&*sym::INPUT_A),
+            n.properties.get(&*sym::INPUT_B),
+        ) {
             (Some(Literal::Int(a)), Some(Literal::Int(b))) if *b == 0 => Some(FoldValue::Int(*a)),
             (Some(Literal::Float(a)), Some(Literal::Float(b))) if *b == 0.0 => {
                 Some(FoldValue::Float(*a))
@@ -4553,7 +4945,10 @@ fn literal_carrier_value(n: &Node) -> Option<FoldValue> {
         };
     }
     if n.gate_class.ends_with("LogicalOR") {
-        return match (n.properties.get(&*sym::B_INPUT_A), n.properties.get(&*sym::B_INPUT_B)) {
+        return match (
+            n.properties.get(&*sym::B_INPUT_A),
+            n.properties.get(&*sym::B_INPUT_B),
+        ) {
             (Some(Literal::Bool(a)), Some(Literal::Bool(false))) => Some(FoldValue::Bool(*a)),
             _ => None,
         };
@@ -4617,8 +5012,12 @@ fn literal_carrier_value(n: &Node) -> Option<FoldValue> {
 /// order — mirrors `fold/mod.rs::FORMAT_SLOTS` (private to that module, so
 /// re-declared here identically).
 const PREDICT_FORMAT_SLOTS: [WirePort; 7] = [
-    WirePort::InputA, WirePort::InputB, WirePort::InputC,
-    WirePort::InputD, WirePort::InputE, WirePort::InputF,
+    WirePort::InputA,
+    WirePort::InputB,
+    WirePort::InputC,
+    WirePort::InputD,
+    WirePort::InputE,
+    WirePort::InputF,
     WirePort::InputG,
 ];
 
@@ -4722,7 +5121,10 @@ fn predict(root: &Module) -> StdMap<NodeId, FoldValue> {
 
     let mut in_wires: StdMap<(NodeId, WirePort), Vec<PortRef>> = StdMap::new();
     for w in &wires {
-        in_wires.entry((w.target.node_id, w.target.port)).or_default().push(w.source);
+        in_wires
+            .entry((w.target.node_id, w.target.port))
+            .or_default()
+            .push(w.source);
     }
 
     let mut known: StdMap<NodeId, FoldValue> = StdMap::new();
@@ -4742,7 +5144,11 @@ fn predict(root: &Module) -> StdMap<NodeId, FoldValue> {
             let n = nodes[&id];
 
             if n.gate_class == gc::LITERAL {
-                if let Some(v) = n.properties.get(&*sym::VALUE).and_then(FoldValue::from_literal) {
+                if let Some(v) = n
+                    .properties
+                    .get(&*sym::VALUE)
+                    .and_then(FoldValue::from_literal)
+                {
                     known.insert(id, v);
                     changed = true;
                 }
@@ -4848,7 +5254,9 @@ fn predict(root: &Module) -> StdMap<NodeId, FoldValue> {
 fn root_out_labels(module: &Module) -> StdMap<String, NodeId> {
     let mut map = StdMap::new();
     for id in &module.outputs {
-        let Some(n) = module.nodes.get(id) else { continue };
+        let Some(n) = module.nodes.get(id) else {
+            continue;
+        };
         if let Some(Literal::String(label)) = n.properties.get(&*sym::PORT_LABEL) {
             map.insert(label.clone(), *id);
         }
@@ -4885,7 +5293,10 @@ fn trace_delivered(
     let node = *nodes.get(&node_id)?;
 
     if node.gate_class == gc::LITERAL {
-        return node.properties.get(&*sym::VALUE).and_then(FoldValue::from_literal);
+        return node
+            .properties
+            .get(&*sym::VALUE)
+            .and_then(FoldValue::from_literal);
     }
     if let Some(v) = literal_carrier_value(node) {
         return Some(v);
@@ -4896,7 +5307,10 @@ fn trace_delivered(
         .filter(|w| w.target.node_id == node_id && w.target.port == WirePort::RerInput)
         .collect();
     match incoming.len() {
-        0 => node.properties.get(&*sym::RER_INPUT).and_then(FoldValue::from_literal),
+        0 => node
+            .properties
+            .get(&*sym::RER_INPUT)
+            .and_then(FoldValue::from_literal),
         1 => trace_delivered(wires, nodes, incoming[0].source.node_id, depth + 1),
         _ => None, // fan-in — never a legitimate fold delivery
     }
@@ -4918,7 +5332,12 @@ fn dump_module(module: &Module, indent: usize, out: &mut String) {
         } else {
             String::new()
         };
-        let _ = writeln!(out, "{pad}[{id}] {} kind={:?}{val}", short_class(n.gate_class), n.kind);
+        let _ = writeln!(
+            out,
+            "{pad}[{id}] {} kind={:?}{val}",
+            short_class(n.gate_class),
+            n.kind
+        );
     }
     for w in &module.wires {
         let _ = writeln!(
@@ -4951,7 +5370,10 @@ fn prepare_diff(src: &str) -> DiffPrep {
             .spawn_scoped(s, || prepare_diff_inner(src))
             .expect("spawn worker")
             .join()
-            .unwrap_or(DiffPrep { pair: None, panic: Some("harness: worker thread panicked".into()) })
+            .unwrap_or(DiffPrep {
+                pair: None,
+                panic: Some("harness: worker thread panicked".into()),
+            })
     })
 }
 
@@ -4969,16 +5391,25 @@ fn lower_variant(src: &str, file: &str, fold_mode: FoldMode) -> Result<Option<Mo
         })
     }))
     .map_err(|p| format!("PANIC {stage}(fold_mode={fold_mode:?}): {}", panic_msg(p)))?;
-    let rejected = |ds: &[wirescript::diagnostic::Diagnostic]| ds.iter().any(|d| d.severity == Severity::Error);
+    let rejected = |ds: &[wirescript::diagnostic::Diagnostic]| {
+        ds.iter().any(|d| d.severity == Severity::Error)
+    };
     if rejected(&fe.resolved.diagnostics) || rejected(&fe.typecheck.diagnostics) {
         return Ok(None);
     }
-    let errs: Vec<&str> =
-        fe.lowered.diagnostics.iter().filter(|d| d.severity == Severity::Error).map(|d| d.message.as_str()).collect();
+    let errs: Vec<&str> = fe
+        .lowered
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
     if errs.is_empty() {
         Ok(Some(fe.lowered.module))
     } else {
-        Err(format!("lower(fold_mode={fold_mode:?}) diagnostics: {errs:?}"))
+        Err(format!(
+            "lower(fold_mode={fold_mode:?}) diagnostics: {errs:?}"
+        ))
     }
 }
 
@@ -4990,11 +5421,17 @@ fn prepare_diff_inner(src: &str) -> DiffPrep {
     // A program resolve or typecheck rejects is no finding (fold only touches
     // lowering, so both variants see the same rejection).
     if matches!(u, Ok(None)) || matches!(f, Ok(None)) {
-        return DiffPrep { pair: None, panic: None };
+        return DiffPrep {
+            pair: None,
+            panic: None,
+        };
     }
     let (u, f) = (u.map(Option::unwrap), f.map(Option::unwrap));
     match (u, f) {
-        (Ok(um), Ok(fm)) => DiffPrep { pair: Some((um, fm)), panic: None },
+        (Ok(um), Ok(fm)) => DiffPrep {
+            pair: Some((um, fm)),
+            panic: None,
+        },
         (u, f) => {
             let mut msgs = Vec::new();
             if let Err(e) = &u {
@@ -5005,7 +5442,10 @@ fn prepare_diff_inner(src: &str) -> DiffPrep {
             }
             let joined = msgs.join("; ");
             let is_panic = joined.contains("PANIC");
-            DiffPrep { pair: None, panic: is_panic.then_some(joined) }
+            DiffPrep {
+                pair: None,
+                panic: is_panic.then_some(joined),
+            }
         }
     }
 }
@@ -5053,7 +5493,9 @@ fn run_fold_diff(count: usize, seed: u64) {
         for label in sorted_labels {
             let u_id = u_labels[label];
             n_total_outs += 1;
-            let Some(pred_v) = predicted.get(&u_id) else { continue };
+            let Some(pred_v) = predicted.get(&u_id) else {
+                continue;
+            };
             n_predicted_outs += 1;
 
             let delivered = match f_labels.get(label) {
@@ -5156,7 +5598,11 @@ fn run_fold_diff(count: usize, seed: u64) {
 /// through, since `Opaque`'s gate class carries no certified-table entry.
 fn fold_leaf(g: &mut Gen, ty: Ty) -> String {
     let l = g.lit(ty);
-    if g.rng.chance(1, 5) { format!("Opaque({l})") } else { l }
+    if g.rng.chance(1, 5) {
+        format!("Opaque({l})")
+    } else {
+        l
+    }
 }
 
 /// An ASCII string, <=32 chars — dedicated to the certified STRING op pool
@@ -5168,8 +5614,16 @@ fn fold_leaf(g: &mut Gen, ty: Ty) -> String {
 /// permanent, uninteresting refusal instead of exercising the pool below.
 fn fold_str_ascii_lit(g: &mut Gen) -> String {
     const WORDS: &[&str] = &[
-        "", "a", "ab", "hello", "world", "Hello World", "  spaced  ",
-        "MixedCase", "123abc", "the quick brown fox jumps over",
+        "",
+        "a",
+        "ab",
+        "hello",
+        "world",
+        "Hello World",
+        "  spaced  ",
+        "MixedCase",
+        "123abc",
+        "the quick brown fox jumps over",
     ];
     format!("\"{}\"", g.rng.pick(WORDS))
 }
@@ -5177,7 +5631,11 @@ fn fold_str_ascii_lit(g: &mut Gen) -> String {
 /// Like `fold_leaf`, but for `fold_str_ascii_lit` — 20% `Opaque`-wrapped.
 fn fold_str_leaf(g: &mut Gen) -> String {
     let s = fold_str_ascii_lit(g);
-    if g.rng.chance(1, 5) { format!("Opaque({s})") } else { s }
+    if g.rng.chance(1, 5) {
+        format!("Opaque({s})")
+    } else {
+        s
+    }
 }
 
 /// An EXACTLY-representable (as f64) decimal float literal — mirrors the
@@ -5189,8 +5647,8 @@ fn fold_str_leaf(g: &mut Gen) -> String {
 /// GENERAL fuzzer).
 fn fold_exact_float_lit(g: &mut Gen) -> String {
     const VALUES: &[&str] = &[
-        "0.0", "1.0", "-1.0", "0.5", "-0.5", "0.25", "-0.25",
-        "1.5", "-1.5", "2.0", "-2.0", "0.75", "-0.75", "3.0", "4.0",
+        "0.0", "1.0", "-1.0", "0.5", "-0.5", "0.25", "-0.25", "1.5", "-1.5", "2.0", "-2.0", "0.75",
+        "-0.75", "3.0", "4.0",
     ];
     (*g.rng.pick(VALUES)).to_string()
 }
@@ -5201,9 +5659,15 @@ fn fold_exact_float_lit(g: &mut Gen) -> String {
 fn fold_vec_leaf(g: &mut Gen) -> String {
     let v = format!(
         "Vec({}, {}, {})",
-        fold_exact_float_lit(g), fold_exact_float_lit(g), fold_exact_float_lit(g)
+        fold_exact_float_lit(g),
+        fold_exact_float_lit(g),
+        fold_exact_float_lit(g)
     );
-    if g.rng.chance(1, 5) { format!("Opaque({v})") } else { v }
+    if g.rng.chance(1, 5) {
+        format!("Opaque({v})")
+    } else {
+        v
+    }
 }
 
 /// A `Ty::Vec3` expression, depth <= `depth`: leaf, component-wise/broadcast
@@ -5226,7 +5690,11 @@ fn fold_vec_expr(g: &mut Gen, depth: u32) -> String {
             let op = *g.rng.pick(&["+", "-", "*", "/"]);
             let v = fold_vec_expr(g, depth - 1);
             let s = fold_exact_float_lit(g);
-            if g.rng.chance(1, 2) { format!("({v} {op} {s})") } else { format!("({s} {op} {v})") }
+            if g.rng.chance(1, 2) {
+                format!("({v} {op} {s})")
+            } else {
+                format!("({s} {op} {v})")
+            }
         }
         2 => {
             let a = fold_vec_expr(g, depth - 1);
@@ -5256,8 +5724,16 @@ fn fold_str_expr(g: &mut Gen, depth: u32) -> String {
         0 => {
             let ta = *g.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str]);
             let tb = *g.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str]);
-            let a = if ta == Ty::Str { fold_str_expr(g, depth - 1) } else { fold_expr(g, ta, depth - 1) };
-            let b = if tb == Ty::Str { fold_str_expr(g, depth - 1) } else { fold_expr(g, tb, depth - 1) };
+            let a = if ta == Ty::Str {
+                fold_str_expr(g, depth - 1)
+            } else {
+                fold_expr(g, ta, depth - 1)
+            };
+            let b = if tb == Ty::Str {
+                fold_str_expr(g, depth - 1)
+            } else {
+                fold_expr(g, tb, depth - 1)
+            };
             format!("({a} .. {b})")
         }
         1 => format!("ToLower({})", fold_str_expr(g, depth - 1)),
@@ -5412,7 +5888,10 @@ fn gen_fold_diff_program(seed: u64) -> String {
 
     let n_outs = g.rng.range(1, 3);
     let out_types: Vec<Ty> = (0..n_outs)
-        .map(|_| *g.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str, Ty::Vec3]))
+        .map(|_| {
+            *g.rng
+                .pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str, Ty::Vec3])
+        })
         .collect();
     let chip_wrap_idx = if !out_types.is_empty() && g.rng.chance(3, 10) {
         Some(g.rng.below(out_types.len()))
@@ -5633,9 +6112,7 @@ fn main() {
                     .map(|(n2, r)| format!("{n2}  <<= {r}"))
                     .collect::<Vec<_>>()
                     .join(" | "),
-                Kind::WireFanIn | Kind::WireDangling | Kind::WireDup => {
-                    out.wire_detail.join(" | ")
-                }
+                Kind::WireFanIn | Kind::WireDangling | Kind::WireDup => out.wire_detail.join(" | "),
                 Kind::StorageCollapse | Kind::DroppedWrite => out.storage_detail.join(" | "),
                 _ => bucket.clone(),
             };
@@ -5772,7 +6249,12 @@ fn main() {
         }
         std::fs::write(format!("{dir}/meta.txt"), &meta).expect("write meta");
 
-        let _ = writeln!(report, "── bucket {fi:03} ── {} — {}", f.kind.name(), f.bucket);
+        let _ = writeln!(
+            report,
+            "── bucket {fi:03} ── {} — {}",
+            f.kind.name(),
+            f.bucket
+        );
         let _ = writeln!(
             report,
             "   hits={hits} diag-class={}",

@@ -43,12 +43,15 @@ pub(crate) fn fold_as(lit: &crate::ir::Literal, dst: &Type) -> Option<crate::ir:
         let digits = s.strip_prefix('-').unwrap_or(s);
         let (whole, frac) = digits.split_once('.').unwrap_or((digits, "1"));
         let all = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
-        (all(whole) && all(frac)).then(|| s.parse::<f64>().ok()).flatten()
+        (all(whole) && all(frac))
+            .then(|| s.parse::<f64>().ok())
+            .flatten()
     };
     Some(match (lit, dst) {
-        (L::Int(_), Type::Int) | (L::Float(_), Type::Float) | (L::Bool(_), Type::Bool) | (L::String(_), Type::String) => {
-            lit.clone()
-        }
+        (L::Int(_), Type::Int)
+        | (L::Float(_), Type::Float)
+        | (L::Bool(_), Type::Bool)
+        | (L::String(_), Type::String) => lit.clone(),
         (L::Int(n), Type::Float) => L::Float(*n as f64),
         (L::Int(n), Type::Bool) => L::Bool(*n != 0),
         (L::Int(n), Type::String) => L::String(n.to_string()),
@@ -71,7 +74,12 @@ fn object(t: &Type) -> bool {
 fn aggregate_fields(t: &Type) -> Option<Vec<(String, Type)>> {
     match t {
         Type::Record(fs) => Some(fs.clone()),
-        Type::Tuple(ts) => Some(ts.iter().enumerate().map(|(i, t)| (i.to_string(), t.clone())).collect()),
+        Type::Tuple(ts) => Some(
+            ts.iter()
+                .enumerate()
+                .map(|(i, t)| (i.to_string(), t.clone()))
+                .collect(),
+        ),
         _ => None,
     }
 }
@@ -124,7 +132,10 @@ pub(crate) fn conversion(src: &Type, dst: &Type) -> Result<Type, String> {
             let mut converted = Vec::with_capacity(ds.len());
             for (name, d) in &ds {
                 let s = &ss.iter().find(|(n, _)| n == name).expect("same fields").1;
-                converted.push((name.clone(), conversion(s, d).map_err(|why| format!("field `{name}`: {why}"))?));
+                converted.push((
+                    name.clone(),
+                    conversion(s, d).map_err(|why| format!("field `{name}`: {why}"))?,
+                ));
             }
             Ok(match dst {
                 Type::Tuple(_) => Type::Tuple(converted.into_iter().map(|(_, t)| t).collect()),
@@ -138,7 +149,12 @@ pub(crate) fn conversion(src: &Type, dst: &Type) -> Result<Type, String> {
 /// Type `value as ty`. A conversion `as` cannot make yet is WS109 (a warning)
 /// and leaves the value its own type, so what follows is checked against what
 /// the value really is.
-pub(super) fn infer_as(ctx: &mut TypeCheckCtx, value: &Expr, ty: &TypeExpr, range: &SourceRange) -> Type {
+pub(super) fn infer_as(
+    ctx: &mut TypeCheckCtx,
+    value: &Expr,
+    ty: &TypeExpr,
+    range: &SourceRange,
+) -> Type {
     let src = unwrap_ref(&infer::infer(ctx, value));
     let dst = resolve::resolve_type_expr(ctx, ty);
     match conversion(&src, &dst) {
@@ -179,16 +195,33 @@ mod tests {
         assert!(!ok(Type::Character, Type::Controller));
         assert!(!ok(Type::Entity, Type::Bool));
         assert!(!ok(Type::Bool, Type::Entity));
-        assert!(!ok(Type::Array(Box::new(Type::Int)), Type::Array(Box::new(Type::Float))));
+        assert!(!ok(
+            Type::Array(Box::new(Type::Int)),
+            Type::Array(Box::new(Type::Float))
+        ));
         assert!(!ok(Type::Brick, Type::String));
         assert!(!ok(Type::Vector, Type::Float));
         assert!(ok(Type::Vector, Type::String));
         assert!(ok(Type::Int, Type::Vector));
         let t = |v: Vec<Type>| Type::Tuple(v);
-        assert_eq!(conversion(&t(vec![Type::Int, Type::Int]), &t(vec![Type::Bool, Type::Int])), Ok(t(vec![Type::Bool, Type::Int])));
+        assert_eq!(
+            conversion(
+                &t(vec![Type::Int, Type::Int]),
+                &t(vec![Type::Bool, Type::Int])
+            ),
+            Ok(t(vec![Type::Bool, Type::Int]))
+        );
         assert!(conversion(&t(vec![Type::Int]), &t(vec![Type::Bool, Type::Int])).is_err());
-        let r = |v: Vec<(&str, Type)>| Type::Record(v.into_iter().map(|(n, t)| (n.to_string(), t)).collect());
-        assert!(conversion(&r(vec![("x", Type::Int), ("y", Type::Int)]), &r(vec![("y", Type::Float), ("x", Type::Float)])).is_ok());
+        let r = |v: Vec<(&str, Type)>| {
+            Type::Record(v.into_iter().map(|(n, t)| (n.to_string(), t)).collect())
+        };
+        assert!(
+            conversion(
+                &r(vec![("x", Type::Int), ("y", Type::Int)]),
+                &r(vec![("y", Type::Float), ("x", Type::Float)])
+            )
+            .is_ok()
+        );
         assert!(conversion(&r(vec![("x", Type::Int)]), &r(vec![("y", Type::Int)])).is_err());
     }
 }
@@ -218,6 +251,9 @@ mod fold_tests {
         assert_eq!(f(L::String("hi".into()), Type::Int), None);
         assert_eq!(f(L::String("1e3".into()), Type::Int), None);
         assert_eq!(f(L::String("  42".into()), Type::Int), None);
-        assert_eq!(f(L::Bool(false), Type::String), Some(L::String("false".into())));
+        assert_eq!(
+            f(L::Bool(false), Type::String),
+            Some(L::String("false".into()))
+        );
     }
 }

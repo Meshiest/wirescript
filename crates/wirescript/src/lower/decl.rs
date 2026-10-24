@@ -7,7 +7,11 @@ use super::*;
 /// a string wires into the label's `Text` port directly; only a non-string is
 /// routed through a `FormatText` gate to coerce it.
 fn label_source_is_string(ctx: &LowerCtx, p: PortRef) -> bool {
-    ctx.builder.module.get(p.node_id).and_then(|n| n.output_type(p.port)) == Some(Type::String)
+    ctx.builder
+        .module
+        .get(p.node_id)
+        .and_then(|n| n.output_type(p.port))
+        == Some(Type::String)
 }
 
 /// Lower a label expression to a string-typed value port: the value directly if
@@ -96,7 +100,10 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         // has no exec reset to apply it — surface the drop.
         TopDecl::Var(v) => ctx.with_nofold(v.no_fold, |ctx| {
             // Its initializer reads the declaration before it (see `scope::top`).
-            let above = ctx.top_names.initializer_read(&v.name, &v.range).map(|at| ctx.top_view(at));
+            let above = ctx
+                .top_names
+                .initializer_read(&v.name, &v.range)
+                .map(|at| ctx.top_view(at));
             warn_unbaked_var_init(ctx, v, true);
             if let Some(view) = above {
                 ctx.restore_top_view(view);
@@ -188,8 +195,10 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             for d in &ns.decls {
                 match d {
                     TopDecl::Chip(c) => {
-                        ns_decls
-                            .insert(c.name.clone(), Binding::Chip(std::sync::Arc::new(c.clone())));
+                        ns_decls.insert(
+                            c.name.clone(),
+                            Binding::Chip(std::sync::Arc::new(c.clone())),
+                        );
                         // A namespaced mod's body also calls its SIBLING mods by
                         // bare name (`drawCardBg(...)`, not `card.drawCardBg`);
                         // register them so those calls resolve when the body is
@@ -271,8 +280,13 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                             pre_declare_array(ctx, a);
                             record_ns_member_state(ctx, &a.range, &a.name);
                             route_ns_member(
-                                ctx, &a.name, &mut ns_decls, &mut ns_value_names,
-                                &mut ns_restores, saved, owned,
+                                ctx,
+                                &a.name,
+                                &mut ns_decls,
+                                &mut ns_value_names,
+                                &mut ns_restores,
+                                saved,
+                                owned,
                             );
                         }
                     }
@@ -285,8 +299,13 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                             pre_declare_map(ctx, m);
                             record_ns_member_state(ctx, &m.range, &m.name);
                             route_ns_member(
-                                ctx, &m.name, &mut ns_decls, &mut ns_value_names,
-                                &mut ns_restores, saved, owned,
+                                ctx,
+                                &m.name,
+                                &mut ns_decls,
+                                &mut ns_value_names,
+                                &mut ns_restores,
+                                saved,
+                                owned,
                             );
                         }
                     }
@@ -301,8 +320,13 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                             ctx.with_nofold(v.no_fold, |ctx| warn_unbaked_var_init(ctx, v, true));
                             record_ns_member_state(ctx, &v.range, &v.name);
                             route_ns_member(
-                                ctx, &v.name, &mut ns_decls, &mut ns_value_names,
-                                &mut ns_restores, saved, owned,
+                                ctx,
+                                &v.name,
+                                &mut ns_decls,
+                                &mut ns_value_names,
+                                &mut ns_restores,
+                                saved,
+                                owned,
                             );
                         }
                     }
@@ -316,8 +340,13 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                             record_ns_member_state(ctx, &b.range, &b.name);
                             ns_buffers.push(b);
                             route_ns_member(
-                                ctx, &b.name, &mut ns_decls, &mut ns_value_names,
-                                &mut ns_restores, saved, owned,
+                                ctx,
+                                &b.name,
+                                &mut ns_decls,
+                                &mut ns_value_names,
+                                &mut ns_restores,
+                                saved,
+                                owned,
                             );
                         }
                     }
@@ -336,8 +365,13 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                             pre_declare_input(ctx, i);
                             record_ns_member_state(ctx, &i.range, &i.name);
                             route_ns_member(
-                                ctx, &i.name, &mut ns_decls, &mut ns_value_names,
-                                &mut ns_restores, saved, owned,
+                                ctx,
+                                &i.name,
+                                &mut ns_decls,
+                                &mut ns_value_names,
+                                &mut ns_restores,
+                                saved,
+                                owned,
                             );
                         }
                     }
@@ -360,8 +394,13 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                         });
                         ns_outputs.push(o);
                         route_ns_member(
-                            ctx, &o.name, &mut ns_decls, &mut ns_value_names,
-                            &mut ns_restores, saved, owned,
+                            ctx,
+                            &o.name,
+                            &mut ns_decls,
+                            &mut ns_value_names,
+                            &mut ns_restores,
+                            saved,
+                            owned,
                         );
                         // The output's binding lives under its mangled scope key,
                         // so `route_ns_member`'s bare-name capture misses it.
@@ -559,8 +598,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 .entry(ns.range.file.clone())
                 .or_default()
                 .insert(ns.name.clone(), Binding::Namespace(ns_decls.clone()));
-            ctx.scope
-                .insert(&ns.name, Binding::Namespace(ns_decls));
+            ctx.scope.insert(&ns.name, Binding::Namespace(ns_decls));
         }
     }
 }
@@ -614,7 +652,11 @@ pub(super) fn lower_buffer_body(ctx: &mut LowerCtx, d: &BufferDecl) {
     // A name the top level declares more than once may name a `let` here:
     // the buffer is the one this declaration made.
     let key = (d.range.file.clone(), d.range.start.offset, d.name.clone());
-    let rec = match ctx.top_dup_bindings.get(&key).or_else(|| ctx.scope.get(&d.name)) {
+    let rec = match ctx
+        .top_dup_bindings
+        .get(&key)
+        .or_else(|| ctx.scope.get(&d.name))
+    {
         Some(Binding::Buffer(r)) => r.clone(),
         _ => return,
     };
@@ -663,7 +705,11 @@ pub(super) fn lower_anon_chip(ctx: &mut LowerCtx, d: &AnonChipDecl) {
     // the name means again after the chip, and inside the chip no read takes
     // the name for a top-level constant (as typecheck's
     // `check_anon_chip_stmts`; see `scope::top`).
-    let storage = ctx.anon_chip_storage.get(&chip_node_id).cloned().unwrap_or_default();
+    let storage = ctx
+        .anon_chip_storage
+        .get(&chip_node_id)
+        .cloned()
+        .unwrap_or_default();
     let top_level = ctx.scope.depth() == 1;
     let names: Vec<String> = match ctx.top_names.chip_at(&d.range) {
         Some(chip) if top_level => chip.names.clone(),
@@ -684,7 +730,12 @@ pub(super) fn lower_anon_chip(ctx: &mut LowerCtx, d: &AnonChipDecl) {
     let hidden = top_level.then(|| ctx.consts.hide_at_top(names.iter().cloned()));
     if let Some(hidden_mark) = hidden {
         let outside = earlier.clone();
-        ctx.anon_chip_shadows.push(crate::lower::context::AnonChipShadow { body: d.range.clone(), outside, hidden_mark });
+        ctx.anon_chip_shadows
+            .push(crate::lower::context::AnonChipShadow {
+                body: d.range.clone(),
+                outside,
+                hidden_mark,
+            });
     }
 
     let saved_chip = ctx.current_anon_chip.take();
@@ -694,7 +745,10 @@ pub(super) fn lower_anon_chip(ctx: &mut LowerCtx, d: &AnonChipDecl) {
 
     ctx.current_anon_chip = saved_chip;
     if let Some(mark) = hidden {
-        let left = names.iter().filter_map(|n| Some((n.clone(), ctx.scope.get_current(n)?.clone()))).collect();
+        let left = names
+            .iter()
+            .filter_map(|n| Some((n.clone(), ctx.scope.get_current(n)?.clone())))
+            .collect();
         let held = ctx.consts.hidden_at_top().split_off(mark);
         ctx.anon_chip_names.insert(d.range.clone(), (left, held));
     }
@@ -844,10 +898,19 @@ type LetRecord = (String, Literal, bool);
 /// binding exists keeps the initializer, lowered first, reading the names
 /// around the `let`. At the top level no frame is open and the module's
 /// constants already hold every top-level one.
-fn record_let_constants(ctx: &mut LowerCtx, d: &LetDecl, records: Vec<LetRecord>, uncertified: bool) {
+fn record_let_constants(
+    ctx: &mut LowerCtx,
+    d: &LetDecl,
+    records: Vec<LetRecord>,
+    uncertified: bool,
+) {
     let mut recorded: HashSet<String> = HashSet::default();
     for (name, lit, declared) in records {
-        let marks = crate::const_scope::Marks { declared, placeholder: false, uncertified };
+        let marks = crate::const_scope::Marks {
+            declared,
+            placeholder: false,
+            uncertified,
+        };
         ctx.consts.record(&name, lit, marks);
         recorded.insert(name);
     }
@@ -944,7 +1007,11 @@ fn record_let_value(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecord
         && let Some(lit) = expr_to_literal_in(&d.value, &ctx.const_lookup())
     {
         // A plain `let` re-binding a name CLEARS any `const` mark it had.
-        records.push((name.clone(), crate::const_eval::in_let_annotation(d, lit, ctx.consts.types()), false));
+        records.push((
+            name.clone(),
+            crate::const_eval::in_let_annotation(d, lit, ctx.consts.types()),
+            false,
+        ));
     }
 
     // A `const` binding — EVERY binding form, `Ident` and destructuring
@@ -1193,14 +1260,17 @@ fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecor
     // placeholder `0` value when it has no `= ...` initializer — see the
     // parser) never names a constant, so it must not reach the const
     // recording below.
-    if let Some(te @ TypeExpr::Name {
-        name: type_name,
-        ..
-    }) = &d.typ
+    if let Some(
+        te @ TypeExpr::Name {
+            name: type_name, ..
+        },
+    ) = &d.typ
     {
         // Through an alias only when written with no value: `let s: Sig =
         // go` names `go` again.
-        if type_name == "exec" || (!d.has_initializer() && crate::lower::call::is_exec_type(ctx, te)) {
+        if type_name == "exec"
+            || (!d.has_initializer() && crate::lower::call::is_exec_type(ctx, te))
+        {
             if let LetBinding::Ident { name, .. } = &d.binding {
                 // Top-level signals were already hubbed by the pre-declare
                 // pass; skip the pass-2 revisit (no exec context at top level).
@@ -1368,8 +1438,7 @@ fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecor
             let record: HashMap<crate::intern::Sym, Binding> = fields
                 .iter()
                 .filter_map(|(field_name, _ty)| {
-                    let port =
-                        resolve_output_field_port(ctx, rhs_port.node_id, field_name)?;
+                    let port = resolve_output_field_port(ctx, rhs_port.node_id, field_name)?;
                     Some((
                         crate::intern::intern(field_name),
                         Binding::Local(LocalRecord { port }),
@@ -1383,7 +1452,10 @@ fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecor
             // reads the popped element, not a record).
             if !record.is_empty() {
                 match &d.binding {
-                    LetBinding::RecordDestruct { fields: destruct_fields, .. } => {
+                    LetBinding::RecordDestruct {
+                        fields: destruct_fields,
+                        ..
+                    } => {
                         install_record_destruct(ctx, &record, destruct_fields);
                         return;
                     }
@@ -1420,21 +1492,28 @@ fn lower_let_binding(ctx: &mut LowerCtx, d: &LetDecl, records: &mut Vec<LetRecor
         }
         // A gate read held on its gate's first output (`let k = fs.max()`)
         // destructures by the names its outputs are declared with.
-        LetBinding::Tuple { .. } | LetBinding::RecordDestruct { .. } if ctx.gate_outputs(d.value.range()).is_some() => {
+        LetBinding::Tuple { .. } | LetBinding::RecordDestruct { .. }
+            if ctx.gate_outputs(d.value.range()).is_some() =>
+        {
             let record: HashMap<crate::intern::Sym, Binding> = ctx
                 .gate_outputs(d.value.range())
                 .unwrap_or_default()
                 .iter()
                 .filter_map(|(n, _)| {
                     let port = resolve_output_field_port(ctx, rhs_port.node_id, n)?;
-                    Some((crate::intern::intern(n), Binding::Local(LocalRecord { port })))
+                    Some((
+                        crate::intern::intern(n),
+                        Binding::Local(LocalRecord { port }),
+                    ))
                 })
                 .collect();
             match &d.binding {
                 LetBinding::Tuple { names, rest, .. } => {
                     install_tuple_value(ctx, &d.value, &record, names, rest.as_ref());
                 }
-                LetBinding::RecordDestruct { fields, .. } => install_record_destruct(ctx, &record, fields),
+                LetBinding::RecordDestruct { fields, .. } => {
+                    install_record_destruct(ctx, &record, fields)
+                }
                 _ => {}
             }
         }
@@ -1515,7 +1594,9 @@ pub(super) fn lower_record_lit(
         // A field a later one supplies again is never read, so never held.
         let later = supplied_by(ctx, &fields[i + 1..]);
         let range = match field {
-            RecordLitField::Named { range, .. } | RecordLitField::Shorthand { range, .. } | RecordLitField::Spread { range, .. } => range,
+            RecordLitField::Named { range, .. }
+            | RecordLitField::Shorthand { range, .. }
+            | RecordLitField::Spread { range, .. } => range,
         };
         let mut keys = Vec::new();
         let slot = ord.source(ctx, "", None, range, |ctx| {
@@ -1550,7 +1631,10 @@ pub(super) fn lower_record_lit(
 
 /// The field names `fields` supply, as far as they are known before lowering
 /// them: a spread supplies every field of its record type.
-pub(super) fn supplied_by(ctx: &LowerCtx, fields: &[RecordLitField]) -> HashSet<crate::intern::Sym> {
+pub(super) fn supplied_by(
+    ctx: &LowerCtx,
+    fields: &[RecordLitField],
+) -> HashSet<crate::intern::Sym> {
     let mut out = HashSet::default();
     for f in fields {
         match f {
@@ -1607,7 +1691,10 @@ impl Slots<'_> {
     pub(super) fn one_enum(self, name: &str) -> bool {
         match self {
             Slots::OneEnum => true,
-            _ => matches!(self.of(name).map(|t| unwrap_ref(&t)), Some(Type::Enum { .. })),
+            _ => matches!(
+                self.of(name).map(|t| unwrap_ref(&t)),
+                Some(Type::Enum { .. })
+            ),
         }
     }
 
@@ -1623,7 +1710,13 @@ impl Slots<'_> {
 
 /// `binding`, the value at `at` of the record literal field `name`: a gate
 /// read in a field holding one value is its first output.
-fn field_value(ctx: &LowerCtx, binding: Binding, at: &SourceRange, lit: Slots, name: &str) -> Binding {
+fn field_value(
+    ctx: &LowerCtx,
+    binding: Binding,
+    at: &SourceRange,
+    lit: Slots,
+    name: &str,
+) -> Binding {
     match &binding {
         Binding::Record(rec) if lit.one_value(name) => {
             held_output(ctx, rec, at, OutputPick::First).unwrap_or(binding)
@@ -1676,7 +1769,10 @@ fn lower_record_field(
                 // did not type as a scalar is probed, so a scalar field is
                 // lowered once, through `lower_expr` below.
                 let binding = Binding::Record(inner);
-                map.push((crate::intern::intern(name), field_value(ctx, binding, value.range(), lit, name)));
+                map.push((
+                    crate::intern::intern(name),
+                    field_value(ctx, binding, value.range(), lit, name),
+                ));
             } else {
                 // A call the record probe above already lowered for this
                 // same value keeps that one gate.
@@ -1684,7 +1780,10 @@ fn lower_record_field(
                     Some(port) => port,
                     None => lower_expr(ctx, value),
                 };
-                map.push((crate::intern::intern(name), Binding::Local(LocalRecord { port })));
+                map.push((
+                    crate::intern::intern(name),
+                    Binding::Local(LocalRecord { port }),
+                ));
             }
         }
         RecordLitField::Shorthand { name, range } => {
@@ -1748,8 +1847,7 @@ pub(super) fn install_record_destruct(
                 }
             }
             RecordDestructField::Rest { name, .. } => {
-                ctx.scope
-                    .insert(&name, Binding::Record(remaining.clone()));
+                ctx.scope.insert(&name, Binding::Record(remaining.clone()));
             }
         }
     }
@@ -1779,7 +1877,9 @@ fn install_tuple_value(
     names: &[String],
     rest: Option<&String>,
 ) {
-    if let Some(Binding::Record(positions)) = held_output(ctx, src, value.range(), OutputPick::Positions) {
+    if let Some(Binding::Record(positions)) =
+        held_output(ctx, src, value.range(), OutputPick::Positions)
+    {
         let order: Vec<String> = (0..positions.len()).map(|i| i.to_string()).collect();
         install_tuple_destruct(ctx, &positions, names, rest, &order);
         return;

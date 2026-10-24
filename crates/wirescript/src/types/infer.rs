@@ -33,7 +33,11 @@ pub enum InferError {
     /// pass an explicit type argument).
     Unpinnable(String),
     /// The resolved (joined) type isn't a member of the var's mask.
-    OutOfMask { var: String, ty: Type, mask: Vec<Type> },
+    OutOfMask {
+        var: String,
+        ty: Type,
+        mask: Vec<Type>,
+    },
 }
 
 /// `any`/`Opaque`-typed constraint values are the dynamic type: consistent
@@ -71,16 +75,18 @@ pub fn solve(
             }
             resolved = Some(match resolved {
                 None => cty.clone(),
-                Some(prev) => match crate::types::coerce::widening_join_all([prev.clone(), cty.clone()]) {
-                    Some(joined) => joined,
-                    None => {
-                        return Err(InferError::Conflict {
-                            var: var.clone(),
-                            a: prev,
-                            b: cty.clone(),
-                        });
+                Some(prev) => {
+                    match crate::types::coerce::widening_join_all([prev.clone(), cty.clone()]) {
+                        Some(joined) => joined,
+                        None => {
+                            return Err(InferError::Conflict {
+                                var: var.clone(),
+                                a: prev,
+                                b: cty.clone(),
+                            });
+                        }
                     }
-                },
+                }
             });
         }
 
@@ -90,7 +96,11 @@ pub fn solve(
         };
 
         if !crate::types::classes::mask_contains(mask, &ty) {
-            return Err(InferError::OutOfMask { var: var.clone(), ty, mask: mask.clone() });
+            return Err(InferError::OutOfMask {
+                var: var.clone(),
+                ty,
+                mask: mask.clone(),
+            });
         }
 
         subst.insert(var.clone(), ty);

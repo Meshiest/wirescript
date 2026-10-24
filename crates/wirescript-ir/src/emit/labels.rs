@@ -157,14 +157,23 @@ pub(super) fn emit_plane_header(
     let Some(text) = chip_header_text(title, doc) else {
         return;
     };
-    let at = brdb::Position { x: extent.x + HEADER_EDGE_LIFT, y: 0, z: 2 };
+    let at = brdb::Position {
+        x: extent.x + HEADER_EDGE_LIFT,
+        y: 0,
+        z: 2,
+    };
     bricks.push(label_carrier(world, at, &text, (0.5, 0.0)));
 }
 
 /// An invisible 1x1F carrier brick at `position` holding `text` flat on the
 /// plane, anchored at `anchor` (`(0.5, 0.0)` centres it, `(0.0, 0.5)` runs it
 /// rightward from its left edge).
-fn label_carrier(world: &mut World, position: brdb::Position, text: &str, anchor: (f32, f32)) -> brdb::Brick {
+fn label_carrier(
+    world: &mut World,
+    position: brdb::Position,
+    text: &str,
+    anchor: (f32, f32),
+) -> brdb::Brick {
     // A 1x1F procedural default brick (10x10x4 cm -> half-extents 5,5,2).
     let mut brick = brdb::Brick {
         asset: brdb::BrickType::from((brdb::assets::bricks::PB_DEFAULT_BRICK, (5, 5, 2))),
@@ -172,13 +181,29 @@ fn label_carrier(world: &mut World, position: brdb::Position, text: &str, anchor
         visible: false,
         ..Default::default()
     };
-    brick.add_component_box(Box::new(text_label(world, text, 0.0, 0.5, LABEL_LINE_HEIGHT, anchor.0, anchor.1)));
+    brick.add_component_box(Box::new(text_label(
+        world,
+        text,
+        0.0,
+        0.5,
+        LABEL_LINE_HEIGHT,
+        anchor.0,
+        anchor.1,
+    )));
     brick
 }
 
 /// The floating name label on a chip's brick.
 pub(super) fn chip_name_label(world: &mut World, name: &str) -> LiteralComponent {
-    text_label(world, name, LABEL_ROTATION_DEG, -0.5, LABEL_LINE_HEIGHT, 0.5, 0.5)
+    text_label(
+        world,
+        name,
+        LABEL_ROTATION_DEG,
+        -0.5,
+        LABEL_LINE_HEIGHT,
+        0.5,
+        0.5,
+    )
 }
 
 /// One invisible 1×1 carrier brick per layout text annotation — the source's
@@ -193,7 +218,11 @@ pub(super) fn emit_annotations(
     annotations: &[crate::layout::TextAnnotation],
 ) {
     for ann in annotations {
-        let at = brdb::Position { x: ann.x + 5, y: ann.y + 5, z: ann.z };
+        let at = brdb::Position {
+            x: ann.x + 5,
+            y: ann.y + 5,
+            z: ann.z,
+        };
         bricks.push(label_carrier(world, at, &ann.text, (0.0, 0.5)));
     }
 }

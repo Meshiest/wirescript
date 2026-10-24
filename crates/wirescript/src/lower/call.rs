@@ -13,8 +13,8 @@ pub(super) use builtin::*;
 mod dispatch;
 pub(super) use dispatch::*;
 mod instance_body;
-use instance_body::*;
 pub(in crate::lower) use instance_body::wire_record_backing;
+use instance_body::*;
 mod inline;
 pub(super) use inline::*;
 mod instance;
@@ -114,9 +114,14 @@ pub(in crate::lower) fn expand_spread_args<'a>(
 /// Named args that name no parameter (`exec = ...`) stay as they are, and a
 /// call with a spread is left alone: its positions are only known once the
 /// spread is expanded.
-fn named_args_in_place<'a>(decl: &ChipDecl, args: &'a [CallArg]) -> std::borrow::Cow<'a, [CallArg]> {
+fn named_args_in_place<'a>(
+    decl: &ChipDecl,
+    args: &'a [CallArg],
+) -> std::borrow::Cow<'a, [CallArg]> {
     let param_of = |name: &str| decl.inputs.iter().position(|p| p.name == name);
-    let moves = args.iter().any(|a| matches!(a, CallArg::Named { name, .. } if param_of(name).is_some()));
+    let moves = args
+        .iter()
+        .any(|a| matches!(a, CallArg::Named { name, .. } if param_of(name).is_some()));
     if !moves || args.iter().any(|a| matches!(a, CallArg::Spread(_))) {
         return std::borrow::Cow::Borrowed(args);
     }
@@ -144,7 +149,12 @@ fn named_args_in_place<'a>(decl: &ChipDecl, args: &'a [CallArg]) -> std::borrow:
             None => break,
         }
     }
-    out.extend(positional.iter().skip(decl.inputs.len()).map(|e| CallArg::Positional((*e).clone())));
+    out.extend(
+        positional
+            .iter()
+            .skip(decl.inputs.len())
+            .map(|e| CallArg::Positional((*e).clone())),
+    );
     out.extend(kept);
     std::borrow::Cow::Owned(out)
 }
@@ -160,7 +170,12 @@ pub(super) fn lower_chip_call(
         return crate::lower::function::lower_fn_call(ctx, chip_decl, args, range);
     }
     let named = !chip_decl.name.is_empty();
-    if named && ctx.chip_call_stack.iter().any(|(decl, open)| *open && *decl == chip_decl.range) {
+    if named
+        && ctx
+            .chip_call_stack
+            .iter()
+            .any(|(decl, open)| *open && *decl == chip_decl.range)
+    {
         ctx.diagnostics.push(Diagnostic::error(
             "WS020",
             format!(
@@ -172,7 +187,11 @@ pub(super) fn lower_chip_call(
             ),
             range.clone(),
         ));
-        return synthesise_unsupported_range(ctx, &format!("the call `{}(..)`", chip_decl.name), range);
+        return synthesise_unsupported_range(
+            ctx,
+            &format!("the call `{}(..)`", chip_decl.name),
+            range,
+        );
     }
     if named {
         ctx.chip_call_stack.push((chip_decl.range.clone(), false));

@@ -333,7 +333,10 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             ],
             vec![CallOutput::plain(
                 WirePort::Value,
-                Type::Record(vec![("Value".into(), Type::Opaque), ("Found".into(), Type::Bool)]),
+                Type::Record(vec![
+                    ("Value".into(), Type::Opaque),
+                    ("Found".into(), Type::Bool),
+                ]),
             )],
         ),
     );
@@ -499,7 +502,10 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
     // the component type it names (`Component<PointLight>`, typed in
     // `typecheck::call`); `AddComponent` adds one first if the brick has none.
     // The `$Component/...` is a constant baked into the gate's Component Type.
-    for (name, gate) in [("GetComponent", gc::GET_COMPONENT), ("AddComponent", gc::ADD_COMPONENT)] {
+    for (name, gate) in [
+        ("GetComponent", gc::GET_COMPONENT),
+        ("AddComponent", gc::ADD_COMPONENT),
+    ] {
         m.insert(
             name,
             CallSpec {
@@ -507,10 +513,17 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 gate_class: gate,
                 params: vec![
                     CallParam::req("brick", WirePort::Brick, Type::Brick),
-                    CallParam::req("componentType", WirePort::ComponentType, Type::Component(String::new())),
+                    CallParam::req(
+                        "componentType",
+                        WirePort::ComponentType,
+                        Type::Component(String::new()),
+                    ),
                 ],
                 exec: true,
-                outputs: vec![CallOutput::plain(WirePort::Component, Type::Param("T".into()))],
+                outputs: vec![CallOutput::plain(
+                    WirePort::Component,
+                    Type::Param("T".into()),
+                )],
                 receiver: Some(Type::Brick),
             },
         );
@@ -525,7 +538,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::REMOVE_COMPONENT,
             params: vec![
                 CallParam::req("brick", WirePort::Brick, Type::Brick),
-                CallParam::req("componentType", WirePort::ComponentType, Type::Component(String::new())),
+                CallParam::req(
+                    "componentType",
+                    WirePort::ComponentType,
+                    Type::Component(String::new()),
+                ),
             ],
             exec: true,
             outputs: vec![],
@@ -544,13 +561,21 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 // Config-only on SweepSimple (settings menu, not wire inputs).
                 // `direction` is an EBrickDirection enum member.
                 CallParam::opt("direction", WirePort::Direction, Type::Int),
-                CallParam::opt("spreadTowardCenter", WirePort::BSpreadBiasedTowardsCenter, Type::Bool),
+                CallParam::opt(
+                    "spreadTowardCenter",
+                    WirePort::BSpreadBiasedTowardsCenter,
+                    Type::Bool,
+                ),
                 CallParam::opt("detectBricks", WirePort::BDetectBricks, Type::Bool),
                 CallParam::opt("detectPlayers1", WirePort::BDetectPlayers1, Type::Bool),
                 CallParam::opt("detectPlayers2", WirePort::BDetectPlayers2, Type::Bool),
                 CallParam::opt("detectPlayers3", WirePort::BDetectPlayers3, Type::Bool),
                 CallParam::opt("detectPlayers4", WirePort::BDetectPlayers4, Type::Bool),
-                CallParam::opt("bodyPartsOnly", WirePort::BOnlyHitPlayerBodyParts, Type::Bool),
+                CallParam::opt(
+                    "bodyPartsOnly",
+                    WirePort::BOnlyHitPlayerBodyParts,
+                    Type::Bool,
+                ),
                 CallParam::opt("detectPhysics", WirePort::BDetectPhysics, Type::Bool),
                 CallParam::opt("detectMap", WirePort::BDetectMap, Type::Bool),
                 // Wire input: collision channel (EBRSweepCollisionChannel, int).

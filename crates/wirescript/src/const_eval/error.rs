@@ -111,12 +111,12 @@ impl ConstError {
 
     pub fn message(&self) -> String {
         match &self.reason {
-            ConstReason::NotConstant(name) => format!(
-                "not a compile-time constant: '{name}' is a runtime value"
-            ),
-            ConstReason::NotAConstMod(name) => format!(
-                "not a compile-time constant: '{name}' is not declared `const mod`"
-            ),
+            ConstReason::NotConstant(name) => {
+                format!("not a compile-time constant: '{name}' is a runtime value")
+            }
+            ConstReason::NotAConstMod(name) => {
+                format!("not a compile-time constant: '{name}' is not declared `const mod`")
+            }
             ConstReason::NestedConstModCall(name) => format!(
                 "not a compile-time constant: '{name}' is a `const mod`, but it is called \
                  inside a surrounding expression that has no compile-time form (usually \
@@ -126,18 +126,18 @@ impl ConstError {
             ConstReason::UnnamedConstMod(name) => format!(
                 "not a compile-time constant: '{name}' is a `const mod` this file does not declare or import"
             ),
-            ConstReason::Unsupported(what) => format!(
-                "not a compile-time constant: {what} cannot be evaluated at compile time"
-            ),
+            ConstReason::Unsupported(what) => {
+                format!("not a compile-time constant: {what} cannot be evaluated at compile time")
+            }
             ConstReason::UnsupportedMessage(why) => format!("not a compile-time constant: {why}"),
             ConstReason::TupleArityMismatch { expected, got } => format!(
                 "not a compile-time constant: this tuple destructure binds {expected} \
                  position(s), but the value has {got}"
             ),
             ConstReason::UnsupportedMethod(why) => format!("not a compile-time constant: {why}"),
-            ConstReason::Refused(why) => format!(
-                "the compiler will not compute this value at compile time: {why}"
-            ),
+            ConstReason::Refused(why) => {
+                format!("the compiler will not compute this value at compile time: {why}")
+            }
             ConstReason::ArrayIndexOutOfRange { index, len } => format!(
                 "index {index} is out of range for a {len}-element compile-time constant \
                  array, and there is no previous value to fall back on at compile time"
@@ -147,9 +147,9 @@ impl ConstError {
                  previous value to fall back on at compile time"
                     .to_string()
             }
-            ConstReason::RecordFieldNotFound(field) => format!(
-                "this compile-time constant record has no field named '{field}'"
-            ),
+            ConstReason::RecordFieldNotFound(field) => {
+                format!("this compile-time constant record has no field named '{field}'")
+            }
             ConstReason::BudgetExceeded => {
                 "const evaluation gave up: the call chain is too deep or too large".into()
             }

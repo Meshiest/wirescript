@@ -168,7 +168,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 // 3 Tool, 4-7 Player1-4, 8 NoAdditionalRestriction — int at the wire).
                 CallParam::opt("collisionChannel", WirePort::CollisionChannel, Type::Int),
                 // Config-only (settings menu, not a wire input on Sweep).
-                CallParam::opt("bodyPartsOnly", WirePort::BOnlyHitPlayerBodyParts, Type::Bool),
+                CallParam::opt(
+                    "bodyPartsOnly",
+                    WirePort::BOnlyHitPlayerBodyParts,
+                    Type::Bool,
+                ),
             ],
             exec: true,
             outputs: vec![CallOutput::plain(

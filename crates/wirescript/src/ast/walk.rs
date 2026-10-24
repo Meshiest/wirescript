@@ -68,10 +68,23 @@ impl Ctx {
     pub fn enter(self, flow: Flow) -> Ctx {
         match flow {
             Flow::Seq => self,
-            Flow::Branch => Ctx { branch: true, ..self },
-            Flow::Loop => Ctx { branch: true, in_loop: true, ..self },
-            Flow::AnonChip => Ctx { anon_chip: true, ..self },
-            Flow::Handler => Ctx { handler: true, ..self },
+            Flow::Branch => Ctx {
+                branch: true,
+                ..self
+            },
+            Flow::Loop => Ctx {
+                branch: true,
+                in_loop: true,
+                ..self
+            },
+            Flow::AnonChip => Ctx {
+                anon_chip: true,
+                ..self
+            },
+            Flow::Handler => Ctx {
+                handler: true,
+                ..self
+            },
             Flow::Decl => Ctx { decl: true, ..self },
         }
     }
@@ -174,15 +187,21 @@ pub fn any_below<'a>(
 /// Whether running `s` can end its block before the next statement runs: a
 /// `return`, `break` or `continue` on `s`'s own path.
 pub fn leaves_early(s: &Stmt) -> bool {
-    let exits =
-        |n: Node| matches!(n, Node::Stmt(Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. }));
+    let exits = |n: Node| {
+        matches!(
+            n,
+            Node::Stmt(Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. })
+        )
+    };
     exits(Node::Stmt(s)) || any_below(Node::Stmt(s), Flow::on_path, &mut |n| exits(n))
 }
 
 /// Whether a `return` is reached on `block`'s own path (not inside a loop
 /// body, a nested handler or a declaration).
 pub fn contains_return(block: &Block) -> bool {
-    any_below(Node::Block(block), Flow::on_path, &mut |n| matches!(n, Node::Stmt(Stmt::Return { .. })))
+    any_below(Node::Block(block), Flow::on_path, &mut |n| {
+        matches!(n, Node::Stmt(Stmt::Return { .. }))
+    })
 }
 
 /// The block arms of the value `match`es in `node`'s own expressions, stopping
@@ -249,8 +268,18 @@ fn opt<'a>(e: &'a Option<Expr>, flow: Flow, f: &mut dyn FnMut(Node<'a>, Flow)) {
 
 fn decl_children<'a>(d: &'a TopDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
     match d {
-        TopDecl::Import(ImportDecl { path: _, kind: _, range: _ }) => {}
-        TopDecl::Namespace(NamespaceDecl { name: _, decls, source_path: _, module_doc: _, range: _ }) => {
+        TopDecl::Import(ImportDecl {
+            path: _,
+            kind: _,
+            range: _,
+        }) => {}
+        TopDecl::Namespace(NamespaceDecl {
+            name: _,
+            decls,
+            source_path: _,
+            module_doc: _,
+            range: _,
+        }) => {
             for d in decls {
                 f(Node::Decl(d), Flow::Seq);
             }
@@ -259,12 +288,22 @@ fn decl_children<'a>(d: &'a TopDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
         TopDecl::Array(a) => array_children(a, f),
         TopDecl::Map(m) => map_children(m, f),
         TopDecl::Buffer(b) => buffer_children(b, f),
-        TopDecl::Fn(FnDecl { name: _, params: _, return_type: _, body, range: _ }) => {
-            f(Node::Expr(body), Flow::Decl)
-        }
+        TopDecl::Fn(FnDecl {
+            name: _,
+            params: _,
+            return_type: _,
+            body,
+            range: _,
+        }) => f(Node::Expr(body), Flow::Decl),
         TopDecl::Chip(c) => chip_children(c, f),
         TopDecl::AnonChip(ac) => anon_chip_children(ac, f),
-        TopDecl::Event(EventDecl { name: _, source, captured, no_fold: _, range: _ }) => {
+        TopDecl::Event(EventDecl {
+            name: _,
+            source,
+            captured,
+            no_fold: _,
+            range: _,
+        }) => {
             f(Node::Expr(source), Flow::Seq);
             if let Some(h) = captured {
                 handler_children(h, f);
@@ -280,8 +319,18 @@ fn decl_children<'a>(d: &'a TopDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
         TopDecl::If(i) => if_children(i, f),
         TopDecl::IfLet(i) => if_let_children(i, f),
         TopDecl::ExprStmt(es) => expr_stmt_children(es, f),
-        TopDecl::TypeAlias(TypeAliasDecl { name: _, type_params: _, typ: _, range: _ }) => {}
-        TopDecl::Enum(EnumDecl { name: _, type_params: _, variants: _, range: _ }) => {}
+        TopDecl::TypeAlias(TypeAliasDecl {
+            name: _,
+            type_params: _,
+            typ: _,
+            range: _,
+        }) => {}
+        TopDecl::Enum(EnumDecl {
+            name: _,
+            type_params: _,
+            variants: _,
+            range: _,
+        }) => {}
     }
 }
 
@@ -289,9 +338,20 @@ fn decl_children<'a>(d: &'a TopDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
 pub fn stmt_children<'a>(s: &'a Stmt, f: &mut dyn FnMut(Node<'a>, Flow)) {
     match s {
         Stmt::Assign(a) => assign_children(a, f),
-        Stmt::Emit(Emit { name: _, value, buffer, range: _ }) => {
+        Stmt::Emit(Emit {
+            name: _,
+            value,
+            buffer,
+            range: _,
+        }) => {
             opt(value, Flow::Seq, f);
-            if let Some(BufferSpec { delay, hold, seconds: _, range: _ }) = buffer {
+            if let Some(BufferSpec {
+                delay,
+                hold,
+                seconds: _,
+                range: _,
+            }) = buffer
+            {
                 opt(delay, Flow::Seq, f);
                 opt(hold, Flow::Seq, f);
             }
@@ -312,10 +372,24 @@ pub fn stmt_children<'a>(s: &'a Stmt, f: &mut dyn FnMut(Node<'a>, Flow)) {
         Stmt::AnonChip(ac) => anon_chip_children(ac, f),
         Stmt::ChipDecl(c) => chip_children(c, f),
         Stmt::Return { value, range: _ } => opt(value, Flow::Seq, f),
-        Stmt::For(ForStmt { bindings: _, source, result: _, sliced: _, label: _, label_expr, body, range: _ }) => {
+        Stmt::For(ForStmt {
+            bindings: _,
+            source,
+            result: _,
+            sliced: _,
+            label: _,
+            label_expr,
+            body,
+            range: _,
+        }) => {
             opt(label_expr, Flow::Seq, f);
             match source {
-                ForSource::Range(RangeSource { extent, step, reversed: _, range: _ }) => {
+                ForSource::Range(RangeSource {
+                    extent,
+                    step,
+                    reversed: _,
+                    range: _,
+                }) => {
                     match extent {
                         RangeExtent::Bounds { start, end } => {
                             f(Node::Expr(start), Flow::Seq);
@@ -348,17 +422,36 @@ fn expr_children_in<'a>(e: &'a Expr, exits: Exits, f: &mut dyn FnMut(Node<'a>, F
         }
     };
     match e {
-        Expr::IntLit { value: _, text: _, range: _ }
-        | Expr::AtomLit { name: _, value: _, range: _ }
-        | Expr::FloatLit { value: _, text: _, range: _ }
+        Expr::IntLit {
+            value: _,
+            text: _,
+            range: _,
+        }
+        | Expr::AtomLit {
+            name: _,
+            value: _,
+            range: _,
+        }
+        | Expr::FloatLit {
+            value: _,
+            text: _,
+            range: _,
+        }
         | Expr::StringLit { value: _, range: _ }
         | Expr::BoolLit { value: _, range: _ }
         | Expr::NullLit { range: _ }
         | Expr::CurrentExec { range: _ }
         | Expr::Ident { name: _, range: _ }
-        | Expr::AssetRef { asset_type: _, asset_name: _, range: _ }
+        | Expr::AssetRef {
+            asset_type: _,
+            asset_name: _,
+            range: _,
+        }
         | Expr::PrefabRef { path: _, range: _ }
-        | Expr::NestedPrefab { source: _, range: _ } => {}
+        | Expr::NestedPrefab {
+            source: _,
+            range: _,
+        } => {}
         Expr::InterpLit { parts, range: _ } => each(
             &mut parts.iter().filter_map(|p| match p {
                 InterpPart::Lit(_) => None,
@@ -366,37 +459,88 @@ fn expr_children_in<'a>(e: &'a Expr, exits: Exits, f: &mut dyn FnMut(Node<'a>, F
             }),
             Flow::Seq,
         ),
-        Expr::FieldAccess { obj, field: _, range: _ } | Expr::TuplePick { obj, index: _, range: _ } => {
-            each(&mut std::iter::once(obj.as_ref()), Flow::Seq)
+        Expr::FieldAccess {
+            obj,
+            field: _,
+            range: _,
         }
-        Expr::IndexAccess { obj, index, range: _ } => each(&mut [obj.as_ref(), index.as_ref()].into_iter(), Flow::Seq),
-        Expr::UnOp { op: _, operand, range: _ }
+        | Expr::TuplePick {
+            obj,
+            index: _,
+            range: _,
+        } => each(&mut std::iter::once(obj.as_ref()), Flow::Seq),
+        Expr::IndexAccess {
+            obj,
+            index,
+            range: _,
+        } => each(&mut [obj.as_ref(), index.as_ref()].into_iter(), Flow::Seq),
+        Expr::UnOp {
+            op: _,
+            operand,
+            range: _,
+        }
         | Expr::Deref { operand, range: _ }
-        | Expr::RefOf { operand, range: _ } => each(&mut std::iter::once(operand.as_ref()), Flow::Seq),
-        Expr::BinOp { op: _, left, right, range: _ } => {
-            each(&mut [left.as_ref(), right.as_ref()].into_iter(), Flow::Seq)
+        | Expr::RefOf { operand, range: _ } => {
+            each(&mut std::iter::once(operand.as_ref()), Flow::Seq)
         }
-        Expr::Call { callee, args, type_args: _, range: _ } => {
+        Expr::BinOp {
+            op: _,
+            left,
+            right,
+            range: _,
+        } => each(&mut [left.as_ref(), right.as_ref()].into_iter(), Flow::Seq),
+        Expr::Call {
+            callee,
+            args,
+            type_args: _,
+            range: _,
+        } => {
             each(&mut std::iter::once(callee.as_ref()), Flow::Seq);
             each(
                 &mut args.iter().map(|a| match a {
                     CallArg::Positional(x) | CallArg::Spread(x) => x,
-                    CallArg::Named { name: _, value, name_range: _ } => value,
+                    CallArg::Named {
+                        name: _,
+                        value,
+                        name_range: _,
+                    } => value,
                 }),
                 Flow::Seq,
             );
         }
-        Expr::IfExpr { cond, then_branch, else_branch, range: _ } => {
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+            range: _,
+        } => {
             each(&mut std::iter::once(cond.as_ref()), Flow::Seq);
-            each(&mut [then_branch.as_ref(), else_branch.as_ref()].into_iter(), Flow::Branch);
+            each(
+                &mut [then_branch.as_ref(), else_branch.as_ref()].into_iter(),
+                Flow::Branch,
+            );
         }
-        Expr::BlockExpr { stmts, value, range: _ } => {
+        Expr::BlockExpr {
+            stmts,
+            value,
+            range: _,
+        } => {
             let flow = stmts_children(stmts, exits, f);
             f(Node::Expr(value), flow);
         }
-        Expr::MatchExpr { scrutinee, arms, range: _ } => {
+        Expr::MatchExpr {
+            scrutinee,
+            arms,
+            range: _,
+        } => {
             f(Node::Expr(scrutinee), Flow::Seq);
-            for MatchArm { pattern: _, guard, body, range: _ } in arms {
+            for MatchArm {
+                pattern: _,
+                guard,
+                body,
+                range: _,
+            } in arms
+            {
                 if let Some(g) = guard {
                     f(Node::Expr(g), Flow::Branch);
                 }
@@ -407,19 +551,32 @@ fn expr_children_in<'a>(e: &'a Expr, exits: Exits, f: &mut dyn FnMut(Node<'a>, F
             }
         }
         Expr::RecordLit { fields, range: _ } => record_fields(fields, f),
-        Expr::VariantCtor { path, fields, range: _ } => {
+        Expr::VariantCtor {
+            path,
+            fields,
+            range: _,
+        } => {
             f(Node::Expr(path), Flow::Seq);
             record_fields(fields, f);
         }
         Expr::Array { elements, range: _ } => array_elems(elements, f),
         Expr::MapLit { entries, range: _ } => {
-            for MapLitEntry { key, value, range: _ } in entries {
+            for MapLitEntry {
+                key,
+                value,
+                range: _,
+            } in entries
+            {
                 f(Node::Expr(key), Flow::Seq);
                 f(Node::Expr(value), Flow::Seq);
             }
         }
         Expr::Unsafe { inner, range: _ } => f(Node::Expr(inner), Flow::Seq),
-        Expr::Is { value, path, range: _ } => {
+        Expr::Is {
+            value,
+            path,
+            range: _,
+        } => {
             f(Node::Expr(value), Flow::Seq);
             f(Node::Expr(path), Flow::Seq);
         }
@@ -430,9 +587,12 @@ fn expr_children_in<'a>(e: &'a Expr, exits: Exits, f: &mut dyn FnMut(Node<'a>, F
 fn record_fields<'a>(fields: &'a [RecordLitField], f: &mut dyn FnMut(Node<'a>, Flow)) {
     for field in fields {
         match field {
-            RecordLitField::Named { name: _, value, range: _ } | RecordLitField::Spread { value, range: _ } => {
-                f(Node::Expr(value), Flow::Seq)
+            RecordLitField::Named {
+                name: _,
+                value,
+                range: _,
             }
+            | RecordLitField::Spread { value, range: _ } => f(Node::Expr(value), Flow::Seq),
             RecordLitField::Shorthand { name: _, range: _ } => {}
         }
     }
@@ -447,7 +607,11 @@ fn array_elems<'a>(elements: &'a [ArrayElem], f: &mut dyn FnMut(Node<'a>, Flow))
 }
 
 fn assign_children<'a>(a: &'a Assign, f: &mut dyn FnMut(Node<'a>, Flow)) {
-    let Assign { target, value, range: _ } = a;
+    let Assign {
+        target,
+        value,
+        range: _,
+    } = a;
     f(Node::Expr(target), Flow::Seq);
     f(Node::Expr(value), Flow::Seq);
 }
@@ -468,7 +632,12 @@ fn await_children<'a>(a: &'a AwaitStmt, f: &mut dyn FnMut(Node<'a>, Flow)) {
 }
 
 fn if_children<'a>(i: &'a If, f: &mut dyn FnMut(Node<'a>, Flow)) {
-    let If { cond, then_block, else_block, range: _ } = i;
+    let If {
+        cond,
+        then_block,
+        else_block,
+        range: _,
+    } = i;
     f(Node::Expr(cond), Flow::Seq);
     f(Node::Block(then_block), Flow::Branch);
     if let Some(b) = else_block {
@@ -477,7 +646,13 @@ fn if_children<'a>(i: &'a If, f: &mut dyn FnMut(Node<'a>, Flow)) {
 }
 
 fn if_let_children<'a>(i: &'a IfLet, f: &mut dyn FnMut(Node<'a>, Flow)) {
-    let IfLet { pattern: _, scrutinee, then_block, else_block, range: _ } = i;
+    let IfLet {
+        pattern: _,
+        scrutinee,
+        then_block,
+        else_block,
+        range: _,
+    } = i;
     f(Node::Expr(scrutinee), Flow::Seq);
     f(Node::Block(then_block), Flow::Branch);
     if let Some(b) = else_block {
@@ -486,12 +661,25 @@ fn if_let_children<'a>(i: &'a IfLet, f: &mut dyn FnMut(Node<'a>, Flow)) {
 }
 
 fn let_children<'a>(l: &'a LetDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
-    let LetDecl { binding: _, typ: _, value, no_fold: _, is_const: _, range: _ } = l;
+    let LetDecl {
+        binding: _,
+        typ: _,
+        value,
+        no_fold: _,
+        is_const: _,
+        range: _,
+    } = l;
     f(Node::Expr(value), Flow::Seq);
 }
 
 fn let_else_children<'a>(l: &'a LetElse, f: &mut dyn FnMut(Node<'a>, Flow)) {
-    let LetElse { pattern: _, scrutinee, else_block, is_const: _, range: _ } = l;
+    let LetElse {
+        pattern: _,
+        scrutinee,
+        else_block,
+        is_const: _,
+        range: _,
+    } = l;
     f(Node::Expr(scrutinee), Flow::Seq);
     f(Node::Block(else_block), Flow::Branch);
 }
@@ -502,7 +690,18 @@ fn expr_stmt_children<'a>(es: &'a ExprStmt, f: &mut dyn FnMut(Node<'a>, Flow)) {
 }
 
 fn var_children<'a>(v: &'a VarDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
-    let VarDecl { name: _, typ: _, init, is_static: _, no_fold: _, label: _, label_expr, color_expr, material_expr, range: _ } = v;
+    let VarDecl {
+        name: _,
+        typ: _,
+        init,
+        is_static: _,
+        no_fold: _,
+        label: _,
+        label_expr,
+        color_expr,
+        material_expr,
+        range: _,
+    } = v;
     opt(init, Flow::Seq, f);
     opt(label_expr, Flow::Seq, f);
     opt(color_expr, Flow::Seq, f);
@@ -510,22 +709,46 @@ fn var_children<'a>(v: &'a VarDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
 }
 
 fn array_children<'a>(a: &'a ArrayDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
-    let ArrayDecl { name: _, element_type: _, init, range: _ } = a;
+    let ArrayDecl {
+        name: _,
+        element_type: _,
+        init,
+        range: _,
+    } = a;
     array_elems(init, f);
 }
 
 fn map_children<'a>(m: &'a MapDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
-    let MapDecl { name: _, key_type: _, value_type: _, init, range: _ } = m;
+    let MapDecl {
+        name: _,
+        key_type: _,
+        value_type: _,
+        init,
+        range: _,
+    } = m;
     opt(init, Flow::Seq, f);
 }
 
 fn buffer_children<'a>(b: &'a BufferDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
-    let BufferDecl { name: _, typ: _, init, range: _ } = b;
+    let BufferDecl {
+        name: _,
+        typ: _,
+        init,
+        range: _,
+    } = b;
     f(Node::Expr(init), Flow::Seq);
 }
 
 fn in_children<'a>(i: &'a InDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
-    let InDecl { name: _, typ: _, side: _, label: _, label_expr, invisible: _, range: _ } = i;
+    let InDecl {
+        name: _,
+        typ: _,
+        side: _,
+        label: _,
+        label_expr,
+        invisible: _,
+        range: _,
+    } = i;
     opt(label_expr, Flow::Seq, f);
 }
 
@@ -567,7 +790,15 @@ fn handler_children<'a>(h: &'a Handler, f: &mut dyn FnMut(Node<'a>, Flow)) {
 }
 
 fn anon_chip_children<'a>(ac: &'a AnonChipDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
-    let AnonChipDecl { body, range: _, label: _, label_expr, color_expr, material_expr, closed: _ } = ac;
+    let AnonChipDecl {
+        body,
+        range: _,
+        label: _,
+        label_expr,
+        color_expr,
+        material_expr,
+        closed: _,
+    } = ac;
     opt(label_expr, Flow::Seq, f);
     opt(color_expr, Flow::Seq, f);
     opt(material_expr, Flow::Seq, f);
@@ -632,7 +863,11 @@ var b: int = 0
             let mut names = Vec::new();
             mentioned_names(Node::Stmt(s), &mut |n| names.push(n));
             for name in ["a", "b", "c", "p", "go", "P"] {
-                assert_eq!(names.contains(&name), mentions(Node::Stmt(s), name), "{name} in {s:?}");
+                assert_eq!(
+                    names.contains(&name),
+                    mentions(Node::Stmt(s), name),
+                    "{name} in {s:?}"
+                );
             }
         }
     }

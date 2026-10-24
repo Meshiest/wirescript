@@ -5,7 +5,9 @@
 //! above 2.6. Usage:
 //!   cargo run --release -p wirescript --example editor_scale [-- --runs 7]
 use std::time::{Duration, Instant};
-use wirescript::analysis::{collect_inlay_hints, find_name_range, prepare_rename_at, references_at, semantic_tokens};
+use wirescript::analysis::{
+    collect_inlay_hints, find_name_range, prepare_rename_at, references_at, semantic_tokens,
+};
 use wirescript::resolve::{FsLoader, resolve_parsed};
 
 const SIZES: [usize; 3] = [2000, 4000, 8000];
@@ -62,14 +64,21 @@ fn requests(src: &str) -> Vec<(&'static str, Duration)> {
     // server does.
     time("semantic tokens", &mut || {
         let spans = semantic_tokens(&ast);
-        let narrowed = spans.iter().filter(|s| s.coarse).filter_map(|s| find_name_range(src, &s.range, &s.name)).count();
+        let narrowed = spans
+            .iter()
+            .filter(|s| s.coarse)
+            .filter_map(|s| find_name_range(src, &s.range, &s.name))
+            .count();
         std::hint::black_box((spans.len(), narrowed));
     });
     // Find-references and prepare-rename on `counter`'s declaration (line 2).
     time("references", &mut || {
         let (_, sites) = references_at(&ast, src, FILE, 1, 5).expect("counter has references");
-        let narrowed =
-            sites.iter().filter(|s| s.coarse).filter_map(|s| find_name_range(src, &s.range, "counter")).count();
+        let narrowed = sites
+            .iter()
+            .filter(|s| s.coarse)
+            .filter_map(|s| find_name_range(src, &s.range, "counter"))
+            .count();
         std::hint::black_box((sites.len(), narrowed));
     });
     time("rename", &mut || {
@@ -79,7 +88,12 @@ fn requests(src: &str) -> Vec<(&'static str, Duration)> {
         std::hint::black_box(collect_inlay_hints(src, &resolved.ast, &tc.type_of_expr, FILE).len());
     });
     time("diagnostics", &mut || {
-        let input = wirescript::CompileInput { source: src, file: FILE, module_name: None, fold_mode: Default::default() };
+        let input = wirescript::CompileInput {
+            source: src,
+            file: FILE,
+            module_name: None,
+            fold_mode: Default::default(),
+        };
         std::hint::black_box(wirescript::diagnostics_only(input, &FsLoader).len());
     });
     times
@@ -87,7 +101,12 @@ fn requests(src: &str) -> Vec<(&'static str, Duration)> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let runs: usize = args.iter().position(|a| a == "--runs").and_then(|i| args.get(i + 1)).and_then(|r| r.parse().ok()).unwrap_or(5);
+    let runs: usize = args
+        .iter()
+        .position(|a| a == "--runs")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|r| r.parse().ok())
+        .unwrap_or(5);
 
     let sources: Vec<String> = SIZES.iter().map(|&n| source(n)).collect();
     // The fastest of `runs` runs of each request at each size.
@@ -96,7 +115,10 @@ fn main() {
         .map(|src| {
             let mut best = wirescript::on_big_stack(|| requests(src));
             for _ in 1..runs {
-                for (b, (_, t)) in best.iter_mut().zip(wirescript::on_big_stack(|| requests(src))) {
+                for (b, (_, t)) in best
+                    .iter_mut()
+                    .zip(wirescript::on_big_stack(|| requests(src)))
+                {
                     b.1 = b.1.min(t);
                 }
             }
@@ -104,7 +126,10 @@ fn main() {
         })
         .collect();
 
-    println!("request times in ms at {} lines, ratio = t(8k) / t(4k); fail above {LIMIT}", SIZES.map(|n| n.to_string()).join(" / "));
+    println!(
+        "request times in ms at {} lines, ratio = t(8k) / t(4k); fail above {LIMIT}",
+        SIZES.map(|n| n.to_string()).join(" / ")
+    );
     let ms = |d: Duration| d.as_secs_f64() * 1000.0;
     let mut failures = Vec::new();
     for (k, (name, _)) in best[0].iter().enumerate() {
@@ -115,11 +140,26 @@ fn main() {
         if bad {
             failures.push(format!("{name} {ratio:.2}"));
         }
-        let mark = if bad { "  FAIL" } else if judged { "" } else { "  (under noise floor)" };
-        println!("{name:<16} {:>8.1} / {:>8.1} / {:>8.1}   {ratio:5.2}{mark}", ms(a), ms(b), ms(c));
+        let mark = if bad {
+            "  FAIL"
+        } else if judged {
+            ""
+        } else {
+            "  (under noise floor)"
+        };
+        println!(
+            "{name:<16} {:>8.1} / {:>8.1} / {:>8.1}   {ratio:5.2}{mark}",
+            ms(a),
+            ms(b),
+            ms(c)
+        );
     }
     if !failures.is_empty() {
-        eprintln!("editor_scale: {} request(s) grow faster than {LIMIT}x per doubling: {}", failures.len(), failures.join(", "));
+        eprintln!(
+            "editor_scale: {} request(s) grow faster than {LIMIT}x per doubling: {}",
+            failures.len(),
+            failures.join(", ")
+        );
         std::process::exit(1);
     }
     println!("editor_scale: every request scales within the limit");
